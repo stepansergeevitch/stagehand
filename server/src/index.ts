@@ -229,7 +229,12 @@ app.post("/api/tasks/:id/terminal", async (c) => {
     if (!acc) return c.json({ error: "no logged-in account" }, 400);
     const env = db.prepare(`SELECT path FROM envs WHERE id = ?`).get(task.env_id) as { path: string };
     const name = taskSessionName(task.ticket_id);
-    await ensureSession(name, task.worktree_path ?? env.path, `claude --resume ${task.session_id}`, { CLAUDE_CONFIG_DIR: acc.config_dir });
+    await ensureSession(
+        name,
+        task.worktree_path ?? env.path,
+        `claude --resume ${task.session_id}; echo; echo '[stagehand] claude exited — press Enter to close'; read -r`,
+        { CLAUDE_CONFIG_DIR: acc.config_dir },
+    );
     return c.json({ terminal: name });
 });
 
@@ -266,7 +271,13 @@ app.get(
                     ws.close();
                     return;
                 }
-                term = attach(name, 120, 36);
+                try {
+                    term = attach(name, 120, 36);
+                } catch (e) {
+                    ws.send(`\r\n[stagehand] could not open a pty: ${String((e as Error).message ?? e)}\r\n`);
+                    ws.close();
+                    return;
+                }
                 term.onData((d) => ws.send(d));
                 term.onExit(() => ws.close());
             },

@@ -13,16 +13,23 @@ export const Terminal = ({ session }: { session: string }) => {
         const fit = new FitAddon();
         term.loadAddon(fit);
         term.open(el);
-        fit.fit();
+        const safeFit = (): void => {
+            // fit() throws when the container has no layout yet (first frame, StrictMode remount); measure only once laid out.
+            if (el.clientWidth > 0 && el.clientHeight > 0) fit.fit();
+        };
+        requestAnimationFrame(safeFit);
 
         const proto = location.protocol === "https:" ? "wss" : "ws";
         const ws = new WebSocket(`${proto}://${location.host}/ws/term?session=${encodeURIComponent(session)}`);
-        ws.onopen = () => ws.send(JSON.stringify({ t: "r", cols: term.cols, rows: term.rows }));
+        ws.onopen = () => {
+            safeFit();
+            ws.send(JSON.stringify({ t: "r", cols: term.cols, rows: term.rows }));
+        };
         ws.onmessage = (e) => term.write(typeof e.data === "string" ? e.data : "");
         ws.onclose = () => term.write("\r\n[stagehand] terminal closed\r\n");
         const onData = term.onData((d) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ t: "i", d })));
         const onResize = () => {
-            fit.fit();
+            safeFit();
             if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "r", cols: term.cols, rows: term.rows }));
         };
         const ro = new ResizeObserver(onResize);
