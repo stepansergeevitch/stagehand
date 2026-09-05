@@ -55,6 +55,8 @@ export interface EnvRow {
     path: string;
     base_branch: string;
     default_account_id: string | null;
+    app_url: string | null;
+    qa_script: string | null;
     created_at: string;
 }
 
@@ -192,11 +194,21 @@ CREATE TABLE IF NOT EXISTS reviews (
 
 export type DB = Database.Database;
 
+const MIGRATIONS: Array<[string, string]> = [
+    ["envs.app_url", `ALTER TABLE envs ADD COLUMN app_url TEXT`],
+    ["envs.qa_script", `ALTER TABLE envs ADD COLUMN qa_script TEXT`],
+];
+
 export const openDb = (dataDir: string): DB => {
     const db = new Database(join(dataDir, "stagehand.sqlite"));
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
     db.exec(SCHEMA);
+    for (const [key, sql] of MIGRATIONS) {
+        const [table, column] = key.split(".") as [string, string];
+        const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+        if (!cols.some((c) => c.name === column)) db.exec(sql);
+    }
     return db;
 };
 

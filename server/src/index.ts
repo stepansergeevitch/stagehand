@@ -116,29 +116,50 @@ app.get("/api/envs", (c) => c.json(envsAll()));
 
 app.post("/api/envs", async (c) => {
     const body = json(
-        z.object({ name: z.string().min(1), path: z.string().min(1), baseBranch: z.string().default("main"), defaultAccountId: z.string().optional() }),
+        z.object({
+            name: z.string().min(1),
+            path: z.string().min(1),
+            baseBranch: z.string().default("main"),
+            defaultAccountId: z.string().optional(),
+            appUrl: z.string().url().optional(),
+            qaScript: z.string().optional(),
+        }),
         await c.req.json(),
     );
     if (!existsSync(body.path) || !(await isGitRepo(body.path))) return c.json({ error: `${body.path} is not a git checkout` }, 400);
     const id = randomUUID();
-    db.prepare(`INSERT INTO envs (id, name, path, base_branch, default_account_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(
+    db.prepare(`INSERT INTO envs (id, name, path, base_branch, default_account_id, app_url, qa_script, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id,
         body.name,
         body.path,
         body.baseBranch,
         body.defaultAccountId ?? null,
+        body.appUrl ?? null,
+        body.qaScript ?? null,
         now(),
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(id));
 });
 
 app.patch("/api/envs/:id", async (c) => {
-    const body = json(z.object({ defaultAccountId: z.string().nullable().optional(), baseBranch: z.string().optional() }), await c.req.json());
+    const body = json(
+        z.object({
+            name: z.string().min(1).optional(),
+            defaultAccountId: z.string().nullable().optional(),
+            baseBranch: z.string().optional(),
+            appUrl: z.string().url().nullable().optional(),
+            qaScript: z.string().nullable().optional(),
+        }),
+        await c.req.json(),
+    );
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
     if (!env) return c.json({ error: "not found" }, 404);
-    db.prepare(`UPDATE envs SET default_account_id = ?, base_branch = ? WHERE id = ?`).run(
+    db.prepare(`UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ? WHERE id = ?`).run(
+        body.name ?? env.name,
         body.defaultAccountId === undefined ? env.default_account_id : body.defaultAccountId,
         body.baseBranch ?? env.base_branch,
+        body.appUrl === undefined ? env.app_url : body.appUrl,
+        body.qaScript === undefined ? env.qa_script : body.qaScript,
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));

@@ -75,6 +75,19 @@ section.card { background: var(--panel); border: 1px solid var(--line); border-r
 section.card h2 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 10px; }
 section.card h3 { font-size: 13px; margin: 12px 0 6px; }
 .md { white-space: pre-wrap; font-size: 13px; max-width: 80ch; }
+.markdown { font-size: 13.5px; max-width: 88ch; line-height: 1.5; }
+.markdown h1 { font-size: 17px; margin: 14px 0 8px; }
+.markdown h2 { font-size: 15px; margin: 18px 0 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.markdown h3 { font-size: 13.5px; margin: 12px 0 4px; }
+.markdown p { margin: 6px 0; }
+.markdown ul, .markdown ol { margin: 4px 0 8px; padding-left: 22px; }
+.markdown li { margin: 2px 0; }
+.markdown code { font-family: var(--mono); font-size: 12px; background: var(--code); padding: 1px 4px; border-radius: 3px; }
+.markdown pre { background: var(--code); padding: 10px 12px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
+.markdown pre code { background: none; padding: 0; }
+.markdown table { font-size: 12.5px; margin: 8px 0; display: block; overflow-x: auto; }
+.markdown blockquote { margin: 6px 0; padding: 4px 12px; border-left: 3px solid var(--line); color: var(--ink-2); }
+.markdown hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13px; }
 .kv b { color: var(--ink-3); font-weight: 500; }
 ul.plain { margin: 4px 0; padding-left: 18px; }

@@ -9,7 +9,7 @@ export interface Account {
     logged_in: number; chrome_capable: number | null; failover_enabled: number; failover_threshold: number;
     limits: Array<{ window: string; utilization: number; resetsAt: number }>;
 }
-export interface Env { id: string; name: string; path: string; base_branch: string; default_account_id: string | null }
+export interface Env { id: string; name: string; path: string; base_branch: string; default_account_id: string | null; app_url: string | null; qa_script: string | null }
 export interface Task {
     id: string; env_id: string; ticket_id: string; title: string | null; session_id: string; account_id: string | null;
     branch: string | null; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
@@ -60,7 +60,9 @@ export const api = {
     patchAccount: (id: string, body: { failover_enabled?: boolean; failover_threshold?: number }) =>
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
-    addEnv: (body: { name: string; path: string; baseBranch: string; defaultAccountId?: string }) => post<Env>("/api/envs", body),
+    addEnv: (body: { name: string; path: string; baseBranch: string; defaultAccountId?: string; appUrl?: string; qaScript?: string }) => post<Env>("/api/envs", body),
+    patchEnv: (id: string, body: { name?: string; baseBranch?: string; defaultAccountId?: string | null; appUrl?: string | null; qaScript?: string | null }) =>
+        fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
     tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
     createTask: (envId: string, ticketId: string, accountId?: string) => post<Task>("/api/tasks", { envId, ticketId, accountId }),

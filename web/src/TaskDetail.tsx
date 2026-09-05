@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, STAGE_LABEL, STAGE_ORDER, type Account, type QaPass, type Stage, type TaskDetail } from "./api";
 import { Terminal } from "./Terminal";
+import { Markdown } from "./Markdown";
 
 interface Props {
     detail: TaskDetail;
@@ -111,14 +112,14 @@ export const TaskDetailView = ({ detail, accounts, feed, terminal, onAction, onO
                 <section className="card">
                     <h2>Research <span className={`chip ${research.classification === "bug" ? "bad" : "accent"}`}>{research.classification}</span></h2>
                     <div className="kv"><b>Summary</b><span>{research.summary}</span><b>Branch</b><code>{research.branchName}</code><b>Areas</b><span>{research.affectedAreas.join(", ")}</span></div>
-                    {researchMd && <details><summary>research.md</summary><div className="md">{researchMd}</div></details>}
+                    {researchMd && <details><summary>research.md</summary><Markdown source={researchMd} /></details>}
                 </section>
             )}
 
             {design && (
                 <section className="card">
                     <h2>Design proposal <span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span></h2>
-                    {designMd && <div className="md">{designMd}</div>}
+                    {designMd && <Markdown source={designMd} />}
                     <h3>Plan by layer</h3>
                     <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
                     <h3>Test plan</h3>
@@ -143,7 +144,7 @@ export const TaskDetailView = ({ detail, accounts, feed, terminal, onAction, onO
                         <b>Files</b><span>{impl.files.map((f) => <code key={f} style={{ marginRight: 8 }}>{f}</code>)}</span>
                         <b>Commits</b><span>{impl.commits.map((c) => <div key={c}><code>{c}</code></div>)}</span>
                     </div>
-                    {impl.notes && <p className="md">{impl.notes}</p>}
+                    {impl.notes && <Markdown source={impl.notes} />}
                 </section>
             )}
 
@@ -153,7 +154,7 @@ export const TaskDetailView = ({ detail, accounts, feed, terminal, onAction, onO
                 <section className="card">
                     <h2>PR draft</h2>
                     <div className="kv"><b>Title</b><span>{pr.title}</span><b>Base</b><code>{pr.base}</code></div>
-                    <div className="md">{pr.body}</div>
+                    <Markdown source={pr.body} />
                 </section>
             )}
 

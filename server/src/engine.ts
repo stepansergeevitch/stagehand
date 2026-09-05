@@ -302,7 +302,11 @@ export class Engine extends EventEmitter {
                 def.stage === "qa_baseline"
                     ? " — the change is NOT implemented yet; expect asserts about new behaviour to fail. Record what the app does today."
                     : " — the change is implemented; every assert is expected to hold.";
-            vars["firstUrl"] = scenarios[0]?.url ?? "/deals";
+            vars["appUrl"] = env.app_url ?? "https://localhost:3000";
+            vars["firstUrl"] = scenarios[0]?.url ?? "/";
+            vars["qaSetup"] = env.qa_script
+                ? `0. Bring the app up first by running this from the worktree with Bash: \`${env.qa_script}\`. If it exits non-zero, write every scenario as \`blocked\` with the script's last lines as the blocker and stop.`
+                : `0. The app is expected to be already running at ${env.app_url ?? "https://localhost:3000"}; if it is not reachable, write every scenario as \`blocked\` with blocker "app not running at <url>" and stop.`;
             vars["scenarios"] = scenarios
                 .map(
                     (s) =>

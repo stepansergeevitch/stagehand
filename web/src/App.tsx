@@ -240,23 +240,48 @@ const TaskForm = ({ accounts, env, onSubmit }: { accounts: Account[]; env: Env; 
     );
 };
 
-const EnvForm = ({ accounts, onSubmit }: { accounts: Account[]; onSubmit: (b: { name: string; path: string; baseBranch: string; defaultAccountId?: string }) => Promise<void> }) => {
+const EnvForm = ({
+    accounts,
+    onSubmit,
+}: {
+    accounts: Account[];
+    onSubmit: (b: { name: string; path: string; baseBranch: string; defaultAccountId?: string; appUrl?: string; qaScript?: string }) => Promise<void>;
+}) => {
     const [name, setName] = useState("");
     const [path, setPath] = useState("");
     const [base, setBase] = useState("main");
     const [acc, setAcc] = useState("");
+    const [appUrl, setAppUrl] = useState("");
+    const [qaScript, setQaScript] = useState("");
     return (
         <>
             <label>Name <input autoFocus value={name} onChange={(e) => setName(e.target.value)} /></label>
             <label>Path <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="/Users/you/code/repo" /></label>
             <label>Base branch <input value={base} onChange={(e) => setBase(e.target.value)} /></label>
+            <label>App URL for QA <input value={appUrl} onChange={(e) => setAppUrl(e.target.value)} placeholder="https://localhost:3000" /></label>
+            <label>QA bring-up command <input value={qaScript} onChange={(e) => setQaScript(e.target.value)} placeholder="optional, run from the worktree before QA" /></label>
             <label>Default account
                 <select value={acc} onChange={(e) => setAcc(e.target.value)}>
                     <option value="">— none —</option>
                     {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
             </label>
-            <button className="primary" disabled={!name || !path} onClick={() => onSubmit({ name, path, baseBranch: base, ...(acc ? { defaultAccountId: acc } : {}) })}>Add</button>
+            <button
+                className="primary"
+                disabled={!name || !path}
+                onClick={() =>
+                    onSubmit({
+                        name,
+                        path,
+                        baseBranch: base,
+                        ...(acc ? { defaultAccountId: acc } : {}),
+                        ...(appUrl ? { appUrl } : {}),
+                        ...(qaScript ? { qaScript } : {}),
+                    })
+                }
+            >
+                Add
+            </button>
         </>
     );
 };
