@@ -35,6 +35,11 @@ export const removeWorktree = async (envPath: string, path: string): Promise<voi
     await git(envPath, ["worktree", "remove", "--force", path]);
 };
 
+export const removeWorktreeAndBranch = async (envPath: string, path: string, branch: string): Promise<void> => {
+    if (existsSync(path)) await removeWorktree(envPath, path);
+    await git(envPath, ["branch", "-D", branch]);
+};
+
 export const diffStat = (worktree: string, baseBranch: string): Promise<string> =>
     git(worktree, ["diff", "--stat", `origin/${baseBranch}...HEAD`]);
 

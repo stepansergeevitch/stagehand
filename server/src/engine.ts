@@ -1,11 +1,11 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import { now, type AccountRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
-import { createWorktree } from "./git.js";
+import { createWorktree, removeWorktreeAndBranch } from "./git.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { DesignResult, QaPassResult, ResearchResult, type QaScenario } from "./stages/contracts.js";
 
@@ -167,6 +167,23 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task) return;
         this.dispatch(taskId, task.stage, { notes: "Previous attempt did not complete. Continue from the current state of the task directory." });
+    }
+
+    async deleteTask(taskId: string, removeWorktree: boolean): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) return;
+        const run = this.latestRun(taskId);
+        if (run) this.active.get(run.id)?.kill();
+        if (removeWorktree && task.worktree_path && task.branch) {
+            const env = this.env(task.env_id);
+            await removeWorktreeAndBranch(env.path, task.worktree_path, task.branch).catch(() => undefined);
+        }
+        rmSync(this.taskDir(taskId), { recursive: true, force: true });
+        this.db.prepare(`DELETE FROM reviews WHERE task_id = ?`).run(taskId);
+        this.db.prepare(`DELETE FROM pr_state WHERE task_id = ?`).run(taskId);
+        this.db.prepare(`DELETE FROM runs WHERE task_id = ?`).run(taskId);
+        this.db.prepare(`DELETE FROM tasks WHERE id = ?`).run(taskId);
+        this.emit("task", { ...task, status: "deleted" });
     }
 
     setAccount(taskId: string, accountId: string): void {

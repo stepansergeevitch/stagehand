@@ -11,7 +11,7 @@ import { now, openDb, type AccountRow, type EnvRow } from "./db.js";
 import { Engine } from "./engine.js";
 import { loginCommand, probeChrome, readAuthStatus, scaffoldAccountDir } from "./claude/accounts.js";
 import { isGitRepo } from "./git.js";
-import { attach, ensureSession, loginSessionName, sessionExists, taskSessionName } from "./tmux.js";
+import { attach, ensureSession, killSession, loginSessionName, sessionExists, taskSessionName } from "./tmux.js";
 
 const cfg = loadConfig();
 const db = openDb(cfg.dataDir);
@@ -212,6 +212,14 @@ app.post("/api/tasks/:id/account", async (c) => {
     const body = json(z.object({ accountId: z.string() }), await c.req.json());
     engine.setAccount(c.req.param("id"), body.accountId);
     return c.json(engine.getTask(c.req.param("id")));
+});
+
+app.delete("/api/tasks/:id", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    await killSession(taskSessionName(task.ticket_id));
+    await engine.deleteTask(task.id, c.req.query("worktree") !== "keep");
+    return c.json({ deleted: task.id });
 });
 
 app.post("/api/tasks/:id/pin", (c) => {
