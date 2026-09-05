@@ -5,9 +5,9 @@ This is the IMPLEMENTATION stage for ticket {{ticketId}} in the worktree {{workt
 ## Rules
 
 - Unit TDD: for each entry in `testPlan`, write the tests first (red), then the implementation (green). Add tests if you find gaps; never drop a planned case.
-- Run the targeted tests after each slice: backend `uv run pytest <paths>` (from `backend/`), frontend `npm test -- --testPathPattern=<path>` (from `frontend/`).
-- Coverage on NEW lines must exceed 90%: backend `uv run pytest --cov=<touched modules> --cov-report=term-missing <paths>`; frontend `npm test -- --coverage --collectCoverageFrom=<touched files> --testPathPattern=<path>`. Add tests until it does.
-- Gates before you finish: all targeted tests green AND `uv run basedpyright --level error` (from `backend/`) reports zero errors. Fix at the source — no `# type: ignore`, `# pyright: ignore`, `cast`, or baseline entries.
+- Use the repo's own commands, as documented in its CLAUDE.md / Makefile / pyproject, for tests, coverage and type-checking (northspyre-deal: `uv run pytest`, `npm test`, `uv run basedpyright --level error`; other repos: whatever CLAUDE.md prescribes). Run the targeted tests after each slice.
+- Coverage on NEW lines must exceed 90% (e.g. `pytest --cov=<touched modules> --cov-report=term-missing <paths>`); add tests until it does.
+- Gates before you finish: all targeted tests green AND the repo's type-checker/linter clean. Fix at the source — no `# type: ignore`, `# pyright: ignore`, `cast`, or baseline entries.
 - Commit in small steps with short one-line messages; no Co-Authored-By, no conventional-commit prefixes. Never push, never touch `{{baseBranch}}`, never rewrite history.
 - Never put the ticket id in source code or comments. Never post to GitHub.
 
