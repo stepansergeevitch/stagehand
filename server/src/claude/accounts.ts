@@ -70,19 +70,28 @@ export const readAuthStatus = async (configDir: string): Promise<AuthStatus> => 
     }
 };
 
-export const probeChrome = async (configDir: string, cwd: string): Promise<boolean> => {
+const probeChromeOnce = async (configDir: string, cwd: string): Promise<boolean> => {
     const prompt =
-        "Use ToolSearch to load mcp__claude-in-chrome__tabs_context_mcp, then call it once. " +
+        "Use ToolSearch to load mcp__claude-in-chrome__tabs_context_mcp, then call it once. If it errors, wait 5 seconds and call it once more. " +
         "Reply with exactly CHROME_OK if it returned tab data, otherwise CHROME_FAIL.";
     try {
         const { stdout } = await execFileAsync(
             "claude",
-            ["-p", prompt, "--chrome", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "4", "--no-session-persistence"],
-            { cwd, env: { ...process.env, CLAUDE_CONFIG_DIR: configDir }, timeout: 120_000 },
+            ["-p", prompt, "--chrome", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "6", "--no-session-persistence"],
+            { cwd, env: { ...process.env, CLAUDE_CONFIG_DIR: configDir }, timeout: 180_000 },
         );
         const res = z.object({ result: z.string().optional() }).safeParse(JSON.parse(stdout));
         return res.success && (res.data.result ?? "").includes("CHROME_OK");
     } catch {
         return false;
     }
+};
+
+// The extension bridge connects lazily and occasionally misses the first attempt; three tries separates "flaky" from "not this account".
+export const probeChrome = async (configDir: string, cwd: string, attempts = 3): Promise<boolean> => {
+    for (let i = 0; i < attempts; i++) {
+        if (await probeChromeOnce(configDir, cwd)) return true;
+        await new Promise((r) => setTimeout(r, 3_000));
+    }
+    return false;
 };
