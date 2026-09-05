@@ -1,9 +1,10 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { Config } from "../config.js";
+import { claudeEnv } from "./env.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -60,9 +61,7 @@ export const loginCommand = (configDir: string, email?: string): string => {
 
 export const readAuthStatus = async (configDir: string): Promise<AuthStatus> => {
     try {
-        const { stdout } = await execFileAsync("claude", ["auth", "status"], {
-            env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
-        });
+        const { stdout } = await execFileAsync("claude", ["auth", "status"], { env: claudeEnv(configDir) });
         const parsed = AuthStatus.safeParse(JSON.parse(stdout));
         return parsed.success ? parsed.data : { loggedIn: false };
     } catch {
@@ -70,19 +69,37 @@ export const readAuthStatus = async (configDir: string): Promise<AuthStatus> => 
     }
 };
 
+// stdin must be closed: with an open pipe claude waits for input and the Chrome bridge never attaches.
+const runClaudeJson = (args: string[], cwd: string, configDir: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+        const child = spawn("claude", args, { cwd, env: claudeEnv(configDir), stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        let err = "";
+        child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
+        child.stderr.setEncoding("utf8").on("data", (d: string) => (err += d));
+        const timer = setTimeout(() => child.kill("SIGTERM"), 180_000);
+        child.on("close", (code) => {
+            clearTimeout(timer);
+            code === 0 ? resolve(out) : reject(new Error(`claude exited ${code}: ${err.slice(-300)}`));
+        });
+        child.on("error", reject);
+    });
+
 const probeChromeOnce = async (configDir: string, cwd: string): Promise<boolean> => {
     const prompt =
         "Use ToolSearch to load mcp__claude-in-chrome__tabs_context_mcp, then call it once. If it errors, wait 5 seconds and call it once more. " +
         "Reply with exactly CHROME_OK if it returned tab data, otherwise CHROME_FAIL.";
     try {
-        const { stdout } = await execFileAsync(
-            "claude",
+        const stdout = await runClaudeJson(
             ["-p", prompt, "--chrome", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "6", "--no-session-persistence"],
-            { cwd, env: { ...process.env, CLAUDE_CONFIG_DIR: configDir }, timeout: 180_000 },
+            cwd,
+            configDir,
         );
-        const res = z.object({ result: z.string().optional() }).safeParse(JSON.parse(stdout));
+        const res = z.object({ result: z.string().optional(), is_error: z.boolean().optional() }).safeParse(JSON.parse(stdout));
+        console.error(`[probeChrome] ${configDir} cwd=${cwd} → ${res.success ? res.data.result : "unparseable"}`);
         return res.success && (res.data.result ?? "").includes("CHROME_OK");
-    } catch {
+    } catch (e) {
+        console.error(`[probeChrome] ${configDir} failed: ${String(e).slice(0, 300)}`);
         return false;
     }
 };

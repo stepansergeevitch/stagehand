@@ -20,7 +20,8 @@ export const ensureSession = async (name: string, cwd: string, command: string, 
     const exports = Object.entries(env)
         .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
         .join(" ");
-    await tmux(["new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", cwd, `${exports} ${command}`]);
+    // tmux inherits the server's environment; unset the dev-toolchain variables inside the pane too.
+    await tmux(["new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", cwd, `unset NODE_OPTIONS CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ${exports} ${command}`]);
 };
 
 export const killSession = async (name: string): Promise<void> => {

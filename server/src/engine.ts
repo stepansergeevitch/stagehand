@@ -471,10 +471,22 @@ export class Engine extends EventEmitter {
             this.setTaskStatus(taskId, "waiting_user", `${def.label} · needs you`);
             return;
         }
-        if (def.stage === "manual_qa") {
+        if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
             const qa = QaPassResult.parse(data);
+            // The Chrome bridge attaches unreliably on a fresh process (~1 in 3 misses); a bridge-level block is retried, a real block is not.
+            const bridgeMiss = qa.blockers.some((b) => /extension|not connected/i.test(b)) && qa.scenarios.every((s) => s.outcome === "blocked");
+            const attempt = this.latestRun(taskId)?.attempt ?? 1;
+            if (bridgeMiss && attempt < 3) {
+                this.dispatch(taskId, def.stage, { attempt: attempt + 1 });
+                return;
+            }
+            const blockedByAuth = qa.blockers.some((b) => /auth0|log ?in/i.test(b));
+            if (blockedByAuth) {
+                this.setTaskStatus(taskId, "blocked", `${def.label} · log into Northspyre in the automation Chrome window, then retry`);
+                return;
+            }
             const failed = qa.scenarios.filter((s) => s.outcome === "fail").length;
-            if (failed > 0) {
+            if (def.stage === "manual_qa" && failed > 0) {
                 this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`Manual QA · ${failed} scenario(s) failed`, now(), taskId);
             }
         }

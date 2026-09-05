@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { EventEmitter } from "node:events";
 import { z } from "zod";
+import { claudeEnv } from "./env.js";
 
 export interface RunSpec {
     prompt: string;
@@ -114,7 +115,7 @@ export const startClaude = (spec: RunSpec): ClaudeRun => {
     const emitter = new EventEmitter() as ClaudeRun;
     const child: ChildProcess = spawn("claude", buildArgs(spec), {
         cwd: spec.cwd,
-        env: { ...process.env, CLAUDE_CONFIG_DIR: spec.configDir },
+        env: claudeEnv(spec.configDir),
         stdio: ["ignore", "pipe", "pipe"],
     });
     emitter.pid = child.pid;

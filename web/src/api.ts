@@ -1,0 +1,84 @@
+export type Stage =
+    | "research" | "design_proposal" | "qa_baseline" | "implementation" | "manual_qa" | "user_review"
+    | "pr_creation_review" | "pr_waiting" | "pr_red" | "pr_green" | "pr_approved" | "done";
+
+export type TaskStatus = "idle" | "queued" | "running" | "waiting_user" | "blocked" | "rate_limited" | "failed" | "done" | "stopped";
+
+export interface Account {
+    id: string; name: string; config_dir: string; email: string | null; org: string | null; plan: string | null;
+    logged_in: number; chrome_capable: number | null; failover_enabled: number; failover_threshold: number;
+    limits: Array<{ window: string; utilization: number; resetsAt: number }>;
+}
+export interface Env { id: string; name: string; path: string; base_branch: string; default_account_id: string | null }
+export interface Task {
+    id: string; env_id: string; ticket_id: string; title: string | null; session_id: string; account_id: string | null;
+    branch: string | null; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
+    pinned: number; created_at: string; updated_at: string;
+}
+export interface Run {
+    id: string; task_id: string; stage: Stage; kind: string; status: string; account_id: string; started_at: string | null;
+    finished_at: string | null; resume_at: string | null; error: string | null; result_json: string | null; cost_usd: number | null;
+    num_turns: number | null; last_event: string | null; attempt: number;
+}
+export interface QaStep { action: string; assert: string; shot: boolean }
+export interface QaScenario { id: string; title: string; url: string; persona: string; steps: QaStep[] }
+export interface Design {
+    classification: "bug" | "feature"; scope: { inScope: string[]; outOfScope: string[] };
+    plan: Array<{ layer: string; changes: string[] }>; testPlan: Array<{ file: string; cases: string[] }>;
+    qa: QaScenario[]; qaSkippedReason: string | null;
+}
+export interface QaPass {
+    pass: "before" | "after";
+    scenarios: Array<{ id: string; outcome: "pass" | "fail" | "blocked"; observation: string; shots: Array<{ step: number; file: string }> }>;
+    blockers: string[];
+}
+export interface Impl {
+    files: string[]; commits: string[]; tests: { backend: string | null; frontend: string | null };
+    coverageNewLines: number | null; gates: { tests: boolean; typecheck: boolean }; notes: string;
+}
+export interface TaskDetail {
+    task: Task; runs: Run[]; artifacts: Array<{ path: string; size: number }>;
+    research: { classification: string; title: string; branchName: string; summary: string; affectedAreas: string[] } | null;
+    design: Design | null; impl: Impl | null; qaBefore: QaPass | null; qaAfter: QaPass | null;
+    pr: { title: string; body: string; base: string } | null;
+    reviews: Array<{ id: string; stage: Stage; verdict: string; route_to: string | null; notes: string | null; created_at: string }>;
+}
+
+const j = async <T,>(res: Response): Promise<T> => {
+    const body = (await res.json()) as T & { error?: string };
+    if (!res.ok) throw new Error(body.error ?? res.statusText);
+    return body;
+};
+const post = <T,>(url: string, body?: unknown): Promise<T> =>
+    fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => j<T>(r));
+
+export const api = {
+    accounts: () => fetch("/api/accounts").then((r) => j<Account[]>(r)),
+    addAccount: (name: string, email?: string) => post<{ account: Account; terminal: string | null }>("/api/accounts", { name, email }),
+    refreshAccount: (id: string, probe: boolean) => post<Account>(`/api/accounts/${id}/refresh?probe=${probe ? 1 : 0}`),
+    loginAccount: (id: string) => post<{ terminal: string }>(`/api/accounts/${id}/login`),
+    patchAccount: (id: string, body: { failover_enabled?: boolean; failover_threshold?: number }) =>
+        fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
+    envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
+    addEnv: (body: { name: string; path: string; baseBranch: string; defaultAccountId?: string }) => post<Env>("/api/envs", body),
+    tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
+    task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
+    createTask: (envId: string, ticketId: string, accountId?: string) => post<Task>("/api/tasks", { envId, ticketId, accountId }),
+    review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string }) => post<Task>(`/api/tasks/${id}/review`, body),
+    stop: (id: string) => post<Task>(`/api/tasks/${id}/stop`),
+    retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),
+    pin: (id: string) => post<Task>(`/api/tasks/${id}/pin`),
+    setAccount: (id: string, accountId: string) => post<Task>(`/api/tasks/${id}/account`, { accountId }),
+    terminal: (id: string) => post<{ terminal: string }>(`/api/tasks/${id}/terminal`),
+    artifactUrl: (id: string, rel: string) => `/api/tasks/${id}/artifacts/${rel}`,
+};
+
+export const STAGE_LABEL: Record<Stage, string> = {
+    research: "Research", design_proposal: "Design Proposal", qa_baseline: "QA baseline", implementation: "Implementation",
+    manual_qa: "Manual QA", user_review: "User Review", pr_creation_review: "PR Creation Review", pr_waiting: "PR Waiting",
+    pr_red: "PR Red", pr_green: "PR Green", pr_approved: "PR Approved", done: "Done",
+};
+export const STAGE_ORDER: Stage[] = [
+    "research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "user_review",
+    "pr_creation_review", "pr_waiting", "pr_red", "pr_green", "pr_approved", "done",
+];
