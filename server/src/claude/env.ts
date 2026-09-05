@@ -10,5 +10,7 @@ export const claudeEnv = (configDir: string): Record<string, string> => {
         env[k] = v;
     }
     env["CLAUDE_CONFIG_DIR"] = configDir;
+    // Marker for user hooks (e.g. mempalace auto-save) to skip orchestrated runs.
+    env["STAGEHAND_RUN"] = "1";
     return env;
 };
