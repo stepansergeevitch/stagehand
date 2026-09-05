@@ -49,9 +49,23 @@ export class Engine extends EventEmitter {
     private recoverInterrupted(): void {
         const stale = this.db.prepare(`SELECT * FROM runs WHERE status = 'running'`).all() as RunRow[];
         for (const run of stale) {
+            // The claude child may have finished its work before the restart; if the stage's output already validates, complete it from disk.
+            if (this.completeFromDisk(run.task_id, run.id, run.stage)) continue;
             this.db.prepare(`UPDATE runs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?`).run("server restarted mid-run", now(), run.id);
             this.setTaskStatus(run.task_id, "failed", "run interrupted by server restart — retry to resume");
         }
+    }
+
+    private completeFromDisk(taskId: string, runId: string, stage: Stage): boolean {
+        const def = STAGE_DEFS[stage];
+        if (!def.contract || !def.outputFile) return false;
+        const validation = this.validateOutput(taskId, def);
+        if (!validation.ok) return false;
+        this.db
+            .prepare(`UPDATE runs SET status = 'done', finished_at = COALESCE(finished_at, ?), error = NULL, result_json = ? WHERE id = ?`)
+            .run(now(), JSON.stringify(validation.data), runId);
+        this.afterStage(taskId, def, validation.data);
+        return true;
     }
 
     private tick(): void {
@@ -166,6 +180,8 @@ export class Engine extends EventEmitter {
     retry(taskId: string): void {
         const task = this.getTask(taskId);
         if (!task) return;
+        const last = this.latestRun(taskId);
+        if (last && last.stage === task.stage && this.completeFromDisk(taskId, last.id, task.stage)) return;
         this.dispatch(taskId, task.stage, { notes: "Previous attempt did not complete. Continue from the current state of the task directory." });
     }
 
