@@ -1,0 +1,68 @@
+import { z } from "zod";
+
+export const ResearchResult = z.object({
+    classification: z.enum(["bug", "feature"]),
+    title: z.string(),
+    branchName: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/),
+    summary: z.string(),
+    affectedAreas: z.array(z.string()).default([]),
+});
+export type ResearchResult = z.infer<typeof ResearchResult>;
+
+export const QaScenario = z.object({
+    id: z.string().regex(/^S\d+$/),
+    title: z.string(),
+    url: z.string(),
+    persona: z.string().default("default user"),
+    steps: z
+        .array(
+            z.object({
+                action: z.string(),
+                assert: z.string(),
+                shot: z.boolean().default(false),
+            }),
+        )
+        .min(1),
+});
+export type QaScenario = z.infer<typeof QaScenario>;
+
+export const DesignResult = z.object({
+    classification: z.enum(["bug", "feature"]),
+    scope: z.object({ inScope: z.array(z.string()), outOfScope: z.array(z.string()) }),
+    plan: z.array(z.object({ layer: z.string(), changes: z.array(z.string()) })),
+    testPlan: z.array(z.object({ file: z.string(), cases: z.array(z.string()) })),
+    qa: z.array(QaScenario).max(3),
+    qaSkippedReason: z.string().nullable().default(null),
+});
+export type DesignResult = z.infer<typeof DesignResult>;
+
+export const QaPassResult = z.object({
+    pass: z.enum(["before", "after"]),
+    scenarios: z.array(
+        z.object({
+            id: z.string(),
+            outcome: z.enum(["pass", "fail", "blocked"]),
+            observation: z.string(),
+            shots: z.array(z.object({ step: z.number().int(), file: z.string() })),
+        }),
+    ),
+    blockers: z.array(z.string()).default([]),
+});
+export type QaPassResult = z.infer<typeof QaPassResult>;
+
+export const ImplResult = z.object({
+    files: z.array(z.string()),
+    commits: z.array(z.string()),
+    tests: z.object({ backend: z.string().nullable(), frontend: z.string().nullable() }),
+    coverageNewLines: z.number().nullable(),
+    gates: z.object({ tests: z.boolean(), typecheck: z.boolean() }),
+    notes: z.string().default(""),
+});
+export type ImplResult = z.infer<typeof ImplResult>;
+
+export const PrDraft = z.object({
+    title: z.string(),
+    body: z.string(),
+    base: z.string(),
+});
+export type PrDraft = z.infer<typeof PrDraft>;
