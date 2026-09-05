@@ -5,6 +5,7 @@
   "description": "Local orchestrator that walks ClickUp tickets through Research → Design → Implementation → QA → PR stages with headless Claude Code.",
   "workspaces": ["server", "web"],
   "scripts": {
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
     "dev": "npm run dev --workspace=server & npm run dev --workspace=web & wait",
     "dev:server": "npm run dev --workspace=server",
     "dev:web": "npm run dev --workspace=web",
