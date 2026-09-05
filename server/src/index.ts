@@ -273,12 +273,14 @@ app.get(
             onMessage(evt) {
                 if (!term) return;
                 const raw = typeof evt.data === "string" ? evt.data : "";
-                if (raw.startsWith("")) {
-                    const msg = JSON.parse(raw.slice(1)) as { cols: number; rows: number };
-                    term.resize(msg.cols, msg.rows);
+                let msg: { t: "i"; d: string } | { t: "r"; cols: number; rows: number };
+                try {
+                    msg = JSON.parse(raw) as typeof msg;
+                } catch {
                     return;
                 }
-                term.write(raw);
+                if (msg.t === "r") term.resize(msg.cols, msg.rows);
+                else term.write(msg.d);
             },
             onClose() {
                 term?.kill();
