@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Config } from "./config.js";
-import { now, type DB, type EnvRow, type ServiceKind, type ServiceRow, type TaskRow } from "./db.js";
+import { now, parseEnvVars, type DB, type EnvRow, type ServiceKind, type ServiceRow, type TaskRow } from "./db.js";
 import { ensureSession, killSession, sessionExists } from "./tmux.js";
 
 const execFileAsync = promisify(execFile);
@@ -104,7 +104,13 @@ export class Services {
         const cwd = task.worktree_path ?? env.path;
         // The command may be an && chain; run it in a subshell so its whole stdout+stderr reaches the log.
         const wrapped = `cd ${JSON.stringify(cwd)}; echo "[stagehand] ${kind.toUpperCase()} on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command} ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind.toUpperCase()} exited (\${PIPESTATUS[0]:-$?})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
-        await ensureSession(tmux, cwd, wrapped, { PORT: String(port), STAGEHAND_PORT: String(port), STAGEHAND_BE_URL: be?.url ?? "", STAGEHAND_BE_PORT: be ? String(be.port) : "" });
+        await ensureSession(tmux, cwd, wrapped, {
+            ...parseEnvVars(env.env_vars),
+            PORT: String(port),
+            STAGEHAND_PORT: String(port),
+            STAGEHAND_BE_URL: be?.url ?? "",
+            STAGEHAND_BE_PORT: be ? String(be.port) : "",
+        });
 
         const id = randomUUID();
         this.db

@@ -18,6 +18,7 @@ export interface RunSpec {
     allowedTools?: string[];
     appendSystemPrompt?: string;
     eventLogPath?: string;
+    extraEnv?: Record<string, string>;
 }
 
 export const RateLimitInfo = z.object({
@@ -115,7 +116,7 @@ export const startClaude = (spec: RunSpec): ClaudeRun => {
     const emitter = new EventEmitter() as ClaudeRun;
     const child: ChildProcess = spawn("claude", buildArgs(spec), {
         cwd: spec.cwd,
-        env: claudeEnv(spec.configDir),
+        env: claudeEnv(spec.configDir, spec.extraEnv ?? {}),
         stdio: ["ignore", "pipe", "pipe"],
     });
     emitter.pid = child.pid;

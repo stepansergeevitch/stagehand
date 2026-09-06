@@ -12,7 +12,7 @@ export interface Account {
 export interface Env {
     id: string; name: string; path: string; base_branch: string; default_account_id: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
-    setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear";
+    setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
 }
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
@@ -76,14 +76,14 @@ export const api = {
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: {
         name: string; path: string; baseBranch: string; defaultAccountId?: string; appUrl?: string; qaScript?: string;
-        repos?: string[]; branchPrefix?: string; ticketSource: "clickup" | "linear";
+        repos?: string[]; branchPrefix?: string; ticketSource: "clickup" | "linear"; envVars?: string;
     }) => post<Env>("/api/envs", body),
     patchEnv: (
         id: string,
         body: {
             name?: string; baseBranch?: string; defaultAccountId?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
-            setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear";
+            setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),

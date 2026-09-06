@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { now, type AccountRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
+import { now, parseEnvVars, type AccountRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup } from "./git.js";
 import type { Services } from "./services.js";
@@ -82,7 +82,7 @@ export class Engine extends EventEmitter {
         const ref = { source: task.source as "clickup" | "linear", id: task.ticket_id, url: task.ticket_url };
         const account = this.pickAccount(task, STAGE_DEFS.research);
         this.setTaskStatus(taskId, "running", "fetching ticket");
-        void fetchTicket(ref, this.cfg, account?.config_dir ?? this.cfg.mainConfigDir, env.path, this.taskDir(taskId))
+        void fetchTicket(ref, this.cfg, account?.config_dir ?? this.cfg.mainConfigDir, env.path, this.taskDir(taskId), parseEnvVars(env.env_vars))
             .then((ticket) => {
                 this.db.prepare(`UPDATE tasks SET title = ?, ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(ticket.title, ticket.url, now(), taskId);
                 this.dispatch(taskId, "research");
@@ -256,6 +256,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: account.config_dir,
+            extraEnv: parseEnvVars(env.env_vars),
             chrome: true,
             maxTurns: 12,
             model: this.cfg.stageModels.helper ?? "sonnet",
@@ -293,7 +294,7 @@ export class Engine extends EventEmitter {
         if (run) this.active.get(run.id)?.kill();
         if (removeWorktree && task.worktree_path && task.branch) {
             const env = this.env(task.env_id);
-            await removeWorktreeAndBranch(env, task.worktree_path, task.branch).catch(() => undefined);
+            await removeWorktreeAndBranch(env, task.worktree_path, task.branch, parseEnvVars(env.env_vars)).catch(() => undefined);
         }
         rmSync(this.taskDir(taskId), { recursive: true, force: true });
         this.db.prepare(`DELETE FROM reviews WHERE task_id = ?`).run(taskId);
@@ -489,6 +490,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: account.config_dir,
+            extraEnv: parseEnvVars(env.env_vars),
             ...(fresh ? {} : priorRuns.n === 0 ? { sessionId: task.session_id, name: task.ticket_id } : { resume: task.session_id }),
             chrome: def.chrome === true,
             ...((): { model?: string } => {
@@ -657,7 +659,8 @@ export class Engine extends EventEmitter {
             const branch = prefix && !r.branchName.startsWith(prefix) ? `${prefix}${r.branchName}` : r.branchName;
             this.db.prepare(`UPDATE tasks SET title = ?, branch = ?, updated_at = ? WHERE id = ?`).run(r.title, branch, now(), taskId);
             this.setTaskStatus(taskId, "running", "creating worktree");
-            void createWorktree(env, branch)
+            const envVars = parseEnvVars(env.env_vars);
+            void createWorktree(env, branch, envVars)
                 .then(async (wt) => {
                     this.db.prepare(`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE id = ?`).run(wt.path, now(), taskId);
                     if (wt.reused) {
@@ -665,7 +668,7 @@ export class Engine extends EventEmitter {
                     }
                     if (env.setup_command) {
                         this.setTaskStatus(taskId, "running", "running worktree setup");
-                        await runWorktreeSetup(wt.path, env.path, env.setup_command);
+                        await runWorktreeSetup(wt.path, env.path, env.setup_command, envVars);
                     }
                     this.advance(taskId, "design_proposal");
                 })

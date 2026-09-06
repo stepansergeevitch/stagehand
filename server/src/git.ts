@@ -5,8 +5,10 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const git = async (cwd: string, args: string[]): Promise<string> => {
-    const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], { maxBuffer: 8 * 1024 * 1024 });
+type Vars = Record<string, string>;
+
+const git = async (cwd: string, args: string[], vars: Vars = {}): Promise<string> => {
+    const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], { maxBuffer: 8 * 1024 * 1024, env: { ...process.env, ...vars } });
     return stdout.trim();
 };
 
@@ -55,33 +57,33 @@ export interface WorktreeResult {
     existingCommits: number;
 }
 
-const createOne = async (repoPath: string, baseBranch: string, branch: string, target: string): Promise<WorktreeResult> => {
-    await git(repoPath, ["fetch", "origin", baseBranch]);
+const createOne = async (repoPath: string, baseBranch: string, branch: string, target: string, vars: Vars): Promise<WorktreeResult> => {
+    await git(repoPath, ["fetch", "origin", baseBranch], vars);
     if (existsSync(target)) {
-        const log = await git(target, ["log", "--oneline", `origin/${baseBranch}..HEAD`]);
+        const log = await git(target, ["log", "--oneline", `origin/${baseBranch}..HEAD`], vars);
         return { path: target, reused: true, existingCommits: log ? log.split("\n").length : 0 };
     }
-    const branchExists = (await git(repoPath, ["branch", "--list", branch])) !== "";
+    const branchExists = (await git(repoPath, ["branch", "--list", branch], vars)) !== "";
     if (branchExists) {
-        await git(repoPath, ["worktree", "add", target, branch]);
-        const log = await git(target, ["log", "--oneline", `origin/${baseBranch}..HEAD`]);
+        await git(repoPath, ["worktree", "add", target, branch], vars);
+        const log = await git(target, ["log", "--oneline", `origin/${baseBranch}..HEAD`], vars);
         return { path: target, reused: true, existingCommits: log ? log.split("\n").length : 0 };
     }
-    await git(repoPath, ["worktree", "add", target, "-b", branch, `origin/${baseBranch}`]);
+    await git(repoPath, ["worktree", "add", target, "-b", branch, `origin/${baseBranch}`], vars);
     return { path: target, reused: false, existingCommits: 0 };
 };
 
 // Single repo: the worktree is the checkout. Multi-repo: the worktree is a directory holding one checkout per sub-repo
 // on the same branch (<root>/backend, <root>/frontend), mirroring the env's layout so commands like `cd backend && …` work unchanged.
-export const createWorktree = async (env: RepoLayout, branch: string): Promise<WorktreeResult> => {
+export const createWorktree = async (env: RepoLayout, branch: string, vars: Vars = {}): Promise<WorktreeResult> => {
     const root = worktreePathFor(env.path, branch);
     const subs = envRepos(env);
-    if (subs.length === 0) return createOne(env.path, env.base_branch, branch, root);
+    if (subs.length === 0) return createOne(env.path, env.base_branch, branch, root, vars);
     mkdirSync(root, { recursive: true });
     let reused = false;
     let existingCommits = 0;
     for (const dir of subs) {
-        const r = await createOne(join(env.path, dir), env.base_branch, branch, join(root, dir));
+        const r = await createOne(join(env.path, dir), env.base_branch, branch, join(root, dir), vars);
         reused = reused || r.reused;
         existingCommits += r.existingCommits;
     }
@@ -89,28 +91,33 @@ export const createWorktree = async (env: RepoLayout, branch: string): Promise<W
 };
 
 // Gitignored runtime files (certs, .env, node_modules) don't come with a worktree; the env's setup command creates them.
-export const runWorktreeSetup = async (worktree: string, envPath: string, command: string): Promise<string> => {
+export const runWorktreeSetup = async (worktree: string, envPath: string, command: string, vars: Vars = {}): Promise<string> => {
     const rendered = command.replace(/\{\{envPath\}\}/g, envPath).replace(/\{\{worktree\}\}/g, worktree);
-    const { stdout, stderr } = await execFileAsync("bash", ["-lc", rendered], { cwd: worktree, maxBuffer: 8 * 1024 * 1024, timeout: 600_000 });
+    const { stdout, stderr } = await execFileAsync("bash", ["-lc", rendered], {
+        cwd: worktree,
+        maxBuffer: 8 * 1024 * 1024,
+        timeout: 600_000,
+        env: { ...process.env, ...vars },
+    });
     return (stdout + stderr).trim().slice(-2000);
 };
 
-export const removeWorktree = async (repoPath: string, path: string): Promise<void> => {
-    await git(repoPath, ["worktree", "remove", "--force", path]);
+export const removeWorktree = async (repoPath: string, path: string, vars: Vars = {}): Promise<void> => {
+    await git(repoPath, ["worktree", "remove", "--force", path], vars);
 };
 
-export const removeWorktreeAndBranch = async (env: RepoLayout, path: string, branch: string): Promise<void> => {
+export const removeWorktreeAndBranch = async (env: RepoLayout, path: string, branch: string, vars: Vars = {}): Promise<void> => {
     const subs = envRepos(env);
     if (subs.length === 0) {
-        if (existsSync(path)) await removeWorktree(env.path, path);
-        await git(env.path, ["branch", "-D", branch]);
+        if (existsSync(path)) await removeWorktree(env.path, path, vars);
+        await git(env.path, ["branch", "-D", branch], vars);
         return;
     }
     for (const dir of subs) {
         const repoPath = join(env.path, dir);
         const target = join(path, dir);
-        if (existsSync(target)) await removeWorktree(repoPath, target).catch(() => undefined);
-        await git(repoPath, ["branch", "-D", branch]).catch(() => undefined);
+        if (existsSync(target)) await removeWorktree(repoPath, target, vars).catch(() => undefined);
+        await git(repoPath, ["branch", "-D", branch], vars).catch(() => undefined);
     }
 };
 

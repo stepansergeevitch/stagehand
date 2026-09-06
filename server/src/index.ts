@@ -14,7 +14,7 @@ const MODEL_OPTIONS = [
     { value: "opus", label: "Opus 5 (claude-opus-5)" },
     { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
 ];
-import { now, openDb, STAGES, type AccountRow, type EnvRow, type Stage } from "./db.js";
+import { now, openDb, parseEnvVars, STAGES, type AccountRow, type EnvRow, type Stage } from "./db.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
 import { loginCommand, probeChrome, readAuthStatus, scaffoldAccountDir } from "./claude/accounts.js";
@@ -150,6 +150,7 @@ app.post("/api/envs", async (c) => {
             repos: z.array(z.string().min(1)).optional(),
             branchPrefix: z.string().optional(),
             ticketSource: z.enum(["clickup", "linear"]).default("clickup"),
+            envVars: z.string().optional(),
         }),
         await c.req.json(),
     );
@@ -158,8 +159,8 @@ app.post("/api/envs", async (c) => {
     if (bad) return c.json({ error: bad }, 400);
     const id = randomUUID();
     db.prepare(
-        `INSERT INTO envs (id, name, path, base_branch, default_account_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO envs (id, name, path, base_branch, default_account_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
         id,
         body.name,
@@ -178,6 +179,7 @@ app.post("/api/envs", async (c) => {
         repos,
         body.branchPrefix ?? null,
         body.ticketSource ?? "clickup",
+        body.envVars ?? null,
         now(),
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(id));
@@ -201,6 +203,7 @@ app.patch("/api/envs/:id", async (c) => {
             repos: z.array(z.string().min(1)).nullable().optional(),
             branchPrefix: z.string().nullable().optional(),
             ticketSource: z.enum(["clickup", "linear"]).optional(),
+            envVars: z.string().nullable().optional(),
         }),
         await c.req.json(),
     );
@@ -213,7 +216,7 @@ app.patch("/api/envs/:id", async (c) => {
         if (bad) return c.json({ error: bad }, 400);
     }
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         pick(body.defaultAccountId, env.default_account_id),
@@ -230,6 +233,7 @@ app.patch("/api/envs/:id", async (c) => {
         repos,
         pick(body.branchPrefix, env.branch_prefix),
         body.ticketSource ?? env.ticket_source,
+        pick(body.envVars, env.env_vars),
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));
@@ -407,13 +411,13 @@ app.post("/api/tasks/:id/terminal", async (c) => {
     if (task.status === "running") return c.json({ error: "a headless run owns this session right now; wait for it to finish" }, 409);
     const acc = task.account_id ? accountById(task.account_id) : accountsAll().find((a) => a.logged_in);
     if (!acc) return c.json({ error: "no logged-in account" }, 400);
-    const env = db.prepare(`SELECT path FROM envs WHERE id = ?`).get(task.env_id) as { path: string };
+    const env = db.prepare(`SELECT path, env_vars FROM envs WHERE id = ?`).get(task.env_id) as { path: string; env_vars: string | null };
     const name = taskSessionName(task.ticket_id);
     await ensureSession(
         name,
         task.worktree_path ?? env.path,
         `claude --resume ${task.session_id}; echo; echo '[stagehand] claude exited — press Enter to close'; read -r`,
-        { CLAUDE_CONFIG_DIR: acc.config_dir },
+        { ...parseEnvVars(env.env_vars), CLAUDE_CONFIG_DIR: acc.config_dir },
     );
     return c.json({ terminal: name });
 });

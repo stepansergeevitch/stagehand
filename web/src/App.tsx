@@ -377,6 +377,7 @@ const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[
         repos: joinRepos(env.repos),
         branchPrefix: env.branch_prefix ?? "",
         ticketSource: env.ticket_source,
+        envVars: env.env_vars ?? "",
         defaultAccountId: env.default_account_id ?? "",
         appUrl: env.app_url ?? "",
         beCommand: env.be_command ?? "",
@@ -414,6 +415,7 @@ const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[
                 <label>BE URL template <input value={f.beUrlTemplate} onChange={set("beUrlTemplate")} placeholder="http://localhost:{{port}}" /></label>
                 <label>FE URL template <input value={f.feUrlTemplate} onChange={set("feUrlTemplate")} placeholder="http://localhost:{{port}}" /></label>
             </div>
+            <label>Environment variables (KEY=VALUE per line; exported into git, setup, BE/FE, Claude runs and the terminal for this env) <textarea value={f.envVars} onChange={set("envVars")} placeholder={"GH_CONFIG_DIR=/Users/you/code/project/.gh\nAWS_PROFILE=project"} /></label>
             <label>Worktree setup command (runs once after a worktree is created; {"{{envPath}}"} / {"{{worktree}}"}) <textarea value={f.setupCommand} onChange={set("setupCommand")} placeholder="e.g. ln -sf {{envPath}}/.env .env; mkdir -p etc/ssl; ln -sf {{envPath}}/etc/ssl/*.pem etc/ssl/" /></label>
             <label>BE command <textarea value={f.beCommand} onChange={set("beCommand")} placeholder="e.g. PORT={{port}} uv run manage run" /></label>
             <label>FE command <textarea value={f.feCommand} onChange={set("feCommand")} placeholder="e.g. PORT={{port}} REACT_APP_API_BASE_URL={{beUrl}}/api npm start" /></label>
@@ -435,6 +437,7 @@ const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[
                         repos: splitRepos(f.repos).length ? splitRepos(f.repos) : null,
                         branchPrefix: nul(f.branchPrefix),
                         ticketSource: f.ticketSource as "clickup" | "linear",
+                        envVars: nul(f.envVars),
                     })
                 }
             >

@@ -69,8 +69,24 @@ export interface EnvRow {
     // Prepended to research's branch name (e.g. "stepanb/").
     branch_prefix: string | null;
     ticket_source: "clickup" | "linear";
+    // KEY=VALUE per line; exported into every process run for this env (git, setup, BE/FE, claude runs, terminal).
+    env_vars: string | null;
     created_at: string;
 }
+
+export const parseEnvVars = (text: string | null): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const raw of (text ?? "").split("\n")) {
+        const line = raw.trim();
+        if (!line || line.startsWith("#")) continue;
+        const eq = line.indexOf("=");
+        if (eq <= 0) continue;
+        const key = line.slice(0, eq).trim();
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+        out[key] = line.slice(eq + 1).trim().replace(/^(["'])(.*)\1$/, "$2");
+    }
+    return out;
+};
 
 export interface TaskRow {
     id: string;
@@ -233,6 +249,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.repos", `ALTER TABLE envs ADD COLUMN repos TEXT`],
     ["envs.branch_prefix", `ALTER TABLE envs ADD COLUMN branch_prefix TEXT`],
     ["envs.ticket_source", `ALTER TABLE envs ADD COLUMN ticket_source TEXT NOT NULL DEFAULT 'clickup'`],
+    ["envs.env_vars", `ALTER TABLE envs ADD COLUMN env_vars TEXT`],
     ["tasks.ticket_url", `ALTER TABLE tasks ADD COLUMN ticket_url TEXT`],
     ["tasks.model", `ALTER TABLE tasks ADD COLUMN model TEXT`],
 ];

@@ -112,7 +112,7 @@ const fetchLinearRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> => 
 
 // ---------- MCP fetcher (no token needed; uses the account's connected MCP servers) ----------
 
-const fetchViaClaude = (ref: TicketRef, configDir: string, cwd: string, outPath: string): Promise<Ticket> =>
+const fetchViaClaude = (ref: TicketRef, configDir: string, cwd: string, outPath: string, extraEnv: Record<string, string>): Promise<Ticket> =>
     new Promise((resolve, reject) => {
         const tool = ref.source === "clickup" ? "mcp__clickup__clickup_get_task (task_id, include: [\"description\"]); if the task has a parent, fetch it too" : "the Linear MCP issue tool (e.g. mcp__linear__get_issue)";
         const prompt =
@@ -125,7 +125,7 @@ const fetchViaClaude = (ref: TicketRef, configDir: string, cwd: string, outPath:
         const child = spawn(
             "claude",
             ["-p", prompt, "--output-format", "json", "--permission-mode", "auto", "--max-turns", "16", "--no-session-persistence", "--no-chrome", "--model", "sonnet", "--add-dir", join(outPath, "..")],
-            { cwd, env: claudeEnv(configDir), stdio: ["ignore", "pipe", "pipe"] },
+            { cwd, env: claudeEnv(configDir, extraEnv), stdio: ["ignore", "pipe", "pipe"] },
         );
         let err = "";
         child.stderr.setEncoding("utf8").on("data", (d: string) => (err += d));
@@ -142,7 +142,7 @@ const fetchViaClaude = (ref: TicketRef, configDir: string, cwd: string, outPath:
         child.on("error", reject);
     });
 
-export const fetchTicket = async (ref: TicketRef, cfg: Config, configDir: string, cwd: string, taskDir: string): Promise<Ticket> => {
+export const fetchTicket = async (ref: TicketRef, cfg: Config, configDir: string, cwd: string, taskDir: string, extraEnv: Record<string, string> = {}): Promise<Ticket> => {
     const outPath = join(taskDir, "ticket.json");
     const restConfigured = ref.source === "clickup" ? !!cfg.clickupToken : !!cfg.linearApiKey;
     let ticket: Ticket;
@@ -150,7 +150,7 @@ export const fetchTicket = async (ref: TicketRef, cfg: Config, configDir: string
         ticket = ref.source === "clickup" ? await fetchClickUpRest(ref, cfg) : await fetchLinearRest(ref, cfg);
         writeFileSync(outPath, JSON.stringify(ticket, null, 2));
     } else {
-        ticket = await fetchViaClaude(ref, configDir, cwd, outPath);
+        ticket = await fetchViaClaude(ref, configDir, cwd, outPath, extraEnv);
     }
     return ticket;
 };
