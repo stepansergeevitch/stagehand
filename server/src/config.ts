@@ -41,6 +41,8 @@ const ConfigSchema = z.object({
             passwordHash: z.string().nullable().default(null),
             sessionSecret: z.string().nullable().default(null),
             sessionDays: z.number().int().default(30),
+            // Router gateway to ask for a NAT-PMP port mapping (public port = local port); renewed periodically while the server runs.
+            natPmpGateway: z.string().nullable().default(null),
         })
         .default({}),
 });
@@ -63,7 +65,7 @@ const defaults = (): Config => ({
     linearApiKey: null,
     defaultModel: null,
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_red: null, helper: "sonnet" },
-    publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30 },
+    publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },
 });
 
 export const saveConfig = (cfg: Config): void => {

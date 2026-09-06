@@ -3,6 +3,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer as createHttpsServer } from "node:https";
 import { join, normalize } from "node:path";
@@ -493,6 +494,7 @@ app.get("/api/health", (c) => c.json({ ok: true, config: { ...cfg, publicAccess:
 
 // The built web UI is served on the public listener only; locally the Vite dev server (5173) proxies to this process.
 const WEB_DIST = "../web/dist";
+const NATPMPC = existsSync("/opt/homebrew/bin/natpmpc") ? "/opt/homebrew/bin/natpmpc" : "natpmpc";
 const staticFiles = serveStatic({ root: WEB_DIST });
 const spaIndex = serveStatic({ path: `${WEB_DIST}/index.html` });
 app.get("*", (c, next) => (isPublicRequest(c, cfg.publicAccess.port) ? staticFiles(c, next) : next()));
@@ -515,6 +517,18 @@ const startPublicListener = (): void => {
         (info) => console.log(`stagehand public listener on https://${info.address}:${info.port} (user ${pa.user ?? "unset"})`),
     );
     injectWebSocket(publicServer);
+    if (pa.natPmpGateway) {
+        const gateway = pa.natPmpGateway;
+        const renew = (): void => {
+            execFile(NATPMPC, ["-g", gateway, "-a", String(pa.port), String(pa.port), "tcp", "7200"], (err, stdout) => {
+                const line = stdout.split("\n").find((l) => /Mapped public port/.test(l));
+                if (err || !line) console.warn(`[stagehand] NAT-PMP mapping failed: ${err?.message ?? stdout.trim().slice(-200)}`);
+                else console.log(`[stagehand] ${line.trim()} via ${gateway}`);
+            });
+        };
+        renew();
+        setInterval(renew, 30 * 60_000).unref();
+    }
 };
 
 const server = serve({ fetch: app.fetch, port: cfg.port, hostname: "127.0.0.1" }, (info) => {
