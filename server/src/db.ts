@@ -46,6 +46,8 @@ export interface AccountRow {
     chrome_capable: number | null;
     failover_enabled: number;
     failover_threshold: number;
+    // What `claude` picks when no --model is passed for this account (observed from run init events / a probe).
+    default_model: string | null;
     created_at: string;
 }
 
@@ -251,6 +253,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.ticket_source", `ALTER TABLE envs ADD COLUMN ticket_source TEXT NOT NULL DEFAULT 'clickup'`],
     ["envs.env_vars", `ALTER TABLE envs ADD COLUMN env_vars TEXT`],
     ["reviews.comments", `ALTER TABLE reviews ADD COLUMN comments TEXT`],
+    ["accounts.default_model", `ALTER TABLE accounts ADD COLUMN default_model TEXT`],
     ["tasks.ticket_url", `ALTER TABLE tasks ADD COLUMN ticket_url TEXT`],
     ["tasks.model", `ALTER TABLE tasks ADD COLUMN model TEXT`],
 ];

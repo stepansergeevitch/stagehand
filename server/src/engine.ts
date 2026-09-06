@@ -519,6 +519,8 @@ export class Engine extends EventEmitter {
             )
             .run(runId, taskId, stage, fresh ? "fresh-session" : "task-session", account.id, now(), attempt);
         this.setTaskStatus(taskId, "running", `${def.label} · starting`);
+        const stageModel = (this.cfg.stageModels as Record<string, string | null | undefined>)[def.stage];
+        const explicitModel = task.model ?? stageModel ?? this.cfg.defaultModel ?? null;
 
         const run = startClaude({
             prompt,
@@ -527,11 +529,7 @@ export class Engine extends EventEmitter {
             extraEnv: parseEnvVars(env.env_vars),
             ...(fresh ? {} : priorRuns.n === 0 ? { sessionId: task.session_id, name: task.ticket_id } : { resume: task.session_id }),
             chrome: def.chrome === true,
-            ...((): { model?: string } => {
-                const stageModel = (this.cfg.stageModels as Record<string, string | null | undefined>)[def.stage];
-                const model = task.model ?? stageModel ?? this.cfg.defaultModel;
-                return model ? { model } : {};
-            })(),
+            ...(explicitModel ? { model: explicitModel } : {}),
             ...(def.maxTurns ? { maxTurns: def.maxTurns } : {}),
             addDirs: [this.taskDir(taskId)],
             eventLogPath,
@@ -540,6 +538,11 @@ export class Engine extends EventEmitter {
         this.db.prepare(`UPDATE runs SET pid = ? WHERE id = ?`).run(run.pid ?? null, runId);
 
         run.on("activity", (ev: ActivityEvent) => {
+            // A run without --model tells us what this account's default really is.
+            if (ev.kind === "init" && !explicitModel) {
+                const model = (ev.raw as { model?: unknown }).model;
+                if (typeof model === "string" && model) this.db.prepare(`UPDATE accounts SET default_model = ? WHERE id = ?`).run(model, account.id);
+            }
             if (ev.kind === "tool_use" || ev.kind === "text") {
                 this.db.prepare(`UPDATE runs SET last_event = ? WHERE id = ?`).run(ev.summary, runId);
                 this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`${def.label} · ${ev.summary}`, now(), taskId);

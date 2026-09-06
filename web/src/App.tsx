@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, STAGE_LABEL, STAGE_ORDER, type Account, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
+import { api, modelLabel, STAGE_LABEL, STAGE_ORDER, type Account, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
 import { TaskDetailView } from "./TaskDetail";
 
 type Group = "Pinned" | "Needs input" | "Working" | "Idle" | "Failed" | "Completed" | "Stopped";
@@ -218,7 +218,7 @@ export const App = () => {
             )}
             {modal === "settings" && settings && (
                 <Modal title="Settings" onClose={() => setModal(null)}>
-                    <SettingsForm settings={settings} onSubmit={async (b) => { await run(() => api.patchSettings(b)); setModal(null); }} />
+                    <SettingsForm settings={settings} accounts={accounts} onSubmit={async (b) => { await run(() => api.patchSettings(b)); setModal(null); }} />
                 </Modal>
             )}
             {modal === "account" && (
@@ -240,14 +240,24 @@ export const App = () => {
     );
 };
 
-const Modal = ({ title, children, onClose, wide }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) => (
-    <div className="modal" onClick={onClose}>
-        <div className="box" style={wide ? { minWidth: "min(900px, 100vw - 24px)" } : undefined} onClick={(e) => e.stopPropagation()}>
-            <h2>{title}</h2>
-            {children}
+const Modal = ({ title, children, onClose, wide }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) => {
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose]);
+    return (
+        <div className="modal" onClick={onClose}>
+            <div className="box" style={wide ? { minWidth: "min(900px, 100vw - 24px)" } : undefined} onClick={(e) => e.stopPropagation()}>
+                <div className="modal-head">
+                    <h2>{title}</h2>
+                    <button className="close" onClick={onClose} aria-label="Close" title="Close (Esc)">×</button>
+                </div>
+                {children}
+            </div>
         </div>
-    </div>
-);
+    );
+};
 
 // ClickUp and Linear both use 1 = urgent … 4 = low; 0/null = unset.
 const PRIORITY_MARK: Record<number, string> = { 0: "·", 1: "🔴", 2: "🟠", 3: "🟡", 4: "🔵" };
@@ -299,15 +309,20 @@ const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; 
             </label>
             <label>Claude model
                 <select value={model} onChange={(e) => setModel(e.target.value)}>
-                    {(settings?.models ?? [{ value: "", label: "Account default" }]).map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                    {(settings?.models ?? [{ value: "", label: "Account default" }]).map((m) => (
+                        <option key={m.value} value={m.value}>
+                            {m.value === "" ? `Account default${(() => { const d = modelLabel(accounts.find((a) => a.id === acc)?.default_model, settings?.models); return d ? ` · ${d}` : " · not resolved yet (refresh the account)"; })()}` : m.label}
+                        </option>
+                    ))}
                 </select>
+                <span className="field-hint">Applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet.</span>
             </label>
             <button className="primary" disabled={!ticket.trim() || parsed === "unrecognised"} onClick={() => onSubmit(ticket.trim(), acc || undefined, model || undefined)}>Start task</button>
         </>
     );
 };
 
-const SettingsForm = ({ settings, onSubmit }: { settings: Settings; onSubmit: (b: Partial<Omit<Settings, "models">>) => Promise<void> }) => {
+const SettingsForm = ({ settings, accounts, onSubmit }: { settings: Settings; accounts: Account[]; onSubmit: (b: Partial<Omit<Settings, "models">>) => Promise<void> }) => {
     const [clickupToken, setClickupToken] = useState("");
     const [clickupTeamId, setClickupTeamId] = useState(settings.clickupTeamId ?? "");
     const [linearApiKey, setLinearApiKey] = useState("");
@@ -320,7 +335,13 @@ const SettingsForm = ({ settings, onSubmit }: { settings: Settings; onSubmit: (b
             <label>Linear API key <input value={linearApiKey} onChange={(e) => setLinearApiKey(e.target.value)} placeholder={settings.linearApiKey ?? "not set"} /></label>
             <label>Default Claude model
                 <select value={defaultModel} onChange={(e) => setDefaultModel(e.target.value)}>
-                    {settings.models.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                    {settings.models.map((m) => (
+                        <option key={m.value} value={m.value}>
+                            {m.value === ""
+                                ? `Account default · ${accounts.filter((a) => a.logged_in).map((a) => `${a.name}: ${modelLabel(a.default_model, settings.models) ?? "?"}`).join(", ") || "no logged-in account"}`
+                                : m.label}
+                        </option>
+                    ))}
                 </select>
             </label>
             <button className="primary" onClick={() => onSubmit({

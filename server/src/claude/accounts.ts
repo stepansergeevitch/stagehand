@@ -104,6 +104,24 @@ const probeChromeOnce = async (configDir: string, cwd: string): Promise<boolean>
     }
 };
 
+// Which model the account gets without --model: one trivial run, read back from the result's modelUsage.
+export const probeDefaultModel = async (configDir: string, cwd: string): Promise<string | null> => {
+    try {
+        const stdout = await runClaudeJson(
+            ["-p", "Reply with exactly OK", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "1", "--no-session-persistence", "--no-chrome"],
+            cwd,
+            configDir,
+        );
+        const res = z.object({ modelUsage: z.record(z.unknown()).optional() }).safeParse(JSON.parse(stdout));
+        const model = res.success ? Object.keys(res.data.modelUsage ?? {})[0] ?? null : null;
+        console.error(`[probeDefaultModel] ${configDir} → ${model ?? "unknown"}`);
+        return model;
+    } catch (e) {
+        console.error(`[probeDefaultModel] ${configDir} failed: ${String(e).slice(0, 300)}`);
+        return null;
+    }
+};
+
 // The extension bridge connects lazily and occasionally misses the first attempt; three tries separates "flaky" from "not this account".
 export const probeChrome = async (configDir: string, cwd: string, attempts = 3): Promise<boolean> => {
     for (let i = 0; i < attempts; i++) {

@@ -6,9 +6,16 @@ export type TaskStatus = "idle" | "queued" | "running" | "waiting_user" | "block
 
 export interface Account {
     id: string; name: string; config_dir: string; email: string | null; org: string | null; plan: string | null;
-    logged_in: number; chrome_capable: number | null; failover_enabled: number; failover_threshold: number;
+    logged_in: number; chrome_capable: number | null; failover_enabled: number; failover_threshold: number; default_model: string | null;
     limits: Array<{ window: string; utilization: number; resetsAt: number }>;
 }
+
+// "claude-opus-5" → "Opus 5" using the settings model list; unknown ids are shown as-is.
+export const modelLabel = (id: string | null | undefined, models: Array<{ value: string; label: string }> | undefined): string | null => {
+    if (!id) return null;
+    const hit = models?.find((m) => m.label.includes(`(${id})`) || m.value === id);
+    return hit ? hit.label.replace(/\s*\(.*\)$/, "") : id;
+};
 export interface Env {
     id: string; name: string; path: string; base_branch: string; default_account_id: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;

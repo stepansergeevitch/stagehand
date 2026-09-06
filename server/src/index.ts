@@ -22,7 +22,7 @@ const MODEL_OPTIONS = [
 import { now, openDb, parseEnvVars, STAGES, type AccountRow, type EnvRow, type Stage } from "./db.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
-import { loginCommand, probeChrome, readAuthStatus, scaffoldAccountDir } from "./claude/accounts.js";
+import { loginCommand, probeChrome, probeDefaultModel, readAuthStatus, scaffoldAccountDir } from "./claude/accounts.js";
 import { isGitRepo, repoPaths } from "./git.js";
 import { attach, ensureSession, killSession, loginSessionName, sessionExists, taskSessionName } from "./tmux.js";
 
@@ -62,6 +62,10 @@ const refreshAccount = async (acc: AccountRow, probe: boolean): Promise<AccountR
     if (probe && status.loggedIn) {
         const capable = await probeChrome(acc.config_dir, cfg.dataDir);
         db.prepare(`UPDATE accounts SET chrome_capable = ? WHERE id = ?`).run(capable ? 1 : 0, acc.id);
+    }
+    if (status.loggedIn && (probe || !acc.default_model)) {
+        const model = await probeDefaultModel(acc.config_dir, cfg.dataDir);
+        if (model) db.prepare(`UPDATE accounts SET default_model = ? WHERE id = ?`).run(model, acc.id);
     }
     return accountById(acc.id)!;
 };
