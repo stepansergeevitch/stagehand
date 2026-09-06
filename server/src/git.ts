@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -119,6 +119,8 @@ export const removeWorktreeAndBranch = async (env: RepoLayout, path: string, bra
         if (existsSync(target)) await removeWorktree(repoPath, target, vars).catch(() => undefined);
         await git(repoPath, ["branch", "-D", branch], vars).catch(() => undefined);
     }
+    // The root directory is ours, not git's; drop it once it holds nothing but leftovers.
+    if (existsSync(path)) rmSync(path, { recursive: true, force: true });
 };
 
 // Per-checkout helpers; for a multi-repo worktree pass the sub-repo checkout (<worktree>/<dir>).
