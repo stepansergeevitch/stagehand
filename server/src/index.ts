@@ -6,7 +6,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { loadConfig } from "./config.js";
+import { loadConfig, saveConfig } from "./config.js";
+
+const MODEL_OPTIONS = [
+    { value: "", label: "Account default" },
+    { value: "fable", label: "Fable 5.1 (claude-fable-5-1)" },
+    { value: "opus", label: "Opus 5 (claude-opus-5)" },
+    { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
+];
 import { now, openDb, type AccountRow, type EnvRow } from "./db.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
@@ -200,8 +207,46 @@ app.patch("/api/envs/:id", async (c) => {
 app.get("/api/tasks", (c) => c.json(engine.listTasks(c.req.query("env"))));
 
 app.post("/api/tasks", async (c) => {
-    const body = json(z.object({ envId: z.string(), ticketId: z.string().min(3), accountId: z.string().optional() }), await c.req.json());
-    return c.json(engine.createTask(body.envId, body.ticketId, body.accountId));
+    const body = json(
+        z.object({ envId: z.string(), ticket: z.string().min(3), accountId: z.string().optional(), model: z.string().optional() }),
+        await c.req.json(),
+    );
+    return c.json(engine.createTask(body.envId, body.ticket, body.accountId, body.model));
+});
+
+// ---------- settings (integrations, defaults) ----------
+
+const mask = (s: string | null): string | null => (s ? `${s.slice(0, 4)}…${s.slice(-3)}` : null);
+
+app.get("/api/settings", (c) =>
+    c.json({
+        clickupToken: mask(cfg.clickupToken),
+        clickupTeamId: cfg.clickupTeamId,
+        linearApiKey: mask(cfg.linearApiKey),
+        defaultTicketSource: cfg.defaultTicketSource,
+        defaultModel: cfg.defaultModel,
+        models: MODEL_OPTIONS,
+    }),
+);
+
+app.patch("/api/settings", async (c) => {
+    const body = json(
+        z.object({
+            clickupToken: z.string().nullable().optional(),
+            clickupTeamId: z.string().nullable().optional(),
+            linearApiKey: z.string().nullable().optional(),
+            defaultTicketSource: z.enum(["clickup", "linear"]).optional(),
+            defaultModel: z.string().nullable().optional(),
+        }),
+        await c.req.json(),
+    );
+    if (body.clickupToken !== undefined) cfg.clickupToken = body.clickupToken;
+    if (body.clickupTeamId !== undefined) cfg.clickupTeamId = body.clickupTeamId;
+    if (body.linearApiKey !== undefined) cfg.linearApiKey = body.linearApiKey;
+    if (body.defaultTicketSource !== undefined) cfg.defaultTicketSource = body.defaultTicketSource;
+    if (body.defaultModel !== undefined) cfg.defaultModel = body.defaultModel;
+    saveConfig(cfg);
+    return c.json({ ok: true });
 });
 
 app.get("/api/tasks/:id", (c) => {
@@ -218,6 +263,7 @@ app.get("/api/tasks/:id", (c) => {
         qaBefore: engine.readArtifactJson(task.id, "qa/before.json"),
         qaAfter: engine.readArtifactJson(task.id, "qa/after.json"),
         pr: engine.readArtifactJson(task.id, "pr.json"),
+        ticket: engine.readArtifactJson(task.id, "ticket.json"),
         reviews: db.prepare(`SELECT * FROM reviews WHERE task_id = ? ORDER BY created_at`).all(task.id),
     });
 });

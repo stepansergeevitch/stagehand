@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, STAGE_LABEL, STAGE_ORDER, type Account, type Env, type Task, type TaskDetail } from "./api";
+import { api, STAGE_LABEL, STAGE_ORDER, type Account, type Env, type Settings, type Task, type TaskDetail } from "./api";
 import { TaskDetailView } from "./TaskDetail";
 
 type Group = "Pinned" | "Needs input" | "Working" | "Idle" | "Failed" | "Completed" | "Stopped";
@@ -62,7 +62,11 @@ export const App = () => {
     const [selected, setSelected] = useState<string | null>(null);
     const [detail, setDetail] = useState<TaskDetail | null>(null);
     const [feed, setFeed] = useState<Record<string, string[]>>({});
-    const [modal, setModal] = useState<"task" | "env" | "env-edit" | "account" | null>(null);
+    const [modal, setModal] = useState<"task" | "env" | "env-edit" | "account" | "settings" | null>(null);
+    const [settings, setSettings] = useState<Settings | null>(null);
+    useEffect(() => {
+        void api.settings().then(setSettings).catch(() => undefined);
+    }, [modal]);
     const [terminal, setTerminal] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
 
@@ -145,6 +149,7 @@ export const App = () => {
                 <span className="spacer" />
                 {accounts.map((a) => <Gauge key={a.id} a={a} />)}
                 <button onClick={() => setModal("account")}>+ account</button>
+                <button onClick={() => setModal("settings")} title="Integrations & defaults">⚙</button>
                 <button className="primary" disabled={!env} onClick={() => setModal("task")}>+ task</button>
             </header>
             <div className="main">
@@ -191,7 +196,7 @@ export const App = () => {
             </div>
             {modal === "task" && env && (
                 <Modal title={`New task in ${env.name}`} onClose={() => setModal(null)}>
-                    <TaskForm accounts={accounts} env={env} onSubmit={async (ticket, acc) => { await run(() => api.createTask(env.id, ticket, acc)); setModal(null); }} />
+                    <TaskForm accounts={accounts} env={env} settings={settings} onSubmit={async (ticket, acc, model) => { await run(() => api.createTask(env.id, ticket, acc, model)); setModal(null); }} />
                 </Modal>
             )}
             {modal === "env" && (
@@ -202,6 +207,11 @@ export const App = () => {
             {modal === "env-edit" && env && (
                 <Modal title={`Edit ${env.name}`} onClose={() => setModal(null)} wide>
                     <EnvEditForm env={env} accounts={accounts} onSubmit={async (b) => { await run(() => api.patchEnv(env.id, b)); setModal(null); }} />
+                </Modal>
+            )}
+            {modal === "settings" && settings && (
+                <Modal title="Settings" onClose={() => setModal(null)}>
+                    <SettingsForm settings={settings} onSubmit={async (b) => { await run(() => api.patchSettings(b)); setModal(null); }} />
                 </Modal>
             )}
             {modal === "account" && (
@@ -232,18 +242,65 @@ const Modal = ({ title, children, onClose, wide }: { title: string; children: Re
     </div>
 );
 
-const TaskForm = ({ accounts, env, onSubmit }: { accounts: Account[]; env: Env; onSubmit: (ticket: string, accountId?: string) => Promise<void> }) => {
+const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; env: Env; settings: Settings | null; onSubmit: (ticket: string, accountId?: string, model?: string) => Promise<void> }) => {
     const [ticket, setTicket] = useState("");
     const [acc, setAcc] = useState(env.default_account_id ?? accounts.find((a) => a.logged_in)?.id ?? "");
+    const [model, setModel] = useState(settings?.defaultModel ?? "");
+    const parsed = (() => {
+        const s = ticket.trim();
+        if (/app\.clickup\.com\/t\//.test(s)) return "ClickUp link";
+        if (/linear\.app\/.+\/issue\//.test(s)) return "Linear link";
+        if (/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(s)) return `${settings?.defaultTicketSource ?? "clickup"} id`;
+        return s ? "unrecognised" : "";
+    })();
     return (
         <>
-            <label>Ticket id <input autoFocus value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder="ENG-24201" /></label>
+            <label>Ticket id or link <input autoFocus value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder="PRODUCT-8704 · https://app.clickup.com/t/… · https://linear.app/…/issue/…" /></label>
+            {parsed && <span className={`chip ${parsed === "unrecognised" ? "bad" : "accent"}`}>{parsed}</span>}
             <label>Account
                 <select value={acc} onChange={(e) => setAcc(e.target.value)}>
                     {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} · {a.email ?? "not logged in"}</option>)}
                 </select>
             </label>
-            <button className="primary" disabled={!ticket.trim()} onClick={() => onSubmit(ticket.trim(), acc || undefined)}>Start research</button>
+            <label>Claude model
+                <select value={model} onChange={(e) => setModel(e.target.value)}>
+                    {(settings?.models ?? [{ value: "", label: "Account default" }]).map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+            </label>
+            <button className="primary" disabled={!ticket.trim() || parsed === "unrecognised"} onClick={() => onSubmit(ticket.trim(), acc || undefined, model || undefined)}>Start task</button>
+        </>
+    );
+};
+
+const SettingsForm = ({ settings, onSubmit }: { settings: Settings; onSubmit: (b: Partial<Omit<Settings, "models">>) => Promise<void> }) => {
+    const [clickupToken, setClickupToken] = useState("");
+    const [clickupTeamId, setClickupTeamId] = useState(settings.clickupTeamId ?? "");
+    const [linearApiKey, setLinearApiKey] = useState("");
+    const [defaultTicketSource, setSource] = useState(settings.defaultTicketSource);
+    const [defaultModel, setDefaultModel] = useState(settings.defaultModel ?? "");
+    return (
+        <>
+            <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 12.5 }}>Tokens are optional: without them tickets are fetched through the account's ClickUp/Linear MCP by a short Claude run. Stored in ~/.stagehand/config.json.</p>
+            <label>ClickUp personal API token (pk_…) <input value={clickupToken} onChange={(e) => setClickupToken(e.target.value)} placeholder={settings.clickupToken ?? "not set"} /></label>
+            <label>ClickUp team id <input value={clickupTeamId} onChange={(e) => setClickupTeamId(e.target.value)} /></label>
+            <label>Linear API key <input value={linearApiKey} onChange={(e) => setLinearApiKey(e.target.value)} placeholder={settings.linearApiKey ?? "not set"} /></label>
+            <label>Bare ids default to
+                <select value={defaultTicketSource} onChange={(e) => setSource(e.target.value as "clickup" | "linear")}>
+                    <option value="clickup">ClickUp</option><option value="linear">Linear</option>
+                </select>
+            </label>
+            <label>Default Claude model
+                <select value={defaultModel} onChange={(e) => setDefaultModel(e.target.value)}>
+                    {settings.models.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+            </label>
+            <button className="primary" onClick={() => onSubmit({
+                ...(clickupToken ? { clickupToken } : {}),
+                clickupTeamId: clickupTeamId || null,
+                ...(linearApiKey ? { linearApiKey } : {}),
+                defaultTicketSource,
+                defaultModel: defaultModel || null,
+            })}>Save</button>
         </>
     );
 };

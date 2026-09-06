@@ -11,6 +11,11 @@ const ConfigSchema = z.object({
     tmuxSession: z.string().default("stagehand"),
     maxConcurrentRunsPerAccount: z.number().int().default(2),
     preflightUtilizationLimit: z.number().default(0.9),
+    clickupToken: z.string().nullable().default(null),
+    clickupTeamId: z.string().nullable().default(null),
+    linearApiKey: z.string().nullable().default(null),
+    defaultTicketSource: z.enum(["clickup", "linear"]).default("clickup"),
+    defaultModel: z.string().nullable().default(null),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -26,7 +31,16 @@ const defaults = (): Config => ({
     tmuxSession: "stagehand",
     maxConcurrentRunsPerAccount: 2,
     preflightUtilizationLimit: 0.9,
+    clickupToken: null,
+    clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
+    linearApiKey: null,
+    defaultTicketSource: "clickup",
+    defaultModel: null,
 });
+
+export const saveConfig = (cfg: Config): void => {
+    writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 4));
+};
 
 export const loadConfig = (): Config => {
     mkdirSync(STAGEHAND_HOME, { recursive: true });

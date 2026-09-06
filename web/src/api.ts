@@ -14,9 +14,17 @@ export interface Env {
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null;
 }
+export interface Settings {
+    clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
+    defaultTicketSource: "clickup" | "linear"; defaultModel: string | null; models: Array<{ value: string; label: string }>;
+}
+export interface Ticket {
+    source: "clickup" | "linear"; id: string; url: string | null; title: string; status: string | null; description: string;
+    acceptanceCriteria: string[]; parent: { id: string; title: string; description: string } | null; fetchedVia: "rest" | "mcp";
+}
 export interface Service { id: string; task_id: string; kind: "be" | "fe"; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string; running: boolean }
 export interface Task {
-    id: string; env_id: string; ticket_id: string; title: string | null; session_id: string; account_id: string | null;
+    id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
     branch: string | null; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
     pinned: number; created_at: string; updated_at: string;
 }
@@ -46,6 +54,7 @@ export interface TaskDetail {
     research: { classification: string; title: string; branchName: string; summary: string; affectedAreas: string[] } | null;
     design: Design | null; impl: Impl | null; qaBefore: QaPass | null; qaAfter: QaPass | null;
     pr: { title: string; body: string; base: string } | null;
+    ticket: Ticket | null;
     reviews: Array<{ id: string; stage: Stage; verdict: string; route_to: string | null; notes: string | null; created_at: string }>;
 }
 
@@ -77,7 +86,10 @@ export const api = {
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
     tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
-    createTask: (envId: string, ticketId: string, accountId?: string) => post<Task>("/api/tasks", { envId, ticketId, accountId }),
+    createTask: (envId: string, ticket: string, accountId?: string, model?: string) => post<Task>("/api/tasks", { envId, ticket, accountId, model }),
+    settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
+    patchSettings: (body: Partial<Omit<Settings, "models">>) =>
+        fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
     review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string }) => post<Task>(`/api/tasks/${id}/review`, body),
     stop: (id: string) => post<Task>(`/api/tasks/${id}/stop`),
     retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),

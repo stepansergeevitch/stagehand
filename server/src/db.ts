@@ -73,6 +73,8 @@ export interface TaskRow {
     ticket_id: string;
     title: string | null;
     source: string;
+    ticket_url: string | null;
+    model: string | null;
     session_id: string;
     account_id: string | null;
     branch: string | null;
@@ -223,6 +225,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.be_port", `ALTER TABLE envs ADD COLUMN be_port INTEGER`],
     ["envs.fe_port", `ALTER TABLE envs ADD COLUMN fe_port INTEGER`],
     ["envs.setup_command", `ALTER TABLE envs ADD COLUMN setup_command TEXT`],
+    ["tasks.ticket_url", `ALTER TABLE tasks ADD COLUMN ticket_url TEXT`],
+    ["tasks.model", `ALTER TABLE tasks ADD COLUMN model TEXT`],
 ];
 
 export type ServiceKind = "be" | "fe";

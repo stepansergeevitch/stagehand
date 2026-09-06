@@ -59,6 +59,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             <div className="sub">
                 {statusChip(task.status)}
                 <span>{STAGE_LABEL[task.stage]}</span>
+                {task.ticket_url ? <a href={task.ticket_url} target="_blank" rel="noreferrer">{task.source} ↗</a> : <span>{task.source}</span>}
+                {task.model && <span className="chip">{task.model}</span>}
                 {task.branch && <span>⎇ {task.branch}</span>}
                 <span>session {task.session_id.slice(0, 8)}</span>
                 <label>
@@ -127,6 +129,23 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     <h2>Live</h2>
                     <div className="feed">{feed.length === 0 ? <div className="k">waiting for events…</div> : feed.slice(-40).map((l, i) => <div key={i}>{l}</div>)}</div>
                 </section>
+            )}
+
+            {detail.ticket && (
+                <Section title="Ticket" open={task.stage === "research"} badge={<span className="chip">{detail.ticket.fetchedVia}</span>}>
+                    <div className="kv">
+                        <b>Title</b><span>{detail.ticket.title}</span>
+                        <b>Status</b><span>{detail.ticket.status ?? "—"}</span>
+                        {detail.ticket.parent && <><b>Parent</b><span>{detail.ticket.parent.id} — {detail.ticket.parent.title}</span></>}
+                    </div>
+                    {detail.ticket.acceptanceCriteria.length > 0 && (
+                        <>
+                            <h3>Acceptance criteria</h3>
+                            <ul className="plain">{detail.ticket.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul>
+                        </>
+                    )}
+                    <details><summary>Description</summary><Markdown source={detail.ticket.description} /></details>
+                </Section>
             )}
 
             {research && (

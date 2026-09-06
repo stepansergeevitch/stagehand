@@ -7,6 +7,7 @@ import { now, type AccountRow, type DB, type EnvRow, type RunRow, type Stage, ty
 import { startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { createWorktree, removeWorktreeAndBranch, runWorktreeSetup } from "./git.js";
 import type { Services } from "./services.js";
+import { fetchTicket, parseTicketRef, renderTicketForPrompt, Ticket } from "./tickets.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { DesignResult, QaPassResult, ResearchResult, type QaScenario } from "./stages/contracts.js";
 
@@ -154,21 +155,33 @@ export class Engine extends EventEmitter {
 
     // ---------- task creation ----------
 
-    createTask(envId: string, ticketId: string, accountId?: string): TaskRow {
+    createTask(envId: string, ticketInput: string, accountId?: string, model?: string): TaskRow {
         const env = this.env(envId);
+        const ref = parseTicketRef(ticketInput, this.cfg.defaultTicketSource);
         const id = randomUUID();
         const sessionId = randomUUID();
         const ts = now();
         this.db
             .prepare(
-                `INSERT INTO tasks (id, env_id, ticket_id, source, session_id, account_id, stage, status, pinned, created_at, updated_at)
-                 VALUES (?, ?, ?, 'clickup', ?, ?, 'research', 'idle', 0, ?, ?)`,
+                `INSERT INTO tasks (id, env_id, ticket_id, source, ticket_url, model, session_id, account_id, stage, status, status_line, pinned, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'research', 'running', 'fetching ticket', 0, ?, ?)`,
             )
-            .run(id, env.id, ticketId.toUpperCase(), sessionId, accountId ?? env.default_account_id, ts, ts);
-        this.taskDir(id);
+            .run(id, env.id, ref.id, ref.source, ref.url, model ?? this.cfg.defaultModel, sessionId, accountId ?? env.default_account_id, ts, ts);
+        const taskDir = this.taskDir(id);
         const task = this.getTask(id)!;
         this.emit("task", task);
-        this.dispatch(id, "research");
+
+        const account = this.pickAccount(task, STAGE_DEFS.research);
+        void fetchTicket(ref, this.cfg, account?.config_dir ?? this.cfg.mainConfigDir, env.path, taskDir)
+            .then((ticket) => {
+                this.db.prepare(`UPDATE tasks SET title = ?, ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(ticket.title, ticket.url, now(), id);
+                this.dispatch(id, "research");
+            })
+            .catch((e: unknown) => {
+                const reason = String((e as Error).message ?? e).slice(0, 200);
+                this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`ticket fetch failed (${reason}) — research will try the MCP itself`, now(), id);
+                this.dispatch(id, "research");
+            });
         return task;
     }
 
@@ -285,9 +298,16 @@ export class Engine extends EventEmitter {
     private promptVars(task: TaskRow, def: StageDef, opts: DispatchOpts): Record<string, string> {
         const env = this.env(task.env_id);
         const taskDir = this.taskDir(task.id);
+        const ticketRaw = this.readArtifactJson<unknown>(task.id, "ticket.json");
+        const ticketParsed = ticketRaw ? Ticket.safeParse(ticketRaw) : null;
         const vars: Record<string, string> = {
             ticketId: task.ticket_id,
             ticketIdUpper: task.ticket_id.toUpperCase(),
+            ticketSource: task.source,
+            ticketUrl: task.ticket_url ?? "",
+            ticket: ticketParsed?.success
+                ? renderTicketForPrompt(ticketParsed.data)
+                : `(Stagehand could not fetch the ticket server-side. Fetch ${task.source} ticket ${task.ticket_id} yourself with the ${task.source} MCP tool — for ClickUp: mcp__clickup__clickup_get_task with detail_level "detailed", and its parent if any. If that fails too, write the output file with classification "feature", title "TICKET FETCH FAILED" and the error in summary.)`,
             envPath: env.path,
             baseBranch: env.base_branch,
             worktree: task.worktree_path ?? env.path,
@@ -385,6 +405,7 @@ export class Engine extends EventEmitter {
             configDir: account.config_dir,
             ...(fresh ? {} : priorRuns.n === 0 ? { sessionId: task.session_id, name: task.ticket_id } : { resume: task.session_id }),
             chrome: def.chrome === true,
+            ...(task.model ? { model: task.model } : {}),
             ...(def.maxTurns ? { maxTurns: def.maxTurns } : {}),
             addDirs: [this.taskDir(taskId)],
             eventLogPath,
