@@ -69,6 +69,7 @@ export const App = () => {
     }, [modal]);
     const [terminal, setTerminal] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [moreOpen, setMoreOpen] = useState(false);
 
     const reload = useCallback(async () => {
         const [a, e, t] = await Promise.all([api.accounts(), api.envs(), api.tasks()]);
@@ -134,25 +135,30 @@ export const App = () => {
 
     return (
         <div className="app">
-            <header className="topbar">
+            <header className={`topbar ${moreOpen ? "more-open" : ""}`}>
                 <span className="brand">Stagehand</span>
                 <label>
                     env
                     <select value={envId} onChange={(e) => setEnvId(e.target.value)}>
                         {envs.map((e) => (
-                            <option key={e.id} value={e.id}>{e.name} · {e.path} ({e.base_branch})</option>
+                            <option key={e.id} value={e.id}>{e.name} ({e.base_branch})</option>
                         ))}
                     </select>
                 </label>
-                <button onClick={() => setModal("env")}>+ env</button>
-                {env && <button onClick={() => setModal("env-edit")}>edit env</button>}
-                <span className="spacer" />
-                {accounts.map((a) => <Gauge key={a.id} a={a} />)}
-                <button onClick={() => setModal("account")}>+ account</button>
-                <button onClick={() => setModal("settings")} title="Integrations & defaults">⚙</button>
+                <button className="more" onClick={() => setMoreOpen((v) => !v)} title="Accounts, env and settings">⋯</button>
                 <button className="primary" disabled={!env} onClick={() => setModal("task")}>+ task</button>
+                <span className="extra">
+                    <button onClick={() => setModal("env")}>+ env</button>
+                    {env && <button onClick={() => setModal("env-edit")}>edit env</button>}
+                </span>
+                <span className="spacer" />
+                <span className="extra gauges">{accounts.map((a) => <Gauge key={a.id} a={a} />)}</span>
+                <span className="extra">
+                    <button onClick={() => setModal("account")}>+ account</button>
+                    <button onClick={() => setModal("settings")} title="Integrations & defaults">⚙</button>
+                </span>
             </header>
-            <div className="main">
+            <div className={`main ${selected ? "has-selection" : ""}`}>
                 <aside className="list">
                     {visible.length === 0 && <div className="empty">No tasks in this env yet.</div>}
                     {grouped.map(([g, list]) => (
@@ -174,6 +180,7 @@ export const App = () => {
                     ))}
                 </aside>
                 <main className="detail">
+                    {selected && <button className="back" onClick={() => setSelected(null)}>← tasks</button>}
                     {error && <div className="blocked-box">{error}</div>}
                     {!detail && <div className="empty">Select a task, or add one.</div>}
                     {detail && (
@@ -205,7 +212,7 @@ export const App = () => {
                 </Modal>
             )}
             {modal === "env-edit" && env && (
-                <Modal title={`Edit ${env.name}`} onClose={() => setModal(null)} wide>
+                <Modal title={`Edit ${env.name} · ${env.path}`} onClose={() => setModal(null)} wide>
                     <EnvEditForm env={env} accounts={accounts} onSubmit={async (b) => { await run(() => api.patchEnv(env.id, b)); setModal(null); }} />
                 </Modal>
             )}
@@ -235,7 +242,7 @@ export const App = () => {
 
 const Modal = ({ title, children, onClose, wide }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) => (
     <div className="modal" onClick={onClose}>
-        <div className="box" style={wide ? { minWidth: 900 } : undefined} onClick={(e) => e.stopPropagation()}>
+        <div className="box" style={wide ? { minWidth: "min(900px, 100vw - 24px)" } : undefined} onClick={(e) => e.stopPropagation()}>
             <h2>{title}</h2>
             {children}
         </div>
