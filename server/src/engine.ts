@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import { now, type AccountRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
-import { createWorktree, removeWorktreeAndBranch } from "./git.js";
+import { createWorktree, removeWorktreeAndBranch, runWorktreeSetup } from "./git.js";
 import type { Services } from "./services.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { DesignResult, QaPassResult, ResearchResult, type QaScenario } from "./stages/contracts.js";
@@ -533,10 +533,14 @@ export class Engine extends EventEmitter {
             this.db.prepare(`UPDATE tasks SET title = ?, branch = ?, updated_at = ? WHERE id = ?`).run(r.title, r.branchName, now(), taskId);
             this.setTaskStatus(taskId, "running", "creating worktree");
             void createWorktree(env.path, env.base_branch, r.branchName)
-                .then((wt) => {
+                .then(async (wt) => {
                     this.db.prepare(`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE id = ?`).run(wt.path, now(), taskId);
                     if (wt.reused) {
                         this.setTaskStatus(taskId, "running", `reusing existing worktree/branch with ${wt.existingCommits} commit(s) ahead of ${env.base_branch}`);
+                    }
+                    if (env.setup_command) {
+                        this.setTaskStatus(taskId, "running", "running worktree setup");
+                        await runWorktreeSetup(wt.path, env.path, env.setup_command);
                     }
                     this.advance(taskId, "design_proposal");
                 })

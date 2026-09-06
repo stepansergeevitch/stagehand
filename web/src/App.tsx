@@ -308,6 +308,7 @@ const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[
         feUrlTemplate: env.fe_url_template ?? "",
         bePort: env.be_port ? String(env.be_port) : "",
         fePort: env.fe_port ? String(env.fe_port) : "",
+        setupCommand: env.setup_command ?? "",
     });
     const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
     const nul = (s: string) => (s.trim() === "" ? null : s);
@@ -329,6 +330,7 @@ const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[
                 <label>BE URL template <input value={f.beUrlTemplate} onChange={set("beUrlTemplate")} placeholder="http://localhost:{{port}}" /></label>
                 <label>FE URL template <input value={f.feUrlTemplate} onChange={set("feUrlTemplate")} placeholder="http://localhost:{{port}}" /></label>
             </div>
+            <label>Worktree setup command (runs once after a worktree is created; {"{{envPath}}"} / {"{{worktree}}"}) <textarea value={f.setupCommand} onChange={set("setupCommand")} placeholder="e.g. ln -sf {{envPath}}/.env .env; mkdir -p etc/ssl; ln -sf {{envPath}}/etc/ssl/*.pem etc/ssl/" /></label>
             <label>BE command <textarea value={f.beCommand} onChange={set("beCommand")} placeholder="e.g. PORT={{port}} uv run manage run" /></label>
             <label>FE command <textarea value={f.feCommand} onChange={set("feCommand")} placeholder="e.g. PORT={{port}} REACT_APP_API_BASE_URL={{beUrl}}/api npm start" /></label>
             <button
@@ -345,6 +347,7 @@ const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[
                         feUrlTemplate: nul(f.feUrlTemplate),
                         bePort: f.bePort.trim() ? Number(f.bePort) : null,
                         fePort: f.fePort.trim() ? Number(f.fePort) : null,
+                        setupCommand: nul(f.setupCommand),
                     })
                 }
             >

@@ -168,6 +168,7 @@ app.patch("/api/envs/:id", async (c) => {
             feUrlTemplate: z.string().nullable().optional(),
             bePort: z.number().int().positive().nullable().optional(),
             fePort: z.number().int().positive().nullable().optional(),
+            setupCommand: z.string().nullable().optional(),
         }),
         await c.req.json(),
     );
@@ -175,7 +176,7 @@ app.patch("/api/envs/:id", async (c) => {
     if (!env) return c.json({ error: "not found" }, 404);
     const pick = <T,>(next: T | undefined, cur: T): T => (next === undefined ? cur : next);
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         pick(body.defaultAccountId, env.default_account_id),
@@ -188,6 +189,7 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.feUrlTemplate, env.fe_url_template),
         pick(body.bePort, env.be_port),
         pick(body.fePort, env.fe_port),
+        pick(body.setupCommand, env.setup_command),
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));

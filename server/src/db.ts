@@ -63,6 +63,7 @@ export interface EnvRow {
     be_url_template: string | null;
     be_port: number | null;
     fe_port: number | null;
+    setup_command: string | null;
     created_at: string;
 }
 
@@ -221,6 +222,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.be_url_template", `ALTER TABLE envs ADD COLUMN be_url_template TEXT`],
     ["envs.be_port", `ALTER TABLE envs ADD COLUMN be_port INTEGER`],
     ["envs.fe_port", `ALTER TABLE envs ADD COLUMN fe_port INTEGER`],
+    ["envs.setup_command", `ALTER TABLE envs ADD COLUMN setup_command TEXT`],
 ];
 
 export type ServiceKind = "be" | "fe";

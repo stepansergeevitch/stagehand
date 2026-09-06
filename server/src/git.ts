@@ -46,6 +46,13 @@ export const createWorktree = async (envPath: string, baseBranch: string, branch
     return { path, reused: false, existingCommits: 0 };
 };
 
+// Gitignored runtime files (certs, .env, node_modules) don't come with a worktree; the env's setup command creates them.
+export const runWorktreeSetup = async (worktree: string, envPath: string, command: string): Promise<string> => {
+    const rendered = command.replace(/\{\{envPath\}\}/g, envPath).replace(/\{\{worktree\}\}/g, worktree);
+    const { stdout, stderr } = await execFileAsync("bash", ["-lc", rendered], { cwd: worktree, maxBuffer: 8 * 1024 * 1024, timeout: 600_000 });
+    return (stdout + stderr).trim().slice(-2000);
+};
+
 export const removeWorktree = async (envPath: string, path: string): Promise<void> => {
     await git(envPath, ["worktree", "remove", "--force", path]);
 };
