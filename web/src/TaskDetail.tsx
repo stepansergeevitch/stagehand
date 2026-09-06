@@ -78,6 +78,46 @@ const Sub = ({ title, open = true, children }: { title: React.ReactNode; open?: 
     </details>
 );
 
+// The ticket as it was fetched from ClickUp/Linear: everything Claude was given, unabridged.
+const TicketView = ({ detail, researchMd }: { detail: TaskDetail; researchMd: string | null }) => {
+    const { task, ticket } = detail;
+    if (!ticket) {
+        return (
+            <section className="card">
+                <h2>Ticket</h2>
+                <p>
+                    Stagehand did not fetch this ticket server-side (no API token at the time), so there is no stored copy; Research read it through the MCP and quoted it in research.md below.
+                    {task.ticket_url && <> Open it in {task.source}: <a href={task.ticket_url} target="_blank" rel="noreferrer">{task.ticket_id} ↗</a>.</>}
+                </p>
+                {researchMd && <Sub title="research.md (ticket quoted verbatim in section 1)"><Markdown source={researchMd} /></Sub>}
+            </section>
+        );
+    }
+    return (
+        <section className="card ticket-view">
+            <h2>{ticket.id} {ticket.title}</h2>
+            <div className="sub">
+                {ticket.status && <span className="chip">{ticket.status}</span>}
+                <span className="chip">{ticket.source} · {ticket.fetchedVia}</span>
+                {(ticket.url ?? task.ticket_url) && <a href={ticket.url ?? task.ticket_url ?? ""} target="_blank" rel="noreferrer">open in {task.source} ↗</a>}
+            </div>
+            {ticket.acceptanceCriteria.length > 0 && (
+                <Sub title="Acceptance criteria">
+                    <ul className="plain">{ticket.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul>
+                </Sub>
+            )}
+            <Sub title="Description">
+                {ticket.description.trim() ? <Markdown source={ticket.description} /> : <div className="empty">no description</div>}
+            </Sub>
+            {ticket.parent && (
+                <Sub title={<>Parent · {ticket.parent.id} {ticket.parent.title}</>} open={false}>
+                    {ticket.parent.description.trim() ? <Markdown source={ticket.parent.description} /> : <div className="empty">no description</div>}
+                </Sub>
+            )}
+        </section>
+    );
+};
+
 const RERUNNABLE: ReadonlySet<Stage> = new Set(["research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "pr_creation_review", "pr_red"]);
 
 const statusChip = (s: string) => {
@@ -98,6 +138,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const currentIdx = STAGE_ORDER.indexOf(task.stage);
     const skipped = new Set<Stage>(design && design.qa.length === 0 ? ["qa_baseline", "manual_qa"] : []);
     const waiting = task.status === "waiting_user";
+    const [tab, setTab] = useState<"work" | "ticket">("work");
+    useEffect(() => setTab("work"), [task.id]);
 
     return (
         <>
@@ -144,6 +186,14 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 })}
             </div>
 
+            <div className="tabs" role="tablist">
+                <button role="tab" className={tab === "work" ? "active" : ""} onClick={() => setTab("work")}>Work</button>
+                <button role="tab" className={tab === "ticket" ? "active" : ""} onClick={() => setTab("ticket")}>Ticket</button>
+            </div>
+
+            {tab === "ticket" && <TicketView detail={detail} researchMd={researchMd} />}
+
+            {tab === "work" && (<>
             {task.worktree_path && (
                 <Section title="App" open={true}>
                     <ServicesPanel taskId={task.id} env={env} onError={onError} />
@@ -335,6 +385,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 ))}
                 </div>
             </Section>
+            </>)}
         </>
     );
 };
