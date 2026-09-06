@@ -64,6 +64,11 @@ export interface EnvRow {
     be_port: number | null;
     fe_port: number | null;
     setup_command: string | null;
+    // JSON array of sub-directories that are separate git repos (e.g. ["backend","frontend"]); null = path itself is the repo.
+    repos: string | null;
+    // Prepended to research's branch name (e.g. "stepanb/").
+    branch_prefix: string | null;
+    ticket_source: "clickup" | "linear";
     created_at: string;
 }
 
@@ -225,6 +230,9 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.be_port", `ALTER TABLE envs ADD COLUMN be_port INTEGER`],
     ["envs.fe_port", `ALTER TABLE envs ADD COLUMN fe_port INTEGER`],
     ["envs.setup_command", `ALTER TABLE envs ADD COLUMN setup_command TEXT`],
+    ["envs.repos", `ALTER TABLE envs ADD COLUMN repos TEXT`],
+    ["envs.branch_prefix", `ALTER TABLE envs ADD COLUMN branch_prefix TEXT`],
+    ["envs.ticket_source", `ALTER TABLE envs ADD COLUMN ticket_source TEXT NOT NULL DEFAULT 'clickup'`],
     ["tasks.ticket_url", `ALTER TABLE tasks ADD COLUMN ticket_url TEXT`],
     ["tasks.model", `ALTER TABLE tasks ADD COLUMN model TEXT`],
 ];

@@ -1,5 +1,7 @@
 This is the DESIGN PROPOSAL stage for ticket {{ticketId}}. You are now in the task worktree at {{worktree}} on branch `{{branch}}` (base `{{baseBranch}}`). Your research is in `{{taskDir}}/research.md` and `{{taskDir}}/research.json` — read both first. Do not write application code, do not commit.
 
+{{repoLayout}}
+
 {{reviewerNotes}}
 
 ## What to produce

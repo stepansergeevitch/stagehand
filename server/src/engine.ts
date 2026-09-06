@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import { now, type AccountRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
-import { createWorktree, removeWorktreeAndBranch, runWorktreeSetup } from "./git.js";
+import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup } from "./git.js";
 import type { Services } from "./services.js";
 import { fetchTicket, parseTicketRef, renderTicketForPrompt, Ticket } from "./tickets.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
@@ -25,6 +25,15 @@ interface DispatchOpts {
 }
 
 const FIVE_HOUR = "five_hour";
+
+// One paragraph for prompts: where the code lives and how the worktree is laid out.
+const describeRepoLayout = (env: EnvRow, worktree: string | null): string => {
+    const subs = envRepos(env);
+    if (subs.length === 0) return `The project is a single git repository at ${env.path} (base branch \`${env.base_branch}\`).`;
+    const list = subs.map((d) => `\`${d}/\``).join(", ");
+    const wt = worktree ? ` The task worktree ${worktree} mirrors this layout: each of ${list} inside it is a separate checkout of the task branch.` : "";
+    return `The project is a workspace at ${env.path} made of separate git repositories in ${list} (base branch \`${env.base_branch}\` in each); the workspace root itself is NOT a git repository — run git commands inside the repository directory you are changing.${wt}`;
+};
 
 export class Engine extends EventEmitter {
     private readonly active = new Map<string, ClaudeRun>();
@@ -182,7 +191,7 @@ export class Engine extends EventEmitter {
 
     createTask(envId: string, ticketInput: string, accountId?: string, model?: string): TaskRow {
         const env = this.env(envId);
-        const ref = parseTicketRef(ticketInput, this.cfg.defaultTicketSource);
+        const ref = parseTicketRef(ticketInput, env.ticket_source);
         const id = randomUUID();
         const sessionId = randomUUID();
         const ts = now();
@@ -284,7 +293,7 @@ export class Engine extends EventEmitter {
         if (run) this.active.get(run.id)?.kill();
         if (removeWorktree && task.worktree_path && task.branch) {
             const env = this.env(task.env_id);
-            await removeWorktreeAndBranch(env.path, task.worktree_path, task.branch).catch(() => undefined);
+            await removeWorktreeAndBranch(env, task.worktree_path, task.branch).catch(() => undefined);
         }
         rmSync(this.taskDir(taskId), { recursive: true, force: true });
         this.db.prepare(`DELETE FROM reviews WHERE task_id = ?`).run(taskId);
@@ -386,6 +395,7 @@ export class Engine extends EventEmitter {
                 : `(Stagehand could not fetch the ticket server-side. Fetch ${task.source} ticket ${task.ticket_id} yourself with the ${task.source} MCP tool — for ClickUp: mcp__clickup__clickup_get_task with detail_level "detailed", and its parent if any. If that fails too, write the output file with classification "feature", title "TICKET FETCH FAILED" and the error in summary.)`,
             envPath: env.path,
             baseBranch: env.base_branch,
+            repoLayout: describeRepoLayout(env, task.worktree_path),
             worktree: task.worktree_path ?? env.path,
             branch: task.branch ?? "",
             taskDir,
@@ -633,7 +643,8 @@ export class Engine extends EventEmitter {
             const r = ResearchResult.parse(data);
             const env = this.env(task.env_id);
             const wanted = r.repositoryPath ? r.repositoryPath.replace(/\/+$/, "") : null;
-            if (wanted && wanted !== env.path.replace(/\/+$/, "")) {
+            const mine = [env.path, ...repoPaths(env)].map((p) => p.replace(/\/+$/, ""));
+            if (wanted && !mine.includes(wanted)) {
                 const other = this.db.prepare(`SELECT name FROM envs WHERE path = ?`).get(wanted) as { name: string } | undefined;
                 this.setTaskStatus(
                     taskId,
@@ -642,9 +653,11 @@ export class Engine extends EventEmitter {
                 );
                 return;
             }
-            this.db.prepare(`UPDATE tasks SET title = ?, branch = ?, updated_at = ? WHERE id = ?`).run(r.title, r.branchName, now(), taskId);
+            const prefix = env.branch_prefix ?? "";
+            const branch = prefix && !r.branchName.startsWith(prefix) ? `${prefix}${r.branchName}` : r.branchName;
+            this.db.prepare(`UPDATE tasks SET title = ?, branch = ?, updated_at = ? WHERE id = ?`).run(r.title, branch, now(), taskId);
             this.setTaskStatus(taskId, "running", "creating worktree");
-            void createWorktree(env.path, env.base_branch, r.branchName)
+            void createWorktree(env, branch)
                 .then(async (wt) => {
                     this.db.prepare(`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE id = ?`).run(wt.path, now(), taskId);
                     if (wt.reused) {

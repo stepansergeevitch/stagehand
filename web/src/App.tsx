@@ -250,7 +250,7 @@ const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; 
         const s = ticket.trim();
         if (/app\.clickup\.com\/t\//.test(s)) return "ClickUp link";
         if (/linear\.app\/.+\/issue\//.test(s)) return "Linear link";
-        if (/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(s)) return `${settings?.defaultTicketSource ?? "clickup"} id`;
+        if (/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(s)) return `${env.ticket_source} id`;
         return s ? "unrecognised" : "";
     })();
     return (
@@ -276,7 +276,6 @@ const SettingsForm = ({ settings, onSubmit }: { settings: Settings; onSubmit: (b
     const [clickupToken, setClickupToken] = useState("");
     const [clickupTeamId, setClickupTeamId] = useState(settings.clickupTeamId ?? "");
     const [linearApiKey, setLinearApiKey] = useState("");
-    const [defaultTicketSource, setSource] = useState(settings.defaultTicketSource);
     const [defaultModel, setDefaultModel] = useState(settings.defaultModel ?? "");
     return (
         <>
@@ -284,11 +283,6 @@ const SettingsForm = ({ settings, onSubmit }: { settings: Settings; onSubmit: (b
             <label>ClickUp personal API token (pk_…) <input value={clickupToken} onChange={(e) => setClickupToken(e.target.value)} placeholder={settings.clickupToken ?? "not set"} /></label>
             <label>ClickUp team id <input value={clickupTeamId} onChange={(e) => setClickupTeamId(e.target.value)} /></label>
             <label>Linear API key <input value={linearApiKey} onChange={(e) => setLinearApiKey(e.target.value)} placeholder={settings.linearApiKey ?? "not set"} /></label>
-            <label>Bare ids default to
-                <select value={defaultTicketSource} onChange={(e) => setSource(e.target.value as "clickup" | "linear")}>
-                    <option value="clickup">ClickUp</option><option value="linear">Linear</option>
-                </select>
-            </label>
             <label>Default Claude model
                 <select value={defaultModel} onChange={(e) => setDefaultModel(e.target.value)}>
                     {settings.models.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
@@ -298,7 +292,6 @@ const SettingsForm = ({ settings, onSubmit }: { settings: Settings; onSubmit: (b
                 ...(clickupToken ? { clickupToken } : {}),
                 clickupTeamId: clickupTeamId || null,
                 ...(linearApiKey ? { linearApiKey } : {}),
-                defaultTicketSource,
                 defaultModel: defaultModel || null,
             })}>Save</button>
         </>
@@ -310,7 +303,7 @@ const EnvForm = ({
     onSubmit,
 }: {
     accounts: Account[];
-    onSubmit: (b: { name: string; path: string; baseBranch: string; defaultAccountId?: string; appUrl?: string; qaScript?: string }) => Promise<void>;
+    onSubmit: (b: Parameters<typeof api.addEnv>[0]) => Promise<void>;
 }) => {
     const [name, setName] = useState("");
     const [path, setPath] = useState("");
@@ -318,11 +311,22 @@ const EnvForm = ({
     const [acc, setAcc] = useState("");
     const [appUrl, setAppUrl] = useState("");
     const [qaScript, setQaScript] = useState("");
+    const [repos, setRepos] = useState("");
+    const [branchPrefix, setBranchPrefix] = useState("");
+    const [ticketSource, setTicketSource] = useState<"clickup" | "linear">("clickup");
+    const repoList = splitRepos(repos);
     return (
         <>
             <label>Name <input autoFocus value={name} onChange={(e) => setName(e.target.value)} /></label>
-            <label>Path <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="/Users/you/code/repo" /></label>
+            <label>Path <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="/Users/you/code/repo — or a workspace folder holding several repos" /></label>
+            <label>Sub-repositories (comma-separated; empty = the path itself is the git repo) <input value={repos} onChange={(e) => setRepos(e.target.value)} placeholder="backend, frontend" /></label>
             <label>Base branch <input value={base} onChange={(e) => setBase(e.target.value)} /></label>
+            <label>Branch prefix <input value={branchPrefix} onChange={(e) => setBranchPrefix(e.target.value)} placeholder="e.g. stepanb/ — prepended to the branch research proposes" /></label>
+            <label>Task system (how bare ids like ABC-123 are resolved)
+                <select value={ticketSource} onChange={(e) => setTicketSource(e.target.value as "clickup" | "linear")}>
+                    <option value="clickup">ClickUp</option><option value="linear">Linear</option>
+                </select>
+            </label>
             <label>App URL for QA <input value={appUrl} onChange={(e) => setAppUrl(e.target.value)} placeholder="https://localhost:3000" /></label>
             <label>QA bring-up command <input value={qaScript} onChange={(e) => setQaScript(e.target.value)} placeholder="optional, run from the worktree before QA" /></label>
             <label>Default account
@@ -339,9 +343,12 @@ const EnvForm = ({
                         name,
                         path,
                         baseBranch: base,
+                        ticketSource,
                         ...(acc ? { defaultAccountId: acc } : {}),
                         ...(appUrl ? { appUrl } : {}),
                         ...(qaScript ? { qaScript } : {}),
+                        ...(repoList.length ? { repos: repoList } : {}),
+                        ...(branchPrefix.trim() ? { branchPrefix: branchPrefix.trim() } : {}),
                     })
                 }
             >
@@ -353,10 +360,23 @@ const EnvForm = ({
 
 const HELP = "Placeholders: {{port}} (this service's port), {{url}}, {{bePort}}, {{beUrl}} (FE only), {{worktree}}, {{taskDir}}. Runs from the task's worktree in tmux; output goes to <taskDir>/logs/<kind>.log.";
 
+const splitRepos = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
+const joinRepos = (json: string | null): string => {
+    try {
+        const v: unknown = json ? JSON.parse(json) : [];
+        return Array.isArray(v) ? v.join(", ") : "";
+    } catch {
+        return "";
+    }
+};
+
 const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[]; onSubmit: (b: Parameters<typeof api.patchEnv>[1]) => Promise<void> }) => {
     const [f, setF] = useState({
         name: env.name,
         baseBranch: env.base_branch,
+        repos: joinRepos(env.repos),
+        branchPrefix: env.branch_prefix ?? "",
+        ticketSource: env.ticket_source,
         defaultAccountId: env.default_account_id ?? "",
         appUrl: env.app_url ?? "",
         beCommand: env.be_command ?? "",
@@ -375,6 +395,13 @@ const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[
             <div className="two">
                 <label>Name <input value={f.name} onChange={set("name")} /></label>
                 <label>Base branch <input value={f.baseBranch} onChange={set("baseBranch")} /></label>
+                <label>Sub-repositories (comma-separated; empty = single repo) <input value={f.repos} onChange={set("repos")} placeholder="backend, frontend" /></label>
+                <label>Branch prefix <input value={f.branchPrefix} onChange={set("branchPrefix")} placeholder="e.g. stepanb/" /></label>
+                <label>Task system
+                    <select value={f.ticketSource} onChange={set("ticketSource")}>
+                        <option value="clickup">ClickUp</option><option value="linear">Linear</option>
+                    </select>
+                </label>
                 <label>Default account
                     <select value={f.defaultAccountId} onChange={set("defaultAccountId")}>
                         <option value="">— none —</option>
@@ -405,6 +432,9 @@ const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[
                         bePort: f.bePort.trim() ? Number(f.bePort) : null,
                         fePort: f.fePort.trim() ? Number(f.fePort) : null,
                         setupCommand: nul(f.setupCommand),
+                        repos: splitRepos(f.repos).length ? splitRepos(f.repos) : null,
+                        branchPrefix: nul(f.branchPrefix),
+                        ticketSource: f.ticketSource as "clickup" | "linear",
                     })
                 }
             >

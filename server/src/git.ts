@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -21,7 +21,33 @@ export const isGitRepo = async (path: string): Promise<boolean> => {
 
 export const currentBranch = (path: string): Promise<string> => git(path, ["branch", "--show-current"]);
 
-export const worktreePathFor = (envPath: string, branch: string): string => join(envPath, ".claude", "worktrees", branch);
+// An env is either one git repo at `path`, or a workspace at `path` whose sub-directories `repos` are separate git repos.
+export interface RepoLayout {
+    path: string;
+    base_branch: string;
+    repos: string | null;
+}
+
+export const envRepos = (env: Pick<RepoLayout, "repos">): string[] => {
+    if (!env.repos) return [];
+    try {
+        const parsed: unknown = JSON.parse(env.repos);
+        return Array.isArray(parsed) ? parsed.filter((r): r is string => typeof r === "string" && r.length > 0) : [];
+    } catch {
+        return [];
+    }
+};
+
+export const isMultiRepo = (env: Pick<RepoLayout, "repos">): boolean => envRepos(env).length > 0;
+
+// Every git checkout that belongs to the env (the env path itself, or each sub-repo) — for validation and repo-path checks.
+export const repoPaths = (env: RepoLayout): string[] => {
+    const subs = envRepos(env);
+    return subs.length ? subs.map((d) => join(env.path, d)) : [env.path];
+};
+
+// Branch names may contain "/" (e.g. stepanb/inv-1-x); the worktree directory flattens that.
+export const worktreePathFor = (envPath: string, branch: string): string => join(envPath, ".claude", "worktrees", branch.replace(/\//g, "-"));
 
 export interface WorktreeResult {
     path: string;
@@ -29,21 +55,37 @@ export interface WorktreeResult {
     existingCommits: number;
 }
 
-export const createWorktree = async (envPath: string, baseBranch: string, branch: string): Promise<WorktreeResult> => {
-    const path = worktreePathFor(envPath, branch);
-    await git(envPath, ["fetch", "origin", baseBranch]);
-    if (existsSync(path)) {
-        const log = await git(path, ["log", "--oneline", `origin/${baseBranch}..HEAD`]);
-        return { path, reused: true, existingCommits: log ? log.split("\n").length : 0 };
+const createOne = async (repoPath: string, baseBranch: string, branch: string, target: string): Promise<WorktreeResult> => {
+    await git(repoPath, ["fetch", "origin", baseBranch]);
+    if (existsSync(target)) {
+        const log = await git(target, ["log", "--oneline", `origin/${baseBranch}..HEAD`]);
+        return { path: target, reused: true, existingCommits: log ? log.split("\n").length : 0 };
     }
-    const branchExists = (await git(envPath, ["branch", "--list", branch])) !== "";
+    const branchExists = (await git(repoPath, ["branch", "--list", branch])) !== "";
     if (branchExists) {
-        await git(envPath, ["worktree", "add", path, branch]);
-        const log = await git(path, ["log", "--oneline", `origin/${baseBranch}..HEAD`]);
-        return { path, reused: true, existingCommits: log ? log.split("\n").length : 0 };
+        await git(repoPath, ["worktree", "add", target, branch]);
+        const log = await git(target, ["log", "--oneline", `origin/${baseBranch}..HEAD`]);
+        return { path: target, reused: true, existingCommits: log ? log.split("\n").length : 0 };
     }
-    await git(envPath, ["worktree", "add", path, "-b", branch, `origin/${baseBranch}`]);
-    return { path, reused: false, existingCommits: 0 };
+    await git(repoPath, ["worktree", "add", target, "-b", branch, `origin/${baseBranch}`]);
+    return { path: target, reused: false, existingCommits: 0 };
+};
+
+// Single repo: the worktree is the checkout. Multi-repo: the worktree is a directory holding one checkout per sub-repo
+// on the same branch (<root>/backend, <root>/frontend), mirroring the env's layout so commands like `cd backend && …` work unchanged.
+export const createWorktree = async (env: RepoLayout, branch: string): Promise<WorktreeResult> => {
+    const root = worktreePathFor(env.path, branch);
+    const subs = envRepos(env);
+    if (subs.length === 0) return createOne(env.path, env.base_branch, branch, root);
+    mkdirSync(root, { recursive: true });
+    let reused = false;
+    let existingCommits = 0;
+    for (const dir of subs) {
+        const r = await createOne(join(env.path, dir), env.base_branch, branch, join(root, dir));
+        reused = reused || r.reused;
+        existingCommits += r.existingCommits;
+    }
+    return { path: root, reused, existingCommits };
 };
 
 // Gitignored runtime files (certs, .env, node_modules) don't come with a worktree; the env's setup command creates them.
@@ -53,22 +95,33 @@ export const runWorktreeSetup = async (worktree: string, envPath: string, comman
     return (stdout + stderr).trim().slice(-2000);
 };
 
-export const removeWorktree = async (envPath: string, path: string): Promise<void> => {
-    await git(envPath, ["worktree", "remove", "--force", path]);
+export const removeWorktree = async (repoPath: string, path: string): Promise<void> => {
+    await git(repoPath, ["worktree", "remove", "--force", path]);
 };
 
-export const removeWorktreeAndBranch = async (envPath: string, path: string, branch: string): Promise<void> => {
-    if (existsSync(path)) await removeWorktree(envPath, path);
-    await git(envPath, ["branch", "-D", branch]);
+export const removeWorktreeAndBranch = async (env: RepoLayout, path: string, branch: string): Promise<void> => {
+    const subs = envRepos(env);
+    if (subs.length === 0) {
+        if (existsSync(path)) await removeWorktree(env.path, path);
+        await git(env.path, ["branch", "-D", branch]);
+        return;
+    }
+    for (const dir of subs) {
+        const repoPath = join(env.path, dir);
+        const target = join(path, dir);
+        if (existsSync(target)) await removeWorktree(repoPath, target).catch(() => undefined);
+        await git(repoPath, ["branch", "-D", branch]).catch(() => undefined);
+    }
 };
 
-export const diffStat = (worktree: string, baseBranch: string): Promise<string> =>
-    git(worktree, ["diff", "--stat", `origin/${baseBranch}...HEAD`]);
+// Per-checkout helpers; for a multi-repo worktree pass the sub-repo checkout (<worktree>/<dir>).
+export const diffStat = (checkout: string, baseBranch: string): Promise<string> =>
+    git(checkout, ["diff", "--stat", `origin/${baseBranch}...HEAD`]);
 
-export const changedFiles = async (worktree: string, baseBranch: string): Promise<string[]> => {
-    const out = await git(worktree, ["diff", "--name-only", `origin/${baseBranch}...HEAD`]);
+export const changedFiles = async (checkout: string, baseBranch: string): Promise<string[]> => {
+    const out = await git(checkout, ["diff", "--name-only", `origin/${baseBranch}...HEAD`]);
     return out ? out.split("\n") : [];
 };
 
-export const commitLog = (worktree: string, baseBranch: string): Promise<string> =>
-    git(worktree, ["log", "--oneline", `origin/${baseBranch}..HEAD`]);
+export const commitLog = (checkout: string, baseBranch: string): Promise<string> =>
+    git(checkout, ["log", "--oneline", `origin/${baseBranch}..HEAD`]);

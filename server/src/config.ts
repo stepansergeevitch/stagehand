@@ -14,7 +14,6 @@ const ConfigSchema = z.object({
     clickupToken: z.string().nullable().default(null),
     clickupTeamId: z.string().nullable().default(null),
     linearApiKey: z.string().nullable().default(null),
-    defaultTicketSource: z.enum(["clickup", "linear"]).default("clickup"),
     defaultModel: z.string().nullable().default(null),
     // Per-stage model defaults (task.model overrides); cheaper models for reading-heavy or mechanical stages.
     stageModels: z
@@ -47,7 +46,6 @@ const defaults = (): Config => ({
     clickupToken: null,
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
     linearApiKey: null,
-    defaultTicketSource: "clickup",
     defaultModel: null,
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_red: null, helper: "sonnet" },
 });

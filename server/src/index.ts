@@ -18,7 +18,7 @@ import { now, openDb, STAGES, type AccountRow, type EnvRow, type Stage } from ".
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
 import { loginCommand, probeChrome, readAuthStatus, scaffoldAccountDir } from "./claude/accounts.js";
-import { isGitRepo } from "./git.js";
+import { isGitRepo, repoPaths } from "./git.js";
 import { attach, ensureSession, killSession, loginSessionName, sessionExists, taskSessionName } from "./tmux.js";
 
 const cfg = loadConfig();
@@ -121,6 +121,14 @@ app.patch("/api/accounts/:id", async (c) => {
 
 const envsAll = (): EnvRow[] => db.prepare(`SELECT * FROM envs ORDER BY created_at`).all() as EnvRow[];
 
+// Every checkout the env claims (the path itself, or each sub-repo) must exist and be a git repo.
+const badCheckouts = async (env: { path: string; base_branch: string; repos: string | null }): Promise<string | null> => {
+    for (const p of repoPaths(env)) {
+        if (!existsSync(p) || !(await isGitRepo(p))) return `${p} is not a git checkout`;
+    }
+    return null;
+};
+
 app.get("/api/envs", (c) => c.json(envsAll()));
 
 app.post("/api/envs", async (c) => {
@@ -136,14 +144,22 @@ app.post("/api/envs", async (c) => {
             feCommand: z.string().optional(),
             beUrlTemplate: z.string().optional(),
             feUrlTemplate: z.string().optional(),
+            bePort: z.number().int().positive().optional(),
+            fePort: z.number().int().positive().optional(),
+            setupCommand: z.string().optional(),
+            repos: z.array(z.string().min(1)).optional(),
+            branchPrefix: z.string().optional(),
+            ticketSource: z.enum(["clickup", "linear"]).default("clickup"),
         }),
         await c.req.json(),
     );
-    if (!existsSync(body.path) || !(await isGitRepo(body.path))) return c.json({ error: `${body.path} is not a git checkout` }, 400);
+    const repos = body.repos && body.repos.length ? JSON.stringify(body.repos) : null;
+    const bad = await badCheckouts({ path: body.path, base_branch: body.baseBranch ?? "main", repos });
+    if (bad) return c.json({ error: bad }, 400);
     const id = randomUUID();
     db.prepare(
-        `INSERT INTO envs (id, name, path, base_branch, default_account_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO envs (id, name, path, base_branch, default_account_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
         id,
         body.name,
@@ -156,6 +172,12 @@ app.post("/api/envs", async (c) => {
         body.feCommand ?? null,
         body.beUrlTemplate ?? null,
         body.feUrlTemplate ?? null,
+        body.bePort ?? null,
+        body.fePort ?? null,
+        body.setupCommand ?? null,
+        repos,
+        body.branchPrefix ?? null,
+        body.ticketSource ?? "clickup",
         now(),
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(id));
@@ -176,14 +198,22 @@ app.patch("/api/envs/:id", async (c) => {
             bePort: z.number().int().positive().nullable().optional(),
             fePort: z.number().int().positive().nullable().optional(),
             setupCommand: z.string().nullable().optional(),
+            repos: z.array(z.string().min(1)).nullable().optional(),
+            branchPrefix: z.string().nullable().optional(),
+            ticketSource: z.enum(["clickup", "linear"]).optional(),
         }),
         await c.req.json(),
     );
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
     if (!env) return c.json({ error: "not found" }, 404);
     const pick = <T,>(next: T | undefined, cur: T): T => (next === undefined ? cur : next);
+    const repos = body.repos === undefined ? env.repos : body.repos && body.repos.length ? JSON.stringify(body.repos) : null;
+    if (repos !== env.repos) {
+        const bad = await badCheckouts({ path: env.path, base_branch: env.base_branch, repos });
+        if (bad) return c.json({ error: bad }, 400);
+    }
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         pick(body.defaultAccountId, env.default_account_id),
@@ -197,6 +227,9 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.bePort, env.be_port),
         pick(body.fePort, env.fe_port),
         pick(body.setupCommand, env.setup_command),
+        repos,
+        pick(body.branchPrefix, env.branch_prefix),
+        body.ticketSource ?? env.ticket_source,
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));
@@ -223,7 +256,6 @@ app.get("/api/settings", (c) =>
         clickupToken: mask(cfg.clickupToken),
         clickupTeamId: cfg.clickupTeamId,
         linearApiKey: mask(cfg.linearApiKey),
-        defaultTicketSource: cfg.defaultTicketSource,
         defaultModel: cfg.defaultModel,
         models: MODEL_OPTIONS,
     }),
@@ -235,7 +267,6 @@ app.patch("/api/settings", async (c) => {
             clickupToken: z.string().nullable().optional(),
             clickupTeamId: z.string().nullable().optional(),
             linearApiKey: z.string().nullable().optional(),
-            defaultTicketSource: z.enum(["clickup", "linear"]).optional(),
             defaultModel: z.string().nullable().optional(),
         }),
         await c.req.json(),
@@ -243,7 +274,6 @@ app.patch("/api/settings", async (c) => {
     if (body.clickupToken !== undefined) cfg.clickupToken = body.clickupToken;
     if (body.clickupTeamId !== undefined) cfg.clickupTeamId = body.clickupTeamId;
     if (body.linearApiKey !== undefined) cfg.linearApiKey = body.linearApiKey;
-    if (body.defaultTicketSource !== undefined) cfg.defaultTicketSource = body.defaultTicketSource;
     if (body.defaultModel !== undefined) cfg.defaultModel = body.defaultModel;
     saveConfig(cfg);
     return c.json({ ok: true });

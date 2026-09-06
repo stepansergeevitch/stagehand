@@ -12,11 +12,11 @@ export interface Account {
 export interface Env {
     id: string; name: string; path: string; base_branch: string; default_account_id: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
-    setup_command: string | null;
+    setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear";
 }
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
-    defaultTicketSource: "clickup" | "linear"; defaultModel: string | null; models: Array<{ value: string; label: string }>;
+    defaultModel: string | null; models: Array<{ value: string; label: string }>;
 }
 export interface Ticket {
     source: "clickup" | "linear"; id: string; url: string | null; title: string; status: string | null; description: string;
@@ -74,13 +74,16 @@ export const api = {
     patchAccount: (id: string, body: { failover_enabled?: boolean; failover_threshold?: number }) =>
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
-    addEnv: (body: { name: string; path: string; baseBranch: string; defaultAccountId?: string; appUrl?: string; qaScript?: string }) => post<Env>("/api/envs", body),
+    addEnv: (body: {
+        name: string; path: string; baseBranch: string; defaultAccountId?: string; appUrl?: string; qaScript?: string;
+        repos?: string[]; branchPrefix?: string; ticketSource: "clickup" | "linear";
+    }) => post<Env>("/api/envs", body),
     patchEnv: (
         id: string,
         body: {
             name?: string; baseBranch?: string; defaultAccountId?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
-            setupCommand?: string | null;
+            setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear";
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),

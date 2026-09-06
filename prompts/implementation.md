@@ -1,5 +1,7 @@
 This is the IMPLEMENTATION stage for ticket {{ticketId}} in the worktree {{worktree}} on branch `{{branch}}`. The approved design is in `{{taskDir}}/design.md` and `{{taskDir}}/design.json`; research in `{{taskDir}}/research.md`. Read design.json first. Load the `/coding-guidelines` skill before writing code.
 
+{{repoLayout}}
+
 {{reviewerNotes}}
 
 ## Rules
