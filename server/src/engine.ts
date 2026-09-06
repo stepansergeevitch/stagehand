@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
@@ -58,6 +58,31 @@ export class Engine extends EventEmitter {
             this.db.prepare(`UPDATE runs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?`).run("server restarted mid-run", now(), run.id);
             this.setTaskStatus(run.task_id, "failed", "run interrupted by server restart — retry to resume");
         }
+        // Tasks still in the ticket-fetch phase have no run row; the fetch child died with the server.
+        const fetching = this.db.prepare(`SELECT * FROM tasks WHERE status = 'running'`).all() as TaskRow[];
+        for (const t of fetching) {
+            const active = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND status = 'running'`).get(t.id) as { n: number };
+            if (active.n === 0) this.setTaskStatus(t.id, "failed", "ticket fetch interrupted by server restart — retry");
+        }
+    }
+
+    private fetchTicketThenResearch(taskId: string): void {
+        const task = this.getTask(taskId);
+        if (!task) return;
+        const env = this.env(task.env_id);
+        const ref = { source: task.source as "clickup" | "linear", id: task.ticket_id, url: task.ticket_url };
+        const account = this.pickAccount(task, STAGE_DEFS.research);
+        this.setTaskStatus(taskId, "running", "fetching ticket");
+        void fetchTicket(ref, this.cfg, account?.config_dir ?? this.cfg.mainConfigDir, env.path, this.taskDir(taskId))
+            .then((ticket) => {
+                this.db.prepare(`UPDATE tasks SET title = ?, ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(ticket.title, ticket.url, now(), taskId);
+                this.dispatch(taskId, "research");
+            })
+            .catch((e: unknown) => {
+                const reason = String((e as Error).message ?? e).slice(0, 200);
+                this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`ticket fetch failed (${reason}) — research will try the MCP itself`, now(), taskId);
+                this.dispatch(taskId, "research");
+            });
     }
 
     private completeFromDisk(taskId: string, runId: string, stage: Stage): boolean {
@@ -167,21 +192,10 @@ export class Engine extends EventEmitter {
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'research', 'running', 'fetching ticket', 0, ?, ?)`,
             )
             .run(id, env.id, ref.id, ref.source, ref.url, model ?? this.cfg.defaultModel, sessionId, accountId ?? env.default_account_id, ts, ts);
-        const taskDir = this.taskDir(id);
+        this.taskDir(id);
         const task = this.getTask(id)!;
         this.emit("task", task);
-
-        const account = this.pickAccount(task, STAGE_DEFS.research);
-        void fetchTicket(ref, this.cfg, account?.config_dir ?? this.cfg.mainConfigDir, env.path, taskDir)
-            .then((ticket) => {
-                this.db.prepare(`UPDATE tasks SET title = ?, ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(ticket.title, ticket.url, now(), id);
-                this.dispatch(id, "research");
-            })
-            .catch((e: unknown) => {
-                const reason = String((e as Error).message ?? e).slice(0, 200);
-                this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`ticket fetch failed (${reason}) — research will try the MCP itself`, now(), id);
-                this.dispatch(id, "research");
-            });
+        this.fetchTicketThenResearch(id);
         return task;
     }
 
@@ -196,9 +210,68 @@ export class Engine extends EventEmitter {
     retry(taskId: string): void {
         const task = this.getTask(taskId);
         if (!task) return;
+        // A blocked stage (auth, app down, bridge) has a valid-but-useless output file; it must run again, not be "completed from disk".
+        if (task.status === "blocked") {
+            this.rerun(taskId, task.stage);
+            return;
+        }
+        if (task.stage === "research" && !existsSync(join(this.taskDir(taskId), "ticket.json")) && !this.latestRun(taskId)) {
+            this.fetchTicketThenResearch(taskId);
+            return;
+        }
         const last = this.latestRun(taskId);
         if (last && last.stage === task.stage && this.completeFromDisk(taskId, last.id, task.stage)) return;
         this.dispatch(taskId, task.stage, { notes: "Previous attempt did not complete. Continue from the current state of the task directory." });
+    }
+
+    // Opens the app in the automation Chrome profile and waits for a human to log in there. The profile persists,
+    // so this is needed once per app session lifetime (core: 365 days; deal: the Auth0 tenant's session).
+    async qaLogin(taskId: string): Promise<"logged_in" | "timeout" | "failed"> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        const env = this.env(task.env_id);
+        const account = this.pickAccount(task, STAGE_DEFS.manual_qa);
+        if (!account) throw new Error("no account with Chrome connected");
+        const be = this.services.get(taskId, "be");
+        const fe = this.services.get(taskId, "fe");
+        const appUrl = (env.app_url ?? (fe ? "{{feUrl}}" : "https://localhost:3000")).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{beUrl\}\}/g, be?.url ?? "");
+        this.setTaskStatus(taskId, "blocked", "waiting for you to log in in the automation Chrome window");
+        const prompt =
+            `Load the browser tools with one ToolSearch (tabs_context_mcp, tabs_create_mcp, navigate, computer, get_page_text). Create a new tab and navigate to ${appUrl}/. ` +
+            `A human will log in in this window — you must NOT type any credentials. Bring the page to the front (Bash: osascript -e 'tell application "Google Chrome" to activate'). ` +
+            `Then poll: every 15 seconds (Bash sleep 15) read the page (get_page_text) and the tab URL (tabs_context_mcp); the login is done when the URL is on ${appUrl} and the page is NOT an Auth0/login/"Sign in"/welcome page (it shows the application UI). ` +
+            `Poll for up to 10 minutes. Reply with exactly one line: LOGGED_IN when done, TIMEOUT if 10 minutes passed, or FAILED <reason> if the browser tools do not work.`;
+        const run = startClaude({
+            prompt,
+            cwd: task.worktree_path ?? env.path,
+            configDir: account.config_dir,
+            chrome: true,
+            maxTurns: 80,
+            allowedTools: ["Bash"],
+        });
+        const outcome = await run.done;
+        const text = outcome.result?.result ?? "";
+        if (/LOGGED_IN/.test(text)) {
+            this.setTaskStatus(taskId, "idle", "logged in — re-running the blocked stage");
+            this.rerun(taskId, task.stage);
+            return "logged_in";
+        }
+        this.setTaskStatus(taskId, "blocked", /TIMEOUT/.test(text) ? "login window timed out — click Log in for QA again" : `login helper failed: ${text.slice(0, 120)}`);
+        return /TIMEOUT/.test(text) ? "timeout" : "failed";
+    }
+
+    rerun(taskId: string, stage: Stage): void {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        const def = STAGE_DEFS[stage];
+        if (!def.prompt) throw new Error(`${def.label} has nothing to run`);
+        if (def.outputFile) {
+            const p = join(this.taskDir(taskId), def.outputFile);
+            if (existsSync(p)) renameSync(p, `${p}.prev-${Date.now()}`);
+        }
+        this.setStage(taskId, stage);
+        this.dispatch(taskId, stage, { notes: "This stage is being re-run on request. Do the work again from scratch for this stage; earlier stages' outputs in the task directory are still valid." });
     }
 
     async deleteTask(taskId: string, removeWorktree: boolean): Promise<void> {

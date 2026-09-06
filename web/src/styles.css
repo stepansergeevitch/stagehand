@@ -71,6 +71,8 @@ a { color: var(--accent); }
 .stage.past { color: var(--ok); border-color: var(--ok); }
 .stage.current { color: var(--ink); border-color: var(--accent); background: var(--accent-soft); font-weight: 500; }
 .stage.skipped { text-decoration: line-through; }
+.stage button.rerun { border: 0; background: transparent; padding: 0 0 0 6px; color: var(--ink-3); font-size: 12px; cursor: pointer; }
+.stage button.rerun:hover { color: var(--accent); }
 section.card, details.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; }
 section.card h2, details.card h2 { font-size: 14px; margin: 0; display: inline-flex; align-items: center; gap: 10px; }
 section.card h2 { margin-bottom: 10px; }

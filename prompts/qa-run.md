@@ -5,7 +5,7 @@ You are a QA runner. Drive the running northspyre-deal app through the scenarios
 {{qaSetup}}
 1. Load the browser tools in ONE ToolSearch call: `select:mcp__claude-in-chrome__tabs_context_mcp,mcp__claude-in-chrome__tabs_create_mcp,mcp__claude-in-chrome__navigate,mcp__claude-in-chrome__read_page,mcp__claude-in-chrome__find,mcp__claude-in-chrome__form_input,mcp__claude-in-chrome__computer,mcp__claude-in-chrome__get_page_text,mcp__claude-in-chrome__read_network_requests`. If `tabs_context_mcp` errors with "extension is not connected", wait 5 seconds and call it once more before giving up (blocker: "browser extension not connected").
 2. Call `tabs_context_mcp` first, then `tabs_create_mcp` — do not reuse existing tabs.
-3. The app base URL is `{{appUrl}}`; every scenario URL below is relative to it. Navigate to `{{appUrl}}{{firstUrl}}`. If the page redirects to Auth0 (`*.auth0.com`) or a login form, the app needs a login that you must NOT perform: write the output file with every scenario `blocked`, `blockers: ["login required in the automation Chrome window"]`, and stop.
+3. The app base URL is `{{appUrl}}`; every scenario URL below is relative to it. Navigate to `{{appUrl}}{{firstUrl}}`. If the page redirects to Auth0 (`*.auth0.com`), or shows a splash/"Sign in"/welcome page instead of the application, wait 5 seconds and re-read once (silent auth may still be completing); if it is still a login page, the app needs a login that you must NOT perform: write the output file with every scenario `blocked`, `blockers: ["login required in the automation Chrome window"]`, and stop.
 4. If a page shows a connection error, retry once after 5 seconds, then record `blocked` with the error.
 
 ## Scenarios

@@ -37,6 +37,8 @@ const Section = ({ title, badge, open, children }: { title: string; badge?: Reac
     </details>
 );
 
+const RERUNNABLE: ReadonlySet<Stage> = new Set(["research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "pr_creation_review", "pr_red"]);
+
 const statusChip = (s: string) => {
     const cls = s === "waiting_user" || s === "blocked" ? "wait" : s === "running" ? "accent" : s === "failed" ? "bad" : s === "done" ? "ok" : s === "rate_limited" ? "warn" : "";
     return <span className={`chip ${cls}`}>{s.replace("_", " ")}</span>;
@@ -73,15 +75,29 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             <div className="actions">
                 {task.status === "running" && <button className="danger" onClick={() => onAction(() => api.stop(task.id))}>Stop</button>}
                 {(task.status === "failed" || task.status === "stopped" || task.status === "blocked") && (
-                    <button className="primary" onClick={() => onAction(() => api.retry(task.id))}>Retry stage</button>
+                    <button className="primary" onClick={() => onAction(() => api.retry(task.id))}>{task.status === "blocked" ? "Re-run stage" : "Retry stage"}</button>
                 )}
                 <button onClick={() => onAction(() => api.pin(task.id))}>{task.pinned ? "Unpin" : "Pin"}</button>
                 {terminal ? <button onClick={onCloseTerminal}>Close terminal</button> : <button disabled={task.status === "running"} onClick={onOpenTerminal}>Open terminal</button>}
             </div>
             <div className="timeline">
-                {STAGE_ORDER.map((s, i) => (
-                    <span key={s} className={`stage ${i < currentIdx ? "past" : i === currentIdx ? "current" : ""} ${skipped.has(s) ? "skipped" : ""}`}>{STAGE_LABEL[s]}</span>
-                ))}
+                {STAGE_ORDER.map((s, i) => {
+                    const runnable = RERUNNABLE.has(s) && i <= currentIdx && task.status !== "running" && !skipped.has(s);
+                    return (
+                        <span key={s} className={`stage ${i < currentIdx ? "past" : i === currentIdx ? "current" : ""} ${skipped.has(s) ? "skipped" : ""}`}>
+                            {STAGE_LABEL[s]}
+                            {runnable && (
+                                <button
+                                    className="rerun"
+                                    title={`Re-run ${STAGE_LABEL[s]} (archives its previous output)`}
+                                    onClick={() => { if (confirm(`Re-run ${STAGE_LABEL[s]}? Later stages will run again after it.`)) void onAction(() => api.rerun(task.id, s)); }}
+                                >
+                                    ↻
+                                </button>
+                            )}
+                        </span>
+                    );
+                })}
             </div>
 
             {task.worktree_path && (
@@ -90,7 +106,17 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 </Section>
             )}
 
-            {task.status === "blocked" && <div className="blocked-box"><b>Blocked.</b> {task.status_line}</div>}
+            {task.status === "blocked" && (
+                <div className="blocked-box">
+                    <b>Blocked.</b> {task.status_line}
+                    {/log ?in/i.test(task.status_line ?? "") && !/waiting for you/.test(task.status_line ?? "") && (
+                        <div className="actions" style={{ marginBottom: 0 }}>
+                            <button className="primary" onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA</button>
+                            <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Opens the app in the automation Chrome window; log in there once (the profile persists), and the stage re-runs by itself.</span>
+                        </div>
+                    )}
+                </div>
+            )}
             {task.status === "rate_limited" && <div className="blocked-box"><b>Rate limited.</b> {task.status_line}</div>}
 
             {waiting && (
@@ -187,6 +213,12 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
             {(qaBefore || qaAfter) && design && (
                 <Section title="QA evidence" open={task.stage === "manual_qa" || task.stage === "user_review"}>
+                    {task.status !== "running" && (
+                        <div className="actions" style={{ marginTop: 0 }}>
+                            <button onClick={() => onAction(() => api.rerun(task.id, "qa_baseline"))}>Re-run QA baseline</button>
+                            {currentIdx >= STAGE_ORDER.indexOf("manual_qa") && <button onClick={() => onAction(() => api.rerun(task.id, "manual_qa"))}>Re-run Manual QA</button>}
+                        </div>
+                    )}
                     <QaGallery taskId={task.id} design={design} before={qaBefore} after={qaAfter} />
                 </Section>
             )}

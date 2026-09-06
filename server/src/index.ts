@@ -14,7 +14,7 @@ const MODEL_OPTIONS = [
     { value: "opus", label: "Opus 5 (claude-opus-5)" },
     { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
 ];
-import { now, openDb, type AccountRow, type EnvRow } from "./db.js";
+import { now, openDb, STAGES, type AccountRow, type EnvRow, type Stage } from "./db.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
 import { loginCommand, probeChrome, readAuthStatus, scaffoldAccountDir } from "./claude/accounts.js";
@@ -302,6 +302,18 @@ app.post("/api/tasks/:id/stop", (c) => {
 
 app.post("/api/tasks/:id/retry", (c) => {
     engine.retry(c.req.param("id"));
+    return c.json(engine.getTask(c.req.param("id")));
+});
+
+app.post("/api/tasks/:id/qa-login", (c) => {
+    const id = c.req.param("id");
+    void engine.qaLogin(id).catch((e: unknown) => console.error("[qa-login]", String((e as Error).message ?? e)));
+    return c.json({ started: true });
+});
+
+app.post("/api/tasks/:id/rerun", async (c) => {
+    const body = json(z.object({ stage: z.enum(STAGES as [Stage, ...Stage[]]) }), await c.req.json());
+    engine.rerun(c.req.param("id"), body.stage);
     return c.json(engine.getTask(c.req.param("id")));
 });
 
