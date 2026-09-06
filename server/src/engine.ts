@@ -236,17 +236,20 @@ export class Engine extends EventEmitter {
         const fe = this.services.get(taskId, "fe");
         const appUrl = (env.app_url ?? (fe ? "{{feUrl}}" : "https://localhost:3000")).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{beUrl\}\}/g, be?.url ?? "");
         this.setTaskStatus(taskId, "blocked", "waiting for you to log in in the automation Chrome window");
+        // One turn to open the page, ONE Bash loop to wait (osascript reads the live tab titles/URLs) — not a model turn per poll.
         const prompt =
-            `Load the browser tools with one ToolSearch (tabs_context_mcp, tabs_create_mcp, navigate, computer, get_page_text). Create a new tab and navigate to ${appUrl}/. ` +
-            `A human will log in in this window — you must NOT type any credentials. Bring the page to the front (Bash: osascript -e 'tell application "Google Chrome" to activate'). ` +
-            `Then poll: every 15 seconds (Bash sleep 15) read the page (get_page_text) and the tab URL (tabs_context_mcp); the login is done when the URL is on ${appUrl} and the page is NOT an Auth0/login/"Sign in"/welcome page (it shows the application UI). ` +
-            `Poll for up to 10 minutes. Reply with exactly one line: LOGGED_IN when done, TIMEOUT if 10 minutes passed, or FAILED <reason> if the browser tools do not work.`;
+            `Load the browser tools with one ToolSearch (tabs_context_mcp, tabs_create_mcp, navigate). Create a new tab and navigate to ${appUrl}/. ` +
+            `A human will log in in this window — you must NOT type any credentials. Then run this single Bash command and wait for it (it brings Chrome to the front and polls the tab titles for up to 10 minutes):\n` +
+            `osascript -e 'tell application "Google Chrome" to activate'; for i in $(seq 1 60); do t=$(osascript -e 'tell application "Google Chrome" to get {title, URL} of active tab of front window' 2>/dev/null); ` +
+            `case "$t" in *auth0.com*|*"Welcome"*|*"Log in"*|*"Sign in"*|*"login"*) sleep 10;; *"${appUrl}"*) echo LOGGED_IN; exit 0;; *) sleep 10;; esac; done; echo TIMEOUT\n` +
+            `Reply with exactly one line: LOGGED_IN if the command printed LOGGED_IN, TIMEOUT if it printed TIMEOUT, or FAILED <reason> if the browser tools or the command did not work.`;
         const run = startClaude({
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: account.config_dir,
             chrome: true,
-            maxTurns: 80,
+            maxTurns: 12,
+            model: this.cfg.stageModels.helper ?? "sonnet",
             allowedTools: ["Bash"],
         });
         const outcome = await run.done;
@@ -478,7 +481,11 @@ export class Engine extends EventEmitter {
             configDir: account.config_dir,
             ...(fresh ? {} : priorRuns.n === 0 ? { sessionId: task.session_id, name: task.ticket_id } : { resume: task.session_id }),
             chrome: def.chrome === true,
-            ...(task.model ? { model: task.model } : {}),
+            ...((): { model?: string } => {
+                const stageModel = (this.cfg.stageModels as Record<string, string | null | undefined>)[def.stage];
+                const model = task.model ?? stageModel ?? this.cfg.defaultModel;
+                return model ? { model } : {};
+            })(),
             ...(def.maxTurns ? { maxTurns: def.maxTurns } : {}),
             addDirs: [this.taskDir(taskId)],
             eventLogPath,

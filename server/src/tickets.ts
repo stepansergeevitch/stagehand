@@ -124,7 +124,7 @@ const fetchViaClaude = (ref: TicketRef, configDir: string, cwd: string, outPath:
             `If the tool is unavailable or the ticket cannot be fetched, write {"error":"<reason>"} to the same path and reply DONE.`;
         const child = spawn(
             "claude",
-            ["-p", prompt, "--output-format", "json", "--permission-mode", "auto", "--max-turns", "16", "--no-session-persistence", "--no-chrome", "--add-dir", join(outPath, "..")],
+            ["-p", prompt, "--output-format", "json", "--permission-mode", "auto", "--max-turns", "16", "--no-session-persistence", "--no-chrome", "--model", "sonnet", "--add-dir", join(outPath, "..")],
             { cwd, env: claudeEnv(configDir), stdio: ["ignore", "pipe", "pipe"] },
         );
         let err = "";

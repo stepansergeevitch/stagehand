@@ -16,6 +16,19 @@ const ConfigSchema = z.object({
     linearApiKey: z.string().nullable().default(null),
     defaultTicketSource: z.enum(["clickup", "linear"]).default("clickup"),
     defaultModel: z.string().nullable().default(null),
+    // Per-stage model defaults (task.model overrides); cheaper models for reading-heavy or mechanical stages.
+    stageModels: z
+        .object({
+            research: z.string().nullable().default("sonnet"),
+            design_proposal: z.string().nullable().default(null),
+            qa_baseline: z.string().nullable().default("sonnet"),
+            implementation: z.string().nullable().default(null),
+            manual_qa: z.string().nullable().default("sonnet"),
+            pr_creation_review: z.string().nullable().default("sonnet"),
+            pr_red: z.string().nullable().default(null),
+            helper: z.string().nullable().default("sonnet"),
+        })
+        .default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -36,6 +49,7 @@ const defaults = (): Config => ({
     linearApiKey: null,
     defaultTicketSource: "clickup",
     defaultModel: null,
+    stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_red: null, helper: "sonnet" },
 });
 
 export const saveConfig = (cfg: Config): void => {

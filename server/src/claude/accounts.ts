@@ -91,7 +91,7 @@ const probeChromeOnce = async (configDir: string, cwd: string): Promise<boolean>
         "Reply with exactly CHROME_OK if it returned tab data, otherwise CHROME_FAIL.";
     try {
         const stdout = await runClaudeJson(
-            ["-p", prompt, "--chrome", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "6", "--no-session-persistence"],
+            ["-p", prompt, "--chrome", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "6", "--no-session-persistence", "--model", "sonnet"],
             cwd,
             configDir,
         );
