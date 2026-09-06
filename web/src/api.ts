@@ -51,7 +51,7 @@ export interface Design {
 }
 export interface QaPass {
     pass: "before" | "after";
-    scenarios: Array<{ id: string; outcome: "pass" | "fail" | "blocked"; observation: string; shots: Array<{ step: number; file: string }> }>;
+    scenarios: Array<{ id: string; outcome: "pass" | "fail" | "blocked" | "needs_human"; observation: string; shots: Array<{ step: number; file: string }> }>;
     blockers: string[];
 }
 export interface Impl {

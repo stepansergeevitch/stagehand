@@ -406,7 +406,8 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
             const b = before?.scenarios.find((x) => x.id === s.id);
             const a = after?.scenarios.find((x) => x.id === s.id);
             const shots = s.steps.map((st, i) => (st.shot ? i + 1 : null)).filter((x): x is number => x !== null);
-            const chip = (o?: string) => (o ? <span className={`chip ${o === "pass" ? "ok" : o === "fail" ? "bad" : "warn"}`}>{o}</span> : <span className="chip">—</span>);
+            const chip = (o?: string) =>
+                o ? <span className={`chip ${o === "pass" ? "ok" : o === "fail" ? "bad" : o === "needs_human" ? "wait" : "warn"}`}>{o === "needs_human" ? "check yourself" : o}</span> : <span className="chip">—</span>;
             // A "pass" whose own observation talks about errors deserves a second look (the runner may have rationalised an env problem away).
             const suspicious = (p?: { outcome: string; observation: string }) =>
                 p?.outcome === "pass" && /\berror|exception|unauthori[sz]ed|forbidden|denied|could not|couldn't|failed|4\d\d\b|5\d\d\b/i.test(p.observation);
@@ -418,6 +419,11 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                             {(suspicious(b) || suspicious(a)) && <span className="chip warn" title="The runner marked this pass but its observation mentions an error — check the screenshots">⚠ observation mentions an error</span>}
                         </h3>
                     </summary>
+                    {a?.outcome === "needs_human" && (
+                        <div className="review-box" style={{ marginTop: 8 }}>
+                            <b>Please verify this one yourself.</b> {a.observation}
+                        </div>
+                    )}
                     {b?.observation && <div style={{ fontSize: 13, color: "var(--ink-2)" }}>before: {b.observation}</div>}
                     {a?.observation && <div style={{ fontSize: 13, color: "var(--ink-2)" }}>after: {a.observation}</div>}
                     {shots.map((step) => {

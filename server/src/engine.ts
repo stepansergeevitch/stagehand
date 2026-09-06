@@ -734,8 +734,10 @@ export class Engine extends EventEmitter {
                 return;
             }
             const failed = qa.scenarios.filter((s) => s.outcome === "fail").length;
-            if (def.stage === "manual_qa" && failed > 0) {
-                this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`Manual QA · ${failed} scenario(s) failed`, now(), taskId);
+            const needsHuman = qa.scenarios.filter((s) => s.outcome === "needs_human").length;
+            if (def.stage === "manual_qa" && (failed > 0 || needsHuman > 0)) {
+                const parts = [failed > 0 ? `${failed} scenario(s) failed` : null, needsHuman > 0 ? `${needsHuman} need your own check` : null].filter(Boolean);
+                this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`Manual QA · ${parts.join(" · ")}`, now(), taskId);
             }
         }
         if (def.next) this.advance(taskId, def.next);
