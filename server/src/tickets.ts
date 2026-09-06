@@ -116,13 +116,15 @@ const fetchViaClaude = (ref: TicketRef, configDir: string, cwd: string, outPath:
     new Promise((resolve, reject) => {
         const tool = ref.source === "clickup" ? "mcp__clickup__clickup_get_task (task_id, include: [\"description\"]); if the task has a parent, fetch it too" : "the Linear MCP issue tool (e.g. mcp__linear__get_issue)";
         const prompt =
-            `Fetch ${ref.source} ticket ${ref.id} using ${tool}. Do nothing else. Then write ${outPath} as JSON with exactly this shape and reply DONE:\n` +
+            `Fetch ${ref.source} ticket ${ref.id} using ${tool}. Do nothing else. ` +
+            `MCP servers connect asynchronously: if ToolSearch does not list the tool yet, run \`sleep 10\` with Bash and search again — up to 4 times — before concluding it is unavailable. ` +
+            `Then write ${outPath} as JSON with exactly this shape and reply DONE:\n` +
             `{"source":"${ref.source}","id":"${ref.id}","url":<url or null>,"title":<string>,"status":<string or null>,"description":<full markdown description>,` +
             `"acceptanceCriteria":[<each acceptance-criteria bullet verbatim, [] if none>],"parent":<{"id","title","description"} or null>,"fetchedVia":"mcp"}\n` +
             `If the tool is unavailable or the ticket cannot be fetched, write {"error":"<reason>"} to the same path and reply DONE.`;
         const child = spawn(
             "claude",
-            ["-p", prompt, "--output-format", "json", "--permission-mode", "auto", "--max-turns", "8", "--no-session-persistence", "--no-chrome", "--add-dir", join(outPath, "..")],
+            ["-p", prompt, "--output-format", "json", "--permission-mode", "auto", "--max-turns", "16", "--no-session-persistence", "--no-chrome", "--add-dir", join(outPath, "..")],
             { cwd, env: claudeEnv(configDir), stdio: ["ignore", "pipe", "pipe"] },
         );
         let err = "";
