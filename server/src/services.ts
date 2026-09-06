@@ -12,13 +12,6 @@ const execFileAsync = promisify(execFile);
 
 const PORT_RANGE: Record<ServiceKind, [number, number]> = { be: [18000, 18999], fe: [13000, 13999] };
 
-const portFree = (port: number): Promise<boolean> =>
-    new Promise((resolve) => {
-        const srv = createServer();
-        srv.once("error", () => resolve(false));
-        srv.listen(port, "127.0.0.1", () => srv.close(() => resolve(true)));
-    });
-
 const portListening = async (port: number): Promise<boolean> => {
     try {
         const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
@@ -26,6 +19,16 @@ const portListening = async (port: number): Promise<boolean> => {
     } catch {
         return false;
     }
+};
+
+// Binding 127.0.0.1 alone is not enough: a server on `*`/`::` (e.g. next dev) still lets that bind succeed on macOS.
+const portFree = async (port: number): Promise<boolean> => {
+    if (await portListening(port)) return false;
+    return new Promise((resolve) => {
+        const srv = createServer();
+        srv.once("error", () => resolve(false));
+        srv.listen(port, "127.0.0.1", () => srv.close(() => resolve(true)));
+    });
 };
 
 const render = (template: string, vars: Record<string, string>): string => template.replace(/\{\{(\w+)\}\}/g, (_m, k: string) => vars[k] ?? "");
@@ -119,15 +122,26 @@ export class Services {
         return this.db.prepare(`SELECT * FROM services WHERE id = ?`).get(id) as ServiceRow;
     }
 
+    // Ports outside the ranges Stagehand allocates from were pinned by the env (and may be shared with the user's own servers).
+    private isFixedPort(port: number): boolean {
+        return !Object.values(PORT_RANGE).some(([lo, hi]) => port >= lo && port <= hi);
+    }
+
     async stop(taskId: string, kind: ServiceKind): Promise<void> {
         const row = this.get(taskId, kind);
         if (!row) return;
+        const hadSession = await sessionExists(row.tmux);
         await killSession(row.tmux);
-        try {
-            const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${row.port}`, "-sTCP:LISTEN", "-t"]);
-            for (const pid of stdout.trim().split("\n").filter(Boolean)) process.kill(Number(pid), "SIGTERM");
-        } catch {
-            /* nothing listening */
+        // Only sweep leftover listeners when this service actually owned the port: a process we started, on a port
+        // Stagehand chose. On a fixed port (3000/8000-style pins) the listener may be the user's own dev server.
+        if (hadSession && !this.isFixedPort(row.port)) {
+            await new Promise((r) => setTimeout(r, 1500));
+            try {
+                const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${row.port}`, "-sTCP:LISTEN", "-t"]);
+                for (const pid of stdout.trim().split("\n").filter(Boolean)) process.kill(Number(pid), "SIGTERM");
+            } catch {
+                /* nothing listening */
+            }
         }
         this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), row.id);
     }
