@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { loadConfig, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
+import { listMyTickets } from "./my-tickets.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -136,6 +137,17 @@ const badCheckouts = async (env: { path: string; base_branch: string; repos: str
 };
 
 app.get("/api/envs", (c) => c.json(envsAll()));
+
+// Tickets assigned to the configured user in this env's task system, for the new-task dropdown.
+app.get("/api/envs/:id/my-tickets", async (c) => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
+    if (!env) return c.json({ error: "not found" }, 404);
+    try {
+        return c.json({ source: env.ticket_source, tickets: await listMyTickets(env.ticket_source, cfg) });
+    } catch (e) {
+        return c.json({ source: env.ticket_source, tickets: [], error: String((e as Error).message ?? e) });
+    }
+});
 
 app.post("/api/envs", async (c) => {
     const body = json(

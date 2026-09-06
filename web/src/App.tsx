@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, STAGE_LABEL, STAGE_ORDER, type Account, type Env, type Settings, type Task, type TaskDetail } from "./api";
+import { api, STAGE_LABEL, STAGE_ORDER, type Account, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
 import { TaskDetailView } from "./TaskDetail";
 
 type Group = "Pinned" | "Needs input" | "Working" | "Idle" | "Failed" | "Completed" | "Stopped";
@@ -249,10 +249,23 @@ const Modal = ({ title, children, onClose, wide }: { title: string; children: Re
     </div>
 );
 
+// ClickUp and Linear both use 1 = urgent … 4 = low; 0/null = unset.
+const PRIORITY_MARK: Record<number, string> = { 0: "·", 1: "🔴", 2: "🟠", 3: "🟡", 4: "🔵" };
+
 const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; env: Env; settings: Settings | null; onSubmit: (ticket: string, accountId?: string, model?: string) => Promise<void> }) => {
     const [ticket, setTicket] = useState("");
     const [acc, setAcc] = useState(env.default_account_id ?? accounts.find((a) => a.logged_in)?.id ?? "");
     const [model, setModel] = useState(settings?.defaultModel ?? "");
+    const [mine, setMine] = useState<{ tickets: MyTicket[]; error?: string } | null>(null);
+    useEffect(() => {
+        setMine(null);
+        void api.myTickets(env.id).then(setMine).catch((e: Error) => setMine({ tickets: [], error: e.message }));
+    }, [env.id]);
+    const groups = useMemo(() => {
+        const m = new Map<string, MyTicket[]>();
+        for (const t of mine?.tickets ?? []) m.set(t.group, [...(m.get(t.group) ?? []), t]);
+        return [...m.entries()];
+    }, [mine]);
     const parsed = (() => {
         const s = ticket.trim();
         if (/app\.clickup\.com\/t\//.test(s)) return "ClickUp link";
@@ -262,6 +275,21 @@ const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; 
     })();
     return (
         <>
+            <label>
+                My tickets{" "}
+                {mine === null ? <span className="chip">loading…</span> : mine.error ? <span className="chip bad" title={mine.error}>unavailable</span> : <span className="chip">{mine.tickets.length}{env.ticket_source === "clickup" ? " in current sprint" : " assigned"}</span>}
+                <select value={mine?.tickets.some((t) => t.id === ticket) ? ticket : ""} onChange={(e) => setTicket(e.target.value)} disabled={!mine || mine.tickets.length === 0}>
+                    <option value="">— pick one (sorted by priority) —</option>
+                    {groups.map(([g, list]) => (
+                        <optgroup key={g} label={g}>
+                            {list.map((t) => (
+                                <option key={t.id} value={t.id}>{PRIORITY_MARK[t.priority ?? 0] ?? "·"} {t.id} · {t.title.length > 70 ? `${t.title.slice(0, 70)}…` : t.title} [{t.status}]</option>
+                            ))}
+                        </optgroup>
+                    ))}
+                </select>
+                {mine?.error && <span className="hint-line">{mine.error}</span>}
+            </label>
             <label>Ticket id or link <input autoFocus value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder="PRODUCT-8704 · https://app.clickup.com/t/… · https://linear.app/…/issue/…" /></label>
             {parsed && <span className={`chip ${parsed === "unrecognised" ? "bad" : "accent"}`}>{parsed}</span>}
             <label>Account

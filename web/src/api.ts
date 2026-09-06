@@ -53,6 +53,7 @@ export interface DiffLine { type: "context" | "add" | "del"; oldNo: number | nul
 export interface DiffHunk { header: string; lines: DiffLine[] }
 export interface DiffFile { path: string; status: "added" | "modified" | "deleted" | "renamed"; additions: number; deletions: number; hunks: DiffHunk[]; binary: boolean }
 export interface LineComment { path: string; line: number; side: "new" | "old"; snippet: string; text: string }
+export interface MyTicket { id: string; title: string; priority: number | null; priorityLabel: string; status: string; url: string | null; group: string }
 export interface Review { id: string; stage: Stage; verdict: string; route_to: string | null; notes: string | null; comments: string | null; created_at: string }
 export interface TaskDetail {
     task: Task; runs: Run[]; artifacts: Array<{ path: string; size: number }>;
@@ -101,6 +102,7 @@ export const api = {
     review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>
         post<Task>(`/api/tasks/${id}/review`, body),
     diff: (id: string) => fetch(`/api/tasks/${id}/diff`).then((r) => j<{ base: string; files: DiffFile[] }>(r)),
+    myTickets: (envId: string) => fetch(`/api/envs/${envId}/my-tickets`).then((r) => j<{ source: "clickup" | "linear"; tickets: MyTicket[]; error?: string }>(r)),
     stop: (id: string) => post<Task>(`/api/tasks/${id}/stop`),
     retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),
     rerun: (id: string, stage: Stage) => post<Task>(`/api/tasks/${id}/rerun`, { stage }),

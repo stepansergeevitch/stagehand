@@ -13,6 +13,8 @@ const ConfigSchema = z.object({
     preflightUtilizationLimit: z.number().default(0.9),
     clickupToken: z.string().nullable().default(null),
     clickupTeamId: z.string().nullable().default(null),
+    // Resolved once from GET /user with the token above and cached here.
+    clickupUserId: z.string().nullable().default(null),
     linearApiKey: z.string().nullable().default(null),
     defaultModel: z.string().nullable().default(null),
     // Per-stage model defaults (task.model overrides); cheaper models for reading-heavy or mechanical stages.
@@ -62,6 +64,7 @@ const defaults = (): Config => ({
     preflightUtilizationLimit: 0.9,
     clickupToken: null,
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
+    clickupUserId: null,
     linearApiKey: null,
     defaultModel: null,
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_red: null, helper: "sonnet" },
