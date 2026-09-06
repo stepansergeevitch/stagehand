@@ -272,7 +272,10 @@ export class Engine extends EventEmitter {
             `Load the browser tools with one ToolSearch (tabs_context_mcp, tabs_create_mcp, navigate). Create a new tab and navigate to ${appUrl}/. ` +
             `A human will log in in this window — you must NOT type any credentials. Then run this single Bash command and wait for it (it brings Chrome to the front and polls the tab titles for up to 10 minutes):\n` +
             `osascript -e 'tell application "Google Chrome" to activate'; for i in $(seq 1 60); do t=$(osascript -e 'tell application "Google Chrome" to get {title, URL} of active tab of front window' 2>/dev/null); ` +
-            `case "$t" in *auth0.com*|*"Welcome"*|*"Log in"*|*"Sign in"*|*"login"*) sleep 10;; *"${appUrl}"*) echo LOGGED_IN; exit 0;; *) sleep 10;; esac; done; echo TIMEOUT\n` +
+            // Origin-override hack (deal alt-port): Auth0 sends the browser back to the allowed origin; re-open the same query on the real app URL.
+            `case "$t" in *auth0.com*|*"Welcome"*|*"Log in"*|*"Sign in"*|*"login"*) sleep 10;; *"${appUrl}"*) echo LOGGED_IN; exit 0;; ` +
+            `*"localhost:3000/?code="*) u=$(osascript -e 'tell application "Google Chrome" to get URL of active tab of front window'); q=\${u#*localhost:3000/}; osascript -e "tell application \\"Google Chrome\\" to set URL of active tab of front window to \\"${appUrl}/$q\\""; sleep 8;; ` +
+            `*) sleep 10;; esac; done; echo TIMEOUT\n` +
             `Reply with exactly one line: LOGGED_IN if the command printed LOGGED_IN, TIMEOUT if it printed TIMEOUT, or FAILED <reason> if the browser tools or the command did not work.`;
         const run = startClaude({
             prompt,
