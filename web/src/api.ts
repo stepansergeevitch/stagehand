@@ -13,8 +13,10 @@ export interface Account {
 // "claude-opus-5" → "Opus 5" using the settings model list; unknown ids are shown as-is.
 export const modelLabel = (id: string | null | undefined, models: Array<{ value: string; label: string }> | undefined): string | null => {
     if (!id) return null;
-    const hit = models?.find((m) => m.label.includes(`(${id})`) || m.value === id);
-    return hit ? hit.label.replace(/\s*\(.*\)$/, "") : id;
+    const long = id.endsWith("[1m]"); // e.g. claude-opus-5[1m] = the 1M-context variant
+    const base = long ? id.slice(0, -4) : id;
+    const hit = models?.find((m) => m.label.includes(`(${base})`) || m.value === base);
+    return `${hit ? hit.label.replace(/\s*\(.*\)$/, "") : base}${long ? " · 1M context" : ""}`;
 };
 export interface Env {
     id: string; name: string; path: string; base_branch: string; default_account_id: string | null; app_url: string | null; qa_script: string | null;
