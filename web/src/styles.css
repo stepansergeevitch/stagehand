@@ -13,6 +13,7 @@
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; } /* no Safari font boosting when a block is wider than the viewport */
 body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 14px; line-height: 1.45; }
 button { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 5px 10px; cursor: pointer; }
 button:hover { border-color: var(--accent); }
@@ -99,7 +100,10 @@ details.card > .card-body { margin-top: 10px; }
 .markdown blockquote { margin: 6px 0; padding: 4px 12px; border-left: 3px solid var(--line); color: var(--ink-2); }
 .markdown hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13px; }
+.kv > * { min-width: 0; overflow-wrap: anywhere; } /* grid items otherwise refuse to shrink below a long path or commit line */
+.kv code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 .kv b { color: var(--ink-3); font-weight: 500; }
+code, .mono { overflow-wrap: anywhere; }
 ul.plain { margin: 4px 0; padding-left: 18px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -151,8 +155,15 @@ th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; lette
     .main:not(.has-selection) .detail { display: none; }
     .list { border-right: 0; }
     .row { padding: 10px 12px; }
-    .detail { padding: 12px 12px 60px; }
-    .detail h1 { font-size: 17px; }
+    .detail { padding: 12px 12px 60px; overflow-x: hidden; }
+    .detail h1 { font-size: 17px; overflow-wrap: anywhere; }
+    .detail .sub, .scenario h3 { overflow-wrap: anywhere; min-width: 0; }
+    .chip, .stage, button { white-space: nowrap; }
+    .svc { flex-wrap: wrap; row-gap: 4px; }
+    .svc a { overflow-wrap: anywhere; min-width: 0; }
+    section.card, details.card { min-width: 0; max-width: 100%; overflow: hidden; }
+    details.card > summary { flex-wrap: wrap; }
+    .markdown pre, .markdown code, .md { overflow-wrap: anywhere; }
     .back { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 10px; }
     .two { grid-template-columns: 1fr; }
     .kv { grid-template-columns: 1fr; gap: 2px 0; }
