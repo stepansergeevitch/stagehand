@@ -23,12 +23,27 @@ export const currentBranch = (path: string): Promise<string> => git(path, ["bran
 
 export const worktreePathFor = (envPath: string, branch: string): string => join(envPath, ".claude", "worktrees", branch);
 
-export const createWorktree = async (envPath: string, baseBranch: string, branch: string): Promise<string> => {
+export interface WorktreeResult {
+    path: string;
+    reused: boolean;
+    existingCommits: number;
+}
+
+export const createWorktree = async (envPath: string, baseBranch: string, branch: string): Promise<WorktreeResult> => {
     const path = worktreePathFor(envPath, branch);
-    if (existsSync(path)) return path;
     await git(envPath, ["fetch", "origin", baseBranch]);
+    if (existsSync(path)) {
+        const log = await git(path, ["log", "--oneline", `origin/${baseBranch}..HEAD`]);
+        return { path, reused: true, existingCommits: log ? log.split("\n").length : 0 };
+    }
+    const branchExists = (await git(envPath, ["branch", "--list", branch])) !== "";
+    if (branchExists) {
+        await git(envPath, ["worktree", "add", path, branch]);
+        const log = await git(path, ["log", "--oneline", `origin/${baseBranch}..HEAD`]);
+        return { path, reused: true, existingCommits: log ? log.split("\n").length : 0 };
+    }
     await git(envPath, ["worktree", "add", path, "-b", branch, `origin/${baseBranch}`]);
-    return path;
+    return { path, reused: false, existingCommits: 0 };
 };
 
 export const removeWorktree = async (envPath: string, path: string): Promise<void> => {

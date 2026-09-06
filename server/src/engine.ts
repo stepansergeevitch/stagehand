@@ -497,8 +497,11 @@ export class Engine extends EventEmitter {
             this.db.prepare(`UPDATE tasks SET title = ?, branch = ?, updated_at = ? WHERE id = ?`).run(r.title, r.branchName, now(), taskId);
             this.setTaskStatus(taskId, "running", "creating worktree");
             void createWorktree(env.path, env.base_branch, r.branchName)
-                .then((path) => {
-                    this.db.prepare(`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE id = ?`).run(path, now(), taskId);
+                .then((wt) => {
+                    this.db.prepare(`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE id = ?`).run(wt.path, now(), taskId);
+                    if (wt.reused) {
+                        this.setTaskStatus(taskId, "running", `reusing existing worktree/branch with ${wt.existingCommits} commit(s) ahead of ${env.base_branch}`);
+                    }
                     this.advance(taskId, "design_proposal");
                 })
                 .catch((e: unknown) => this.setTaskStatus(taskId, "failed", `worktree: ${String(e).slice(0, 160)}`));
