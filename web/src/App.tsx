@@ -62,7 +62,7 @@ export const App = () => {
     const [selected, setSelected] = useState<string | null>(null);
     const [detail, setDetail] = useState<TaskDetail | null>(null);
     const [feed, setFeed] = useState<Record<string, string[]>>({});
-    const [modal, setModal] = useState<"task" | "env" | "account" | null>(null);
+    const [modal, setModal] = useState<"task" | "env" | "env-edit" | "account" | null>(null);
     const [terminal, setTerminal] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
 
@@ -141,6 +141,7 @@ export const App = () => {
                     </select>
                 </label>
                 <button onClick={() => setModal("env")}>+ env</button>
+                {env && <button onClick={() => setModal("env-edit")}>edit env</button>}
                 <span className="spacer" />
                 {accounts.map((a) => <Gauge key={a.id} a={a} />)}
                 <button onClick={() => setModal("account")}>+ account</button>
@@ -174,6 +175,8 @@ export const App = () => {
                         <TaskDetailView
                             detail={detail}
                             accounts={accounts}
+                            env={envs.find((e) => e.id === detail.task.env_id)}
+                            onError={setError}
                             feed={feed[detail.task.id] ?? []}
                             terminal={terminal}
                             onAction={run}
@@ -194,6 +197,11 @@ export const App = () => {
             {modal === "env" && (
                 <Modal title="Add environment" onClose={() => setModal(null)}>
                     <EnvForm accounts={accounts} onSubmit={async (b) => { await run(() => api.addEnv(b)); setModal(null); }} />
+                </Modal>
+            )}
+            {modal === "env-edit" && env && (
+                <Modal title={`Edit ${env.name}`} onClose={() => setModal(null)} wide>
+                    <EnvEditForm env={env} accounts={accounts} onSubmit={async (b) => { await run(() => api.patchEnv(env.id, b)); setModal(null); }} />
                 </Modal>
             )}
             {modal === "account" && (
@@ -281,6 +289,66 @@ const EnvForm = ({
                 }
             >
                 Add
+            </button>
+        </>
+    );
+};
+
+const HELP = "Placeholders: {{port}} (this service's port), {{url}}, {{bePort}}, {{beUrl}} (FE only), {{worktree}}, {{taskDir}}. Runs from the task's worktree in tmux; output goes to <taskDir>/logs/<kind>.log.";
+
+const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[]; onSubmit: (b: Parameters<typeof api.patchEnv>[1]) => Promise<void> }) => {
+    const [f, setF] = useState({
+        name: env.name,
+        baseBranch: env.base_branch,
+        defaultAccountId: env.default_account_id ?? "",
+        appUrl: env.app_url ?? "",
+        beCommand: env.be_command ?? "",
+        feCommand: env.fe_command ?? "",
+        beUrlTemplate: env.be_url_template ?? "",
+        feUrlTemplate: env.fe_url_template ?? "",
+        bePort: env.be_port ? String(env.be_port) : "",
+        fePort: env.fe_port ? String(env.fe_port) : "",
+    });
+    const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
+    const nul = (s: string) => (s.trim() === "" ? null : s);
+    return (
+        <>
+            <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 12.5 }}>{HELP}</p>
+            <div className="two">
+                <label>Name <input value={f.name} onChange={set("name")} /></label>
+                <label>Base branch <input value={f.baseBranch} onChange={set("baseBranch")} /></label>
+                <label>Default account
+                    <select value={f.defaultAccountId} onChange={set("defaultAccountId")}>
+                        <option value="">— none —</option>
+                        {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                </label>
+                <label>QA app URL <input value={f.appUrl} onChange={set("appUrl")} placeholder="{{feUrl}} or {{beUrl}} or a fixed URL" /></label>
+                <label>BE fixed port <input value={f.bePort} onChange={set("bePort")} placeholder="empty = pick free" /></label>
+                <label>FE fixed port <input value={f.fePort} onChange={set("fePort")} placeholder="empty = pick free" /></label>
+                <label>BE URL template <input value={f.beUrlTemplate} onChange={set("beUrlTemplate")} placeholder="http://localhost:{{port}}" /></label>
+                <label>FE URL template <input value={f.feUrlTemplate} onChange={set("feUrlTemplate")} placeholder="http://localhost:{{port}}" /></label>
+            </div>
+            <label>BE command <textarea value={f.beCommand} onChange={set("beCommand")} placeholder="e.g. PORT={{port}} uv run manage run" /></label>
+            <label>FE command <textarea value={f.feCommand} onChange={set("feCommand")} placeholder="e.g. PORT={{port}} REACT_APP_API_BASE_URL={{beUrl}}/api npm start" /></label>
+            <button
+                className="primary"
+                onClick={() =>
+                    onSubmit({
+                        name: f.name,
+                        baseBranch: f.baseBranch,
+                        defaultAccountId: nul(f.defaultAccountId),
+                        appUrl: nul(f.appUrl),
+                        beCommand: nul(f.beCommand),
+                        feCommand: nul(f.feCommand),
+                        beUrlTemplate: nul(f.beUrlTemplate),
+                        feUrlTemplate: nul(f.feUrlTemplate),
+                        bePort: f.bePort.trim() ? Number(f.bePort) : null,
+                        fePort: f.fePort.trim() ? Number(f.fePort) : null,
+                    })
+                }
+            >
+                Save
             </button>
         </>
     );

@@ -2,10 +2,14 @@ import { useEffect, useState } from "react";
 import { api, STAGE_LABEL, STAGE_ORDER, type Account, type QaPass, type Stage, type TaskDetail } from "./api";
 import { Terminal } from "./Terminal";
 import { Markdown } from "./Markdown";
+import { ServicesPanel } from "./Services";
+import type { Env } from "./api";
 
 interface Props {
     detail: TaskDetail;
     accounts: Account[];
+    env: Env | undefined;
+    onError: (m: string) => void;
     feed: string[];
     terminal: string | null;
     onAction: (fn: () => Promise<unknown>) => Promise<void>;
@@ -38,7 +42,7 @@ const statusChip = (s: string) => {
     return <span className={`chip ${cls}`}>{s.replace("_", " ")}</span>;
 };
 
-export const TaskDetailView = ({ detail, accounts, feed, terminal, onAction, onOpenTerminal, onCloseTerminal }: Props) => {
+export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal, onAction, onOpenTerminal, onCloseTerminal }: Props) => {
     const { task, runs, design, impl, qaBefore, qaAfter, pr, research } = detail;
     const has = (p: string) => detail.artifacts.some((a) => a.path === p);
     const researchMd = useArtifactText(task.id, "research.md", has("research.md"));
@@ -77,6 +81,12 @@ export const TaskDetailView = ({ detail, accounts, feed, terminal, onAction, onO
                     <span key={s} className={`stage ${i < currentIdx ? "past" : i === currentIdx ? "current" : ""} ${skipped.has(s) ? "skipped" : ""}`}>{STAGE_LABEL[s]}</span>
                 ))}
             </div>
+
+            {task.worktree_path && (
+                <Section title="App" open={true}>
+                    <ServicesPanel taskId={task.id} env={env} onError={onError} />
+                </Section>
+            )}
 
             {task.status === "blocked" && <div className="blocked-box"><b>Blocked.</b> {task.status_line}</div>}
             {task.status === "rate_limited" && <div className="blocked-box"><b>Rate limited.</b> {task.status_line}</div>}

@@ -9,13 +9,15 @@ import { z } from "zod";
 import { loadConfig } from "./config.js";
 import { now, openDb, type AccountRow, type EnvRow } from "./db.js";
 import { Engine } from "./engine.js";
+import { Services } from "./services.js";
 import { loginCommand, probeChrome, readAuthStatus, scaffoldAccountDir } from "./claude/accounts.js";
 import { isGitRepo } from "./git.js";
 import { attach, ensureSession, killSession, loginSessionName, sessionExists, taskSessionName } from "./tmux.js";
 
 const cfg = loadConfig();
 const db = openDb(cfg.dataDir);
-const engine = new Engine(db, cfg);
+const services = new Services(db, cfg);
+const engine = new Engine(db, cfg, services);
 
 const app = new Hono();
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -123,12 +125,19 @@ app.post("/api/envs", async (c) => {
             defaultAccountId: z.string().optional(),
             appUrl: z.string().url().optional(),
             qaScript: z.string().optional(),
+            beCommand: z.string().optional(),
+            feCommand: z.string().optional(),
+            beUrlTemplate: z.string().optional(),
+            feUrlTemplate: z.string().optional(),
         }),
         await c.req.json(),
     );
     if (!existsSync(body.path) || !(await isGitRepo(body.path))) return c.json({ error: `${body.path} is not a git checkout` }, 400);
     const id = randomUUID();
-    db.prepare(`INSERT INTO envs (id, name, path, base_branch, default_account_id, app_url, qa_script, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    db.prepare(
+        `INSERT INTO envs (id, name, path, base_branch, default_account_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
         id,
         body.name,
         body.path,
@@ -136,6 +145,10 @@ app.post("/api/envs", async (c) => {
         body.defaultAccountId ?? null,
         body.appUrl ?? null,
         body.qaScript ?? null,
+        body.beCommand ?? null,
+        body.feCommand ?? null,
+        body.beUrlTemplate ?? null,
+        body.feUrlTemplate ?? null,
         now(),
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(id));
@@ -149,17 +162,32 @@ app.patch("/api/envs/:id", async (c) => {
             baseBranch: z.string().optional(),
             appUrl: z.string().url().nullable().optional(),
             qaScript: z.string().nullable().optional(),
+            beCommand: z.string().nullable().optional(),
+            feCommand: z.string().nullable().optional(),
+            beUrlTemplate: z.string().nullable().optional(),
+            feUrlTemplate: z.string().nullable().optional(),
+            bePort: z.number().int().positive().nullable().optional(),
+            fePort: z.number().int().positive().nullable().optional(),
         }),
         await c.req.json(),
     );
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
     if (!env) return c.json({ error: "not found" }, 404);
-    db.prepare(`UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ? WHERE id = ?`).run(
+    const pick = <T,>(next: T | undefined, cur: T): T => (next === undefined ? cur : next);
+    db.prepare(
+        `UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ? WHERE id = ?`,
+    ).run(
         body.name ?? env.name,
-        body.defaultAccountId === undefined ? env.default_account_id : body.defaultAccountId,
+        pick(body.defaultAccountId, env.default_account_id),
         body.baseBranch ?? env.base_branch,
-        body.appUrl === undefined ? env.app_url : body.appUrl,
-        body.qaScript === undefined ? env.qa_script : body.qaScript,
+        pick(body.appUrl, env.app_url),
+        pick(body.qaScript, env.qa_script),
+        pick(body.beCommand, env.be_command),
+        pick(body.feCommand, env.fe_command),
+        pick(body.beUrlTemplate, env.be_url_template),
+        pick(body.feUrlTemplate, env.fe_url_template),
+        pick(body.bePort, env.be_port),
+        pick(body.fePort, env.fe_port),
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));
@@ -235,9 +263,42 @@ app.post("/api/tasks/:id/account", async (c) => {
     return c.json(engine.getTask(c.req.param("id")));
 });
 
+// ---------- per-task BE / FE services ----------
+
+app.get("/api/tasks/:id/services", async (c) => c.json(await services.status(c.req.param("id"))));
+
+app.post("/api/tasks/:id/services/:kind/start", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    const kind = c.req.param("kind");
+    if (kind !== "be" && kind !== "fe") return c.json({ error: "kind must be be|fe" }, 400);
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
+    const row = await services.start(task, env, kind);
+    return c.json(row);
+});
+
+app.post("/api/tasks/:id/services/:kind/stop", async (c) => {
+    const kind = c.req.param("kind");
+    if (kind !== "be" && kind !== "fe") return c.json({ error: "kind must be be|fe" }, 400);
+    await services.stop(c.req.param("id"), kind);
+    return c.json(await services.status(c.req.param("id")));
+});
+
+app.get("/api/tasks/:id/services/:kind/log", (c) => {
+    const kind = c.req.param("kind");
+    if (kind !== "be" && kind !== "fe") return c.json({ error: "kind must be be|fe" }, 400);
+    const path = join(engine.taskDir(c.req.param("id")), "logs", `${kind}.log`);
+    if (!existsSync(path)) return new Response("", { headers: { "content-type": "text/plain" } });
+    const text = readFileSync(path, "utf8");
+    const lines = text.split("\n");
+    const tail = Number(c.req.query("lines") ?? "200");
+    return new Response(lines.slice(-tail).join("\n"), { headers: { "content-type": "text/plain; charset=utf-8" } });
+});
+
 app.delete("/api/tasks/:id", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
+    await services.stopAll(task.id);
     await killSession(taskSessionName(task.ticket_id));
     await engine.deleteTask(task.id, c.req.query("worktree") !== "keep");
     return c.json({ deleted: task.id });

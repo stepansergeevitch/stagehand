@@ -116,6 +116,10 @@ th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; lette
 .modal .box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; min-width: 420px; display: grid; gap: 10px; }
 .modal .box h2 { margin: 0 0 4px; font-size: 15px; }
 .empty { color: var(--ink-3); padding: 30px; text-align: center; }
+.svc { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.svc-kind { font-family: var(--mono); font-weight: 500; width: 28px; }
+.open-app { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.button-link { display: inline-block; background: var(--accent); color: #fff; padding: 6px 12px; border-radius: 4px; text-decoration: none; font-weight: 500; }
 .feed { font-family: var(--mono); font-size: 12px; max-height: 220px; overflow: auto; background: var(--code); border-radius: 4px; padding: 8px 10px; }
 .feed div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .feed .k { color: var(--ink-3); margin-right: 6px; }

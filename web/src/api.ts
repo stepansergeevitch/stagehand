@@ -9,7 +9,11 @@ export interface Account {
     logged_in: number; chrome_capable: number | null; failover_enabled: number; failover_threshold: number;
     limits: Array<{ window: string; utilization: number; resetsAt: number }>;
 }
-export interface Env { id: string; name: string; path: string; base_branch: string; default_account_id: string | null; app_url: string | null; qa_script: string | null }
+export interface Env {
+    id: string; name: string; path: string; base_branch: string; default_account_id: string | null; app_url: string | null; qa_script: string | null;
+    be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
+}
+export interface Service { id: string; task_id: string; kind: "be" | "fe"; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string; running: boolean }
 export interface Task {
     id: string; env_id: string; ticket_id: string; title: string | null; session_id: string; account_id: string | null;
     branch: string | null; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
@@ -61,7 +65,13 @@ export const api = {
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: { name: string; path: string; baseBranch: string; defaultAccountId?: string; appUrl?: string; qaScript?: string }) => post<Env>("/api/envs", body),
-    patchEnv: (id: string, body: { name?: string; baseBranch?: string; defaultAccountId?: string | null; appUrl?: string | null; qaScript?: string | null }) =>
+    patchEnv: (
+        id: string,
+        body: {
+            name?: string; baseBranch?: string; defaultAccountId?: string | null; appUrl?: string | null; qaScript?: string | null;
+            beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
+        },
+    ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
     tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
@@ -72,6 +82,10 @@ export const api = {
     pin: (id: string) => post<Task>(`/api/tasks/${id}/pin`),
     setAccount: (id: string, accountId: string) => post<Task>(`/api/tasks/${id}/account`, { accountId }),
     terminal: (id: string) => post<{ terminal: string }>(`/api/tasks/${id}/terminal`),
+    services: (id: string) => fetch(`/api/tasks/${id}/services`).then((r) => j<Service[]>(r)),
+    startService: (id: string, kind: "be" | "fe") => post<Service>(`/api/tasks/${id}/services/${kind}/start`),
+    stopService: (id: string, kind: "be" | "fe") => post<Service[]>(`/api/tasks/${id}/services/${kind}/stop`),
+    serviceLog: (id: string, kind: "be" | "fe", lines = 120) => fetch(`/api/tasks/${id}/services/${kind}/log?lines=${lines}`).then((r) => r.text()),
     artifactUrl: (id: string, rel: string) => `/api/tasks/${id}/artifacts/${rel}`,
 };
 

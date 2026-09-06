@@ -57,6 +57,12 @@ export interface EnvRow {
     default_account_id: string | null;
     app_url: string | null;
     qa_script: string | null;
+    be_command: string | null;
+    fe_command: string | null;
+    fe_url_template: string | null;
+    be_url_template: string | null;
+    be_port: number | null;
+    fe_port: number | null;
     created_at: string;
 }
 
@@ -181,6 +187,18 @@ CREATE TABLE IF NOT EXISTS pr_state (
     merged_at TEXT,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS services (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    kind TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    tmux TEXT NOT NULL,
+    command TEXT NOT NULL,
+    log_path TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    stopped_at TEXT
+);
 CREATE TABLE IF NOT EXISTS reviews (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id),
@@ -197,7 +215,27 @@ export type DB = Database.Database;
 const MIGRATIONS: Array<[string, string]> = [
     ["envs.app_url", `ALTER TABLE envs ADD COLUMN app_url TEXT`],
     ["envs.qa_script", `ALTER TABLE envs ADD COLUMN qa_script TEXT`],
+    ["envs.be_command", `ALTER TABLE envs ADD COLUMN be_command TEXT`],
+    ["envs.fe_command", `ALTER TABLE envs ADD COLUMN fe_command TEXT`],
+    ["envs.fe_url_template", `ALTER TABLE envs ADD COLUMN fe_url_template TEXT`],
+    ["envs.be_url_template", `ALTER TABLE envs ADD COLUMN be_url_template TEXT`],
+    ["envs.be_port", `ALTER TABLE envs ADD COLUMN be_port INTEGER`],
+    ["envs.fe_port", `ALTER TABLE envs ADD COLUMN fe_port INTEGER`],
 ];
+
+export type ServiceKind = "be" | "fe";
+export interface ServiceRow {
+    id: string;
+    task_id: string;
+    kind: ServiceKind;
+    port: number;
+    url: string;
+    tmux: string;
+    command: string;
+    log_path: string;
+    started_at: string;
+    stopped_at: string | null;
+}
 
 export const openDb = (dataDir: string): DB => {
     const db = new Database(join(dataDir, "stagehand.sqlite"));

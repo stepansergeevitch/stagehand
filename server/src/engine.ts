@@ -6,6 +6,7 @@ import type { Config } from "./config.js";
 import { now, type AccountRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { createWorktree, removeWorktreeAndBranch } from "./git.js";
+import type { Services } from "./services.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { DesignResult, QaPassResult, ResearchResult, type QaScenario } from "./stages/contracts.js";
 
@@ -19,6 +20,7 @@ interface DispatchOpts {
     notes?: string;
     attempt?: number;
     extraVars?: Record<string, string>;
+    servicesReady?: boolean;
 }
 
 const FIVE_HOUR = "five_hour";
@@ -30,6 +32,7 @@ export class Engine extends EventEmitter {
     constructor(
         private readonly db: DB,
         private readonly cfg: Config,
+        private readonly services: Services,
     ) {
         super();
     }
@@ -302,11 +305,17 @@ export class Engine extends EventEmitter {
                 def.stage === "qa_baseline"
                     ? " — the change is NOT implemented yet; expect asserts about new behaviour to fail. Record what the app does today."
                     : " — the change is implemented; every assert is expected to hold.";
-            vars["appUrl"] = env.app_url ?? "https://localhost:3000";
+            const be = this.services.get(task.id, "be");
+            const fe = this.services.get(task.id, "fe");
+            const appUrl = (env.app_url ?? (fe ? "{{feUrl}}" : "https://localhost:3000"))
+                .replace(/\{\{feUrl\}\}/g, fe?.url ?? "")
+                .replace(/\{\{beUrl\}\}/g, be?.url ?? "");
+            vars["appUrl"] = appUrl;
             vars["firstUrl"] = scenarios[0]?.url ?? "/";
+            const logs = [be ? `BE log: ${be.log_path}` : null, fe ? `FE log: ${fe.log_path}` : null].filter(Boolean).join("; ");
             vars["qaSetup"] = env.qa_script
                 ? `0. Bring the app up first by running this from the worktree with Bash: \`${env.qa_script}\`. If it exits non-zero, write every scenario as \`blocked\` with the script's last lines as the blocker and stop.`
-                : `0. The app is expected to be already running at ${env.app_url ?? "https://localhost:3000"}; if it is not reachable, write every scenario as \`blocked\` with blocker "app not running at <url>" and stop.`;
+                : `0. The app was started by the orchestrator from this task's worktree and should be serving at ${appUrl}${logs ? ` (${logs} — read them with Bash \`tail\` when something looks wrong)` : ""}; if it is not reachable, write every scenario as \`blocked\` with blocker "app not running at <url>" and stop.`;
             vars["scenarios"] = scenarios
                 .map(
                     (s) =>
@@ -323,6 +332,20 @@ export class Engine extends EventEmitter {
         if (!task) return;
         const def = STAGE_DEFS[stage];
         if (!def.prompt) return;
+        if (def.chrome && !opts.servicesReady) {
+            // Browser stages run against the task's own BE/FE when the env defines them; bring them up first, then dispatch for real.
+            const env = this.env(task.env_id);
+            if (env.be_command || env.fe_command) {
+                this.setTaskStatus(taskId, "running", `${def.label} · starting BE/FE from the worktree`);
+                void this.bringUpServices(task, env)
+                    .then((ok) => {
+                        if (ok) this.dispatch(taskId, stage, { ...opts, servicesReady: true });
+                        else this.setTaskStatus(taskId, "blocked", `${def.label} · BE/FE did not come up — check the service logs, then retry`);
+                    })
+                    .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · ${String((e as Error).message ?? e).slice(0, 160)}`));
+                return;
+            }
+        }
         const account = this.pickAccount(task, def);
         if (!account) {
             this.setTaskStatus(taskId, "blocked", def.chrome ? "no logged-in account with Chrome connected" : "no logged-in account");
@@ -383,6 +406,19 @@ export class Engine extends EventEmitter {
             this.active.delete(runId);
             this.onRunClosed(taskId, runId, def, account, outcome, opts);
         });
+    }
+
+    private async bringUpServices(task: TaskRow, env: EnvRow): Promise<boolean> {
+        if (env.be_command) {
+            const be = await this.services.start(task, env, "be");
+            if (!(await this.services.waitForPort(be.port, 180_000))) return false;
+        }
+        if (env.fe_command) {
+            const fe = await this.services.start(task, env, "fe");
+            if (!(await this.services.waitForPort(fe.port, 300_000))) return false;
+        }
+        this.emit("task", this.getTask(task.id));
+        return true;
     }
 
     private recordRateLimit(accountId: string, info: RateLimitInfo): void {
