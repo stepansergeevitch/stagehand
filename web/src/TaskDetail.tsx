@@ -277,7 +277,16 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
             {task.branch && task.worktree_path && (
                 <Section title="Code changes" open={task.stage === "user_review"} badge={pending.length > 0 ? <span className="chip wait">{pending.length} 💬</span> : undefined}>
-                    <DiffView taskId={task.id} refreshKey={task.updated_at} comments={comments} canComment={canComment} onChange={changeComment} />
+                    <DiffView
+                        taskId={task.id}
+                        refreshKey={task.updated_at}
+                        comments={comments}
+                        prior={detail.reviews
+                            .filter((r) => r.stage === "user_review" && r.verdict === "changes")
+                            .flatMap((r, i) => parseComments(r).map((c) => ({ ...c, round: i + 1 })))}
+                        canComment={canComment}
+                        onChange={changeComment}
+                    />
                 </Section>
             )}
 

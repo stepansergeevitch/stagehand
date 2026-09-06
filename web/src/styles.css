@@ -183,6 +183,13 @@ details.scenario > ol, details.scenario > div { margin-top: 6px; }
 .dl.has-comment { box-shadow: inset 3px 0 0 var(--wait); }
 .line-comment { margin: 2px 8px 6px 6.4em; padding: 6px 10px; border-left: 3px solid var(--wait); background: var(--wait-soft); border-radius: 4px; font-size: 13px; white-space: pre-wrap; cursor: pointer; }
 .line-comment.editing { cursor: default; }
+/* earlier review rounds: muted, not editable */
+.line-comment.prior { border-left-color: var(--ink-3); background: var(--code); color: var(--ink-2); cursor: default; }
+.line-comment.prior b { color: var(--ink-3); font-family: var(--mono); font-weight: 500; margin-right: 4px; }
+.dl.has-prior { box-shadow: inset 3px 0 0 var(--ink-3); }
+.outdated { padding: 6px 8px 0; }
+.outdated-item code.snippet { color: var(--ink-3); }
+.outdated-item .chip { margin: 0 4px; }
 .line-comment textarea { min-height: 70px; margin-bottom: 6px; }
 .line-comment .actions { margin: 0; }
 .review-history { margin: 10px 0 0; font-size: 13px; }
