@@ -632,6 +632,15 @@ export class Engine extends EventEmitter {
             return;
         }
         if (!outcome.result || outcome.result.is_error || (outcome.exitCode ?? 1) !== 0) {
+            // A run that wrote its output file and then died (typically max turns before the final "DONE") still did the work.
+            if (def.contract && def.outputFile && this.outputWrittenDuringRun(taskId, def.outputFile, runId)) {
+                const validation = this.validateOutput(taskId, def);
+                if (validation.ok) {
+                    finish("done", `ended with ${outcome.result?.subtype ?? `exit ${outcome.exitCode}`} after writing the output`, JSON.stringify(validation.data));
+                    this.afterStage(taskId, def, validation.data);
+                    return;
+                }
+            }
             const err = outcome.result?.result ?? outcome.stderr.trim().split("\n").slice(-3).join(" ") ?? `exit ${outcome.exitCode}`;
             finish("failed", err);
             this.setTaskStatus(taskId, "failed", `${def.label} · ${err.slice(0, 160)}`);
@@ -663,6 +672,14 @@ export class Engine extends EventEmitter {
         finish("done");
         const next = def.next;
         if (next) this.advance(taskId, next);
+    }
+
+    // True when the stage's output file was (re)written after this run started — a stale file from an earlier pass doesn't count.
+    private outputWrittenDuringRun(taskId: string, outputFile: string, runId: string): boolean {
+        const run = this.db.prepare(`SELECT started_at FROM runs WHERE id = ?`).get(runId) as { started_at: string | null } | undefined;
+        const path = join(this.taskDir(taskId), outputFile);
+        if (!run?.started_at || !existsSync(path)) return false;
+        return statSync(path).mtimeMs >= new Date(run.started_at).getTime() - 1000;
     }
 
     private validateOutput(taskId: string, def: StageDef): { ok: true; data: unknown } | { ok: false; error: string } {
