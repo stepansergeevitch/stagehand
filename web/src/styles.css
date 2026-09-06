@@ -114,8 +114,21 @@ th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; lette
 .gallery figure { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 6px; }
 .gallery figure img { width: 100%; display: block; border-radius: 2px; }
 .gallery figcaption { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-top: 4px; }
+/* collapsible sub-headings inside cards, and folded markdown sections */
+details.sub > summary, details.scenario > summary, .markdown details.md-section > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; user-select: none; }
+details.sub > summary::-webkit-details-marker, details.scenario > summary::-webkit-details-marker, .markdown details.md-section > summary::-webkit-details-marker { display: none; }
+details.sub > summary::before, details.scenario > summary::before, .markdown details.md-section > summary::before { content: "▸"; color: var(--ink-3); font-size: 12px; width: 12px; flex: none; }
+details.sub[open] > summary::before, details.scenario[open] > summary::before, .markdown details.md-section[open] > summary::before { content: "▾"; }
+details.sub > summary h3, .markdown details.md-section > summary > * { margin: 0; flex: 1; min-width: 0; }
+details.sub { margin: 12px 0 6px; }
+details.sub > .sub-body { margin-top: 6px; }
+.markdown details.md-section { margin: 4px 0; }
+.markdown details.md-section > summary > h2 { border-top: 0; padding-top: 6px; }
+.markdown details.md-section > .md-section-body { padding-left: 14px; border-left: 2px solid var(--line); margin: 4px 0 8px 5px; }
 .scenario { border-top: 1px solid var(--line); padding: 10px 0; }
 .scenario h3 { margin: 0 0 6px; display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; }
+details.scenario > summary h3 { margin: 0; flex: 1; }
+details.scenario > ol, details.scenario > div { margin-top: 6px; }
 .scenario h3 code { overflow-wrap: anywhere; min-width: 0; }
 .chip.persona { white-space: normal; max-width: 100%; line-height: 1.4; }
 .review-box { border-left: 3px solid var(--wait); padding: 10px 14px; background: var(--wait-soft); border-radius: 4px; margin-bottom: 14px; }

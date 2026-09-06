@@ -70,6 +70,14 @@ const Section = ({ title, badge, open, children }: { title: string; badge?: Reac
     </details>
 );
 
+// A collapsible sub-heading inside a card (open by default).
+const Sub = ({ title, open = true, children }: { title: React.ReactNode; open?: boolean; children: React.ReactNode }) => (
+    <details className="sub" open={open}>
+        <summary><h3>{title}</h3></summary>
+        <div className="sub-body">{children}</div>
+    </details>
+);
+
 const RERUNNABLE: ReadonlySet<Stage> = new Set(["research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "pr_creation_review", "pr_red"]);
 
 const statusChip = (s: string) => {
@@ -245,10 +253,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         {detail.ticket.parent && <><b>Parent</b><span>{detail.ticket.parent.id} — {detail.ticket.parent.title}</span></>}
                     </div>
                     {detail.ticket.acceptanceCriteria.length > 0 && (
-                        <>
-                            <h3>Acceptance criteria</h3>
+                        <Sub title="Acceptance criteria">
                             <ul className="plain">{detail.ticket.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul>
-                        </>
+                        </Sub>
                     )}
                     <details><summary>Description</summary><Markdown source={detail.ticket.description} /></details>
                 </Section>
@@ -264,17 +271,22 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {design && (
                 <Section title="Design proposal" open={task.stage === "design_proposal"} badge={<span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>}>
                     {designMd && <details open={task.stage === "design_proposal"}><summary>design.md</summary><Markdown source={designMd} /></details>}
-                    <h3>Plan by layer</h3>
-                    <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
-                    <h3>Test plan</h3>
-                    <table><tbody>{design.testPlan.map((t) => <tr key={t.file}><td><code>{t.file}</code></td><td><ul className="plain">{t.cases.map((c, i) => <li key={i}><code>{c}</code></li>)}</ul></td></tr>)}</tbody></table>
-                    <h3>QA scenarios {design.qa.length === 0 && <span className="chip">none — {design.qaSkippedReason ?? "no reason given"}</span>}</h3>
-                    {design.qa.map((s) => (
-                        <div className="scenario" key={s.id}>
-                            <h3><span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
-                            <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
-                        </div>
-                    ))}
+                    <Sub title="Plan by layer">
+                        <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
+                    </Sub>
+                    <Sub title="Test plan">
+                        <table><tbody>{design.testPlan.map((t) => <tr key={t.file}><td><code>{t.file}</code></td><td><ul className="plain">{t.cases.map((c, i) => <li key={i}><code>{c}</code></li>)}</ul></td></tr>)}</tbody></table>
+                    </Sub>
+                    <Sub title={<>QA scenarios {design.qa.length === 0 && <span className="chip">none — {design.qaSkippedReason ?? "no reason given"}</span>}</>}>
+                        {design.qa.map((s) => (
+                            <details className="scenario" key={s.id} open>
+                                <summary>
+                                    <h3><span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
+                                </summary>
+                                <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
+                            </details>
+                        ))}
+                    </Sub>
                 </Section>
             )}
 
@@ -336,8 +348,10 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
             const shots = s.steps.map((st, i) => (st.shot ? i + 1 : null)).filter((x): x is number => x !== null);
             const chip = (o?: string) => (o ? <span className={`chip ${o === "pass" ? "ok" : o === "fail" ? "bad" : "warn"}`}>{o}</span> : <span className="chip">—</span>);
             return (
-                <div className="scenario" key={s.id}>
-                    <h3><span className="chip accent">{s.id}</span>{s.title} <span>before {chip(b?.outcome)}</span> <span>after {chip(a?.outcome)}</span></h3>
+                <details className="scenario" key={s.id} open>
+                    <summary>
+                        <h3><span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}</span> <span>after {chip(a?.outcome)}</span></h3>
+                    </summary>
                     {b?.observation && <div style={{ fontSize: 13, color: "var(--ink-2)" }}>before: {b.observation}</div>}
                     {a?.observation && <div style={{ fontSize: 13, color: "var(--ink-2)" }}>after: {a.observation}</div>}
                     {shots.map((step) => {
@@ -350,7 +364,7 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                             </div>
                         );
                     })}
-                </div>
+                </details>
             );
         })}
     </>
