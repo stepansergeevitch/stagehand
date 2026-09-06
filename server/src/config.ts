@@ -28,6 +28,21 @@ const ConfigSchema = z.object({
             helper: z.string().nullable().default("sonnet"),
         })
         .default({}),
+    // Second listener for access from outside the LAN: HTTPS + Basic auth (then a signed cookie), serving the built web UI too.
+    publicAccess: z
+        .object({
+            enabled: z.boolean().default(false),
+            host: z.string().default("0.0.0.0"),
+            port: z.number().int().default(4748),
+            certPath: z.string().nullable().default(null),
+            keyPath: z.string().nullable().default(null),
+            user: z.string().nullable().default(null),
+            // scrypt$<saltHex>$<hashHex>
+            passwordHash: z.string().nullable().default(null),
+            sessionSecret: z.string().nullable().default(null),
+            sessionDays: z.number().int().default(30),
+        })
+        .default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -48,6 +63,7 @@ const defaults = (): Config => ({
     linearApiKey: null,
     defaultModel: null,
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_red: null, helper: "sonnet" },
+    publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30 },
 });
 
 export const saveConfig = (cfg: Config): void => {

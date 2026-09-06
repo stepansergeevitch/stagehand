@@ -1,12 +1,15 @@
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { existsSync, readFileSync } from "node:fs";
+import { createServer as createHttpsServer } from "node:https";
 import { join, normalize } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { loadConfig, saveConfig } from "./config.js";
+import { isPublicRequest, publicAuth } from "./public-access.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -28,6 +31,8 @@ const engine = new Engine(db, cfg, services);
 
 const app = new Hono();
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+// Guard first: requests on the public listener need a login; the loopback listener stays open for local dev.
+app.use("*", publicAuth(cfg));
 app.use("/api/*", cors());
 
 const json = <T>(schema: z.ZodType<T>, body: unknown): T => {
@@ -484,12 +489,39 @@ app.get(
     }),
 );
 
-app.get("/api/health", (c) => c.json({ ok: true, config: { ...cfg, dataDir: cfg.dataDir } }));
+app.get("/api/health", (c) => c.json({ ok: true, config: { ...cfg, publicAccess: { ...cfg.publicAccess, passwordHash: null, sessionSecret: null } } }));
 
-const server = serve({ fetch: app.fetch, port: cfg.port }, (info) => {
-    console.log(`stagehand server on http://localhost:${info.port}`);
+// The built web UI is served on the public listener only; locally the Vite dev server (5173) proxies to this process.
+const WEB_DIST = "../web/dist";
+const staticFiles = serveStatic({ root: WEB_DIST });
+const spaIndex = serveStatic({ path: `${WEB_DIST}/index.html` });
+app.get("*", (c, next) => (isPublicRequest(c, cfg.publicAccess.port) ? staticFiles(c, next) : next()));
+app.get("*", (c, next) => (isPublicRequest(c, cfg.publicAccess.port) && !c.req.path.startsWith("/api/") ? spaIndex(c, next) : next()));
+
+// Second listener, HTTPS, reachable from outside the LAN; every request on it passes the publicAuth guard above.
+const startPublicListener = (): void => {
+    const pa = cfg.publicAccess;
+    if (!pa.enabled) return;
+    if (!pa.certPath || !pa.keyPath) throw new Error("publicAccess.enabled needs certPath and keyPath");
+    if (!existsSync(join(process.cwd(), WEB_DIST, "index.html"))) console.warn(`[stagehand] ${WEB_DIST}/index.html missing — run \`npx vite build\` in web/ for the public UI`);
+    const publicServer = serve(
+        {
+            fetch: app.fetch,
+            port: pa.port,
+            hostname: pa.host,
+            createServer: createHttpsServer,
+            serverOptions: { key: readFileSync(pa.keyPath), cert: readFileSync(pa.certPath) },
+        },
+        (info) => console.log(`stagehand public listener on https://${info.address}:${info.port} (user ${pa.user ?? "unset"})`),
+    );
+    injectWebSocket(publicServer);
+};
+
+const server = serve({ fetch: app.fetch, port: cfg.port, hostname: "127.0.0.1" }, (info) => {
+    console.log(`stagehand server on http://127.0.0.1:${info.port}`);
 });
 injectWebSocket(server);
+startPublicListener();
 engine.startScheduler();
 
 process.on("SIGINT", () => {
