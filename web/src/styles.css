@@ -71,9 +71,15 @@ a { color: var(--accent); }
 .stage.past { color: var(--ok); border-color: var(--ok); }
 .stage.current { color: var(--ink); border-color: var(--accent); background: var(--accent-soft); font-weight: 500; }
 .stage.skipped { text-decoration: line-through; }
-section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; }
-section.card h2 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 10px; }
-section.card h3 { font-size: 13px; margin: 12px 0 6px; }
+section.card, details.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; }
+section.card h2, details.card h2 { font-size: 14px; margin: 0; display: inline-flex; align-items: center; gap: 10px; }
+section.card h2 { margin-bottom: 10px; }
+section.card h3, details.card h3 { font-size: 13px; margin: 12px 0 6px; }
+details.card > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; user-select: none; }
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary::before { content: "▸"; color: var(--ink-3); font-size: 12px; width: 12px; }
+details.card[open] > summary::before { content: "▾"; }
+details.card > .card-body { margin-top: 10px; }
 .md { white-space: pre-wrap; font-size: 13px; max-width: 80ch; }
 .markdown { font-size: 13.5px; max-width: 88ch; line-height: 1.5; }
 .markdown h1 { font-size: 17px; margin: 14px 0 8px; }

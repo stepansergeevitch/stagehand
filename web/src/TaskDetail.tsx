@@ -22,6 +22,17 @@ const useArtifactText = (taskId: string, rel: string, exists: boolean): string |
     return text;
 };
 
+const Section = ({ title, badge, open, children }: { title: string; badge?: React.ReactNode; open: boolean; children: React.ReactNode }) => (
+    <details className="card" open={open}>
+        <summary>
+            <h2>
+                {title} {badge}
+            </h2>
+        </summary>
+        <div className="card-body">{children}</div>
+    </details>
+);
+
 const statusChip = (s: string) => {
     const cls = s === "waiting_user" || s === "blocked" ? "wait" : s === "running" ? "accent" : s === "failed" ? "bad" : s === "done" ? "ok" : s === "rate_limited" ? "warn" : "";
     return <span className={`chip ${cls}`}>{s.replace("_", " ")}</span>;
@@ -109,17 +120,15 @@ export const TaskDetailView = ({ detail, accounts, feed, terminal, onAction, onO
             )}
 
             {research && (
-                <section className="card">
-                    <h2>Research <span className={`chip ${research.classification === "bug" ? "bad" : "accent"}`}>{research.classification}</span></h2>
+                <Section title="Research" open={task.stage === "research" || (task.stage === "design_proposal" && !design)} badge={<span className={`chip ${research.classification === "bug" ? "bad" : "accent"}`}>{research.classification}</span>}>
                     <div className="kv"><b>Summary</b><span>{research.summary}</span><b>Branch</b><code>{research.branchName}</code><b>Areas</b><span>{research.affectedAreas.join(", ")}</span></div>
                     {researchMd && <details><summary>research.md</summary><Markdown source={researchMd} /></details>}
-                </section>
+                </Section>
             )}
 
             {design && (
-                <section className="card">
-                    <h2>Design proposal <span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span></h2>
-                    {designMd && <Markdown source={designMd} />}
+                <Section title="Design proposal" open={task.stage === "design_proposal"} badge={<span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>}>
+                    {designMd && <details open={task.stage === "design_proposal"}><summary>design.md</summary><Markdown source={designMd} /></details>}
                     <h3>Plan by layer</h3>
                     <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
                     <h3>Test plan</h3>
@@ -131,12 +140,11 @@ export const TaskDetailView = ({ detail, accounts, feed, terminal, onAction, onO
                             <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
                         </div>
                     ))}
-                </section>
+                </Section>
             )}
 
             {impl && (
-                <section className="card">
-                    <h2>Implementation <span className={`chip ${impl.gates.tests && impl.gates.typecheck ? "ok" : "bad"}`}>tests {impl.gates.tests ? "✓" : "✗"} · typecheck {impl.gates.typecheck ? "✓" : "✗"}</span></h2>
+                <Section title="Implementation" open={task.stage === "implementation" || task.stage === "user_review"} badge={<span className={`chip ${impl.gates.tests && impl.gates.typecheck ? "ok" : "bad"}`}>tests {impl.gates.tests ? "✓" : "✗"} · typecheck {impl.gates.typecheck ? "✓" : "✗"}</span>}>
                     <div className="kv">
                         <b>Coverage (new lines)</b><span>{impl.coverageNewLines ?? "—"}%</span>
                         <b>Backend</b><span>{impl.tests.backend ?? "—"}</span>
@@ -145,21 +153,24 @@ export const TaskDetailView = ({ detail, accounts, feed, terminal, onAction, onO
                         <b>Commits</b><span>{impl.commits.map((c) => <div key={c}><code>{c}</code></div>)}</span>
                     </div>
                     {impl.notes && <Markdown source={impl.notes} />}
-                </section>
+                </Section>
             )}
 
-            {(qaBefore || qaAfter) && design && <QaGallery taskId={task.id} design={design} before={qaBefore} after={qaAfter} />}
+            {(qaBefore || qaAfter) && design && (
+                <Section title="QA evidence" open={task.stage === "manual_qa" || task.stage === "user_review"}>
+                    <QaGallery taskId={task.id} design={design} before={qaBefore} after={qaAfter} />
+                </Section>
+            )}
 
             {pr && (
-                <section className="card">
-                    <h2>PR draft</h2>
+                <Section title="PR draft" open={task.stage === "pr_creation_review"}>
                     <div className="kv"><b>Title</b><span>{pr.title}</span><b>Base</b><code>{pr.base}</code></div>
                     <Markdown source={pr.body} />
-                </section>
+                </Section>
             )}
 
-            <section className="card runs">
-                <h2>Runs</h2>
+            <Section title="Runs" open={false} badge={<span className="chip">{runs.length}</span>}>
+                <div className="runs">
                 {runs.length === 0 && <div className="empty">none yet</div>}
                 {[...runs].reverse().map((r) => (
                     <div className="run" key={r.id}>
@@ -169,14 +180,14 @@ export const TaskDetailView = ({ detail, accounts, feed, terminal, onAction, onO
                         <span className="mono" style={{ color: "var(--ink-3)" }}>{r.num_turns ? `${r.num_turns} turns` : ""}{r.cost_usd ? ` · $${r.cost_usd.toFixed(2)}` : ""}</span>
                     </div>
                 ))}
-            </section>
+                </div>
+            </Section>
         </>
     );
 };
 
 const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: NonNullable<TaskDetail["design"]>; before: QaPass | null; after: QaPass | null }) => (
-    <section className="card">
-        <h2>QA evidence</h2>
+    <>
         {[before, after].map((p) => p?.blockers.length ? <div key={p.pass} className="blocked-box">{p.pass}: {p.blockers.join(" · ")}</div> : null)}
         {design.qa.map((s) => {
             const b = before?.scenarios.find((x) => x.id === s.id);
@@ -201,5 +212,5 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                 </div>
             );
         })}
-    </section>
+    </>
 );
