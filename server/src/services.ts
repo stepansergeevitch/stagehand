@@ -102,7 +102,8 @@ export class Services {
         const logPath = join(logDir, `${kind}.log`);
         const tmux = serviceSessionName(task.ticket_id, kind);
         const cwd = task.worktree_path ?? env.path;
-        const wrapped = `cd ${JSON.stringify(cwd)}; echo "[stagehand] ${kind.toUpperCase()} on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ${command} 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind.toUpperCase()} exited ($?)" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
+        // The command may be an && chain; run it in a subshell so its whole stdout+stderr reaches the log.
+        const wrapped = `cd ${JSON.stringify(cwd)}; echo "[stagehand] ${kind.toUpperCase()} on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command} ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind.toUpperCase()} exited (\${PIPESTATUS[0]:-$?})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
         await ensureSession(tmux, cwd, wrapped, { PORT: String(port), STAGEHAND_PORT: String(port), STAGEHAND_BE_URL: be?.url ?? "", STAGEHAND_BE_PORT: be ? String(be.port) : "" });
 
         const id = randomUUID();
