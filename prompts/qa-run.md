@@ -19,6 +19,8 @@ You are a QA runner. Drive the running northspyre-deal app through the scenarios
 - For every step marked **shot**, take a screenshot with `mcp__claude-in-chrome__computer` (`action: "screenshot"`, `save_to_disk: true`) of the state that carries the assertion, then move the saved file with Bash to `{{taskDir}}/qa/{{pass}}/<scenario id>-<step number>.jpg` (create the directory first). A step marked shot without a saved file is a failure.
 - Pro forma tables: click the cell container (not the label), type into the activated spinbutton, press Tab to commit, wait 2–3 s, re-read. Tables are huge — use `find` for the target row, not full-page reads.
 - Record the outcome per scenario: `pass` when every assert held, `fail` when an assert did not hold (say exactly what was observed instead), `blocked` when the path could not be exercised.
+- **`pass` means you SAW every assert hold.** An assert you could not observe is never a pass: if the page showed an error (an XML/JSON error document, a 4xx/5xx, an "Issue …" toast, a blank screen), record `fail`, or `blocked` when the cause is clearly the environment rather than the app — and say so in `blockers`. Do not upgrade to `pass` because the same error appears in the other pass, because the API call returned 200, or because the failure "looks unrelated to the change"; the reviewer decides that, not you.
+- Every screenshot must show what the assert describes. A screenshot of an error page next to `pass` is a contradiction the reviewer will catch.
 
 ## Output contract
 
