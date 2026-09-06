@@ -271,7 +271,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     <h3>QA scenarios {design.qa.length === 0 && <span className="chip">none — {design.qaSkippedReason ?? "no reason given"}</span>}</h3>
                     {design.qa.map((s) => (
                         <div className="scenario" key={s.id}>
-                            <h3><span className="chip accent">{s.id}</span>{s.title} <code>{s.url}</code> <span className="chip">{s.persona}</span></h3>
+                            <h3><span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
                             <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
                         </div>
                     ))}

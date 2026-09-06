@@ -115,7 +115,9 @@ th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; lette
 .gallery figure img { width: 100%; display: block; border-radius: 2px; }
 .gallery figcaption { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-top: 4px; }
 .scenario { border-top: 1px solid var(--line); padding: 10px 0; }
-.scenario h3 { margin: 0 0 6px; display: flex; gap: 8px; align-items: center; }
+.scenario h3 { margin: 0 0 6px; display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; }
+.scenario h3 code { overflow-wrap: anywhere; min-width: 0; }
+.chip.persona { white-space: normal; max-width: 100%; line-height: 1.4; }
 .review-box { border-left: 3px solid var(--wait); padding: 10px 14px; background: var(--wait-soft); border-radius: 4px; margin-bottom: 14px; }
 .review-box .actions { margin: 8px 0 0; }
 .blocked-box { border-left: 3px solid var(--warn); padding: 10px 14px; background: var(--warn-soft); border-radius: 4px; margin-bottom: 14px; }
@@ -197,7 +199,7 @@ th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; lette
     .row { padding: 10px 12px; }
     .detail { padding: 12px 12px 60px; overflow-x: hidden; }
     .detail h1 { font-size: 17px; overflow-wrap: anywhere; }
-    .detail .sub, .scenario h3 { overflow-wrap: anywhere; min-width: 0; }
+    .detail .sub { overflow-wrap: anywhere; min-width: 0; }
     .chip, .stage, button { white-space: nowrap; }
     .svc { flex-wrap: wrap; row-gap: 4px; }
     .svc a { overflow-wrap: anywhere; min-width: 0; }
