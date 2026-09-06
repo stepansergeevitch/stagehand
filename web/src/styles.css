@@ -219,6 +219,10 @@ th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; lette
     .modal { place-items: end center; }
     .modal .box { min-width: 0; width: 100%; max-height: 92vh; overflow: auto; border-radius: 12px 12px 0 0; padding: 14px 14px max(14px, env(safe-area-inset-bottom)); }
     .markdown, .md { max-width: none; }
-    table { display: block; overflow-x: auto; }
+    /* two-column plan tables wrap instead of scrolling; markdown tables keep their own scroll box */
+    table { table-layout: fixed; width: 100%; }
+    td, th { overflow-wrap: anywhere; padding: 6px 4px; }
+    td:first-child, th:first-child { width: 34%; }
+    .markdown table { display: block; overflow-x: auto; table-layout: auto; }
     .feed div { white-space: normal; word-break: break-word; }
 }
