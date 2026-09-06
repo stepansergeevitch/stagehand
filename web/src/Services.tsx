@@ -64,7 +64,7 @@ export const ServicesPanel = ({ taskId, env, onError }: { taskId: string; env: E
             {(fe?.running || (be?.running && !configured.fe)) && (
                 <div className="open-app">
                     <a className="button-link" href={(env?.app_url ?? "{{feUrl}}").replace("{{feUrl}}", fe?.url ?? "").replace("{{beUrl}}", be?.url ?? "")} target="_blank" rel="noreferrer">Open app ↗</a>
-                    <span className="mono" style={{ color: "var(--ink-3)" }}>FE {fe.port}{be ? ` → BE ${be.port}` : ""}</span>
+                    <span className="mono" style={{ color: "var(--ink-3)" }}>{[fe ? `FE ${fe.port}` : null, be ? `BE ${be.port}` : null].filter(Boolean).join(" → ")}</span>
                 </div>
             )}
             {log && (
