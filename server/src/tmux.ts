@@ -17,8 +17,9 @@ export const sessionExists = async (name: string): Promise<boolean> => (await tm
 
 export const ensureSession = async (name: string, cwd: string, command: string, env: Record<string, string>): Promise<void> => {
     if (await sessionExists(name)) return;
+    // `export`, not a `K=V cmd` prefix: the command may be a `cd …; ( … )` chain, and a prefix would only apply to its first word.
     const exports = Object.entries(env)
-        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .map(([k, v]) => `export ${k}=${JSON.stringify(v)};`)
         .join(" ");
     // tmux inherits the server's environment; unset the dev-toolchain variables inside the pane too.
     await tmux(["new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", cwd, `unset NODE_OPTIONS CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ${exports} ${command}`]);
