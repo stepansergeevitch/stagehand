@@ -624,6 +624,16 @@ export class Engine extends EventEmitter {
         if (def.stage === "research") {
             const r = ResearchResult.parse(data);
             const env = this.env(task.env_id);
+            const wanted = r.repositoryPath ? r.repositoryPath.replace(/\/+$/, "") : null;
+            if (wanted && wanted !== env.path.replace(/\/+$/, "")) {
+                const other = this.db.prepare(`SELECT name FROM envs WHERE path = ?`).get(wanted) as { name: string } | undefined;
+                this.setTaskStatus(
+                    taskId,
+                    "blocked",
+                    `Research says this ticket's code lives in ${wanted}${other ? ` (env "${other.name}")` : ""}, not in this env — delete this task and recreate it there`,
+                );
+                return;
+            }
             this.db.prepare(`UPDATE tasks SET title = ?, branch = ?, updated_at = ? WHERE id = ?`).run(r.title, r.branchName, now(), taskId);
             this.setTaskStatus(taskId, "running", "creating worktree");
             void createWorktree(env.path, env.base_branch, r.branchName)

@@ -6,6 +6,7 @@ export const ResearchResult = z.object({
     branchName: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/),
     summary: z.string(),
     affectedAreas: z.array(z.string()).default([]),
+    repositoryPath: z.string().nullable().default(null),
 });
 export type ResearchResult = z.infer<typeof ResearchResult>;
 
