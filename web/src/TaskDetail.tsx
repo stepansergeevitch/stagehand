@@ -117,7 +117,18 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     )}
                 </div>
             )}
-            {task.status === "rate_limited" && <div className="blocked-box"><b>Rate limited.</b> {task.status_line}</div>}
+            {task.status === "rate_limited" && (
+                <div className="blocked-box">
+                    <b>Rate limited.</b> {task.status_line}
+                    {(() => {
+                        const at = [...runs].reverse().find((r) => r.resume_at)?.resume_at;
+                        if (!at) return null;
+                        const ms = new Date(at).getTime() - Date.now();
+                        const local = new Date(at).toLocaleString([], { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+                        return <span className="chip warn" style={{ marginLeft: 8 }}>{ms > 0 ? `auto-resume at ${local} (in ${Math.ceil(ms / 60000)} min)` : "resuming…"}</span>;
+                    })()}
+                </div>
+            )}
 
             {waiting && (
                 <div className="review-box">

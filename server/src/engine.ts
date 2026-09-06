@@ -536,7 +536,8 @@ export class Engine extends EventEmitter {
         }
         const run = this.latestRun(task.id);
         if (run) this.db.prepare(`UPDATE runs SET resume_at = ? WHERE id = ?`).run(resumeAt, run.id);
-        this.db.prepare(`UPDATE tasks SET status = 'rate_limited', status_line = ?, updated_at = ? WHERE id = ?`).run(`${reason} · resumes ${resumeAt}`, now(), task.id);
+        const local = new Date(resumeAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+        this.db.prepare(`UPDATE tasks SET status = 'rate_limited', status_line = ?, updated_at = ? WHERE id = ?`).run(`${reason} · resumes at ${local}`, now(), task.id);
         this.emit("task", this.getTask(task.id));
     }
 
