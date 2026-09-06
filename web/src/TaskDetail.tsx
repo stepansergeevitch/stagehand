@@ -3,7 +3,40 @@ import { api, STAGE_LABEL, STAGE_ORDER, type Account, type QaPass, type Stage, t
 import { Terminal } from "./Terminal";
 import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
-import type { Env } from "./api";
+import { DiffView, useDraftComments } from "./DiffView";
+import type { Env, LineComment, Review } from "./api";
+
+const parseComments = (r: Review): LineComment[] => {
+    try {
+        return r.comments ? (JSON.parse(r.comments) as LineComment[]) : [];
+    } catch {
+        return [];
+    }
+};
+
+// Earlier rounds of this stage's review, so the reviewer can check what was asked before.
+const ReviewHistory = ({ reviews, stage }: { reviews: Review[]; stage: Stage }) => {
+    const rounds = reviews.filter((r) => r.stage === stage && r.verdict === "changes");
+    if (rounds.length === 0) return null;
+    return (
+        <div className="review-history">
+            {rounds.map((r, i) => {
+                const cs = parseComments(r);
+                return (
+                    <details key={r.id}>
+                        <summary>Round {i + 1} · {new Date(r.created_at).toLocaleString()} · {cs.length} line comment{cs.length === 1 ? "" : "s"}{r.notes ? " · notes" : ""}</summary>
+                        {r.notes && <div className="md">{r.notes}</div>}
+                        {cs.length > 0 && (
+                            <ul className="plain">
+                                {cs.map((c, j) => <li key={j}><code>{c.path}:{c.line}</code> {c.text}</li>)}
+                            </ul>
+                        )}
+                    </details>
+                );
+            })}
+        </div>
+    );
+};
 
 interface Props {
     detail: TaskDetail;
@@ -51,6 +84,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const designMd = useArtifactText(task.id, "design.md", has("design.md"));
     const [notes, setNotes] = useState("");
     const [routeTo, setRouteTo] = useState<"implementation" | "design_proposal">("implementation");
+    const [comments, changeComment, clearComments] = useDraftComments(task.id);
+    const pending = Object.entries(comments);
+    const canComment = task.status === "waiting_user" && task.stage === "user_review";
     const currentIdx = STAGE_ORDER.indexOf(task.stage);
     const skipped = new Set<Stage>(design && design.qa.length === 0 ? ["qa_baseline", "manual_qa"] : []);
     const waiting = task.status === "waiting_user";
@@ -142,16 +178,49 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             </select>
                         </label>
                     )}
-                    <textarea placeholder="Notes for Claude (required for 'Request changes')" value={notes} onChange={(e) => setNotes(e.target.value)} />
+                    <textarea placeholder={canComment ? "General comments (optional if you left line comments in the diff below)" : "Notes for Claude (required for 'Request changes')"} value={notes} onChange={(e) => setNotes(e.target.value)} />
+                    {canComment && pending.length > 0 && (
+                        <div className="pending-comments">
+                            {pending.length} line comment{pending.length === 1 ? "" : "s"} to send:
+                            <ul className="plain">
+                                {pending.map(([k, c]) => (
+                                    <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
                     <div className="actions">
-                        <button className="primary" onClick={() => onAction(() => api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}) }))}>
+                        <button
+                            className="primary"
+                            onClick={() => onAction(async () => { await api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}) }); clearComments(); setNotes(""); })}
+                        >
                             {task.stage === "pr_creation_review" ? "Approve & create PR" : "Approve"}
                         </button>
-                        <button disabled={!notes.trim()} onClick={() => onAction(() => api.review(task.id, { verdict: "changes", notes, ...(task.stage === "user_review" ? { routeTo } : {}) }))}>
-                            Request changes
+                        <button
+                            disabled={!notes.trim() && !(canComment && pending.length > 0)}
+                            onClick={() =>
+                                onAction(async () => {
+                                    await api.review(task.id, {
+                                        verdict: "changes",
+                                        ...(notes.trim() ? { notes } : {}),
+                                        ...(task.stage === "user_review" ? { routeTo, comments: pending.map(([, c]) => c) } : {}),
+                                    });
+                                    clearComments();
+                                    setNotes("");
+                                })
+                            }
+                        >
+                            Request changes{canComment && pending.length > 0 ? ` (${pending.length})` : ""}
                         </button>
                     </div>
+                    <ReviewHistory reviews={detail.reviews} stage={task.stage} />
                 </div>
+            )}
+
+            {task.branch && task.worktree_path && (
+                <Section title="Code changes" open={task.stage === "user_review"} badge={pending.length > 0 ? <span className="chip wait">{pending.length} 💬</span> : undefined}>
+                    <DiffView taskId={task.id} refreshKey={task.updated_at} comments={comments} canComment={canComment} onChange={changeComment} />
+                </Section>
             )}
 
             {terminal && (

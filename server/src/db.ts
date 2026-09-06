@@ -250,6 +250,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.branch_prefix", `ALTER TABLE envs ADD COLUMN branch_prefix TEXT`],
     ["envs.ticket_source", `ALTER TABLE envs ADD COLUMN ticket_source TEXT NOT NULL DEFAULT 'clickup'`],
     ["envs.env_vars", `ALTER TABLE envs ADD COLUMN env_vars TEXT`],
+    ["reviews.comments", `ALTER TABLE reviews ADD COLUMN comments TEXT`],
     ["tasks.ticket_url", `ALTER TABLE tasks ADD COLUMN ticket_url TEXT`],
     ["tasks.model", `ALTER TABLE tasks ADD COLUMN model TEXT`],
 ];

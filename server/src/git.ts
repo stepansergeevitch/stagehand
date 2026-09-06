@@ -123,6 +123,100 @@ export const removeWorktreeAndBranch = async (env: RepoLayout, path: string, bra
     if (existsSync(path)) rmSync(path, { recursive: true, force: true });
 };
 
+// ---------- review diff ----------
+
+export interface DiffLine {
+    type: "context" | "add" | "del";
+    oldNo: number | null;
+    newNo: number | null;
+    text: string;
+}
+export interface DiffHunk {
+    header: string;
+    lines: DiffLine[];
+}
+export interface DiffFile {
+    path: string;
+    status: "added" | "modified" | "deleted" | "renamed";
+    additions: number;
+    deletions: number;
+    hunks: DiffHunk[];
+    binary: boolean;
+}
+
+// Parses `git diff` unified output into files/hunks/lines with both line numbers, for the review UI.
+export const parseUnifiedDiff = (raw: string, prefix = ""): DiffFile[] => {
+    const files: DiffFile[] = [];
+    let file: DiffFile | null = null;
+    let hunk: DiffHunk | null = null;
+    let oldNo = 0;
+    let newNo = 0;
+    for (const line of raw.split("\n")) {
+        if (line.startsWith("diff --git ")) {
+            const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+            file = { path: prefix + (m?.[2] ?? line.slice(11)), status: "modified", additions: 0, deletions: 0, hunks: [], binary: false };
+            files.push(file);
+            hunk = null;
+            continue;
+        }
+        if (!file) continue;
+        if (line.startsWith("new file mode")) file.status = "added";
+        else if (line.startsWith("deleted file mode")) file.status = "deleted";
+        else if (line.startsWith("rename to ")) {
+            file.status = "renamed";
+            file.path = prefix + line.slice(10);
+        } else if (line.startsWith("Binary files")) file.binary = true;
+        else if (line.startsWith("@@")) {
+            const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+            oldNo = Number(m?.[1] ?? 1);
+            newNo = Number(m?.[2] ?? 1);
+            hunk = { header: line, lines: [] };
+            file.hunks.push(hunk);
+        } else if (hunk) {
+            if (line.startsWith("+")) {
+                hunk.lines.push({ type: "add", oldNo: null, newNo: newNo++, text: line.slice(1) });
+                file.additions++;
+            } else if (line.startsWith("-")) {
+                hunk.lines.push({ type: "del", oldNo: oldNo++, newNo: null, text: line.slice(1) });
+                file.deletions++;
+            } else if (line.startsWith(" ") || line === "") {
+                hunk.lines.push({ type: "context", oldNo: oldNo++, newNo: newNo++, text: line.slice(1) });
+            }
+            // "\ No newline at end of file" and anything else is dropped
+        }
+    }
+    return files;
+};
+
+// Everything the task changed versus the base branch, committed or not, including untracked files, per checkout.
+const diffOne = async (checkout: string, baseBranch: string, prefix: string, vars: Vars): Promise<DiffFile[]> => {
+    const tracked = await git(checkout, ["diff", "--no-color", "--no-ext-diff", "--unified=3", "--find-renames", `origin/${baseBranch}`, "--"], vars);
+    const files = parseUnifiedDiff(tracked, prefix);
+    const untracked = await git(checkout, ["ls-files", "--others", "--exclude-standard"], vars);
+    for (const rel of untracked.split("\n").filter(Boolean).slice(0, 50)) {
+        // `git diff --no-index` exits 1 when files differ; read the output regardless.
+        const raw = await execFileAsync("git", ["-C", checkout, "diff", "--no-color", "--no-index", "--", "/dev/null", rel], {
+            maxBuffer: 8 * 1024 * 1024,
+            env: { ...process.env, ...vars },
+        })
+            .then((r) => r.stdout)
+            .catch((e: { stdout?: string }) => e.stdout ?? "");
+        for (const f of parseUnifiedDiff(raw, prefix)) files.push({ ...f, path: prefix + rel, status: "added" });
+    }
+    return files;
+};
+
+export const worktreeDiff = async (env: RepoLayout, worktree: string, vars: Vars = {}): Promise<DiffFile[]> => {
+    const subs = envRepos(env);
+    if (subs.length === 0) return diffOne(worktree, env.base_branch, "", vars);
+    const all: DiffFile[] = [];
+    for (const dir of subs) {
+        if (!existsSync(join(worktree, dir))) continue;
+        all.push(...(await diffOne(join(worktree, dir), env.base_branch, `${dir}/`, vars)));
+    }
+    return all;
+};
+
 // Per-checkout helpers; for a multi-repo worktree pass the sub-repo checkout (<worktree>/<dir>).
 export const diffStat = (checkout: string, baseBranch: string): Promise<string> =>
     git(checkout, ["diff", "--stat", `origin/${baseBranch}...HEAD`]);

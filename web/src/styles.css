@@ -132,6 +132,39 @@ th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; lette
 .feed div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .feed .k { color: var(--ink-3); margin-right: 6px; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+
+/* ---------- review diff ---------- */
+.diff { margin-top: 8px; }
+.diff .add { color: var(--ok); }
+.diff .del { color: var(--bad); }
+.diff-summary { font-size: 12px; color: var(--ink-2); margin-bottom: 8px; }
+.diff-summary .hint { color: var(--ink-3); }
+.diff-file { border: 1px solid var(--line); border-radius: 6px; margin-bottom: 10px; background: var(--panel); overflow: hidden; }
+.diff-file > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--bg); flex-wrap: wrap; }
+.diff-file > summary::-webkit-details-marker { display: none; }
+.diff-file .path { font-size: 12px; overflow-wrap: anywhere; }
+.diff-file .stat { font-size: 11.5px; margin-left: auto; white-space: nowrap; }
+.hunk { border-top: 1px solid var(--line); }
+.hunk-header { font-size: 11px; color: var(--ink-3); background: var(--code); padding: 3px 10px; }
+.dl { display: grid; grid-template-columns: 3.2em 3.2em 1em 1fr; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
+.dl .no { text-align: right; padding-right: 6px; color: var(--ink-3); user-select: none; font-size: 10.5px; }
+.dl .mark { color: var(--ink-3); user-select: none; }
+.dl .txt { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 8px; }
+.dl.add { background: var(--ok-soft); }
+.dl.del { background: var(--bad-soft); }
+.dl.clickable { cursor: pointer; }
+.dl.clickable:hover { outline: 1px solid var(--accent); outline-offset: -1px; }
+.dl.has-comment { box-shadow: inset 3px 0 0 var(--wait); }
+.line-comment { margin: 2px 8px 6px 6.4em; padding: 6px 10px; border-left: 3px solid var(--wait); background: var(--wait-soft); border-radius: 4px; font-size: 13px; white-space: pre-wrap; cursor: pointer; }
+.line-comment.editing { cursor: default; }
+.line-comment textarea { min-height: 70px; margin-bottom: 6px; }
+.line-comment .actions { margin: 0; }
+.review-history { margin: 10px 0 0; font-size: 13px; }
+.review-history details { margin: 4px 0; }
+.review-history summary { cursor: pointer; color: var(--ink-2); }
+.review-history .md { margin: 6px 0 0 14px; }
+.pending-comments { font-size: 12.5px; color: var(--ink-2); margin: 6px 0; }
+.pending-comments code { margin-right: 6px; }
 .back { display: none; }
 
 /* ---------- phones / narrow windows ---------- */
@@ -164,6 +197,8 @@ th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; lette
     section.card, details.card { min-width: 0; max-width: 100%; overflow: hidden; }
     details.card > summary { flex-wrap: wrap; }
     .markdown pre, .markdown code, .md { overflow-wrap: anywhere; }
+    .dl { grid-template-columns: 2.6em 2.6em 0.9em 1fr; font-size: 11.5px; }
+    .line-comment { margin-left: 8px; }
     .back { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 10px; }
     .two { grid-template-columns: 1fr; }
     .kv { grid-template-columns: 1fr; gap: 2px 0; }

@@ -328,11 +328,25 @@ app.get("/api/tasks/:id/runs/:runId/events", (c) => {
 
 app.post("/api/tasks/:id/review", async (c) => {
     const body = json(
-        z.object({ verdict: z.enum(["approve", "changes"]), routeTo: z.enum(["implementation", "design_proposal"]).optional(), notes: z.string().optional() }),
+        z.object({
+            verdict: z.enum(["approve", "changes"]),
+            routeTo: z.enum(["implementation", "design_proposal"]).optional(),
+            notes: z.string().optional(),
+            comments: z
+                .array(z.object({ path: z.string().min(1), line: z.number().int().positive(), side: z.enum(["new", "old"]), snippet: z.string(), text: z.string().min(1) }))
+                .optional(),
+        }),
         await c.req.json(),
     );
     engine.review(c.req.param("id"), body);
     return c.json(engine.getTask(c.req.param("id")));
+});
+
+app.get("/api/tasks/:id/diff", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    const env = db.prepare(`SELECT base_branch FROM envs WHERE id = ?`).get(task.env_id) as { base_branch: string };
+    return c.json({ base: env.base_branch, files: await engine.diff(task.id) });
 });
 
 app.post("/api/tasks/:id/stop", (c) => {

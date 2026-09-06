@@ -5,17 +5,39 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import { now, parseEnvVars, type AccountRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
-import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup } from "./git.js";
+import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
 import type { Services } from "./services.js";
 import { fetchTicket, parseTicketRef, renderTicketForPrompt, Ticket } from "./tickets.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { DesignResult, QaPassResult, ResearchResult, type QaScenario } from "./stages/contracts.js";
 
+// A comment anchored to one line of the review diff. `line` is the new-file line for add/context lines, the old-file line for deletions.
+export interface LineComment {
+    path: string;
+    line: number;
+    side: "new" | "old";
+    snippet: string;
+    text: string;
+}
+
 export interface ReviewInput {
     verdict: "approve" | "changes";
     routeTo?: "implementation" | "design_proposal" | undefined;
     notes?: string | undefined;
+    comments?: LineComment[] | undefined;
 }
+
+// What the implementer sees: the general notes, then every line comment with its anchor and the quoted line.
+const renderReviewNotes = (round: number, notes: string | undefined, comments: LineComment[]): string => {
+    const parts: string[] = [`## Reviewer notes — review round ${round} (address every point)`];
+    if (notes?.trim()) parts.push(notes.trim());
+    if (comments.length) {
+        parts.push("### Line comments (path:line refer to the current diff against the base branch; the quoted text is the line as it is now)");
+        for (const c of comments) parts.push(`- \`${c.path}:${c.line}\` (${c.side === "old" ? "removed line" : "line"}) — \`${c.snippet.trim().slice(0, 160)}\`\n  → ${c.text.trim()}`);
+    }
+    parts.push("When done, list in impl.json `notes` each reviewer point and how you resolved it (or why not).");
+    return parts.join("\n\n");
+};
 
 interface DispatchOpts {
     notes?: string;
@@ -304,6 +326,14 @@ export class Engine extends EventEmitter {
         this.emit("task", { ...task, status: "deleted" });
     }
 
+    // Everything the task changed so far, for the review diff view.
+    async diff(taskId: string): Promise<DiffFile[]> {
+        const task = this.getTask(taskId);
+        if (!task?.worktree_path) return [];
+        const env = this.env(task.env_id);
+        return worktreeDiff(env, task.worktree_path, parseEnvVars(env.env_vars));
+    }
+
     setAccount(taskId: string, accountId: string): void {
         this.db.prepare(`UPDATE tasks SET account_id = ?, updated_at = ? WHERE id = ?`).run(accountId, now(), taskId);
         this.emit("task", this.getTask(taskId));
@@ -312,15 +342,19 @@ export class Engine extends EventEmitter {
     review(taskId: string, input: ReviewInput): void {
         const task = this.getTask(taskId);
         if (!task || task.status !== "waiting_user") throw new Error("task is not waiting for review");
+        const comments = input.comments ?? [];
+        const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE task_id = ? AND stage = ? AND verdict = 'changes'`).get(taskId, task.stage) as { n: number };
         this.db
-            .prepare(`INSERT INTO reviews (id, task_id, stage, verdict, route_to, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-            .run(randomUUID(), taskId, task.stage, input.verdict, input.routeTo ?? null, input.notes ?? null, now());
+            .prepare(`INSERT INTO reviews (id, task_id, stage, verdict, route_to, notes, comments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(randomUUID(), taskId, task.stage, input.verdict, input.routeTo ?? null, input.notes ?? null, comments.length ? JSON.stringify(comments) : null, now());
 
-        const notes = input.notes ? `## Reviewer notes (address every point)\n\n${input.notes}` : undefined;
         if (input.verdict === "changes") {
             const target: Stage = task.stage === "design_proposal" ? "design_proposal" : (input.routeTo ?? "implementation");
             this.setStage(taskId, target);
-            this.dispatch(taskId, target, { notes: notes ?? "The reviewer requested changes without notes; re-examine the work and improve it." });
+            const hasContent = !!input.notes?.trim() || comments.length > 0;
+            this.dispatch(taskId, target, {
+                notes: hasContent ? renderReviewNotes(prior.n + 1, input.notes, comments) : "The reviewer requested changes without notes; re-examine the work and improve it.",
+            });
             return;
         }
         const next = STAGE_DEFS[task.stage].next;

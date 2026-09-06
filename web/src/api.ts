@@ -49,13 +49,18 @@ export interface Impl {
     files: string[]; commits: string[]; tests: { backend: string | null; frontend: string | null };
     coverageNewLines: number | null; gates: { tests: boolean; typecheck: boolean }; notes: string;
 }
+export interface DiffLine { type: "context" | "add" | "del"; oldNo: number | null; newNo: number | null; text: string }
+export interface DiffHunk { header: string; lines: DiffLine[] }
+export interface DiffFile { path: string; status: "added" | "modified" | "deleted" | "renamed"; additions: number; deletions: number; hunks: DiffHunk[]; binary: boolean }
+export interface LineComment { path: string; line: number; side: "new" | "old"; snippet: string; text: string }
+export interface Review { id: string; stage: Stage; verdict: string; route_to: string | null; notes: string | null; comments: string | null; created_at: string }
 export interface TaskDetail {
     task: Task; runs: Run[]; artifacts: Array<{ path: string; size: number }>;
     research: { classification: string; title: string; branchName: string; summary: string; affectedAreas: string[] } | null;
     design: Design | null; impl: Impl | null; qaBefore: QaPass | null; qaAfter: QaPass | null;
     pr: { title: string; body: string; base: string } | null;
     ticket: Ticket | null;
-    reviews: Array<{ id: string; stage: Stage; verdict: string; route_to: string | null; notes: string | null; created_at: string }>;
+    reviews: Review[];
 }
 
 const j = async <T,>(res: Response): Promise<T> => {
@@ -93,7 +98,9 @@ export const api = {
     settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
     patchSettings: (body: Partial<Omit<Settings, "models">>) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
-    review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string }) => post<Task>(`/api/tasks/${id}/review`, body),
+    review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>
+        post<Task>(`/api/tasks/${id}/review`, body),
+    diff: (id: string) => fetch(`/api/tasks/${id}/diff`).then((r) => j<{ base: string; files: DiffFile[] }>(r)),
     stop: (id: string) => post<Task>(`/api/tasks/${id}/stop`),
     retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),
     rerun: (id: string, stage: Stage) => post<Task>(`/api/tasks/${id}/rerun`, { stage }),

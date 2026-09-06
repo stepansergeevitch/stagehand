@@ -12,6 +12,7 @@ This is the IMPLEMENTATION stage for ticket {{ticketId}} in the worktree {{workt
 - Gates before you finish: all targeted tests green AND the repo's type-checker/linter clean. Fix at the source — no `# type: ignore`, `# pyright: ignore`, `cast`, or baseline entries.
 - Commit in small steps with short one-line messages; no Co-Authored-By, no conventional-commit prefixes. Never push, never touch `{{baseBranch}}`, never rewrite history.
 - Never put the ticket id in source code or comments. Never post to GitHub.
+- If reviewer notes are present above, they come from a human reading your diff: fix every point (line comments name `path:line` in the current diff and quote the line), re-run the gates, and account for each point in `notes`.
 
 ## Output contract
 
