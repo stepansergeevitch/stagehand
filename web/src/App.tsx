@@ -70,7 +70,7 @@ const Gauge = ({ a }: { a: Account }) => {
     const cls = (u: number) => (u >= 0.9 ? "bad" : u >= 0.6 ? "warn" : "");
     const enterprise = a.plan === "enterprise";
     const usage = a.usage ?? { today: { tokens: 0, cost: 0 }, week: { tokens: 0, cost: 0 } };
-    const title = `${a.email ?? "no auth"} · ${a.org ?? ""} · ${a.plan ?? ""}${five ? ` · 5h window ${Math.round(five.utilization * 100)}%` : ""}${week ? ` · 7d window ${Math.round(week.utilization * 100)}%` : ""}`;
+    const title = `${a.email ?? "no auth"} · ${a.org ?? ""} · ${a.plan ?? ""}${five ? ` · 5h window ${Math.round(five.utilization * 100)}%` : ""}${week ? ` · 7d window ${Math.round(week.utilization * 100)}%` : ""}${enterprise ? " · counts what Stagehand ran on this account (tasks, helpers, probes); usage elsewhere needs the Admin API" : ""}`;
     return (
         <span className={`gauge ${enterprise ? "enterprise" : ""}`} title={title}>
             <span className="gauge-name">{a.name}{!a.logged_in && <span className="chip bad">no auth</span>}{a.logged_in === 1 && !a.has_token && <span className="chip warn">legacy</span>}</span>

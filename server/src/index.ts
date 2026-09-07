@@ -14,7 +14,7 @@ import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
-import { usageReport } from "./usage.js";
+import { recordUsage, usageReport } from "./usage.js";
 import { fetchOrgUsage } from "./admin-api.js";
 
 const MODEL_OPTIONS = [
@@ -77,6 +77,7 @@ const refreshAccount = async (acc: AccountRow): Promise<Verification> => {
     let result: Verification;
     if (acc.oauth_token) {
         const r = await probeDefaultModel(cfg.mainConfigDir, cfg.dataDir, authEnv(acc));
+        if (r.result) recordUsage(db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, r.result);
         db.prepare(`UPDATE accounts SET logged_in = ?, default_model = COALESCE(?, default_model) WHERE id = ?`).run(r.ok ? 1 : 0, r.model, acc.id);
         result = r.ok ? { ok: true, detail: `token works — a trivial run answered on ${r.model}` } : { ok: false, detail: `token rejected: ${r.error ?? "run failed"}` };
     } else {
@@ -90,6 +91,7 @@ const refreshAccount = async (acc: AccountRow): Promise<Verification> => {
         );
         if (status.loggedIn && !acc.default_model) {
             const r = await probeDefaultModel(acc.auth_dir, cfg.dataDir);
+            if (r.result) recordUsage(db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, r.result);
             if (r.model) db.prepare(`UPDATE accounts SET default_model = ? WHERE id = ?`).run(r.model, acc.id);
         }
         result = status.loggedIn
@@ -279,7 +281,7 @@ app.post("/api/config-dirs/:id/probe", async (c) => {
     if (!dir) return c.json({ error: "not found" }, 404);
     const acc = engine.usableAccounts(dir.path)[0];
     if (!acc) return c.json({ error: "no AI account can run in this dir — set up a token first" }, 400);
-    const capable = await probeChrome(dir.path, cfg.dataDir, authEnv(acc));
+    const capable = await probeChrome(dir.path, cfg.dataDir, authEnv(acc), 3, (r) => recordUsage(db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, r));
     db.prepare(`UPDATE config_dirs SET chrome_capable = ? WHERE id = ?`).run(capable ? 1 : 0, dir.id);
     return c.json(configDirView(configDirById(dir.id)!));
 });

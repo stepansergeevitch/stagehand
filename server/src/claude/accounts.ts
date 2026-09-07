@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import type { AccountRow } from "../db.js";
 import { claudeEnv } from "./env.js";
+import { ResultEvent } from "./runner.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -59,7 +60,22 @@ const runClaudeJson = (args: string[], cwd: string, configDir: string, extraEnv:
         child.on("error", reject);
     });
 
-const probeChromeOnce = async (configDir: string, cwd: string, extraEnv: Record<string, string>): Promise<boolean> => {
+// `--output-format json` prints the same object as the stream's final result event; keep it so the caller can record usage.
+const parseResult = (stdout: string): ResultEvent | null => {
+    try {
+        const parsed = ResultEvent.safeParse(JSON.parse(stdout));
+        return parsed.success ? parsed.data : null;
+    } catch {
+        return null;
+    }
+};
+
+export interface ProbeOutcome {
+    ok: boolean;
+    result: ResultEvent | null;
+}
+
+const probeChromeOnce = async (configDir: string, cwd: string, extraEnv: Record<string, string>): Promise<ProbeOutcome> => {
     const prompt =
         "Use ToolSearch to load mcp__claude-in-chrome__tabs_context_mcp, then call it once. If it errors, wait 5 seconds and call it once more. " +
         "Reply with exactly CHROME_OK if it returned tab data, otherwise CHROME_FAIL.";
@@ -70,17 +86,17 @@ const probeChromeOnce = async (configDir: string, cwd: string, extraEnv: Record<
             configDir,
             extraEnv,
         );
-        const res = z.object({ result: z.string().optional(), is_error: z.boolean().optional() }).safeParse(JSON.parse(stdout));
-        console.error(`[probeChrome] ${configDir} cwd=${cwd} → ${res.success ? res.data.result : "unparseable"}`);
-        return res.success && (res.data.result ?? "").includes("CHROME_OK");
+        const result = parseResult(stdout);
+        console.error(`[probeChrome] ${configDir} cwd=${cwd} → ${result?.result ?? "unparseable"}`);
+        return { ok: (result?.result ?? "").includes("CHROME_OK"), result };
     } catch (e) {
         console.error(`[probeChrome] ${configDir} failed: ${String(e).slice(0, 300)}`);
-        return false;
+        return { ok: false, result: null };
     }
 };
 
 // One trivial run: proves the account's auth works in this config dir and reveals the model it gets without --model.
-export const probeDefaultModel = async (configDir: string, cwd: string, extraEnv: Record<string, string> = {}): Promise<{ ok: boolean; model: string | null; error: string | null }> => {
+export const probeDefaultModel = async (configDir: string, cwd: string, extraEnv: Record<string, string> = {}): Promise<{ ok: boolean; model: string | null; error: string | null; result: ResultEvent | null }> => {
     try {
         const stdout = await runClaudeJson(
             ["-p", "Reply with exactly OK", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "1", "--no-session-persistence", "--no-chrome"],
@@ -88,21 +104,24 @@ export const probeDefaultModel = async (configDir: string, cwd: string, extraEnv
             configDir,
             extraEnv,
         );
-        const res = z.object({ is_error: z.boolean().optional(), result: z.string().optional(), modelUsage: z.record(z.unknown()).optional() }).safeParse(JSON.parse(stdout));
-        const model = res.success ? Object.keys(res.data.modelUsage ?? {})[0] ?? null : null;
-        const ok = res.success && !res.data.is_error && !!model;
-        console.error(`[probeDefaultModel] ${configDir} → ${ok ? model : `failed: ${res.success ? res.data.result?.slice(0, 120) : "unparseable"}`}`);
-        return { ok, model, error: ok ? null : (res.success ? res.data.result?.slice(0, 200) : null) ?? "no model usage reported" };
+        const result = parseResult(stdout);
+        const model = result ? Object.keys(result.modelUsage ?? {})[0] ?? null : null;
+        const ok = !!result && !result.is_error && !!model;
+        console.error(`[probeDefaultModel] ${configDir} → ${ok ? model : `failed: ${result?.result?.slice(0, 120) ?? "unparseable"}`}`);
+        return { ok, model, error: ok ? null : result?.result?.slice(0, 200) ?? "no model usage reported", result };
     } catch (e) {
         console.error(`[probeDefaultModel] ${configDir} failed: ${String(e).slice(0, 300)}`);
-        return { ok: false, model: null, error: String((e as Error).message ?? e).slice(0, 200) };
+        return { ok: false, model: null, error: String((e as Error).message ?? e).slice(0, 200), result: null };
     }
 };
 
 // The extension bridge connects lazily and occasionally misses the first attempt; three tries separates "flaky" from "not this dir".
-export const probeChrome = async (configDir: string, cwd: string, extraEnv: Record<string, string> = {}, attempts = 3): Promise<boolean> => {
+// Every attempt's result is reported so the caller can record what the probes consumed.
+export const probeChrome = async (configDir: string, cwd: string, extraEnv: Record<string, string> = {}, attempts = 3, onResult?: (r: ResultEvent) => void): Promise<boolean> => {
     for (let i = 0; i < attempts; i++) {
-        if (await probeChromeOnce(configDir, cwd, extraEnv)) return true;
+        const { ok, result } = await probeChromeOnce(configDir, cwd, extraEnv);
+        if (result && onResult) onResult(result);
+        if (ok) return true;
         await new Promise((r) => setTimeout(r, 3_000));
     }
     return false;
