@@ -255,11 +255,18 @@ export class Engine extends EventEmitter {
 
     // Browser stages cannot use an account token (Claude Code disables the Chrome bridge for token sessions); they run with
     // the config dir's own browser login and are charged to the account that login belongs to.
-    chromeContext(env: EnvRow, cd: ConfigDirRow, fallback: AccountRow | null): { ok: true; account: AccountRow | null; extraEnv: Record<string, string> } | { ok: false; reason: string } {
+    chromeContext(
+        env: EnvRow,
+        cd: ConfigDirRow,
+        fallback: AccountRow | null,
+    ): { ok: true; account: AccountRow | null; extraEnv: Record<string, string> } | { ok: false; reason: string; exhausted?: { account: AccountRow; resetsAt: number } } {
         if (!cd.login_ok || !cd.login_email) return { ok: false, reason: `config dir ${cd.name} has no browser login — Config dirs → ${cd.name} → Log in (browser), then Probe Chrome` };
         if (!cd.chrome_capable) return { ok: false, reason: `config dir ${cd.name} has no Chrome connection — Config dirs → ${cd.name} → Probe Chrome, then retry` };
         const owner = (this.db.prepare(`SELECT * FROM accounts WHERE lower(email) = lower(?) ORDER BY created_at`).get(cd.login_email) as AccountRow | undefined) ?? fallback;
-        if (owner && this.exhausted(owner.id)) return { ok: false, reason: `${owner.name} (the browser login in ${cd.name}) is rate-limited; browser stages resume when its window resets` };
+        if (owner && this.exhausted(owner.id)) {
+            const u = this.utilization(owner.id);
+            return { ok: false, reason: `${owner.name} (the browser login in ${cd.name}) is at its 5-hour cap`, ...(u ? { exhausted: { account: owner, resetsAt: u.resetsAt } } : {}) };
+        }
         void env;
         return { ok: true, account: owner, extraEnv: {} };
     }
@@ -822,7 +829,10 @@ export class Engine extends EventEmitter {
         if (def.chrome) {
             const chrome = this.chromeContext(env, cd, picked);
             if (!chrome.ok) {
-                this.setTaskStatus(taskId, "blocked", `${def.label} · ${chrome.reason}`);
+                // The login owner's window resets on its own: park the task with a resume time rather than blocking it.
+                // No failover — a browser stage cannot switch to another account's login.
+                if (chrome.exhausted) this.queueRateLimited(task, chrome.exhausted.account, chrome.exhausted.resetsAt, `${def.label} · ${chrome.reason}`, { failover: false });
+                else this.setTaskStatus(taskId, "blocked", `${def.label} · ${chrome.reason}`);
                 return;
             }
             account = chrome.account ?? picked;
@@ -919,9 +929,9 @@ export class Engine extends EventEmitter {
         this.emit("rate_limit", { accountId, info });
     }
 
-    private queueRateLimited(task: TaskRow, account: AccountRow, resetsAt: number, reason: string): void {
+    private queueRateLimited(task: TaskRow, account: AccountRow, resetsAt: number, reason: string, opts: { failover?: boolean } = {}): void {
         const resumeAt = new Date(resetsAt * 1000 + 30_000).toISOString();
-        const failover = this.findFailover(account, task);
+        const failover = opts.failover === false ? null : this.findFailover(account, task);
         if (failover) {
             this.db.prepare(`UPDATE tasks SET account_id = ?, updated_at = ? WHERE id = ?`).run(failover.id, now(), task.id);
             this.setTaskStatus(task.id, "idle", `${reason} → failing over to ${failover.name}`);
