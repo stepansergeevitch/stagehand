@@ -30,8 +30,11 @@ const clickUp = async <T>(cfg: Config, path: string): Promise<T> => {
 };
 
 // Sprint lists carry start/due dates; fall back to a "(M/D - M/D)" suffix in the name when they don't.
+// ClickUp stores the dates as instants in the workspace's timezone, so a sprint starting "today" can begin hours after
+// local midnight — compare with a day of slack on both ends (the closed-status filter drops last sprint's finished work).
+const DAY = 86_400_000;
 const listCoversToday = (l: ClickUpList, now: Date): boolean => {
-    if (l.start_date && l.due_date) return Number(l.start_date) <= now.getTime() && now.getTime() <= Number(l.due_date) + 86_400_000;
+    if (l.start_date && l.due_date) return Number(l.start_date) - DAY <= now.getTime() && now.getTime() <= Number(l.due_date) + DAY;
     const m = /\((\d{1,2})\/(\d{1,2})\s*-\s*(\d{1,2})\/(\d{1,2})\)/.exec(l.name);
     if (!m) return false;
     const y = now.getFullYear();

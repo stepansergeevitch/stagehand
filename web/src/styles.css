@@ -254,17 +254,19 @@ details.scenario > ol, details.scenario > div { margin-top: 6px; }
 .env-fields textarea.tall { min-height: 160px; }
 .env-fields details > summary { cursor: pointer; color: var(--accent); font-size: 13px; }
 .env-section .actions { margin: 12px 0 0; }
-/* manage page tables */
-.table-wrap { overflow-x: auto; margin-top: 10px; }
-.manage-page table td, .manage-page table th { white-space: nowrap; }
-.manage-page table td code { font-size: 11.5px; }
-.row-actions { display: flex; gap: 6px; }
-.row-actions button { padding: 3px 8px; min-height: 0; }
+/* manage pages: one card per environment / account / task manager */
 .inline-edit { display: inline-flex; gap: 4px; align-items: center; }
 .inline-edit input { width: 140px; padding: 2px 6px; }
 label.inline { display: inline-flex; align-items: center; gap: 4px; }
+.manage-page .item h2, .manage-page .manager h2 { flex-wrap: wrap; }
+.manage-page .item .kv, .manager .kv { margin: 4px 0 10px; }
+.manage-page .item .actions, .manager .actions { margin: 12px 0 0; }
+.manager-fields { max-width: 560px; }
+.test-result { margin-top: 10px; padding: 8px 12px; border-left: 3px solid var(--ok); background: var(--ok-soft); border-radius: 4px; font-size: 13px; overflow-wrap: anywhere; }
+.test-result.bad { border-left-color: var(--bad); background: var(--bad-soft); }
+.test-result ul.plain { margin: 6px 0 0; max-width: 80ch; }
+.test-result li { margin: 2px 0; }
 .manage-page details > summary { cursor: pointer; color: var(--accent); font-size: 13px; margin: 8px 0; }
-@media (max-width: 760px) { .manage-page table { table-layout: auto; width: max-content; min-width: 100%; } .manage-page td, .manage-page th { white-space: nowrap; overflow-wrap: normal; } .manage-page table td:first-child { width: auto; } }
 .modal .box label > select { max-width: 100%; }
 .back { display: none; }
 
