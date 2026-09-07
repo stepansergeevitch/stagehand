@@ -49,13 +49,21 @@ export interface AccountRow {
     org: string | null;
     plan: string | null;
     logged_in: number;
+    // Browser stages need a claude.ai browser login (the Chrome extension is bound to that account, and tokens get no
+    // bridge). `login_ok` says the account's browser dir holds one; `chrome_capable` that the bridge answered under it;
+    // `chrome_browsers` lists the Chrome profiles (extension instances) seen, `chrome_device_id` the one to use.
+    login_ok: number | null;
     chrome_capable: number | null;
+    chrome_browsers: string | null;
+    chrome_device_id: string | null;
+    chrome_browser_name: string | null;
     failover_enabled: number;
     failover_threshold: number;
     // What `claude` picks when no --model is passed for this account (observed from run init events / a probe).
     default_model: string | null;
     created_at: string;
 }
+export const accountBrowserReady = (a: Pick<AccountRow, "login_ok" | "chrome_capable">): boolean => a.login_ok === 1 && a.chrome_capable === 1;
 
 export const hasToken = (a: Pick<AccountRow, "oauth_token">): boolean => !!a.oauth_token;
 // Whether this account can drive a run whose CLAUDE_CONFIG_DIR is `configDirPath`.
@@ -387,6 +395,10 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.account_order", `ALTER TABLE envs ADD COLUMN account_order TEXT`],
     ["envs.chrome_device_id", `ALTER TABLE envs ADD COLUMN chrome_device_id TEXT`],
     ["envs.qa_seed_hints", `ALTER TABLE envs ADD COLUMN qa_seed_hints TEXT`],
+    ["accounts.login_ok", `ALTER TABLE accounts ADD COLUMN login_ok INTEGER`],
+    ["accounts.chrome_browsers", `ALTER TABLE accounts ADD COLUMN chrome_browsers TEXT`],
+    ["accounts.chrome_device_id", `ALTER TABLE accounts ADD COLUMN chrome_device_id TEXT`],
+    ["accounts.chrome_browser_name", `ALTER TABLE accounts ADD COLUMN chrome_browser_name TEXT`],
     ["envs.chrome_browser_name", `ALTER TABLE envs ADD COLUMN chrome_browser_name TEXT`],
     ["config_dirs.login_email", `ALTER TABLE config_dirs ADD COLUMN login_email TEXT`],
     ["config_dirs.login_ok", `ALTER TABLE config_dirs ADD COLUMN login_ok INTEGER`],
@@ -403,6 +415,18 @@ const hasColumn = (db: Database.Database, table: string, column: string): boolea
 export const migrateAccountsToConfigDirs = (db: Database.Database, opts: { mainConfigDir: string; scratchAccountsDir: string }): void => {
     if (hasColumn(db, "accounts", "config_dir")) db.exec(`ALTER TABLE accounts RENAME COLUMN config_dir TO auth_dir`);
     db.exec(`UPDATE envs SET account_order = json_array(default_account_id) WHERE account_order IS NULL AND default_account_id IS NOT NULL`);
+    // Browser login / Chrome facts used to live on config_dirs; an account whose auth dir IS that dir owns them.
+    db.exec(
+        `UPDATE accounts SET login_ok = (SELECT d.login_ok FROM config_dirs d WHERE d.path = accounts.auth_dir),
+             chrome_capable = (SELECT d.chrome_capable FROM config_dirs d WHERE d.path = accounts.auth_dir),
+             chrome_browsers = (SELECT d.chrome_browsers FROM config_dirs d WHERE d.path = accounts.auth_dir)
+         WHERE login_ok IS NULL AND EXISTS (SELECT 1 FROM config_dirs d WHERE d.path = accounts.auth_dir)`,
+    );
+    db.exec(
+        `UPDATE accounts SET chrome_device_id = (SELECT e.chrome_device_id FROM envs e JOIN config_dirs d ON d.id = e.config_dir_id WHERE d.path = accounts.auth_dir AND e.chrome_device_id IS NOT NULL LIMIT 1),
+             chrome_browser_name = (SELECT e.chrome_browser_name FROM envs e JOIN config_dirs d ON d.id = e.config_dir_id WHERE d.path = accounts.auth_dir AND e.chrome_device_id IS NOT NULL LIMIT 1)
+         WHERE chrome_device_id IS NULL`,
+    );
     const dirs = db.prepare(`SELECT COUNT(*) AS n FROM config_dirs`).get() as { n: number };
     const envs = db.prepare(`SELECT * FROM envs`).all() as EnvRow[];
     if (dirs.n > 0 || envs.every((e) => e.config_dir_id)) return;

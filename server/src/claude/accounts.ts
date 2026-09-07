@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -24,6 +24,45 @@ export const authDirFor = (cfg: Config, name: string): string => {
     const dir = join(cfg.dataDir, "auth", name);
     mkdirSync(dir, { recursive: true });
     return dir;
+};
+
+// Where this account's BROWSER login lives (Claude Code keys logins by config dir path): its auth dir when Stagehand
+// owns it, otherwise a Stagehand-owned dir the human logs into once. Browser stages run there with the env's config dir
+// content mirrored in, because the Chrome bridge only answers under a claude.ai browser login.
+export const browserDirFor = (cfg: Config, acc: Pick<AccountRow, "name" | "auth_dir">): string => {
+    if (acc.auth_dir.startsWith(`${cfg.dataDir}/`)) return acc.auth_dir;
+    const dir = join(cfg.dataDir, "browser", acc.name);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+};
+
+// Entries of a config dir that carry behaviour (everything except login/session state); symlinked into a browser dir.
+const MIRROR_SKIP = new Set([".claude.json", ".credentials.json", "setup-token.log", "backups", "cache", "debug", "statsig", "todos", "telemetry", "ide", "paste-cache", "sessions", "session-env", "shell-snapshots", "file-history", "history.jsonl", "daemon", "daemon.lock", "daemon.log", "daemon.status.json", "jobs", "exports"]);
+
+// Makes `browserDir` behave like `configDir`: every behaviour entry of the config dir is symlinked in (existing symlinks
+// are re-pointed, real files are left alone), and .claude.json (MCP servers, onboarding flags) is copied once.
+// Never applied to a directory Stagehand does not own.
+export const mirrorConfigDir = (cfg: Config, configDir: string, browserDir: string): void => {
+    if (browserDir === configDir || !browserDir.startsWith(`${cfg.dataDir}/`)) return;
+    for (const entry of readdirSync(configDir)) {
+        if (MIRROR_SKIP.has(entry) || entry.endsWith("~") || entry.startsWith("#")) continue;
+        const src = join(configDir, entry);
+        const dst = join(browserDir, entry);
+        try {
+            const st = lstatSync(dst);
+            if (st.isSymbolicLink()) {
+                if (readlinkSync(dst) !== src) {
+                    unlinkSync(dst);
+                    symlinkSync(src, dst);
+                }
+            }
+            // a real file/dir in the browser dir is the account's own; keep it
+        } catch {
+            symlinkSync(src, dst);
+        }
+    }
+    const json = join(browserDir, ".claude.json");
+    if (!existsSync(json) && existsSync(join(configDir, ".claude.json"))) copyFileSync(join(configDir, ".claude.json"), json);
 };
 
 // Environment that makes `claude` use this account: the long-lived OAuth token wins over whatever login the config dir holds.

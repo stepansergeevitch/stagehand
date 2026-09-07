@@ -26,7 +26,7 @@ import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf
 import { matchChromeProfiles, openInProfile } from "./chrome-profiles.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
-import { authDirFor, authEnv, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
+import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
 import { isGitRepo, repoPaths } from "./git.js";
 import { attach, capturePane, ensureSession, killSession, loginSessionName, pipePane, sessionExists, taskSessionName } from "./tmux.js";
 
@@ -60,7 +60,7 @@ const configDirById = (id: string): ConfigDirRow | undefined => db.prepare(`SELE
 // The token never leaves the server; the UI only learns whether one is stored.
 const publicAccount = (a: AccountRow) => {
     const { oauth_token, ...rest } = a;
-    return { ...rest, has_token: !!oauth_token };
+    return { ...rest, has_token: !!oauth_token, browsers: chromeBrowsersOf(a), browser_dir: browserDirFor(cfg, a) };
 };
 const emitAccount = (id: string): void => {
     const acc = accountById(id);
@@ -207,15 +207,23 @@ app.post("/api/accounts/:id/refresh", async (c) => {
 
 app.patch("/api/accounts/:id", async (c) => {
     const body = json(
-        z.object({ name: z.string().regex(/^[a-z0-9-]+$/).optional(), failover_enabled: z.boolean().optional(), failover_threshold: z.number().min(0).max(1).optional() }),
+        z.object({
+            name: z.string().regex(/^[a-z0-9-]+$/).optional(),
+            failover_enabled: z.boolean().optional(),
+            failover_threshold: z.number().min(0).max(1).optional(),
+            chromeDeviceId: z.string().nullable().optional(),
+        }),
         await c.req.json(),
     );
     const acc = accountById(c.req.param("id"));
     if (!acc) return c.json({ error: "not found" }, 404);
-    db.prepare(`UPDATE accounts SET name = ?, failover_enabled = ?, failover_threshold = ? WHERE id = ?`).run(
+    const chosen = body.chromeDeviceId === undefined ? undefined : body.chromeDeviceId ? chromeBrowsersOf(acc).find((b) => b.deviceId === body.chromeDeviceId) ?? null : null;
+    db.prepare(`UPDATE accounts SET name = ?, failover_enabled = ?, failover_threshold = ?, chrome_device_id = ?, chrome_browser_name = ? WHERE id = ?`).run(
         body.name ?? acc.name,
         body.failover_enabled === undefined ? acc.failover_enabled : body.failover_enabled ? 1 : 0,
         body.failover_threshold ?? acc.failover_threshold,
+        chosen === undefined ? acc.chrome_device_id : chosen?.deviceId ?? null,
+        chosen === undefined ? acc.chrome_browser_name : chosen ? chromeBrowserLabel(chosen) : null,
         acc.id,
     );
     emitAccount(acc.id);
@@ -243,15 +251,7 @@ const configDirView = (d: ConfigDirRow) => ({
     contents: inspectConfigDir(d.path),
     envs: envsAll().filter((e) => e.config_dir_id === d.id).map((e) => e.name),
     usable_accounts: accountsAll().filter((a) => accountUsableWith(a, d.path)).map((a) => a.name),
-    browsers: chromeBrowsersOf(d),
 });
-
-// The dir's own browser login (what the Chrome bridge needs); the account it belongs to is matched by email.
-const refreshDirLogin = async (dir: ConfigDirRow): Promise<ConfigDirRow> => {
-    const status = await readAuthStatus(dir.path);
-    db.prepare(`UPDATE config_dirs SET login_ok = ?, login_email = ? WHERE id = ?`).run(status.loggedIn ? 1 : 0, status.email ?? null, dir.id);
-    return configDirById(dir.id)!;
-};
 
 app.get("/api/config-dirs", (c) => c.json(configDirsAll().map(configDirView)));
 
@@ -283,51 +283,65 @@ app.delete("/api/config-dirs/:id", (c) => {
     return c.json({ deleted: dir.id });
 });
 
-// Chrome is a property of the dir's browser login (the extension is bound to the claude.ai account signed in there;
-// token sessions get no bridge), so the probe runs under that login and records the connected Chrome profiles.
-app.post("/api/config-dirs/:id/probe", async (c) => {
-    const dir0 = configDirById(c.req.param("id"));
-    if (!dir0) return c.json({ error: "not found" }, 404);
-    const dir = await refreshDirLogin(dir0);
-    if (!dir.login_ok) {
-        db.prepare(`UPDATE config_dirs SET chrome_capable = 0, chrome_browsers = NULL WHERE id = ?`).run(dir.id);
-        return c.json({ ...configDirView(configDirById(dir.id)!), probe: { ok: false, detail: "no browser login in this dir — click Log in (browser) first" } });
+// ---------- browser login + Chrome, per account ----------
+
+// The Chrome extension is bound to the claude.ai account signed into a Chrome profile, and only a browser login (not a
+// token) gets the bridge, so both live on the account: its browser dir holds the login, the probe runs there.
+const refreshBrowserLogin = async (acc: AccountRow): Promise<AccountRow> => {
+    const status = await readAuthStatus(browserDirFor(cfg, acc));
+    db.prepare(`UPDATE accounts SET login_ok = ?, email = COALESCE(email, ?), plan = COALESCE(plan, ?) WHERE id = ?`).run(status.loggedIn ? 1 : 0, status.email ?? null, status.subscriptionType ?? null, acc.id);
+    return accountById(acc.id)!;
+};
+
+app.post("/api/accounts/:id/login", async (c) => {
+    const acc = accountById(c.req.param("id"));
+    if (!acc) return c.json({ error: "not found" }, 404);
+    const dir = browserDirFor(cfg, acc);
+    const name = `sh-browserlogin-${acc.name}`;
+    await killSession(name);
+    await ensureSession(
+        name,
+        dir,
+        `claude auth login --claudeai${acc.email ? ` --email ${JSON.stringify(acc.email)}` : ""}; echo; echo '[stagehand] login finished — run Probe Chrome on the AI accounts page, then close this terminal.'; sleep 600`,
+        { CLAUDE_CONFIG_DIR: dir },
+    );
+    return c.json({ terminal: name, dir });
+});
+
+app.post("/api/accounts/:id/probe-chrome", async (c) => {
+    const acc0 = accountById(c.req.param("id"));
+    if (!acc0) return c.json({ error: "not found" }, 404);
+    const acc = await refreshBrowserLogin(acc0);
+    const dir = browserDirFor(cfg, acc);
+    if (!acc.login_ok) {
+        db.prepare(`UPDATE accounts SET chrome_capable = 0, chrome_browsers = NULL WHERE id = ?`).run(acc.id);
+        emitAccount(acc.id);
+        return c.json({ ok: false, detail: `no browser login in ${dir} — click Log in (browser) first`, account: publicAccount(accountById(acc.id)!) });
     }
-    const owner = accountsAll().find((a) => a.email && dir.login_email && a.email.toLowerCase() === dir.login_email.toLowerCase()) ?? null;
-    const r = await probeChrome(dir.path, cfg.dataDir, 3, (res) => recordUsage(db, { accountId: owner?.id ?? null, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, res));
+    const r = await probeChrome(dir, cfg.dataDir, 3, (res) => recordUsage(db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, res));
     const matches = matchChromeProfiles(r.browsers.map((b) => b.deviceId));
     const browsers: ChromeBrowser[] = r.browsers.map((b) => {
         const m = matches.get(b.deviceId);
         return m ? { ...b, profile: m.profile, account: m.account, profileDir: m.profileDir, browser: m.browser } : b;
     });
-    db.prepare(`UPDATE config_dirs SET chrome_capable = ?, chrome_browsers = ? WHERE id = ?`).run(r.ok ? 1 : 0, r.ok ? JSON.stringify(browsers) : null, dir.id);
-    // Environments that picked one of these profiles get the resolved name too.
-    for (const b of browsers) db.prepare(`UPDATE envs SET chrome_browser_name = ? WHERE chrome_device_id = ?`).run(chromeBrowserLabel(b), b.deviceId);
+    // Keep a chosen profile if it is still connected; otherwise pick the only one, if there is exactly one.
+    const keep = acc.chrome_device_id && browsers.some((b) => b.deviceId === acc.chrome_device_id) ? acc.chrome_device_id : browsers.length === 1 ? browsers[0]!.deviceId : null;
+    const chosen = browsers.find((b) => b.deviceId === keep);
+    db.prepare(`UPDATE accounts SET chrome_capable = ?, chrome_browsers = ?, chrome_device_id = ?, chrome_browser_name = ? WHERE id = ?`).run(
+        r.ok ? 1 : 0,
+        r.ok ? JSON.stringify(browsers) : null,
+        chosen?.deviceId ?? null,
+        chosen ? chromeBrowserLabel(chosen) : null,
+        acc.id,
+    );
+    emitAccount(acc.id);
     return c.json({
-        ...configDirView(configDirById(dir.id)!),
-        probe: {
-            ok: r.ok,
-            detail: r.ok
-                ? `Chrome bridge answered as ${dir.login_email}; ${browsers.length} connected profile(s): ${browsers.map((b) => `${chromeBrowserLabel(b)}${b.account ? ` (${b.account})` : ""}`).join(", ") || "none listed"}`
-                : `no Chrome bridge under ${dir.login_email} — is the extension installed and signed into that claude.ai account?`,
-        },
+        ok: r.ok,
+        detail: r.ok
+            ? `Chrome bridge answered as ${acc.email ?? acc.name}; ${browsers.length} connected profile(s): ${browsers.map((b) => `${chromeBrowserLabel(b)}${b.account ? ` (${b.account})` : ""}`).join(", ") || "none listed"}`
+            : `no Chrome bridge under ${acc.email ?? acc.name} — install the Claude extension in a Chrome profile and sign it into this claude.ai account, then probe again`,
+        account: publicAccount(accountById(acc.id)!),
     });
-});
-
-// Opens `claude auth login` for this dir in a terminal (the browser OAuth form); the login is what the Chrome bridge uses.
-app.post("/api/config-dirs/:id/login", async (c) => {
-    const dir = configDirById(c.req.param("id"));
-    if (!dir) return c.json({ error: "not found" }, 404);
-    const name = `sh-dirlogin-${dir.name.toLowerCase().replace(/[^a-z0-9-]+/g, "-")}`;
-    await killSession(name);
-    await ensureSession(name, dir.path, `claude auth login --claudeai; echo; echo '[stagehand] login finished — run Probe Chrome on the Config dirs page, then close this terminal.'; sleep 600`, { CLAUDE_CONFIG_DIR: dir.path });
-    return c.json({ terminal: name });
-});
-
-app.post("/api/config-dirs/:id/refresh-login", async (c) => {
-    const dir = configDirById(c.req.param("id"));
-    if (!dir) return c.json({ error: "not found" }, 404);
-    return c.json(configDirView(await refreshDirLogin(dir)));
 });
 
 app.get("/api/config-dirs/:id/rules", (c) => {
@@ -401,7 +415,13 @@ app.get("/api/envs/:id/rules", (c) => {
     if (!env) return c.json({ error: "not found" }, 404);
     const cd = engine.configDirOf(env);
     const rules = rulesOf(cd);
-    return c.json({ rules, prTemplates: prTemplates(env, rules), configDir: { id: cd.id, name: cd.name, path: cd.path }, usableAccounts: engine.usableAccounts(cd.path).map((a) => a.id) });
+    return c.json({
+        rules,
+        prTemplates: prTemplates(env, rules),
+        configDir: { id: cd.id, name: cd.name, path: cd.path },
+        usableAccounts: engine.usableAccounts(cd.path).map((a) => a.id),
+        browserAccounts: engine.browserAccounts(env).map((a) => a.id),
+    });
 });
 
 // Tickets assigned to the configured user in this env's task system, for the new-task dropdown.
@@ -690,9 +710,10 @@ app.post("/api/tasks/:id/open-app", async (c) => {
     if (!task) return c.json({ error: "not found" }, 404);
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
     const url = engine.appUrlFor(task, env);
-    const cd = engine.configDirOf(env);
-    const browser = chromeBrowsersOf(cd).find((b) => b.deviceId === env.chrome_device_id);
-    if (!browser?.profileDir) return c.json({ error: `the env's Chrome profile is not resolved — set it on the environment page after probing config dir ${cd.name}` , url }, 400);
+    const candidates = engine.browserAccounts(env);
+    const acc = candidates.find((a) => a.id === task.account_id) ?? candidates[0];
+    const browser = acc ? chromeBrowsersOf(acc).find((b) => b.deviceId === acc.chrome_device_id) : undefined;
+    if (!browser?.profileDir) return c.json({ error: acc ? `${acc.name}'s Chrome profile is not resolved — AI accounts → ${acc.name} → Probe Chrome, then pick the profile` : "no account has a Chrome-paired browser login — AI accounts → Log in (browser) + Probe Chrome", url }, 400);
     try {
         await openInProfile(browser.browser ?? "Google", browser.profileDir, url);
         return c.json({ opened: url, profile: chromeBrowserLabel(browser) });

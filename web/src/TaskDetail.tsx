@@ -484,7 +484,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     {/log ?in/i.test(task.status_line ?? "") && (
                         <div className="actions" style={{ marginBottom: 0 }}>
                             <button className="primary" onClick={async () => { try { const r = await api.openApp(task.id); onError(`Opened ${r.opened} in Chrome profile "${r.profile}" — log in there, then Retry.`); } catch (e) { onError(String((e as Error).message ?? e)); } }}>
-                                Open app in Chrome{env?.chrome_browser_name ? ` (${env.chrome_browser_name})` : ""}
+                                Open app in the QA Chrome profile
                             </button>
                             {!/waiting for you/.test(task.status_line ?? "") && <button onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA (agent waits and re-runs)</button>}
                             <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Open app: the exact URL in the Chrome profile QA uses, no agent — log in, then Retry. Log in for QA: an agent opens it, waits for the login and re-runs the stage by itself.</span>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, chromeBrowserLabel, type Account, type ConfigDir, type Env, type EnvRules } from "./api";
+import { accountOrderOf, accountUsableWith, api, type Account, type ConfigDir, type Env, type EnvRules } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -51,9 +51,7 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
     // ---- claude config dir + AI accounts in priority order
     const [order, setOrder] = useState<string[]>(() => accountOrderOf(env));
     const [dirId, setDirId] = useState(env.config_dir_id ?? "");
-    const [chromeId, setChromeId] = useState(env.chrome_device_id ?? "");
-    const dirRow = configDirs.find((d) => d.id === dirId);
-    const browsers = dirRow?.browsers ?? [];
+    const browserAccounts = (info?.browserAccounts ?? []).map((id) => accounts.find((a) => a.id === id)).filter((a): a is Account => !!a);
     const move = (id: string, delta: number) => setOrder((o) => {
         const i = o.indexOf(id);
         const j = i + delta;
@@ -93,24 +91,13 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
                 </label>
             </Section>
 
-            <Section title="Claude config dir and AI accounts" hint="Every agent run for this environment (research, design, QA, implementation, helpers, the terminal) uses the config dir: its skills, hooks, subagents, MCP servers, CLAUDE.md and the commit/branch/PR rules. The AI accounts only supply the login: runs go to the first listed account that is not exhausted; when it hits its rate limit the next one takes over, and the task waits for a reset only when every listed account is exhausted." saving={saving === "claude"} onSave={() => { const b = browsers.find((x) => x.deviceId === chromeId); return save("claude", { configDirId: nul(dirId), accountOrder: order, chromeDeviceId: nul(chromeId), chromeBrowserName: b ? chromeBrowserLabel(b) : null }); }}>
+            <Section title="Claude config dir and AI accounts" hint="Every agent run for this environment (research, design, QA, implementation, helpers, the terminal) uses the config dir: its skills, hooks, subagents, MCP servers, CLAUDE.md and the commit/branch/PR rules. The AI accounts only supply the login: runs go to the first listed account that is not exhausted; when it hits its rate limit the next one takes over, and the task waits for a reset only when every listed account is exhausted." saving={saving === "claude"} onSave={() => save("claude", { configDirId: nul(dirId), accountOrder: order })}>
                 <label>Config dir
                     <select value={dirId} onChange={(e) => setDirId(e.target.value)}>
                         <option value="">— server default —</option>
-                        {configDirs.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.path}{d.chrome_capable ? " · chrome" : ""}</option>)}
+                        {configDirs.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.path}</option>)}
                     </select>
                     {dirId && <span className="field-hint"><a href="#" onClick={(e) => { e.preventDefault(); onOpenDir(dirId); }}>Edit this dir's rules and see what it contains</a></span>}
-                </label>
-                <label>Chrome profile for browser QA
-                    <select value={chromeId} onChange={(e) => setChromeId(e.target.value)}>
-                        <option value="">— whichever profile is paired —</option>
-                        {browsers.map((b) => <option key={b.deviceId} value={b.deviceId}>{chromeBrowserLabel(b)}{b.account ? ` · ${b.account}` : ""}{b.profile ? "" : ` (${b.deviceId.slice(0, 8)})`}</option>)}
-                        {chromeId && !browsers.some((b) => b.deviceId === chromeId) && <option value={chromeId}>{env.chrome_browser_name ?? chromeId} (not seen by the last probe)</option>}
-                    </select>
-                    <span className="field-hint">
-                        {dirRow ? (dirRow.login_ok ? `Browser stages run as ${dirRow.login_email}${dirRow.chrome_capable ? "" : " — Chrome bridge not connected yet: probe the dir"}` : "This dir has no browser login — browser stages will block until you log in on its page") : "Pick a config dir first"}
-                        {" · profiles come from the dir's Chrome probe; each Chrome profile with the extension installed and signed into that claude.ai account is one entry."}
-                    </span>
                 </label>
                 <div className="account-order">
                     <span className="field-hint">AI accounts in priority order (tick to include, arrows to reorder; empty = any account that can run in this dir)</span>
@@ -135,6 +122,7 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
                 {info && (
                     <div className="kv">
                         <b>Accounts that can run here</b><span>{info.usableAccounts.length ? info.usableAccounts.map((id) => accounts.find((a) => a.id === id)?.name ?? id).join(", ") : "none — set up a token on the AI accounts page"}</span>
+                        <b>Browser stages (QA) run as</b><span>{browserAccounts.length ? browserAccounts.map((a) => `${a.name}${a.chrome_browser_name ? ` (Chrome profile ${a.chrome_browser_name})` : ""}`).join(" → ") : "nobody — no listed account has a Chrome-paired browser login (AI accounts → Log in (browser) + Probe Chrome)"}</span>
                         <b>Rules in effect</b><span>commits {info.rules.allowCommit ? "allowed" : "off"} · push {info.rules.allowPush ? "allowed" : "off"} · PR creation {info.rules.allowPrCreate ? "allowed" : "off"} · branch <code>{info.rules.branchPattern}</code></span>
                         <b>PR templates</b><span>{info.prTemplates.map((t) => `${t.dir === "." ? "" : `${t.dir}: `}${t.path ?? "none"}`).join(" · ")}{info.prTemplates.some((t) => t.overridden) ? " (override)" : ""}</span>
                     </div>

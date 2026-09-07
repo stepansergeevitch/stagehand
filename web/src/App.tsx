@@ -297,7 +297,7 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <ConfigDirPage key={dir.id} dir={dir} onBack={() => setPage("dirs")} onChanged={reload} onError={setError} onTerminal={setTerminal} />
+                            <ConfigDirPage key={dir.id} dir={dir} onBack={() => setPage("dirs")} onChanged={reload} onError={setError} />
                         </main>
                     </div>
                 )}

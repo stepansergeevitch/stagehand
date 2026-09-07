@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager } from "./api";
+import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager } from "./api";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
 export type ManageTab = "envs" | "dirs" | "accounts" | "managers";
@@ -90,7 +90,6 @@ const EnvList = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, onDele
 
 const ConfigDirList = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id: string) => void; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
     const [add, setAdd] = useState({ name: "", path: "" });
-    const [probing, setProbing] = useState<string | null>(null);
     return (
         <>
             <p className="field-hint">A config dir is a Claude directory on this host (skills, hooks, subagents, commands, MCP servers, CLAUDE.md) plus the commit/branch/PR rules Stagehand enforces. Environments point at one; any AI account with a token can run in any dir.</p>
@@ -109,7 +108,6 @@ const ConfigDirList = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id: 
                         <h2>
                             {d.name}
                             {!c.exists && <span className="chip bad">missing on disk</span>}
-                            {d.chrome_capable === 1 ? <span className="chip ok">chrome</span> : d.chrome_capable === 0 ? <span className="chip">no chrome</span> : <span className="chip">chrome not probed</span>}
                         </h2>
                         <div className="kv">
                             <b>Path</b><code>{d.path}</code>
@@ -128,7 +126,6 @@ const ConfigDirList = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id: 
                         </div>
                         <div className="actions">
                             <button onClick={() => onOpen(d.id)}>Rules and contents</button>
-                            <button disabled={probing === d.id || d.usable_accounts.length === 0} title={d.usable_accounts.length === 0 ? "no account can run in this dir" : "run a tiny agent with --chrome to check the extension bridge"} onClick={async () => { setProbing(d.id); await act(() => api.probeConfigDir(d.id)); setProbing(null); }}>{probing === d.id ? "Probing…" : "Probe Chrome"}</button>
                             <button className="danger" disabled={d.envs.length > 0} title={d.envs.length ? "an environment still uses it" : "forget this dir (nothing on disk changes)"} onClick={() => { if (confirm(`Forget config dir ${d.name}? Nothing on disk is touched.`)) void act(() => api.deleteConfigDir(d.id)); }}>Delete</button>
                         </div>
                     </section>
@@ -187,11 +184,26 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                             )}
                             <span className="chip">{a.provider}</span>
                             {a.setting_up ? <span className="chip wait">token setup in progress</span> : a.has_token ? <span className="chip ok">token</span> : a.logged_in ? <span className="chip warn">legacy login</span> : <span className="chip bad">no auth</span>}
+                            {accountBrowserReady(a) ? <span className="chip ok">chrome{a.chrome_browser_name ? ` · ${a.chrome_browser_name}` : ""}</span> : <span className="chip">no chrome</span>}
                             {a.email && <span className="chip">{a.email}</span>}
                             {a.plan && <span className="chip">{a.plan}</span>}
                         </h2>
                         <div className="kv">
                             <b>Runs in</b><span>{a.has_token ? "any config dir" : a.logged_in ? <>only <code>{a.auth_dir}</code> (set up a token to use it anywhere)</> : "nowhere yet — set up a token"}</span>
+                            <b>Browser login</b>
+                            <span>
+                                {a.login_ok === null ? <span className="chip">unknown — probe</span> : a.login_ok ? <span className="chip ok">in {a.browser_dir}</span> : <span className="chip bad">none in {a.browser_dir}</span>}
+                                <span className="field-hint">Browser stages (QA, login helper) need a claude.ai browser login here plus a Chrome profile whose Claude extension is signed into this account; tokens get no Chrome bridge.</span>
+                            </span>
+                            <b>Chrome profile</b>
+                            <span>
+                                {a.chrome_capable === null ? <span className="chip">not probed</span> : a.chrome_capable ? (
+                                    <select value={a.chrome_device_id ?? ""} onChange={(e) => void act(() => api.patchAccount(a.id, { chromeDeviceId: e.target.value || null }))}>
+                                        <option value="">— pick a profile —</option>
+                                        {a.browsers.map((b) => <option key={b.deviceId} value={b.deviceId}>{chromeBrowserLabel(b)}{b.account ? ` · ${b.account}` : ""}{b.profile ? "" : ` (${b.deviceId.slice(0, 8)})`}</option>)}
+                                    </select>
+                                ) : <span className="chip bad">no Chrome bridge under this login</span>}
+                            </span>
                             <b>Default model</b><span>{modelLabel(a.default_model, settings?.models) ?? "—"}</span>
                             <b>Windows 5h / 7d</b><span className="mono">{five ? `${Math.round(five.utilization * 100)}%` : "—"} / {week ? `${Math.round(week.utilization * 100)}%` : "—"}</span>
                             <b>Consumed today / week</b><span className="mono">{fmtTokens(a.usage?.today.tokens ?? 0)} · ${(a.usage?.today.cost ?? 0).toFixed(2)} / {fmtTokens(a.usage?.week.tokens ?? 0)} · ${(a.usage?.week.cost ?? 0).toFixed(2)}</span>
@@ -199,6 +211,20 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                         </div>
                         <div className="actions">
                             <button onClick={async () => { try { const r = await api.setupToken(a.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>{a.has_token ? "Renew token" : "Set up token"}</button>
+                            <button onClick={async () => { try { const r = await api.loginAccount(a.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Log in (browser)</button>
+                            <button disabled={busy === `chrome-${a.id}`} onClick={async () => {
+                                setBusy(`chrome-${a.id}`);
+                                setVerify((v) => ({ ...v, [a.id]: { ok: true, text: "checking the browser login, then running a tiny --chrome agent…" } }));
+                                try {
+                                    const r = await api.probeAccountChrome(a.id);
+                                    setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } }));
+                                    await onChangedSafe();
+                                } catch (e) {
+                                    setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } }));
+                                } finally {
+                                    setBusy(null);
+                                }
+                            }}>{busy === `chrome-${a.id}` ? "Probing…" : "Probe Chrome"}</button>
                             <button disabled={busy === a.id} onClick={async () => {
                                 setBusy(a.id);
                                 setVerify({ ...verify, [a.id]: { ok: true, text: "running a trivial agent turn…" } });

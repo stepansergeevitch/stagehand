@@ -9,10 +9,14 @@ export type TaskStatus = "idle" | "queued" | "running" | "waiting_user" | "block
 export interface Account {
     id: string; name: string; provider: string; auth_dir: string; has_token: boolean; setting_up: boolean; email: string | null; org: string | null; plan: string | null;
     logged_in: number; failover_enabled: number; failover_threshold: number; default_model: string | null;
+    // Browser stages need this account's claude.ai browser login (in browser_dir) and a Chrome profile whose extension is signed into it.
+    login_ok: number | null; chrome_capable: number | null; chrome_device_id: string | null; chrome_browser_name: string | null;
+    browsers: ChromeBrowser[]; browser_dir: string;
     limits: Array<{ window: string; utilization: number; resetsAt: number }>;
     // Tokens of every kind and estimated cost since local midnight / over the last 7 days (from the usage table).
     usage: { today: { tokens: number; cost: number }; week: { tokens: number; cost: number } };
 }
+export const accountBrowserReady = (a: Account): boolean => a.login_ok === 1 && a.chrome_capable === 1;
 export const accountUsableWith = (a: Account, configDirPath: string): boolean => a.logged_in === 1 && (a.has_token || a.auth_dir === configDirPath);
 // The env's account priority list (ids); falls back to the single default account.
 export const accountOrderOf = (env: Pick<Env, "account_order" | "default_account_id">): string[] => {
@@ -30,10 +34,8 @@ export interface ChromeBrowser { deviceId: string; name: string; profile?: strin
 // The Chrome profile name when Stagehand could match it, else the extension's own label ("Browser 1").
 export const chromeBrowserLabel = (b: ChromeBrowser): string => b.profile ?? b.name;
 export interface ConfigDir {
-    id: string; name: string; path: string; chrome_capable: number | null; rules: string | null; created_at: string;
-    login_email: string | null; login_ok: number | null; chrome_browsers: string | null;
-    contents: ConfigDirContents; envs: string[]; usable_accounts: string[]; browsers: ChromeBrowser[];
-    probe?: { ok: boolean; detail: string };
+    id: string; name: string; path: string; rules: string | null; created_at: string;
+    contents: ConfigDirContents; envs: string[]; usable_accounts: string[];
 }
 export interface ConfigDirRules { rules: Rules; defaults: Rules; guardHook: string }
 
@@ -64,7 +66,7 @@ export interface PrComments { number: number; repo: string; human: PrComment[]; 
 export interface TaskManager { source: "clickup" | "linear"; label: string; configured: boolean; token: string | null; teamId: string | null; envs: string[] }
 export interface EnvRules {
     rules: Rules; prTemplates: Array<{ dir: string; path: string | null; overridden: boolean }>;
-    configDir: { id: string; name: string; path: string }; usableAccounts: string[];
+    configDir: { id: string; name: string; path: string }; usableAccounts: string[]; browserAccounts: string[];
 }
 export interface UsageBucket { key: string; label: string; sub?: string; runs: number; cost: number; input: number; output: number; cacheRead: number; cacheWrite: number; turns: number; durationMs: number }
 export interface UsageReport {
@@ -144,16 +146,15 @@ export const api = {
     addAccount: (name: string, email?: string) => post<{ account: Account; terminal: string }>("/api/accounts", { name, email }),
     refreshAccount: (id: string) => post<{ ok: boolean; detail: string; account: Account }>(`/api/accounts/${id}/refresh`),
     setupToken: (id: string) => post<{ terminal: string }>(`/api/accounts/${id}/setup-token`),
+    loginAccount: (id: string) => post<{ terminal: string; dir: string }>(`/api/accounts/${id}/login`),
+    probeAccountChrome: (id: string) => post<{ ok: boolean; detail: string; account: Account }>(`/api/accounts/${id}/probe-chrome`),
     configDirs: () => fetch("/api/config-dirs").then((r) => j<ConfigDir[]>(r)),
     addConfigDir: (name: string, path: string) => post<ConfigDir>("/api/config-dirs", { name, path }),
     patchConfigDir: (id: string, body: { name?: string; rules?: Partial<Rules> }) =>
         fetch(`/api/config-dirs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<ConfigDir>(r)),
     deleteConfigDir: (id: string) => fetch(`/api/config-dirs/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
-    probeConfigDir: (id: string) => post<ConfigDir>(`/api/config-dirs/${id}/probe`),
-    loginConfigDir: (id: string) => post<{ terminal: string }>(`/api/config-dirs/${id}/login`),
-    refreshConfigDirLogin: (id: string) => post<ConfigDir>(`/api/config-dirs/${id}/refresh-login`),
     configDirRules: (id: string) => fetch(`/api/config-dirs/${id}/rules`).then((r) => j<ConfigDirRules>(r)),
-    patchAccount: (id: string, body: { name?: string; failover_enabled?: boolean; failover_threshold?: number }) =>
+    patchAccount: (id: string, body: { name?: string; failover_enabled?: boolean; failover_threshold?: number; chromeDeviceId?: string | null }) =>
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: {
