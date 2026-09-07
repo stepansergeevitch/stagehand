@@ -254,6 +254,19 @@ details.scenario > ol, details.scenario > div { margin-top: 6px; }
 .env-fields textarea.tall { min-height: 160px; }
 .env-fields details > summary { cursor: pointer; color: var(--accent); font-size: 13px; }
 .env-section .actions { margin: 12px 0 0; }
+/* analytics */
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 4px 0 14px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; }
+.tile-label { font-family: var(--mono); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
+.tile-value { font-size: 22px; font-weight: 600; margin: 2px 0; }
+.tile-sub { font-size: 12px; color: var(--ink-3); }
+.usage-table table { font-size: 12.5px; }
+.usage-table td.usage-label small { display: block; color: var(--ink-3); font-weight: 400; overflow-wrap: anywhere; }
+.usage-table td.mono, .usage-table th { white-space: nowrap; }
+.share { display: inline-flex; align-items: center; gap: 6px; min-width: 90px; }
+.share i { display: inline-block; height: 6px; max-width: 60px; flex: 0 0 auto; background: var(--accent); border-radius: 3px; }
+.share > span { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+@media (max-width: 760px) { .tiles { grid-template-columns: 1fr 1fr; } .usage-table table { display: block; overflow-x: auto; table-layout: auto; width: max-content; min-width: 100%; } .usage-table td, .usage-table th { white-space: nowrap; } }
 /* manage pages: one card per environment / account / task manager */
 .inline-edit { display: inline-flex; gap: 4px; align-items: center; }
 .inline-edit input { width: 140px; padding: 2px 6px; }

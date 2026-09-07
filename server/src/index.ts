@@ -14,6 +14,7 @@ import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
+import { usageReport } from "./usage.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -469,6 +470,15 @@ app.patch("/api/envs/:id", async (c) => {
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));
+});
+
+// ---------- usage analytics ----------
+
+// ?days=7|30|… (0 or absent = everything). Cost and tokens as reported by claude's result events, one row per model per invocation.
+app.get("/api/usage", (c) => {
+    const days = Number(c.req.query("days") ?? "0");
+    const since = days > 0 ? new Date(Date.now() - days * 86_400_000) : null;
+    return c.json(usageReport(db, since));
 });
 
 // ---------- tasks ----------

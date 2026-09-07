@@ -50,6 +50,11 @@ export interface EnvRules {
     rules: Rules; prTemplates: Array<{ dir: string; path: string | null; overridden: boolean }>;
     configDir: { id: string; name: string; path: string }; usableAccounts: string[];
 }
+export interface UsageBucket { key: string; label: string; sub?: string; runs: number; cost: number; input: number; output: number; cacheRead: number; cacheWrite: number; turns: number; durationMs: number }
+export interface UsageReport {
+    since: string | null; totals: Omit<UsageBucket, "key" | "label">;
+    byEnv: UsageBucket[]; byAccount: UsageBucket[]; byTask: UsageBucket[]; byStage: UsageBucket[]; byModel: UsageBucket[]; byDay: UsageBucket[];
+}
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
@@ -148,6 +153,7 @@ export const api = {
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
     createTask: (envId: string, ticket: string, accountId?: string, model?: string) => post<Task>("/api/tasks", { envId, ticket, accountId, model }),
     settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
+    usage: (days: number) => fetch(`/api/usage?days=${days}`).then((r) => j<UsageReport>(r)),
     patchSettings: (body: Partial<Omit<Settings, "models">>) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
     review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>

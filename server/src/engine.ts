@@ -4,8 +4,9 @@ import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import { accountUsableWith, now, parseEnvVars, type AccountRow, type ConfigDirRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
-import { startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
+import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv } from "./claude/accounts.js";
+import { backfillUsage, recordUsage } from "./usage.js";
 import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
 import { execFile } from "node:child_process";
@@ -92,6 +93,8 @@ export class Engine extends EventEmitter {
     startScheduler(): void {
         this.timer = setInterval(() => this.tick(), 15_000);
         this.recoverInterrupted();
+        const n = backfillUsage(this.db, this.cfg.dataDir);
+        if (n) console.log(`[stagehand] usage backfilled for ${n} run(s)`);
     }
 
     stopScheduler(): void {
@@ -123,7 +126,11 @@ export class Engine extends EventEmitter {
         const cd = this.configDirOf(env);
         const account = this.pickAccount(task, STAGE_DEFS.research, env, cd);
         this.setTaskStatus(taskId, "running", "fetching ticket");
-        void fetchTicket(ref, this.cfg, cd.path, env.path, this.taskDir(taskId), { ...parseEnvVars(env.env_vars), ...authEnv(account) })
+        const onResult = (raw: unknown): void => {
+            const parsed = ResultEvent.safeParse(raw);
+            if (parsed.success) recordUsage(this.db, { accountId: account?.id ?? null, envId: env.id, taskId, runId: null, kind: "ticket-fetch", stage: null }, parsed.data);
+        };
+        void fetchTicket(ref, this.cfg, cd.path, env.path, this.taskDir(taskId), { ...parseEnvVars(env.env_vars), ...authEnv(account) }, onResult)
             .then((ticket) => {
                 this.db.prepare(`UPDATE tasks SET title = ?, ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(ticket.title, ticket.url, now(), taskId);
                 this.dispatch(taskId, "research");
@@ -322,6 +329,7 @@ export class Engine extends EventEmitter {
             allowedTools: ["Bash"],
         });
         const outcome = await run.done;
+        if (outcome.result) recordUsage(this.db, { accountId: account.id, envId: env.id, taskId, runId: null, kind: "qa-login", stage: null }, outcome.result);
         const text = outcome.result?.result ?? "";
         if (/LOGGED_IN/.test(text)) {
             this.setTaskStatus(taskId, "idle", "logged in — re-running the blocked stage");
@@ -880,6 +888,7 @@ export class Engine extends EventEmitter {
             this.db
                 .prepare(`UPDATE runs SET status = ?, finished_at = ?, error = ?, result_json = ?, cost_usd = ?, num_turns = ? WHERE id = ?`)
                 .run(status, now(), error ?? null, resultJson ?? null, outcome.result?.total_cost_usd ?? null, outcome.result?.num_turns ?? null, runId);
+            if (outcome.result) recordUsage(this.db, { accountId: account.id, envId: task.env_id, taskId, runId, kind: "stage", stage: def.stage }, outcome.result);
         };
 
         const limited = outcome.lastRateLimit && outcome.lastRateLimit.status !== "allowed";

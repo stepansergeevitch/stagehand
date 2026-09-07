@@ -5,11 +5,13 @@ import { EnvPage } from "./EnvPage";
 import { ConfigDirPage } from "./ConfigDirPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
 import { Dashboard, needsAttention } from "./Dashboard";
+import { Analytics } from "./Analytics";
 
-type Page = "dashboard" | "tasks" | "env" | "dir" | ManageTab;
+type Page = "dashboard" | "tasks" | "analytics" | "env" | "dir" | ManageTab;
 const NAV: { id: Page; label: string; hint: string }[] = [
     { id: "dashboard", label: "Dashboard", hint: "Tasks needing your attention, per environment" },
     { id: "tasks", label: "Tasks", hint: "Tasks in the selected environment" },
+    { id: "analytics", label: "Analytics", hint: "Token and cost usage by environment, task, account" },
     { id: "envs", label: "Environments", hint: "Repositories, services, which config dir and account they use" },
     { id: "dirs", label: "Config dirs", hint: "Claude config dirs: skills, hooks, rules, Chrome" },
     { id: "accounts", label: "AI accounts", hint: "Provider logins (tokens), usage, failover" },
@@ -196,6 +198,14 @@ export const App = () => {
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
                             <Dashboard envs={envs} tasks={tasks} onOpen={(t) => { setEnvId(t.env_id); setSelected(t.id); setPage("tasks"); }} />
+                        </main>
+                    </div>
+                )}
+                {page === "analytics" && (
+                    <div className="main page">
+                        <main className="detail">
+                            {error && <div className="blocked-box">{error}</div>}
+                            <Analytics onError={setError} />
                         </main>
                     </div>
                 )}

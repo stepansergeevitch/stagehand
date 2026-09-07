@@ -155,6 +155,26 @@ export interface RunRow {
     attempt: number;
 }
 
+// One row per model used by one claude invocation: a stage run, or a helper (ticket fetch, QA login, probe).
+export interface UsageRow {
+    id: string;
+    at: string;
+    account_id: string | null;
+    env_id: string | null;
+    task_id: string | null;
+    run_id: string | null;
+    kind: string;
+    stage: string | null;
+    model: string | null;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+    cost_usd: number;
+    duration_ms: number | null;
+    turns: number | null;
+}
+
 export interface RateLimitRow {
     account_id: string;
     window: string;
@@ -262,6 +282,26 @@ CREATE TABLE IF NOT EXISTS services (
     started_at TEXT NOT NULL,
     stopped_at TEXT
 );
+CREATE TABLE IF NOT EXISTS usage (
+    id TEXT PRIMARY KEY,
+    at TEXT NOT NULL,
+    account_id TEXT,
+    env_id TEXT,
+    task_id TEXT,
+    run_id TEXT,
+    kind TEXT NOT NULL,
+    stage TEXT,
+    model TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    duration_ms INTEGER,
+    turns INTEGER
+);
+CREATE INDEX IF NOT EXISTS usage_at ON usage(at);
+CREATE INDEX IF NOT EXISTS usage_run ON usage(run_id);
 CREATE TABLE IF NOT EXISTS reviews (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id),

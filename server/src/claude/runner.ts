@@ -33,6 +33,13 @@ export const RateLimitInfo = z.object({
 });
 export type RateLimitInfo = z.infer<typeof RateLimitInfo>;
 
+const ModelUsage = z.object({
+    inputTokens: z.number().optional(),
+    outputTokens: z.number().optional(),
+    cacheReadInputTokens: z.number().optional(),
+    cacheCreationInputTokens: z.number().optional(),
+    costUSD: z.number().optional(),
+});
 export const ResultEvent = z.object({
     type: z.literal("result"),
     subtype: z.string(),
@@ -41,8 +48,45 @@ export const ResultEvent = z.object({
     session_id: z.string(),
     num_turns: z.number().optional(),
     total_cost_usd: z.number().optional(),
+    duration_ms: z.number().optional(),
+    usage: z
+        .object({
+            input_tokens: z.number().optional(),
+            output_tokens: z.number().optional(),
+            cache_read_input_tokens: z.number().optional(),
+            cache_creation_input_tokens: z.number().optional(),
+        })
+        .optional(),
+    modelUsage: z.record(ModelUsage).optional(),
 });
 export type ResultEvent = z.infer<typeof ResultEvent>;
+
+export interface ModelTokens {
+    model: string | null;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+}
+
+// Per-model token counts from a result event; falls back to the aggregate `usage` block when there is no model breakdown.
+export const tokensOf = (r: ResultEvent): ModelTokens[] => {
+    const entries = Object.entries(r.modelUsage ?? {});
+    if (entries.length) {
+        return entries.map(([model, u]) => ({
+            model,
+            input: u.inputTokens ?? 0,
+            output: u.outputTokens ?? 0,
+            cacheRead: u.cacheReadInputTokens ?? 0,
+            cacheWrite: u.cacheCreationInputTokens ?? 0,
+            cost: u.costUSD ?? 0,
+        }));
+    }
+    const u = r.usage;
+    if (!u && r.total_cost_usd === undefined) return [];
+    return [{ model: null, input: u?.input_tokens ?? 0, output: u?.output_tokens ?? 0, cacheRead: u?.cache_read_input_tokens ?? 0, cacheWrite: u?.cache_creation_input_tokens ?? 0, cost: r.total_cost_usd ?? 0 }];
+};
 
 export interface ActivityEvent {
     kind: "init" | "text" | "tool_use" | "tool_result" | "rate_limit" | "hook" | "other";
