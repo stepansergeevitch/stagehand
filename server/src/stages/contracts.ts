@@ -15,6 +15,9 @@ export const QaScenario = z.object({
     title: z.string(),
     url: z.string(),
     persona: z.string().default("default user"),
+    // Data the journey needs, as concrete steps the runner performs itself before the first step (UI actions, API calls
+    // with payloads, SQL, or a repo script) — never a request for a human to prepare something. Empty = nothing to seed.
+    seed: z.array(z.string()).default([]),
     steps: z
         .array(
             z.object({

@@ -772,6 +772,7 @@ export class Engine extends EventEmitter {
                 .map(
                     (s) =>
                         `### ${s.id} — ${s.title}\nStart: \`${s.url}\` · Persona: ${s.persona}\n` +
+                        (s.seed.length ? `Seed (do this first, yourself):\n${s.seed.map((x, i) => `- seed ${i + 1}: ${x}`).join("\n")}\n` : "Seed: nothing beyond a logged-in user.\n") +
                         s.steps.map((st, i) => `${i + 1}. ${st.action} → **assert:** ${st.assert}${st.shot ? " **[shot]**" : ""}`).join("\n"),
                 )
                 .join("\n\n");

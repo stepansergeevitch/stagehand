@@ -574,6 +574,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                     <summary>
                                         <h3><span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
                                     </summary>
+                                    {s.seed && s.seed.length > 0 ? (
+                                        <div className="seed"><b>Seed</b><ul className="plain">{s.seed.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
+                                    ) : (
+                                        <div className="seed quiet">Seed: nothing beyond a logged-in user</div>
+                                    )}
                                     <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
                                 </details>
                             ))}

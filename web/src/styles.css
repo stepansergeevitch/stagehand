@@ -172,6 +172,9 @@ details.sub > .sub-body { margin-top: 6px; }
 .markdown details.md-section > summary > h2 { border-top: 0; padding-top: 6px; }
 .markdown details.md-section > .md-section-body { padding-left: 14px; border-left: 2px solid var(--line); margin: 4px 0 8px 5px; }
 .scenario { border-top: 1px solid var(--line); padding: 10px 0; }
+.scenario .seed { margin: 4px 0 8px; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 4px; font-size: 13px; }
+.scenario .seed b { color: var(--accent); margin-right: 6px; }
+.scenario .seed ul.plain { margin: 2px 0 0; }
 .scenario h3 { margin: 0 0 6px; display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; }
 details.scenario > summary h3 { margin: 0; flex: 1; }
 details.scenario > ol, details.scenario > div { margin-top: 6px; }
