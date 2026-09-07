@@ -73,6 +73,8 @@ export interface EnvRow {
     ticket_source: "clickup" | "linear";
     // KEY=VALUE per line; exported into every process run for this env (git, setup, BE/FE, claude runs, terminal).
     env_vars: string | null;
+    // JSON (see rules.ts Rules): commit/branch/PR rules enforced by the generated skills and guard hook.
+    rules: string | null;
     created_at: string;
 }
 
@@ -254,6 +256,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.env_vars", `ALTER TABLE envs ADD COLUMN env_vars TEXT`],
     ["reviews.comments", `ALTER TABLE reviews ADD COLUMN comments TEXT`],
     ["accounts.default_model", `ALTER TABLE accounts ADD COLUMN default_model TEXT`],
+    ["envs.rules", `ALTER TABLE envs ADD COLUMN rules TEXT`],
     ["tasks.ticket_url", `ALTER TABLE tasks ADD COLUMN ticket_url TEXT`],
     ["tasks.model", `ALTER TABLE tasks ADD COLUMN model TEXT`],
 ];

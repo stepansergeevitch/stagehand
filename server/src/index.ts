@@ -12,6 +12,7 @@ import { z } from "zod";
 import { loadConfig, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
+import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -142,6 +143,13 @@ const badCheckouts = async (env: { path: string; base_branch: string; repos: str
 
 app.get("/api/envs", (c) => c.json(envsAll()));
 
+// Effective rules (defaults merged) and the PR templates found in the env's checkouts, for the environment page.
+app.get("/api/envs/:id/rules", (c) => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
+    if (!env) return c.json({ error: "not found" }, 404);
+    return c.json({ rules: rulesOf(env), defaults: Rules.parse({}), prTemplates: prTemplates(env), guardHook: GUARD_HOOK });
+});
+
 // Tickets assigned to the configured user in this env's task system, for the new-task dropdown.
 app.get("/api/envs/:id/my-tickets", async (c) => {
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
@@ -226,11 +234,13 @@ app.patch("/api/envs/:id", async (c) => {
             branchPrefix: z.string().nullable().optional(),
             ticketSource: z.enum(["clickup", "linear"]).optional(),
             envVars: z.string().nullable().optional(),
+            rules: Rules.partial().optional(),
         }),
         await c.req.json(),
     );
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
     if (!env) return c.json({ error: "not found" }, 404);
+    const mergedRules = body.rules === undefined ? env.rules : JSON.stringify(Rules.parse({ ...rulesOf(env), ...body.rules }));
     const pick = <T,>(next: T | undefined, cur: T): T => (next === undefined ? cur : next);
     const repos = body.repos === undefined ? env.repos : body.repos && body.repos.length ? JSON.stringify(body.repos) : null;
     if (repos !== env.repos) {
@@ -238,7 +248,7 @@ app.patch("/api/envs/:id", async (c) => {
         if (bad) return c.json({ error: bad }, 400);
     }
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, rules = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         pick(body.defaultAccountId, env.default_account_id),
@@ -256,6 +266,7 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.branchPrefix, env.branch_prefix),
         body.ticketSource ?? env.ticket_source,
         pick(body.envVars, env.env_vars),
+        mergedRules,
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));

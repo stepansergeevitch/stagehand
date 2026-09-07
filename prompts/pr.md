@@ -2,23 +2,14 @@ This is the PR DRAFT step for ticket {{ticketId}} in worktree {{worktree}} on br
 
 {{repoLayout}} If the workspace has several repositories, run the git commands below in each repository that has commits ahead of `{{baseBranch}}` and draft one PR per such repository (put the extra drafts in `body` under a `## Companion PRs` heading, one per repository).
 
-1. Read `.github/pull_request_template.md` in the repo and `{{taskDir}}/impl.json`, `{{taskDir}}/design.json`.
+1. PR template: {{prTemplate}}. Read it when there is one, plus `{{taskDir}}/impl.json` and `{{taskDir}}/design.json`.
 2. Look at `git log --oneline origin/{{baseBranch}}..HEAD` and `git diff --stat origin/{{baseBranch}}...HEAD`.
 3. Title: `{{ticketIdUpper}} <imperative phrase>`, under 70 characters — e.g. `{{ticketIdUpper}} Add builder deposit credit to sales schedule`. No adjectives like comprehensive/robust/seamless, no benefit framing.
-4. Body: the template, filled in the house style below. Keep the template's own headings and checkbox lines exactly; add nothing else.
+4. Body: the template with its headings and checkbox lines kept exactly (or just a description when there is no template), written in the environment's house style below. Add nothing beyond what the rules ask for; when in doubt, cut.
 
-## House style (this is how the author writes PRs — match it)
+## House style for this environment (the /pr-description skill says the same)
 
-- **Description = one or two plain sentences.** What the change adds/changes/fixes, in product words. At most one or two code identifiers in backticks (the main class or component) — never a list of call sites, methods, files or tests; the diff shows those. A companion PR in another repo gets one sentence with its link. That is all. Examples of the real thing:
-  - "Fix flaky tests: Isolate test Redis cache; pin BOE loan fields."
-  - "Adds monthly-compounding construction cost inflation to Hard/Soft Costs."
-  - "Add Builder Deposit source constants, hide from picker. Requires the companion core-repo PR https://github.com/…/pull/13740 that adds the actual `source_type` row this UUID refers to."
-  - "Add RFP attachment repo and business entity"
-  - "Wires up the Builder Deposit source type that PRODUCT-8588 scaffolded: the deposit total is spread as a credit across the sales schedule periods and netted against sale proceeds in Returns."
-- **No** sub-headings, tables, "decision" essays, rationale paragraphs, lists of tests, "notes for reviewer", "out of scope" or "follow-up" sections. If the ticket explicitly asks for a decision to be recorded in the PR, add ONE short sentence ("Duplicate lookup keeps today's `.one()` behaviour."). Everything else the reviewer can read in the diff.
-- **Checkboxes:** tick exactly one in Type of change, the applicable ones in Development Setup, one Risk Level, "Regular Deploy" unless the diff needs otherwise. Mobile Impact (when present): tick one; a reason line only for "Mobile unaffected — reason below". Leave the Reviewer Checklist unticked except "covered with tests" when it is.
-- **QA Instructions:** leave the template's `1. ` line exactly as it is, empty. The author never fills this section; the QA evidence lives in Stagehand.
-- Target length: the description is 1–2 lines. When in doubt, cut.
+{{prRules}}
 
 ## Output contract
 

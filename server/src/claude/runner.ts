@@ -19,6 +19,8 @@ export interface RunSpec {
     appendSystemPrompt?: string;
     eventLogPath?: string;
     extraEnv?: Record<string, string>;
+    // Extra settings file (hooks etc.), passed as --settings.
+    settingsPath?: string;
 }
 
 export const RateLimitInfo = z.object({
@@ -109,6 +111,7 @@ export const buildArgs = (spec: RunSpec): string[] => {
     for (const d of spec.addDirs ?? []) args.push("--add-dir", d);
     if (spec.allowedTools?.length) args.push("--allowedTools", spec.allowedTools.join(","));
     if (spec.appendSystemPrompt) args.push("--append-system-prompt", spec.appendSystemPrompt);
+    if (spec.settingsPath) args.push("--settings", spec.settingsPath);
     return args;
 };
 

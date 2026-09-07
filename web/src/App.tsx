@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, modelLabel, STAGE_LABEL, STAGE_ORDER, type Account, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
 import { TaskDetailView } from "./TaskDetail";
+import { EnvPage } from "./EnvPage";
 
 type Group = "Pinned" | "Needs input" | "Working" | "Idle" | "Failed" | "Completed" | "Stopped";
 
@@ -62,7 +63,7 @@ export const App = () => {
     const [selected, setSelected] = useState<string | null>(null);
     const [detail, setDetail] = useState<TaskDetail | null>(null);
     const [feed, setFeed] = useState<Record<string, string[]>>({});
-    const [modal, setModal] = useState<"task" | "env" | "env-edit" | "account" | "settings" | null>(null);
+    const [modal, setModal] = useState<"task" | "env" | "account" | "settings" | null>(null);
     const [settings, setSettings] = useState<Settings | null>(null);
     useEffect(() => {
         void api.settings().then(setSettings).catch(() => undefined);
@@ -70,6 +71,7 @@ export const App = () => {
     const [terminal, setTerminal] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [moreOpen, setMoreOpen] = useState(false);
+    const [page, setPage] = useState<"tasks" | "env">("tasks");
 
     const reload = useCallback(async () => {
         const [a, e, t] = await Promise.all([api.accounts(), api.envs(), api.tasks()]);
@@ -149,7 +151,7 @@ export const App = () => {
                 <button className="primary" disabled={!env} onClick={() => setModal("task")}>+ task</button>
                 <span className="extra">
                     <button onClick={() => setModal("env")}>+ env</button>
-                    {env && <button onClick={() => setModal("env-edit")}>edit env</button>}
+                    {env && <button onClick={() => setPage("env")}>configure env</button>}
                 </span>
                 <span className="spacer" />
                 <span className="extra gauges">{accounts.map((a) => <Gauge key={a.id} a={a} />)}</span>
@@ -158,7 +160,15 @@ export const App = () => {
                     <button onClick={() => setModal("settings")} title="Integrations & defaults">⚙</button>
                 </span>
             </header>
-            <div className={`main ${selected ? "has-selection" : ""}`}>
+            {page === "env" && env && (
+                <div className="main page">
+                    <main className="detail">
+                        {error && <div className="blocked-box">{error}</div>}
+                        <EnvPage env={env} accounts={accounts} onBack={() => setPage("tasks")} onChanged={reload} onError={setError} />
+                    </main>
+                </div>
+            )}
+            {page === "tasks" && <div className={`main ${selected ? "has-selection" : ""}`}>
                 <aside className="list">
                     {visible.length === 0 && <div className="empty">No tasks in this env yet.</div>}
                     {grouped.map(([g, list]) => (
@@ -200,7 +210,7 @@ export const App = () => {
                         />
                     )}
                 </main>
-            </div>
+            </div>}
             {modal === "task" && env && (
                 <Modal title={`New task in ${env.name}`} onClose={() => setModal(null)}>
                     <TaskForm accounts={accounts} env={env} settings={settings} onSubmit={async (ticket, acc, model) => { await run(() => api.createTask(env.id, ticket, acc, model)); setModal(null); }} />
@@ -209,11 +219,6 @@ export const App = () => {
             {modal === "env" && (
                 <Modal title="Add environment" onClose={() => setModal(null)}>
                     <EnvForm accounts={accounts} onSubmit={async (b) => { await run(() => api.addEnv(b)); setModal(null); }} />
-                </Modal>
-            )}
-            {modal === "env-edit" && env && (
-                <Modal title={`Edit ${env.name} · ${env.path}`} onClose={() => setModal(null)} wide>
-                    <EnvEditForm env={env} accounts={accounts} onSubmit={async (b) => { await run(() => api.patchEnv(env.id, b)); setModal(null); }} />
                 </Modal>
             )}
             {modal === "settings" && settings && (

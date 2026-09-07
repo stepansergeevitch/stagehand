@@ -12,7 +12,7 @@ You are starting work on ticket {{ticketId}} in the project at {{envPath}} (base
 3. Search institutional memory: call `mempalace_search` with the ticket's keywords, affected services/models and domain terms (skip only if the palace returns nothing relevant).
 4. Read the code the ticket touches. Trace the real code paths. Use Explore subagents for broad searches, direct Read/Grep for targeted lookups. Do NOT propose a fix yet.
 5. Write `{{taskDir}}/research.md` for an engineer who has never seen this area: ticket description and acceptance criteria verbatim, the purpose of the existing functionality, how it behaves today, the key classes/functions/files with paths, the data flow, relevant business rules and edge cases, and everything relevant the palace returned. Concrete and technical, not a summary.
-6. Produce a branch name: lowercase ticket id, a hyphen, then a short kebab-case slug of the ticket title (e.g. `eng-21986-fix-recoverables-ws`). Lowercase letters, digits, dots, hyphens only. No prefix — the orchestrator applies the project's branch prefix itself.
+6. Produce a branch name: {{branchRule}} No prefix — the orchestrator applies the project's branch prefix itself.
 
 ## Output contract
 

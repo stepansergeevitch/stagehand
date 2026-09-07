@@ -22,7 +22,13 @@ export interface Env {
     id: string; name: string; path: string; base_branch: string; default_account_id: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
+    rules: string | null;
 }
+export interface Rules {
+    commitPattern: string; commitForbid: string[]; commitHint: string; branchPattern: string; branchHint: string;
+    allowCommit: boolean; allowPush: boolean; allowPrCreate: boolean; prRules: string; prTemplatePath: string | null;
+}
+export interface EnvRules { rules: Rules; defaults: Rules; prTemplates: Array<{ dir: string; path: string | null; overridden: boolean }>; guardHook: string }
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
@@ -99,9 +105,12 @@ export const api = {
             name?: string; baseBranch?: string; defaultAccountId?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
+            rules?: Partial<Rules>;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
+    envRules: (id: string) => fetch(`/api/envs/${id}/rules`).then((r) => j<EnvRules>(r)),
+    adoptAccount: (name: string, configDir: string) => post<{ account: Account; terminal: string | null }>("/api/accounts?probe=1", { name, configDir, adopt: true }),
     tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
     createTask: (envId: string, ticket: string, accountId?: string, model?: string) => post<Task>("/api/tasks", { envId, ticket, accountId, model }),

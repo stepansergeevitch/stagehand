@@ -6,6 +6,11 @@ import type { Config } from "./config.js";
 import { now, parseEnvVars, type AccountRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
+import { materializeRules, prTemplates, rulesOf } from "./rules.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 import type { Services } from "./services.js";
 import { fetchTicket, parseTicketRef, renderTicketForPrompt, Ticket } from "./tickets.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
@@ -129,6 +134,7 @@ export class Engine extends EventEmitter {
     }
 
     private tick(): void {
+        this.pollPrs();
         const due = this.db
             .prepare(`SELECT * FROM tasks WHERE status IN ('rate_limited', 'queued')`)
             .all() as TaskRow[];
@@ -362,7 +368,147 @@ export class Engine extends EventEmitter {
         }
         const next = STAGE_DEFS[task.stage].next;
         if (!next) return;
+        if (task.stage === "pr_creation_review") {
+            void this.createPr(taskId);
+            return;
+        }
         this.advance(taskId, next);
+    }
+
+    // ---------- pull requests ----------
+
+    private prCheckouts(task: TaskRow, env: EnvRow): string[] {
+        const wt = task.worktree_path ?? env.path;
+        const subs = envRepos(env);
+        return subs.length ? subs.map((d) => join(wt, d)) : [wt];
+    }
+
+    private async git(cwd: string, args: string[], env: EnvRow): Promise<string> {
+        const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], { env: { ...process.env, ...parseEnvVars(env.env_vars) }, maxBuffer: 4 * 1024 * 1024 });
+        return stdout.trim();
+    }
+
+    private async gh(cwd: string, args: string[], env: EnvRow): Promise<string> {
+        const { stdout } = await execFileAsync("gh", args, { cwd, env: { ...process.env, ...parseEnvVars(env.env_vars) }, maxBuffer: 4 * 1024 * 1024 });
+        return stdout.trim();
+    }
+
+    // After the human approves the draft: push (if allowed) and open the PR (if allowed); otherwise tell the human what to do.
+    // The poller then tracks the PR by head branch, so a PR the human opens by hand is picked up the same way.
+    private async createPr(taskId: string): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task?.branch) return;
+        const env = this.env(task.env_id);
+        const rules = rulesOf(env);
+        const draft = this.readArtifactJson<{ title: string; body: string; base: string }>(taskId, "pr.json");
+        const checkouts = this.prCheckouts(task, env);
+        const created: string[] = [];
+        const manual: string[] = [];
+        for (const cwd of checkouts) {
+            const ahead = await this.git(cwd, ["log", "--oneline", `origin/${env.base_branch}..HEAD`], env).catch(() => "");
+            if (!ahead) continue;
+            const label = checkouts.length > 1 ? `${cwd.slice((task.worktree_path ?? env.path).length + 1)}: ` : "";
+            if (!rules.allowPush) {
+                manual.push(`${label}push \`${task.branch}\``);
+                continue;
+            }
+            this.setTaskStatus(taskId, "running", `PR Creation Review · pushing ${task.branch}`);
+            try {
+                await this.git(cwd, ["push", "-u", "origin", task.branch], env);
+            } catch (e) {
+                this.setTaskStatus(taskId, "failed", `push failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                return;
+            }
+            if (!rules.allowPrCreate || !draft) {
+                manual.push(`${label}open the PR from \`${task.branch}\``);
+                continue;
+            }
+            try {
+                const url = await this.gh(cwd, ["pr", "create", "--base", draft.base || env.base_branch, "--head", task.branch, "--title", draft.title, "--body", draft.body], env);
+                created.push(url);
+                const number = Number(url.split("/").pop());
+                this.db
+                    .prepare(`INSERT INTO pr_state (task_id, number, url, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET number = excluded.number, url = excluded.url, updated_at = excluded.updated_at`)
+                    .run(taskId, Number.isFinite(number) ? number : null, url, now());
+            } catch (e) {
+                this.setTaskStatus(taskId, "failed", `gh pr create failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                return;
+            }
+        }
+        this.setStage(taskId, "pr_waiting");
+        if (manual.length) this.setTaskStatus(taskId, "idle", `PR Waiting · this env forbids it for agents — please ${manual.join(", ")}; Stagehand will pick the PR up by branch name`);
+        else this.setTaskStatus(taskId, "idle", `PR Waiting · ${created.join(" ")}`);
+    }
+
+    // Every few ticks: look the PR up (by stored number or by head branch) and move the task through pr_waiting → pr_green → pr_approved → done.
+    private pollCounter = 0;
+    private pollPrs(): void {
+        if (++this.pollCounter % 8 !== 0) return; // scheduler ticks every 15 s → every 2 min
+        const tasks = this.db.prepare(`SELECT * FROM tasks WHERE stage IN ('pr_waiting','pr_green','pr_approved') AND status = 'idle'`).all() as TaskRow[];
+        for (const task of tasks) void this.pollPr(task).catch((e: unknown) => console.warn(`[stagehand] PR poll ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+    }
+
+    private async pollPr(task: TaskRow): Promise<void> {
+        if (!task.branch) return;
+        const env = this.env(task.env_id);
+        const cwd = this.prCheckouts(task, env)[0]!;
+        const state = this.db.prepare(`SELECT * FROM pr_state WHERE task_id = ?`).get(task.id) as { number: number | null; url: string | null } | undefined;
+        let number = state?.number ?? null;
+        if (!number) {
+            const list = JSON.parse(await this.gh(cwd, ["pr", "list", "--head", task.branch, "--state", "all", "--json", "number,url", "--limit", "1"], env)) as Array<{ number: number; url: string }>;
+            if (!list[0]) return;
+            number = list[0].number;
+            this.db
+                .prepare(`INSERT INTO pr_state (task_id, number, url, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET number = excluded.number, url = excluded.url, updated_at = excluded.updated_at`)
+                .run(task.id, number, list[0].url, now());
+        }
+        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(number), "--json", "url,state,mergedAt,reviewDecision,statusCheckRollup"], env)) as {
+            url: string;
+            state: string;
+            mergedAt: string | null;
+            reviewDecision: string;
+            statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string; status?: string }>;
+        };
+        const checks = pr.statusCheckRollup ?? [];
+        const failed = checks.filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
+        const pending = checks.filter((c) => !c.conclusion && !/SUCCESS|FAILURE|ERROR/i.test(c.state ?? "") && (c.status ?? "") !== "COMPLETED");
+        this.db
+            .prepare(`UPDATE pr_state SET url = ?, checks_json = ?, review_decision = ?, merged_at = ?, updated_at = ? WHERE task_id = ?`)
+            .run(pr.url, JSON.stringify(checks), pr.reviewDecision ?? null, pr.mergedAt ?? null, now(), task.id);
+        if (pr.mergedAt) {
+            this.setStage(task.id, "done");
+            this.setTaskStatus(task.id, "done", `merged · ${pr.url}`);
+            return;
+        }
+        if (pr.state === "CLOSED") {
+            this.setTaskStatus(task.id, "stopped", `PR closed without merge · ${pr.url}`);
+            return;
+        }
+        if (failed.length) {
+            const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_red'`).get(task.id) as { n: number };
+            if (rounds.n >= 3) {
+                this.setTaskStatus(task.id, "blocked", `PR Red · ${failed.length} check(s) failing after 3 fix rounds · ${pr.url}`);
+                return;
+            }
+            this.setStage(task.id, "pr_red");
+            const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");
+            this.dispatch(task.id, "pr_red", {
+                attempt: rounds.n + 1,
+                extraVars: { failureOutput: `Failing checks: ${names}. Read their logs with \`gh pr checks ${number}\` and \`gh run view --log-failed <run-id>\` before changing anything.` },
+            });
+            return;
+        }
+        if (pending.length) {
+            this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`PR Waiting · ${pending.length} check(s) running · ${pr.url}`, now(), task.id);
+            return;
+        }
+        if (pr.reviewDecision === "APPROVED") {
+            if (task.stage !== "pr_approved") this.setStage(task.id, "pr_approved");
+            this.setTaskStatus(task.id, "idle", `PR Approved · waiting for merge · ${pr.url}`);
+            return;
+        }
+        if (task.stage !== "pr_green") this.setStage(task.id, "pr_green");
+        this.setTaskStatus(task.id, "idle", `PR Green · checks passed, waiting for review · ${pr.url}`);
     }
 
     // ---------- stage machine ----------
@@ -434,6 +580,18 @@ export class Engine extends EventEmitter {
             envPath: env.path,
             baseBranch: env.base_branch,
             repoLayout: describeRepoLayout(env, task.worktree_path),
+            ...((): Record<string, string> => {
+                const r = rulesOf(env);
+                const templates = prTemplates(env);
+                return {
+                    commitRule: r.allowCommit
+                        ? `Commit in small steps; every message must match \`${r.commitPattern}\` — ${r.commitHint}${r.commitForbid.length ? ` Never include ${r.commitForbid.map((f) => `\`${f}\``).join(", ")}.` : ""}`
+                        : "Commits are NOT allowed in this environment: leave your changes uncommitted (staging is fine) and say so in your notes; the human commits.",
+                    branchRule: `${r.branchHint} Must match \`${r.branchPattern}\`.`,
+                    prRules: r.prRules,
+                    prTemplate: templates.map((t) => `${t.dir === "." ? "" : `${t.dir}: `}${t.path ?? "none — no template in this repo; write the description only"}`).join("; "),
+                };
+            })(),
             worktree: task.worktree_path ?? env.path,
             branch: task.branch ?? "",
             taskDir,
@@ -525,11 +683,14 @@ export class Engine extends EventEmitter {
         const stageModel = (this.cfg.stageModels as Record<string, string | null | undefined>)[def.stage];
         const explicitModel = task.model ?? stageModel ?? this.cfg.defaultModel ?? null;
 
+        const rulesMat = materializeRules(env, task.worktree_path, this.cfg.dataDir);
         const run = startClaude({
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: account.config_dir,
             extraEnv: parseEnvVars(env.env_vars),
+            settingsPath: rulesMat.settingsPath,
+            appendSystemPrompt: rulesMat.systemPrompt,
             ...(fresh ? {} : priorRuns.n === 0 ? { sessionId: task.session_id, name: task.ticket_id } : { resume: task.session_id }),
             chrome: def.chrome === true,
             ...(explicitModel ? { model: explicitModel } : {}),
