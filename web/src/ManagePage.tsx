@@ -200,7 +200,7 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                                 {a.chrome_capable === null ? <span className="chip">not probed</span> : a.chrome_capable ? (
                                     <select value={a.chrome_device_id ?? ""} onChange={(e) => void act(() => api.patchAccount(a.id, { chromeDeviceId: e.target.value || null }))}>
                                         <option value="">— pick a profile —</option>
-                                        {a.browsers.map((b) => <option key={b.deviceId} value={b.deviceId}>{chromeBrowserLabel(b)}{b.account ? ` · ${b.account}` : ""}{b.profile ? "" : ` (${b.deviceId.slice(0, 8)})`}</option>)}
+                                        {(a.browsers ?? []).map((b) => <option key={b.deviceId} value={b.deviceId}>{chromeBrowserLabel(b)}{b.account ? ` · ${b.account}` : ""}{b.profile ? "" : ` (${b.deviceId.slice(0, 8)})`}</option>)}
                                     </select>
                                 ) : <span className="chip bad">no Chrome bridge under this login</span>}
                             </span>
