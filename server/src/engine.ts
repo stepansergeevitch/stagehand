@@ -815,7 +815,17 @@ export class Engine extends EventEmitter {
                     (s) =>
                         `### ${s.id} — ${s.title}\nStart: \`${s.url}\` · Persona: ${s.persona}\n` +
                         ((s.seed ?? []).length
-                            ? `Seed:\n${(s.seed ?? []).map((x, i) => `- seed ${i + 1}${/^\s*(shell|sql)\s*:/i.test(x) ? " (run by the orchestrator — see the seed report)" : " (do this yourself)"}: ${x}`).join("\n")}\n`
+                            ? `Seed:\n${((): string => {
+                                  let afterUi = false;
+                                  return (s.seed ?? [])
+                                      .map((x, i) => {
+                                          const shell = /^\s*(shell|sql)\s*:/i.test(x);
+                                          if (!shell) afterUi = afterUi || /^\s*ui\s*:/i.test(x);
+                                          const tag = shell ? (afterUi ? "run it yourself: ONE Bash call, exact command, after the ui steps" : "run by the orchestrator — see the seed report") : "do this yourself";
+                                          return `- seed ${i + 1} (${tag}): ${x}`;
+                                      })
+                                      .join("\n");
+                              })()}\n`
                             : "Seed: nothing beyond a logged-in user.\n") +
                         s.steps.map((st, i) => `${i + 1}. ${st.action} → **assert:** ${st.assert}${st.shot ? " **[shot]**" : ""}`).join("\n"),
                 )
@@ -957,10 +967,17 @@ export class Engine extends EventEmitter {
         const lines: string[] = [];
         const log: string[] = [];
         for (const s of design?.qa ?? []) {
+            // Shell steps that come after a ui step depend on what the ui step creates; the runner executes those itself.
+            let afterUi = false;
             (s.seed ?? []).forEach((step, i) => {
                 const m = /^\s*(shell|sql)\s*:\s*/i.exec(step);
                 if (!m) {
+                    afterUi = afterUi || /^\s*ui\s*:/i.test(step);
                     lines.push(`${s.id} seed ${i + 1}: left for you (${/^\s*ui\s*:/i.test(step) ? "ui" : "not a shell command"})`);
+                    return;
+                }
+                if (afterUi) {
+                    lines.push(`${s.id} seed ${i + 1}: run it yourself after the ui steps — ONE Bash call with the exact command from the scenario's seed list`);
                     return;
                 }
                 const cmd = step.slice(m[0].length);
