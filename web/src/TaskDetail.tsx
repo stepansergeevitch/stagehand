@@ -708,10 +708,10 @@ const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design
         if (hit) hit.extra = extra;
         else parts.push({ key: title, title, extra });
     };
-    attach(/implementation|plan by layer/i, "Plan by layer", (
+    attach(/^change|implementation|plan by layer/i, "Plan by layer", (
         <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
     ));
-    attach(/test plan/i, "Test plan", (
+    attach(/^tests?\b|test plan/i, "Test plan", (
         <table><tbody>{design.testPlan.map((t) => <tr key={t.file}><td><code>{t.file}</code></td><td><ul className="plain">{t.cases.map((c, i) => <li key={i}><code>{c}</code></li>)}</ul></td></tr>)}</tbody></table>
     ));
     attach(/qa/i, "QA scenarios", <QaScenarios design={design} />);

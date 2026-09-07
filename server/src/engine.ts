@@ -67,6 +67,10 @@ interface DispatchOpts {
 
 const FIVE_HOUR = "five_hour";
 
+// Required `## ` sections of design.md, in order (numbering optional); mirrored in prompts/design.md.
+export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem", "Change", "Risks and edge cases", "Tests", "QA"] as const;
+export const DESIGN_MAX_WORDS = 700;
+
 // One paragraph for prompts: where the code lives and how the worktree is laid out.
 const describeRepoLayout = (env: EnvRow, worktree: string | null): string => {
     const subs = envRepos(env);
@@ -1026,7 +1030,27 @@ export class Engine extends EventEmitter {
         }
         const parsed = def.contract!.safeParse(raw);
         if (!parsed.success) return { ok: false, error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") };
+        if (def.stage === "design_proposal") {
+            const md = this.designMdProblems(taskId);
+            if (md) return { ok: false, error: md };
+        }
         return { ok: true, data: parsed.data };
+    }
+
+    // The proposal is for a human: a fixed section order and a hard word cap keep it dense. Violations go back to the agent
+    // through the normal contract-retry path.
+    private designMdProblems(taskId: string): string | null {
+        const p = join(this.taskDir(taskId), "design.md");
+        if (!existsSync(p)) return "design.md was not written";
+        const md = readFileSync(p, "utf8");
+        const problems: string[] = [];
+        const headings = [...md.matchAll(/^##\s+(.+?)\s*$/gm)].map((m) => m[1]!.replace(/^\d+[.)]\s*/, "").toLowerCase());
+        for (const want of DESIGN_SECTIONS) if (!headings.some((h) => h.startsWith(want.toLowerCase()))) problems.push(`design.md is missing the section "## ${want}"`);
+        const words = md.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
+        if (words > DESIGN_MAX_WORDS) problems.push(`design.md is ${words} words; the cap is ${DESIGN_MAX_WORDS} — cut repetition, provenance remarks and prose around tables, keep every path:line`);
+        if (/^\s*```json/m.test(md)) problems.push("design.md contains a JSON block — describe scenarios and plans in prose/tables; design.json carries the structure");
+        if (/mempalace|research\.md|as research (found|showed)|per the ticket'?s? (own )?note/i.test(md)) problems.push("design.md refers to where facts came from (research.md, mempalace, ticket notes) — state the facts only");
+        return problems.length ? problems.join("; ") : null;
     }
 
     private afterStage(taskId: string, def: StageDef, data: unknown): void {
