@@ -332,7 +332,8 @@ label.inline { display: inline-flex; align-items: center; gap: 4px; }
     /* one pane at a time: the list, or the selected task with a back button */
     .main { grid-template-columns: 1fr; }
     .main.has-selection .list { display: none; }
-    .main:not(.has-selection) .detail { display: none; }
+    /* only the task list/detail pair is one-pane-at-a-time; every other page (.main.page) is the detail pane alone */
+    .main:not(.has-selection):not(.page) .detail { display: none; }
     .list { border-right: 0; }
     .row { padding: 10px 12px; }
     .detail { padding: 12px 12px 60px; overflow-x: hidden; }
