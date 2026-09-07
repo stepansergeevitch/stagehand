@@ -4,7 +4,7 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer as createHttpsServer } from "node:https";
 import { join, normalize } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -860,6 +860,22 @@ app.get("/api/health", (c) => c.json({ ok: true, config: { ...cfg, publicAccess:
 
 // The built web UI is served on the public listener only; locally the Vite dev server (5173) proxies to this process.
 const WEB_DIST = "../web/dist";
+
+// True when any file under web/src is newer than the built index.html — the phone would be looking at a stale UI.
+const webBundleStale = (): boolean => {
+    const built = statSync(join(process.cwd(), WEB_DIST, "index.html")).mtimeMs;
+    const src = join(process.cwd(), "../web/src");
+    const newest = (dir: string): number => {
+        let m = 0;
+        for (const name of readdirSync(dir)) {
+            const p = join(dir, name);
+            const st = statSync(p);
+            m = Math.max(m, st.isDirectory() ? newest(p) : st.mtimeMs);
+        }
+        return m;
+    };
+    return existsSync(src) && newest(src) > built;
+};
 const NATPMPC = existsSync("/opt/homebrew/bin/natpmpc") ? "/opt/homebrew/bin/natpmpc" : "natpmpc";
 const staticFiles = serveStatic({ root: WEB_DIST });
 const spaIndex = serveStatic({ path: `${WEB_DIST}/index.html` });
@@ -872,6 +888,7 @@ const startPublicListener = (): void => {
     if (!pa.enabled) return;
     if (!pa.certPath || !pa.keyPath) throw new Error("publicAccess.enabled needs certPath and keyPath");
     if (!existsSync(join(process.cwd(), WEB_DIST, "index.html"))) console.warn(`[stagehand] ${WEB_DIST}/index.html missing — run \`npx vite build\` in web/ for the public UI`);
+    else if (webBundleStale()) console.warn(`[stagehand] ${WEB_DIST} is older than web/src — phones on the public listener see an old UI; run \`npx vite build\` in web/`);
     const publicServer = serve(
         {
             fetch: app.fetch,
