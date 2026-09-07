@@ -70,7 +70,7 @@ const Gauge = ({ a }: { a: Account }) => {
     const cls = (u: number) => (u >= 0.9 ? "bad" : u >= 0.6 ? "warn" : "");
     const enterprise = a.plan === "enterprise";
     const usage = a.usage ?? { today: { tokens: 0, cost: 0 }, week: { tokens: 0, cost: 0 } };
-    const title = `${a.email ?? "no auth"} · ${a.org ?? ""} · ${a.plan ?? ""}${five ? ` · 5h window ${Math.round(five.utilization * 100)}%` : ""}${week ? ` · 7d window ${Math.round(week.utilization * 100)}%` : ""}${enterprise ? " · counts what Stagehand ran on this account (tasks, helpers, probes); usage elsewhere needs the Admin API" : ""}`;
+    const title = `${a.email ?? "no auth"} · ${a.org ?? ""} · ${a.plan ?? ""}${five ? ` · 5h window ${Math.round(five.utilization * 100)}%` : ""}${week ? ` · 7d window ${Math.round(week.utilization * 100)}%` : ""}${enterprise ? " · what Stagehand ran on this account (tasks, helpers, probes)" : ""}`;
     return (
         <span className={`gauge ${enterprise ? "enterprise" : ""}`} title={title}>
             <span className="gauge-name">{a.name}{!a.logged_in && <span className="chip bad">no auth</span>}{a.logged_in === 1 && !a.has_token && <span className="chip warn">legacy</span>}</span>
@@ -440,8 +440,6 @@ const SettingsForm = ({ settings, accounts, onSubmit }: { settings: Settings; ac
     const [clickupToken, setClickupToken] = useState("");
     const [clickupTeamId, setClickupTeamId] = useState(settings.clickupTeamId ?? "");
     const [linearApiKey, setLinearApiKey] = useState("");
-    const [adminKey, setAdminKey] = useState("");
-    const [adminUserId, setAdminUserId] = useState(settings.anthropicUserId ?? "");
     const [defaultModel, setDefaultModel] = useState(settings.defaultModel ?? "");
     return (
         <>
@@ -449,8 +447,6 @@ const SettingsForm = ({ settings, accounts, onSubmit }: { settings: Settings; ac
             <label>ClickUp personal API token (pk_…) <input value={clickupToken} onChange={(e) => setClickupToken(e.target.value)} placeholder={settings.clickupToken ?? "not set"} /></label>
             <label>ClickUp team id <input value={clickupTeamId} onChange={(e) => setClickupTeamId(e.target.value)} /></label>
             <label>Linear API key <input value={linearApiKey} onChange={(e) => setLinearApiKey(e.target.value)} placeholder={settings.linearApiKey ?? "not set"} /></label>
-            <label>Anthropic Admin API key (enterprise org, read:analytics scope — adds an organization section to Analytics) <input value={adminKey} onChange={(e) => setAdminKey(e.target.value)} placeholder={settings.anthropicAdminKey ?? "not set"} /></label>
-            <label>Anthropic user id to filter the organization report to (optional, user_…) <input value={adminUserId} onChange={(e) => setAdminUserId(e.target.value)} placeholder="whole organization" /></label>
             <label>Default Claude model
                 <select value={defaultModel} onChange={(e) => setDefaultModel(e.target.value)}>
                     {settings.models.map((m) => (
@@ -466,8 +462,6 @@ const SettingsForm = ({ settings, accounts, onSubmit }: { settings: Settings; ac
                 ...(clickupToken ? { clickupToken } : {}),
                 clickupTeamId: clickupTeamId || null,
                 ...(linearApiKey ? { linearApiKey } : {}),
-                ...(adminKey ? { anthropicAdminKey: adminKey } : {}),
-                anthropicUserId: adminUserId || null,
                 defaultModel: defaultModel || null,
             })}>Save</button>
         </>

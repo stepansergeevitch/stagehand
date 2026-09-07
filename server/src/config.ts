@@ -16,10 +16,6 @@ const ConfigSchema = z.object({
     // Resolved once from GET /user with the token above and cached here.
     clickupUserId: z.string().nullable().default(null),
     linearApiKey: z.string().nullable().default(null),
-    // Anthropic Admin API key with the read:analytics scope (Claude Enterprise orgs only): enables the organization
-    // usage section in Analytics. Optional tagged user id (user_…) narrows the report to one member.
-    anthropicAdminKey: z.string().nullable().default(null),
-    anthropicUserId: z.string().nullable().default(null),
     defaultModel: z.string().nullable().default(null),
     // Per-stage model defaults (task.model overrides); cheaper models for reading-heavy or mechanical stages.
     stageModels: z
@@ -70,8 +66,6 @@ const defaults = (): Config => ({
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
     clickupUserId: null,
     linearApiKey: null,
-    anthropicAdminKey: null,
-    anthropicUserId: null,
     defaultModel: null,
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_red: null, helper: "sonnet" },
     publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },

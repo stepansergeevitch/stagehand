@@ -65,11 +65,8 @@ export interface UsageReport {
     since: string | null; totals: Omit<UsageBucket, "key" | "label">;
     byEnv: UsageBucket[]; byAccount: UsageBucket[]; byTask: UsageBucket[]; byStage: UsageBucket[]; byModel: UsageBucket[]; byDay: UsageBucket[];
 }
-export interface OrgUsageRow { day: string; product: string | null; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number; requests: number }
-export type OrgUsage = { configured: false } | { configured: true; error: string } | { configured: true; organizationId: string; refreshedAt: string | null; since: string; rows: OrgUsageRow[] };
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
-    anthropicAdminKey: string | null; anthropicUserId: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
 }
 export interface Ticket {
@@ -167,7 +164,6 @@ export const api = {
     createTask: (envId: string, ticket: string, accountId?: string, model?: string) => post<Task>("/api/tasks", { envId, ticket, accountId, model }),
     settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
     usage: (days: number) => fetch(`/api/usage?days=${days}`).then((r) => j<UsageReport>(r)),
-    orgUsage: (days: number) => fetch(`/api/usage/org?days=${days}`).then((r) => j<OrgUsage>(r)),
     patchSettings: (body: Partial<Omit<Settings, "models">>) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
     review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>

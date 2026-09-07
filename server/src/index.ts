@@ -15,7 +15,6 @@ import { listMyTickets } from "./my-tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
 import { recordUsage, usageReport } from "./usage.js";
-import { fetchOrgUsage } from "./admin-api.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -503,22 +502,6 @@ app.get("/api/usage", (c) => {
     return c.json(usageReport(db, since));
 });
 
-// Organization-wide token usage from the Anthropic Admin API (enterprise orgs; needs the admin key in Settings). Cached 15 min.
-const orgUsageCache = new Map<number, { at: number; data: unknown }>();
-app.get("/api/usage/org", async (c) => {
-    if (!cfg.anthropicAdminKey) return c.json({ configured: false });
-    const days = Math.min(Math.max(Number(c.req.query("days") ?? "7"), 1), 31);
-    const hit = orgUsageCache.get(days);
-    if (hit && Date.now() - hit.at < 15 * 60_000) return c.json({ configured: true, ...(hit.data as object) });
-    try {
-        const data = await fetchOrgUsage(cfg, days);
-        orgUsageCache.set(days, { at: Date.now(), data });
-        return c.json({ configured: true, ...data });
-    } catch (e) {
-        return c.json({ configured: true, error: String((e as Error).message ?? e) });
-    }
-});
-
 // ---------- tasks ----------
 
 app.get("/api/tasks", (c) => c.json(engine.listTasks(c.req.query("env"))));
@@ -540,8 +523,6 @@ app.get("/api/settings", (c) =>
         clickupToken: mask(cfg.clickupToken),
         clickupTeamId: cfg.clickupTeamId,
         linearApiKey: mask(cfg.linearApiKey),
-        anthropicAdminKey: mask(cfg.anthropicAdminKey),
-        anthropicUserId: cfg.anthropicUserId,
         defaultModel: cfg.defaultModel,
         models: MODEL_OPTIONS,
     }),
@@ -553,8 +534,6 @@ app.patch("/api/settings", async (c) => {
             clickupToken: z.string().nullable().optional(),
             clickupTeamId: z.string().nullable().optional(),
             linearApiKey: z.string().nullable().optional(),
-            anthropicAdminKey: z.string().nullable().optional(),
-            anthropicUserId: z.string().nullable().optional(),
             defaultModel: z.string().nullable().optional(),
         }),
         await c.req.json(),
@@ -562,14 +541,6 @@ app.patch("/api/settings", async (c) => {
     if (body.clickupToken !== undefined) cfg.clickupToken = body.clickupToken;
     if (body.clickupTeamId !== undefined) cfg.clickupTeamId = body.clickupTeamId;
     if (body.linearApiKey !== undefined) cfg.linearApiKey = body.linearApiKey;
-    if (body.anthropicAdminKey !== undefined) {
-        cfg.anthropicAdminKey = body.anthropicAdminKey;
-        orgUsageCache.clear();
-    }
-    if (body.anthropicUserId !== undefined) {
-        cfg.anthropicUserId = body.anthropicUserId;
-        orgUsageCache.clear();
-    }
     if (body.defaultModel !== undefined) cfg.defaultModel = body.defaultModel;
     saveConfig(cfg);
     return c.json({ ok: true });
