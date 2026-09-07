@@ -53,6 +53,9 @@ export interface AccountRow {
     // bridge). `login_ok` says the account's browser dir holds one; `chrome_capable` that the bridge answered under it;
     // `chrome_browsers` lists the Chrome profiles (extension instances) seen, `chrome_device_id` the one to use.
     login_ok: number | null;
+    // Which dir holds that browser login: the account's auth dir (a real config dir, e.g. the main one) or the
+    // Stagehand-owned browser dir that can mirror any env's config dir.
+    login_dir: string | null;
     chrome_capable: number | null;
     chrome_browsers: string | null;
     chrome_device_id: string | null;
@@ -396,6 +399,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.chrome_device_id", `ALTER TABLE envs ADD COLUMN chrome_device_id TEXT`],
     ["envs.qa_seed_hints", `ALTER TABLE envs ADD COLUMN qa_seed_hints TEXT`],
     ["accounts.login_ok", `ALTER TABLE accounts ADD COLUMN login_ok INTEGER`],
+    ["accounts.login_dir", `ALTER TABLE accounts ADD COLUMN login_dir TEXT`],
     ["accounts.chrome_browsers", `ALTER TABLE accounts ADD COLUMN chrome_browsers TEXT`],
     ["accounts.chrome_device_id", `ALTER TABLE accounts ADD COLUMN chrome_device_id TEXT`],
     ["accounts.chrome_browser_name", `ALTER TABLE accounts ADD COLUMN chrome_browser_name TEXT`],
@@ -422,6 +426,7 @@ export const migrateAccountsToConfigDirs = (db: Database.Database, opts: { mainC
              chrome_browsers = (SELECT d.chrome_browsers FROM config_dirs d WHERE d.path = accounts.auth_dir)
          WHERE login_ok IS NULL AND EXISTS (SELECT 1 FROM config_dirs d WHERE d.path = accounts.auth_dir)`,
     );
+    db.exec(`UPDATE accounts SET login_dir = auth_dir WHERE login_dir IS NULL AND login_ok = 1`);
     db.exec(
         `UPDATE accounts SET chrome_device_id = (SELECT e.chrome_device_id FROM envs e JOIN config_dirs d ON d.id = e.config_dir_id WHERE d.path = accounts.auth_dir AND e.chrome_device_id IS NOT NULL LIMIT 1),
              chrome_browser_name = (SELECT e.chrome_browser_name FROM envs e JOIN config_dirs d ON d.id = e.config_dir_id WHERE d.path = accounts.auth_dir AND e.chrome_device_id IS NOT NULL LIMIT 1)

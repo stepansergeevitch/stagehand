@@ -192,8 +192,8 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                             <b>Runs in</b><span>{a.has_token ? "any config dir" : a.logged_in ? <>only <code>{a.auth_dir}</code> (set up a token to use it anywhere)</> : "nowhere yet — set up a token"}</span>
                             <b>Browser login</b>
                             <span>
-                                {a.login_ok === null ? <span className="chip">unknown — probe</span> : a.login_ok ? <span className="chip ok">in {a.browser_dir}</span> : <span className="chip bad">none in {a.browser_dir}</span>}
-                                <span className="field-hint">Browser stages (QA, login helper) need a claude.ai browser login here plus a Chrome profile whose Claude extension is signed into this account; tokens get no Chrome bridge.</span>
+                                {a.login_ok === null ? <span className="chip">unknown — probe</span> : a.login_ok ? <span className="chip ok">in {a.login_dir ?? a.auth_dir}</span> : <span className="chip bad">none</span>}
+                                <span className="field-hint">Browser stages (QA, login helper) need a claude.ai browser login plus a Chrome profile whose Claude extension is signed into this account; tokens get no Chrome bridge. A login in the account's own config dir serves envs using that dir; "Log in (browser)" adds one in {a.browser_dir}, which serves every env (the env's config dir is mirrored in).</span>
                             </span>
                             <b>Chrome profile</b>
                             <span>

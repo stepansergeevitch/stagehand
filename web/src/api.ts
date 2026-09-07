@@ -10,7 +10,7 @@ export interface Account {
     id: string; name: string; provider: string; auth_dir: string; has_token: boolean; setting_up: boolean; email: string | null; org: string | null; plan: string | null;
     logged_in: number; failover_enabled: number; failover_threshold: number; default_model: string | null;
     // Browser stages need this account's claude.ai browser login (in browser_dir) and a Chrome profile whose extension is signed into it.
-    login_ok: number | null; chrome_capable: number | null; chrome_device_id: string | null; chrome_browser_name: string | null;
+    login_ok: number | null; login_dir: string | null; chrome_capable: number | null; chrome_device_id: string | null; chrome_browser_name: string | null;
     browsers: ChromeBrowser[]; browser_dir: string;
     limits: Array<{ window: string; utilization: number; resetsAt: number }>;
     // Tokens of every kind and estimated cost since local midnight / over the last 7 days (from the usage table).

@@ -287,9 +287,20 @@ app.delete("/api/config-dirs/:id", (c) => {
 
 // The Chrome extension is bound to the claude.ai account signed into a Chrome profile, and only a browser login (not a
 // token) gets the bridge, so both live on the account: its browser dir holds the login, the probe runs there.
+// A browser login may live in the account's auth dir (a real config dir such as the main one) or in the Stagehand-owned
+// browser dir; the first one found wins and is remembered as login_dir.
 const refreshBrowserLogin = async (acc: AccountRow): Promise<AccountRow> => {
-    const status = await readAuthStatus(browserDirFor(cfg, acc));
-    db.prepare(`UPDATE accounts SET login_ok = ?, email = COALESCE(email, ?), plan = COALESCE(plan, ?) WHERE id = ?`).run(status.loggedIn ? 1 : 0, status.email ?? null, status.subscriptionType ?? null, acc.id);
+    const own = browserDirFor(cfg, acc);
+    const candidates = [...new Set([acc.auth_dir, own])];
+    let found: { dir: string; email: string | null; plan: string | null } | null = null;
+    for (const dir of candidates) {
+        const status = await readAuthStatus(dir);
+        if (status.loggedIn && status.authMethod !== "oauth_token") {
+            found = { dir, email: status.email ?? null, plan: status.subscriptionType ?? null };
+            break;
+        }
+    }
+    db.prepare(`UPDATE accounts SET login_ok = ?, login_dir = ?, email = COALESCE(email, ?), plan = COALESCE(plan, ?) WHERE id = ?`).run(found ? 1 : 0, found?.dir ?? null, found?.email ?? null, found?.plan ?? null, acc.id);
     return accountById(acc.id)!;
 };
 
@@ -312,11 +323,11 @@ app.post("/api/accounts/:id/probe-chrome", async (c) => {
     const acc0 = accountById(c.req.param("id"));
     if (!acc0) return c.json({ error: "not found" }, 404);
     const acc = await refreshBrowserLogin(acc0);
-    const dir = browserDirFor(cfg, acc);
+    const dir = acc.login_dir ?? browserDirFor(cfg, acc);
     if (!acc.login_ok) {
         db.prepare(`UPDATE accounts SET chrome_capable = 0, chrome_browsers = NULL WHERE id = ?`).run(acc.id);
         emitAccount(acc.id);
-        return c.json({ ok: false, detail: `no browser login in ${dir} — click Log in (browser) first`, account: publicAccount(accountById(acc.id)!) });
+        return c.json({ ok: false, detail: `no browser login in ${acc.auth_dir} or ${browserDirFor(cfg, acc)} — click Log in (browser) first`, account: publicAccount(accountById(acc.id)!) });
     }
     const r = await probeChrome(dir, cfg.dataDir, 3, (res) => recordUsage(db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, res));
     const matches = matchChromeProfiles(r.browsers.map((b) => b.deviceId));

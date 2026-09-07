@@ -265,8 +265,12 @@ export class Engine extends EventEmitter {
     ): { ok: true; account: AccountRow; configDir: string; extraEnv: Record<string, string> } | { ok: false; reason: string; exhausted?: { account: AccountRow; resetsAt: number } } {
         const all = this.db.prepare(`SELECT * FROM accounts ORDER BY created_at`).all() as AccountRow[];
         const ordered = accountOrderOf(env).map((id) => all.find((a) => a.id === id)).filter((a): a is AccountRow => !!a);
-        const pool = (ordered.length ? ordered : all).filter(accountBrowserReady);
-        if (pool.length === 0) return { ok: false, reason: "no AI account has a Chrome-paired browser login — AI accounts → Log in (browser), then Probe Chrome" };
+        const ready = (ordered.length ? ordered : all).filter(accountBrowserReady);
+        if (ready.length === 0) return { ok: false, reason: "no AI account has a Chrome-paired browser login — AI accounts → Log in (browser), then Probe Chrome" };
+        const pool = ready.filter((a) => this.browserDir(a, cd) !== null);
+        if (pool.length === 0) {
+            return { ok: false, reason: `${ready.map((a) => a.name).join(", ")} can drive Chrome only from ${ready.map((a) => a.login_dir).join(", ")}, not for config dir ${cd.name} — AI accounts → Log in (browser) (into the Stagehand browser dir), then Probe Chrome` };
+        }
         const current = task.account_id ? pool.find((a) => a.id === task.account_id) : undefined;
         const account = (current && !this.exhausted(current.id) ? current : undefined) ?? pool.find((a) => !this.exhausted(a.id));
         if (!account) {
@@ -274,17 +278,18 @@ export class Engine extends EventEmitter {
             const u = this.utilization(first.id);
             return { ok: false, reason: `${pool.map((a) => a.name).join(", ")} ${pool.length > 1 ? "are all" : "is"} at the 5-hour cap`, ...(u ? { exhausted: { account: first, resetsAt: u.resetsAt } } : {}) };
         }
-        const dir = this.browserDir(account, cd);
+        const dir = this.browserDir(account, cd)!;
         return { ok: true, account, configDir: dir, extraEnv: {} };
     }
 
-    // The config dir a browser stage runs in for this account: the env's dir itself when the account's login lives there,
-    // else the account's Stagehand-owned browser dir with the env's dir mirrored in.
-    browserDir(account: AccountRow, cd: ConfigDirRow): string {
-        if (account.auth_dir === cd.path) return cd.path;
-        const dir = browserDirFor(this.cfg, account);
-        mirrorConfigDir(this.cfg, cd.path, dir);
-        return dir;
+    // The config dir a browser stage runs in for this account: the env's dir itself when the account's browser login lives
+    // there; else the account's Stagehand-owned browser dir (login required there) with the env's dir mirrored in; else null.
+    browserDir(account: AccountRow, cd: ConfigDirRow): string | null {
+        if (account.login_dir === cd.path) return cd.path;
+        const own = browserDirFor(this.cfg, account);
+        if (account.login_dir !== own) return null;
+        mirrorConfigDir(this.cfg, cd.path, own);
+        return own;
     }
 
     // Accounts that could run browser stages for this env, in priority order (for the UI and the open-app button).
