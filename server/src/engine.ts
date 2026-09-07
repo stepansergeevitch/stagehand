@@ -1216,7 +1216,9 @@ export class Engine extends EventEmitter {
                 const env = this.env(task.env_id);
                 const acc = this.browserAccounts(env).find((a) => a.id === task.account_id) ?? this.browserAccounts(env)[0];
                 const where = acc?.chrome_browser_name ? `Chrome profile "${acc.chrome_browser_name}"` : "the automation Chrome window";
-                this.setTaskStatus(taskId, "blocked", `${def.label} · log in at ${this.appUrlFor(task, env)} in ${where} (or click Log in for QA), then retry`);
+                this.setTaskStatus(taskId, "blocked", `${def.label} · log in at ${this.appUrlFor(task, env)} in ${where} — opening it for you`);
+                // Start the login helper right away: it opens the app in the QA Chrome profile, waits for the human, and re-runs the stage.
+                void this.qaLogin(taskId).catch((e: unknown) => console.warn(`[stagehand] auto login helper ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
                 return;
             }
             const failed = qa.scenarios.filter((s) => s.outcome === "fail").length;

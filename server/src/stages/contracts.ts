@@ -48,7 +48,8 @@ export const QaPassResult = z.object({
             // needs_human: the runner could not verify this properly and asks the reviewer to check it (observation = instructions).
             outcome: z.enum(["pass", "fail", "blocked", "needs_human"]),
             observation: z.string(),
-            shots: z.array(z.object({ step: z.number().int(), file: z.string() })),
+            // A blocked or needs_human scenario legitimately has no screenshots.
+            shots: z.array(z.object({ step: z.number().int(), file: z.string() })).default([]),
         }),
     ),
     blockers: z.array(z.string()).default([]),
