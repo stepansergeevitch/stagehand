@@ -25,9 +25,26 @@ export const ensureSession = async (name: string, cwd: string, command: string, 
     await tmux(["new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", cwd, `unset NODE_OPTIONS CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ${exports} ${command}`]);
 };
 
-// Mirror everything the pane prints into a file (tmux pipe-pane); used to pick a token out of an interactive command's output.
-export const pipePane = async (name: string, file: string): Promise<void> => {
-    await tmux(["pipe-pane", "-t", `=${name}`, "-o", `cat >> ${JSON.stringify(file)}`]);
+// pipe-pane / capture-pane want a pane target and reject the "=session" form; resolve the session's active pane id first.
+const paneId = async (name: string): Promise<string | null> => {
+    const r = await tmux(["list-panes", "-t", `=${name}`, "-F", "#{pane_active} #{pane_id}"]);
+    if (!r.ok) return null;
+    const line = r.stdout.split("\n").find((l) => l.startsWith("1 ")) ?? r.stdout.split("\n")[0];
+    return line?.split(" ")[1] ?? null;
+};
+
+// Mirror everything the pane prints from now on into a file; used to pick a token out of an interactive command's output.
+export const pipePane = async (name: string, file: string): Promise<boolean> => {
+    const id = await paneId(name);
+    if (!id) return false;
+    return (await tmux(["pipe-pane", "-t", id, "-o", `cat >> ${JSON.stringify(file)}`])).ok;
+};
+
+// The pane's visible text plus scrollback (what a human would see), for output printed before a pipe was attached.
+export const capturePane = async (name: string, lines = 500): Promise<string> => {
+    const id = await paneId(name);
+    if (!id) return "";
+    return (await tmux(["capture-pane", "-p", "-J", "-S", `-${lines}`, "-t", id])).stdout;
 };
 
 export const killSession = async (name: string): Promise<void> => {

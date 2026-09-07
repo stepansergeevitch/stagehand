@@ -26,7 +26,7 @@ import { Engine } from "./engine.js";
 import { Services } from "./services.js";
 import { authDirFor, authEnv, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
 import { isGitRepo, repoPaths } from "./git.js";
-import { attach, ensureSession, killSession, loginSessionName, pipePane, sessionExists, taskSessionName } from "./tmux.js";
+import { attach, capturePane, ensureSession, killSession, loginSessionName, pipePane, sessionExists, taskSessionName } from "./tmux.js";
 
 const cfg = loadConfig();
 const db = openDb(cfg.dataDir);
@@ -89,9 +89,42 @@ const refreshAccount = async (acc: AccountRow): Promise<AccountRow> => {
     return accountById(acc.id)!;
 };
 
-// Runs `claude setup-token` in a terminal the human completes in the browser; the pane output is mirrored to a file and
-// polled for the printed token, which is then stored and the terminal closed.
+// Runs `claude setup-token` in a terminal the human completes in the browser. The pane output is mirrored to a file and the
+// pane's scrollback is read as well; both are polled for the printed token, which is then stored and the terminal closed.
 const tokenCaptures = new Map<string, NodeJS.Timeout>();
+const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+const watchTokenSetup = (acc: AccountRow): void => {
+    const tmuxName = loginSessionName(acc.name);
+    const logFile = join(acc.auth_dir, "setup-token.log");
+    const started = Date.now();
+    clearInterval(tokenCaptures.get(acc.id));
+    let busy = false;
+    const timer = setInterval(() => {
+        if (busy) return;
+        busy = true;
+        void (async () => {
+            const fromFile = existsSync(logFile) ? stripAnsi(readFileSync(logFile, "utf8")) : "";
+            const m = OAUTH_TOKEN_RE.exec(fromFile) ?? OAUTH_TOKEN_RE.exec(stripAnsi(await capturePane(tmuxName)));
+            if (m) {
+                clearInterval(timer);
+                tokenCaptures.delete(acc.id);
+                rmSync(logFile, { force: true });
+                db.prepare(`UPDATE accounts SET oauth_token = ?, logged_in = 1 WHERE id = ?`).run(m[0], acc.id);
+                await killSession(tmuxName);
+                emitAccount(acc.id);
+                await refreshAccount(accountById(acc.id)!);
+            } else if (Date.now() - started > 20 * 60_000 || !(await sessionExists(tmuxName))) {
+                clearInterval(timer);
+                tokenCaptures.delete(acc.id);
+                rmSync(logFile, { force: true });
+            }
+        })().finally(() => {
+            busy = false;
+        });
+    }, 2_000);
+    tokenCaptures.set(acc.id, timer);
+};
+
 const startTokenSetup = async (acc: AccountRow): Promise<string> => {
     const tmuxName = loginSessionName(acc.name);
     await killSession(tmuxName);
@@ -103,27 +136,17 @@ const startTokenSetup = async (acc: AccountRow): Promise<string> => {
         `${SETUP_TOKEN_COMMAND}; echo; echo '[stagehand] token setup finished — Stagehand stores the token and closes this terminal.'; sleep 900`,
         { CLAUDE_CONFIG_DIR: acc.auth_dir },
     );
-    await pipePane(tmuxName, logFile);
-    const started = Date.now();
-    clearInterval(tokenCaptures.get(acc.id));
-    const timer = setInterval(() => {
-        const text = existsSync(logFile) ? readFileSync(logFile, "utf8").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "") : "";
-        const m = OAUTH_TOKEN_RE.exec(text);
-        if (m) {
-            clearInterval(timer);
-            tokenCaptures.delete(acc.id);
-            rmSync(logFile, { force: true });
-            db.prepare(`UPDATE accounts SET oauth_token = ?, logged_in = 1 WHERE id = ?`).run(m[0], acc.id);
-            void killSession(tmuxName);
-            void refreshAccount(accountById(acc.id)!);
-        } else if (Date.now() - started > 20 * 60_000) {
-            clearInterval(timer);
-            tokenCaptures.delete(acc.id);
-            rmSync(logFile, { force: true });
-        }
-    }, 2_000);
-    tokenCaptures.set(acc.id, timer);
+    if (!(await pipePane(tmuxName, logFile))) console.warn(`[stagehand] could not mirror the ${tmuxName} pane; relying on scrollback capture`);
+    watchTokenSetup(acc);
     return tmuxName;
+};
+
+// A server restart must not lose a token that was printed in a login terminal that is still open.
+const resumeTokenSetups = async (): Promise<void> => {
+    for (const acc of accountsAll()) {
+        if (acc.oauth_token) continue;
+        if (await sessionExists(loginSessionName(acc.name))) watchTokenSetup(acc);
+    }
 };
 
 app.get("/api/accounts", (c) => {
@@ -757,6 +780,7 @@ const server = serve({ fetch: app.fetch, port: cfg.port, hostname: "127.0.0.1" }
 injectWebSocket(server);
 startPublicListener();
 engine.startScheduler();
+void resumeTokenSetups();
 
 process.on("SIGINT", () => {
     engine.stopScheduler();
