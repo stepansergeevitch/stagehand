@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, STAGE_LABEL, STAGE_ORDER, type Account, type QaPass, type Stage, type TaskDetail } from "./api";
 import { Terminal } from "./Terminal";
 import { Markdown } from "./Markdown";
@@ -79,6 +79,9 @@ interface Props {
     feed: string[];
     terminal: string | null;
     onAction: (fn: () => Promise<unknown>) => Promise<void>;
+    // The open tab is routed (part of the URL hash) so a reload lands on the same view.
+    tab: Tab;
+    setTab: (t: Tab) => void;
     onOpenTerminal: () => Promise<void>;
     onCloseTerminal: () => void;
 }
@@ -107,18 +110,41 @@ const Sub = ({ title, open = true, children }: { title: React.ReactNode; open?: 
     </details>
 );
 
-// The ticket as it was fetched from ClickUp/Linear: everything Claude was given, unabridged.
-const TicketView = ({ detail, researchMd }: { detail: TaskDetail; researchMd: string | null }) => {
+// The ticket as it was fetched from ClickUp/Linear: everything Claude was given, unabridged. Without a stored copy the tab
+// tries one server-side fetch (REST token only, never an agent run) and otherwise shows a plain message with the link.
+const TicketView = ({ detail, onFetch }: { detail: TaskDetail; onFetch: () => Promise<void> }) => {
     const { task, ticket } = detail;
+    const [state, setState] = useState<"idle" | "fetching" | "failed">("idle");
+    const [reason, setReason] = useState<string | null>(null);
+    const tried = useRef(false);
+    const fetchNow = async () => {
+        setState("fetching");
+        try {
+            await onFetch();
+            setState("idle");
+        } catch (e) {
+            setReason(String((e as Error).message ?? e));
+            setState("failed");
+        }
+    };
+    useEffect(() => {
+        if (ticket || tried.current) return;
+        tried.current = true;
+        void fetchNow();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ticket]);
     if (!ticket) {
+        const link = task.ticket_url ? <a href={task.ticket_url} target="_blank" rel="noreferrer">{task.ticket_id} ↗</a> : <code>{task.ticket_id}</code>;
         return (
             <section className="card">
                 <h2>Ticket</h2>
-                <p>
-                    Stagehand did not fetch this ticket server-side (no API token at the time), so there is no stored copy; Research read it through the MCP and quoted it in research.md below.
-                    {task.ticket_url && <> Open it in {task.source}: <a href={task.ticket_url} target="_blank" rel="noreferrer">{task.ticket_id} ↗</a>.</>}
-                </p>
-                {researchMd && <Sub title="research.md (ticket quoted verbatim in section 1)"><Markdown source={researchMd} /></Sub>}
+                {state === "fetching" && <p className="quiet">Fetching {task.ticket_id} from {task.source}…</p>}
+                {state !== "fetching" && (
+                    <div className="blocked-box">
+                        Ticket {link} could not be fetched{reason ? `: ${reason}` : ""}.
+                        <div className="actions"><button onClick={() => void fetchNow()}>Fetch again</button></div>
+                    </div>
+                )}
             </section>
         );
     }
@@ -155,7 +181,8 @@ const statusChip = (s: string) => {
     return <span className={`chip ${cls}`}>{s.replace("_", " ")}</span>;
 };
 
-type Tab = "work" | "runs" | "design" | "code" | "comments" | "ticket";
+export type Tab = "work" | "runs" | "design" | "code" | "comments" | "ticket";
+export const TASK_TABS: readonly Tab[] = ["work", "runs", "design", "code", "comments", "ticket"];
 
 // PR status for the header widget, derived from the stage, the stored PR state and the status line.
 const PrWidget = ({ detail }: { detail: TaskDetail }) => {
@@ -195,7 +222,7 @@ const PrWidget = ({ detail }: { detail: TaskDetail }) => {
     );
 };
 
-export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal, onAction, onOpenTerminal, onCloseTerminal }: Props) => {
+export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal, onAction, tab, setTab, onOpenTerminal, onCloseTerminal }: Props) => {
     const { task, runs, design, impl, qaBefore, qaAfter, pr, research } = detail;
     const has = (p: string) => detail.artifacts.some((a) => a.path === p);
     const researchMd = useArtifactText(task.id, "research.md", has("research.md"));
@@ -208,10 +235,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const currentIdx = STAGE_ORDER.indexOf(task.stage);
     const skipped = new Set<Stage>(design && design.qa.length === 0 ? ["qa_baseline", "manual_qa"] : []);
     const waiting = task.status === "waiting_user";
-    const [tab, setTab] = useState<Tab>("work");
     const [step, setStep] = useState<Stage>(task.stage);
     useEffect(() => {
-        setTab("work");
         setStep(task.stage);
     }, [task.id]);
     useEffect(() => setStep(task.stage), [task.stage]);
@@ -593,7 +618,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 </>
             )}
 
-            {tab === "ticket" && <TicketView detail={detail} researchMd={researchMd} />}
+            {tab === "ticket" && <TicketView detail={detail} onFetch={async () => { await api.fetchTicket(task.id); await onAction(async () => undefined); }} />}
         </>
     );
 };

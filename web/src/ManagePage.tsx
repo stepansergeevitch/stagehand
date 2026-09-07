@@ -151,6 +151,24 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
             <div className="actions" style={{ marginTop: 0 }}>
                 <button className="primary" onClick={onAdd}>+ Account</button>
             </div>
+            {settings && (
+                <section className="card item">
+                    <h2>Defaults</h2>
+                    <div className="env-fields" style={{ maxWidth: 560 }}>
+                        <label>Default Claude model for new tasks (applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet)
+                            <select value={settings.defaultModel ?? ""} onChange={(e) => void act(() => api.patchSettings({ defaultModel: e.target.value || null }))}>
+                                {settings.models.map((m) => (
+                                    <option key={m.value} value={m.value}>
+                                        {m.value === ""
+                                            ? `Account default · ${accounts.filter((a) => a.logged_in).map((a) => `${a.name}: ${modelLabel(a.default_model, settings.models) ?? "?"}`).join(", ") || "no account"}`
+                                            : m.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    </div>
+                </section>
+            )}
             {accounts.map((a) => {
                 const five = a.limits.find((l) => l.window === "five_hour");
                 const week = a.limits.find((l) => l.window === "seven_day");

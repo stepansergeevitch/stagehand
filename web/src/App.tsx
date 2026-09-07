@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { accountOrderOf, accountUsableWith, api, modelLabel, STAGE_LABEL, STAGE_ORDER, type Account, type ConfigDir, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
-import { TaskDetailView } from "./TaskDetail";
+import { TASK_TABS, TaskDetailView, type Tab as TaskTab } from "./TaskDetail";
 import { EnvPage } from "./EnvPage";
 import { ConfigDirPage } from "./ConfigDirPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
@@ -17,6 +17,39 @@ const NAV: { id: Page; label: string; hint: string }[] = [
     { id: "accounts", label: "AI accounts", hint: "Provider logins (tokens), usage, failover" },
     { id: "managers", label: "Task managers", hint: "ClickUp / Linear credentials" },
 ];
+
+// Where the user is, as a URL hash: #/dashboard, #/tasks, #/tasks/<taskId>/<tab>, #/analytics, #/envs, #/env/<envId>,
+// #/dirs, #/dir/<dirId>, #/accounts, #/managers. Reloads and back/forward restore it.
+interface Route {
+    page: Page;
+    selected: string | null;
+    taskTab: TaskTab;
+    envId: string | null;
+    dirId: string | null;
+}
+const PAGES: readonly Page[] = ["dashboard", "tasks", "analytics", "envs", "dirs", "accounts", "managers"];
+const parseHash = (hash: string): Route => {
+    const [head = "", a = "", b = ""] = hash.replace(/^#\/?/, "").split("/");
+    const r: Route = { page: "dashboard", selected: null, taskTab: "work", envId: null, dirId: null };
+    if (head === "tasks") {
+        r.page = "tasks";
+        if (a) r.selected = decodeURIComponent(a);
+        if (b && (TASK_TABS as readonly string[]).includes(b)) r.taskTab = b as TaskTab;
+    } else if (head === "env" && a) {
+        r.page = "env";
+        r.envId = decodeURIComponent(a);
+    } else if (head === "dir" && a) {
+        r.page = "dir";
+        r.dirId = decodeURIComponent(a);
+    } else if ((PAGES as readonly string[]).includes(head)) r.page = head as Page;
+    return r;
+};
+const buildHash = (page: Page, selected: string | null, taskTab: TaskTab, envId: string, dirId: string | null): string => {
+    if (page === "tasks") return selected ? `#/tasks/${encodeURIComponent(selected)}/${taskTab}` : "#/tasks";
+    if (page === "env") return `#/env/${encodeURIComponent(envId)}`;
+    if (page === "dir" && dirId) return `#/dir/${encodeURIComponent(dirId)}`;
+    return `#/${page}`;
+};
 
 // Accounts that can drive runs in this env: any with a token, or a legacy login living in the env's config dir.
 const accountsFor = (env: Env | undefined, accounts: Account[], dirs: ConfigDir[]): Account[] => {
@@ -90,16 +123,23 @@ const Gauge = ({ a }: { a: Account }) => {
 };
 
 export const App = () => {
+    const [initial] = useState(() => parseHash(location.hash));
     const [accounts, setAccounts] = useState<Account[]>([]);
     const [configDirs, setConfigDirs] = useState<ConfigDir[]>([]);
-    const [dirId, setDirId] = useState<string | null>(null);
+    const [dirId, setDirId] = useState<string | null>(initial.dirId);
     const [envs, setEnvs] = useState<Env[]>([]);
     const [tasks, setTasks] = useState<Task[]>([]);
-    const [envId, setEnvId] = useState<string>(() => localStorage.getItem("stagehand.env") ?? "");
-    const [selected, setSelected] = useState<string | null>(null);
+    const [envId, setEnvId] = useState<string>(() => initial.envId ?? localStorage.getItem("stagehand.env") ?? "");
+    const [selected, setSelectedRaw] = useState<string | null>(initial.selected);
+    const [taskTab, setTaskTab] = useState<TaskTab>(initial.taskTab);
+    // Opening a different task starts on its Work tab; a hash-driven change keeps the tab it names.
+    const setSelected = useCallback((id: string | null) => {
+        setSelectedRaw(id);
+        setTaskTab("work");
+    }, []);
     const [detail, setDetail] = useState<TaskDetail | null>(null);
     const [feed, setFeed] = useState<Record<string, string[]>>({});
-    const [modal, setModal] = useState<"task" | "env" | "account" | "settings" | null>(null);
+    const [modal, setModal] = useState<"task" | "env" | "account" | null>(null);
     const [settings, setSettings] = useState<Settings | null>(null);
     useEffect(() => {
         void api.settings().then(setSettings).catch(() => undefined);
@@ -107,24 +147,50 @@ export const App = () => {
     const [terminal, setTerminal] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [moreOpen, setMoreOpen] = useState(false);
-    const [page, setPage] = useState<Page>("dashboard");
+    const [page, setPage] = useState<Page>(initial.page);
     const navActive: Page = page === "env" ? "envs" : page === "dir" ? "dirs" : page;
 
+    // State → hash (so a reload lands here) and hash → state (back/forward, pasted links).
+    useEffect(() => {
+        const h = buildHash(page, selected, taskTab, envId, dirId);
+        if (location.hash !== h) history.pushState(null, "", h);
+    }, [page, selected, taskTab, envId, dirId]);
+    useEffect(() => {
+        const apply = () => {
+            const r = parseHash(location.hash);
+            setPage(r.page);
+            setSelectedRaw(r.selected);
+            setTaskTab(r.taskTab);
+            if (r.envId) setEnvId(r.envId);
+            if (r.dirId) setDirId(r.dirId);
+        };
+        window.addEventListener("popstate", apply);
+        window.addEventListener("hashchange", apply);
+        return () => {
+            window.removeEventListener("popstate", apply);
+            window.removeEventListener("hashchange", apply);
+        };
+    }, []);
+
     const reload = useCallback(async () => {
-        const [a, e, t, d] = await Promise.all([api.accounts(), api.envs(), api.tasks(), api.configDirs()]);
+        const [a, e, t, d, s] = await Promise.all([api.accounts(), api.envs(), api.tasks(), api.configDirs(), api.settings().catch(() => null)]);
         setAccounts(a);
         setEnvs(e);
         setTasks(t);
         setConfigDirs(d);
+        if (s) setSettings(s);
         if (!envId && e[0]) setEnvId(e[0].id);
     }, [envId]);
 
     const loadDetail = useCallback(async (id: string) => setDetail(await api.task(id)), []);
 
-    // A task from another env must not stay open after switching env; the config pages re-fetch accounts/envs on entry.
+    // A task from another env must not stay open after switching env — but a task named by the URL wins over the remembered env.
     useEffect(() => {
-        if (selected && tasks.length && tasks.find((t) => t.id === selected)?.env_id !== envId) setSelected(null);
-    }, [envId, selected, tasks]);
+        if (!selected || !tasks.length) return;
+        const t = tasks.find((x) => x.id === selected);
+        if (!t) setSelected(null);
+        else if (t.env_id !== envId) setEnvId(t.env_id);
+    }, [selected, tasks, envId, setSelected]);
     useEffect(() => {
         if (page !== "tasks") void reload();
     }, [page, reload]);
@@ -188,11 +254,8 @@ export const App = () => {
             <header className={`topbar ${moreOpen ? "more-open" : ""}`}>
                 <span className="brand">Stagehand</span>
                 <span className="spacer" />
-                <button className="more" onClick={() => setMoreOpen((v) => !v)} title="Accounts and settings">⋯</button>
+                <button className="more" onClick={() => setMoreOpen((v) => !v)} title="Account usage">⋯</button>
                 <span className="extra gauges">{accounts.map((a) => <Gauge key={a.id} a={a} />)}</span>
-                <span className="extra">
-                    <button onClick={() => setModal("settings")} title="Default model">⚙</button>
-                </span>
             </header>
             <div className="body">
                 <nav className="sidebar" aria-label="Sections">
@@ -263,7 +326,7 @@ export const App = () => {
                 {page === "tasks" && <div className={`main ${selected ? "has-selection" : ""}`}>
                     <aside className="list">
                         <div className="list-head">
-                            <select value={envId} onChange={(e) => setEnvId(e.target.value)} title="Environment">
+                            <select value={envId} onChange={(e) => { setSelected(null); setEnvId(e.target.value); }} title="Environment">
                                 {envs.map((e) => (
                                     <option key={e.id} value={e.id}>{e.name} ({e.base_branch})</option>
                                 ))}
@@ -305,6 +368,8 @@ export const App = () => {
                                 feed={feed[detail.task.id] ?? []}
                                 terminal={terminal}
                                 onAction={run}
+                                tab={taskTab}
+                                setTab={setTaskTab}
                                 onOpenTerminal={async () => {
                                     const r = await api.terminal(detail.task.id);
                                     setTerminal(r.terminal);
@@ -323,11 +388,6 @@ export const App = () => {
             {modal === "env" && (
                 <Modal title="Add environment" onClose={() => setModal(null)}>
                     <EnvForm accounts={accounts} configDirs={configDirs} onSubmit={async (b) => { await run(() => api.addEnv(b)); setModal(null); }} />
-                </Modal>
-            )}
-            {modal === "settings" && settings && (
-                <Modal title="Settings" onClose={() => setModal(null)}>
-                    <SettingsForm settings={settings} accounts={accounts} onSubmit={async (b) => { await run(() => api.patchSettings(b)); setModal(null); }} />
                 </Modal>
             )}
             {modal === "account" && (
@@ -432,38 +492,6 @@ const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; 
                 <span className="field-hint">Applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet.</span>
             </label>
             <button className="primary" disabled={!ticket.trim() || parsed === "unrecognised" || accounts.length === 0} onClick={() => onSubmit(ticket.trim(), acc || undefined, model || undefined)}>Start task</button>
-        </>
-    );
-};
-
-const SettingsForm = ({ settings, accounts, onSubmit }: { settings: Settings; accounts: Account[]; onSubmit: (b: Partial<Omit<Settings, "models">>) => Promise<void> }) => {
-    const [clickupToken, setClickupToken] = useState("");
-    const [clickupTeamId, setClickupTeamId] = useState(settings.clickupTeamId ?? "");
-    const [linearApiKey, setLinearApiKey] = useState("");
-    const [defaultModel, setDefaultModel] = useState(settings.defaultModel ?? "");
-    return (
-        <>
-            <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 12.5 }}>Tokens are optional: without them tickets are fetched through the account's ClickUp/Linear MCP by a short Claude run. Stored in ~/.stagehand/config.json.</p>
-            <label>ClickUp personal API token (pk_…) <input value={clickupToken} onChange={(e) => setClickupToken(e.target.value)} placeholder={settings.clickupToken ?? "not set"} /></label>
-            <label>ClickUp team id <input value={clickupTeamId} onChange={(e) => setClickupTeamId(e.target.value)} /></label>
-            <label>Linear API key <input value={linearApiKey} onChange={(e) => setLinearApiKey(e.target.value)} placeholder={settings.linearApiKey ?? "not set"} /></label>
-            <label>Default Claude model
-                <select value={defaultModel} onChange={(e) => setDefaultModel(e.target.value)}>
-                    {settings.models.map((m) => (
-                        <option key={m.value} value={m.value}>
-                            {m.value === ""
-                                ? `Account default · ${accounts.filter((a) => a.logged_in).map((a) => `${a.name}: ${modelLabel(a.default_model, settings.models) ?? "?"}`).join(", ") || "no logged-in account"}`
-                                : m.label}
-                        </option>
-                    ))}
-                </select>
-            </label>
-            <button className="primary" onClick={() => onSubmit({
-                ...(clickupToken ? { clickupToken } : {}),
-                clickupTeamId: clickupTeamId || null,
-                ...(linearApiKey ? { linearApiKey } : {}),
-                defaultModel: defaultModel || null,
-            })}>Save</button>
         </>
     );
 };

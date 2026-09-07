@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 import type { Services } from "./services.js";
-import { fetchTicket, parseTicketRef, renderTicketForPrompt, Ticket } from "./tickets.js";
+import { fetchTicket, fetchTicketRest, parseTicketRef, renderTicketForPrompt, Ticket } from "./tickets.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { DesignResult, QaPassResult, ResearchResult, type QaScenario } from "./stages/contracts.js";
 
@@ -140,6 +140,16 @@ export class Engine extends EventEmitter {
                 this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`ticket fetch failed (${reason}) — research will try the MCP itself`, now(), taskId);
                 this.dispatch(taskId, "research");
             });
+    }
+
+    // Stores the raw ticket for a task that has none (created before a token existed); REST only, no agent run.
+    async fetchTicketNow(taskId: string): Promise<Ticket> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        const ticket = await fetchTicketRest({ source: task.source as "clickup" | "linear", id: task.ticket_id, url: task.ticket_url }, this.cfg, this.taskDir(taskId));
+        this.db.prepare(`UPDATE tasks SET title = COALESCE(title, ?), ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(ticket.title, ticket.url, now(), taskId);
+        this.emit("task", this.getTask(taskId));
+        return ticket;
     }
 
     private completeFromDisk(taskId: string, runId: string, stage: Stage): boolean {

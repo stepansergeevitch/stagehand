@@ -627,6 +627,14 @@ app.post("/api/tasks/:id/retry", (c) => {
     return c.json(engine.getTask(c.req.param("id")));
 });
 
+app.post("/api/tasks/:id/fetch-ticket", async (c) => {
+    try {
+        return c.json(await engine.fetchTicketNow(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/qa-login", (c) => {
     const id = c.req.param("id");
     void engine.qaLogin(id).catch((e: unknown) => console.error("[qa-login]", String((e as Error).message ?? e)));

@@ -175,6 +175,7 @@ export const api = {
     retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),
     rerun: (id: string, stage: Stage) => post<Task>(`/api/tasks/${id}/rerun`, { stage }),
     qaLogin: (id: string) => post<{ started: true }>(`/api/tasks/${id}/qa-login`),
+    fetchTicket: (id: string) => post<Ticket>(`/api/tasks/${id}/fetch-ticket`),
     pin: (id: string) => post<Task>(`/api/tasks/${id}/pin`),
     setAccount: (id: string, accountId: string) => post<Task>(`/api/tasks/${id}/account`, { accountId }),
     terminal: (id: string) => post<{ terminal: string }>(`/api/tasks/${id}/terminal`),
