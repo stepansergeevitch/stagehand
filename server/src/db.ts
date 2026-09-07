@@ -82,8 +82,15 @@ export interface ConfigDirRow {
 
 export interface ChromeBrowser {
     deviceId: string;
+    // The extension's own label ("Browser 1"); `profile` is the Chrome profile name when the store could be matched.
     name: string;
+    profile?: string;
+    account?: string | null;
+    // Enough to open a URL in that profile without an agent (`open -na <app> --args --profile-directory=<dir>`).
+    profileDir?: string;
+    browser?: string;
 }
+export const chromeBrowserLabel = (b: ChromeBrowser): string => b.profile ?? b.name;
 export const chromeBrowsersOf = (d: Pick<ConfigDirRow, "chrome_browsers">): ChromeBrowser[] => {
     try {
         const v: unknown = d.chrome_browsers ? JSON.parse(d.chrome_browsers) : [];

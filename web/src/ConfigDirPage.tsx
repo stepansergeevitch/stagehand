@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type ConfigDir, type ConfigDirRules, type Rules } from "./api";
+import { api, chromeBrowserLabel, type ConfigDir, type ConfigDirRules, type Rules } from "./api";
 
 // One Claude config dir: what it contributes to every agent run (skills, hooks, agents, MCP servers), whether its
 // Chrome bridge works, and the commit/branch/PR rules Stagehand enforces for environments using it.
@@ -81,7 +81,7 @@ export const ConfigDirPage = ({ dir, onBack, onChanged, onError, onTerminal }: {
                     <b>Chrome bridge</b>
                     <span>{dir.chrome_capable === null ? <span className="chip">not probed</span> : dir.chrome_capable ? <span className="chip ok">connected</span> : <span className="chip bad">not connected</span>}</span>
                     <b>Chrome profiles</b>
-                    <span>{dir.browsers.length ? dir.browsers.map((b) => `${b.name} (${b.deviceId.slice(0, 8)})`).join(", ") : <span className="quiet">none seen — install the extension in a Chrome profile signed into this claude.ai account, then probe</span>}</span>
+                    <span>{dir.browsers.length ? dir.browsers.map((b) => `${chromeBrowserLabel(b)}${b.account ? ` · ${b.account}` : ""}${b.profile ? "" : ` (${b.deviceId.slice(0, 8)})`}`).join(", ") : <span className="quiet">none seen — install the extension in a Chrome profile signed into this claude.ai account, then probe</span>}</span>
                 </div>
                 <div className="actions">
                     <button onClick={async () => { try { const r = await api.loginConfigDir(dir.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Log in (browser)</button>

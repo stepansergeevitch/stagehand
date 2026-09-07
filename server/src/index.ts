@@ -22,7 +22,8 @@ const MODEL_OPTIONS = [
     { value: "opus", label: "Opus 5 (claude-opus-5)" },
     { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
 ];
-import { accountOrderOf, accountUsableWith, chromeBrowsersOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, STAGES, type AccountRow, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
+import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
+import { matchChromeProfiles, openInProfile } from "./chrome-profiles.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
 import { authDirFor, authEnv, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
@@ -294,10 +295,22 @@ app.post("/api/config-dirs/:id/probe", async (c) => {
     }
     const owner = accountsAll().find((a) => a.email && dir.login_email && a.email.toLowerCase() === dir.login_email.toLowerCase()) ?? null;
     const r = await probeChrome(dir.path, cfg.dataDir, 3, (res) => recordUsage(db, { accountId: owner?.id ?? null, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, res));
-    db.prepare(`UPDATE config_dirs SET chrome_capable = ?, chrome_browsers = ? WHERE id = ?`).run(r.ok ? 1 : 0, r.ok ? JSON.stringify(r.browsers) : null, dir.id);
+    const matches = matchChromeProfiles(r.browsers.map((b) => b.deviceId));
+    const browsers: ChromeBrowser[] = r.browsers.map((b) => {
+        const m = matches.get(b.deviceId);
+        return m ? { ...b, profile: m.profile, account: m.account, profileDir: m.profileDir, browser: m.browser } : b;
+    });
+    db.prepare(`UPDATE config_dirs SET chrome_capable = ?, chrome_browsers = ? WHERE id = ?`).run(r.ok ? 1 : 0, r.ok ? JSON.stringify(browsers) : null, dir.id);
+    // Environments that picked one of these profiles get the resolved name too.
+    for (const b of browsers) db.prepare(`UPDATE envs SET chrome_browser_name = ? WHERE chrome_device_id = ?`).run(chromeBrowserLabel(b), b.deviceId);
     return c.json({
         ...configDirView(configDirById(dir.id)!),
-        probe: { ok: r.ok, detail: r.ok ? `Chrome bridge answered as ${dir.login_email}; ${r.browsers.length} connected profile(s): ${r.browsers.map((b) => b.name).join(", ") || "none listed"}` : `no Chrome bridge under ${dir.login_email} — is the extension installed and signed into that claude.ai account?` },
+        probe: {
+            ok: r.ok,
+            detail: r.ok
+                ? `Chrome bridge answered as ${dir.login_email}; ${browsers.length} connected profile(s): ${browsers.map((b) => `${chromeBrowserLabel(b)}${b.account ? ` (${b.account})` : ""}`).join(", ") || "none listed"}`
+                : `no Chrome bridge under ${dir.login_email} — is the extension installed and signed into that claude.ai account?`,
+        },
     });
 });
 
@@ -661,6 +674,23 @@ app.post("/api/tasks/:id/stop", (c) => {
 app.post("/api/tasks/:id/retry", (c) => {
     engine.retry(c.req.param("id"));
     return c.json(engine.getTask(c.req.param("id")));
+});
+
+// Opens the task's app URL in the env's Chrome profile (the one browser QA uses) so the human can log in there — no agent.
+app.post("/api/tasks/:id/open-app", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
+    const url = engine.appUrlFor(task, env);
+    const cd = engine.configDirOf(env);
+    const browser = chromeBrowsersOf(cd).find((b) => b.deviceId === env.chrome_device_id);
+    if (!browser?.profileDir) return c.json({ error: `the env's Chrome profile is not resolved — set it on the environment page after probing config dir ${cd.name}` , url }, 400);
+    try {
+        await openInProfile(browser.browser ?? "Google", browser.profileDir, url);
+        return c.json({ opened: url, profile: chromeBrowserLabel(browser) });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e), url }, 500);
+    }
 });
 
 app.post("/api/tasks/:id/fetch-ticket", async (c) => {

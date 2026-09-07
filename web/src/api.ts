@@ -26,7 +26,9 @@ export const accountOrderOf = (env: Pick<Env, "account_order" | "default_account
 export interface ConfigDirContents {
     exists: boolean; skills: string[]; agents: string[]; commands: string[]; hooks: string[]; plugins: number; mcpServers: string[]; hasClaudeMd: boolean; hasSettings: boolean;
 }
-export interface ChromeBrowser { deviceId: string; name: string }
+export interface ChromeBrowser { deviceId: string; name: string; profile?: string; account?: string | null; profileDir?: string; browser?: string }
+// The Chrome profile name when Stagehand could match it, else the extension's own label ("Browser 1").
+export const chromeBrowserLabel = (b: ChromeBrowser): string => b.profile ?? b.name;
 export interface ConfigDir {
     id: string; name: string; path: string; chrome_capable: number | null; rules: string | null; created_at: string;
     login_email: string | null; login_ok: number | null; chrome_browsers: string | null;
@@ -183,6 +185,7 @@ export const api = {
     rerun: (id: string, stage: Stage) => post<Task>(`/api/tasks/${id}/rerun`, { stage }),
     qaLogin: (id: string) => post<{ started: true }>(`/api/tasks/${id}/qa-login`),
     fetchTicket: (id: string) => post<Ticket>(`/api/tasks/${id}/fetch-ticket`),
+    openApp: (id: string) => post<{ opened: string; profile: string }>(`/api/tasks/${id}/open-app`),
     pin: (id: string) => post<Task>(`/api/tasks/${id}/pin`),
     setAccount: (id: string, accountId: string) => post<Task>(`/api/tasks/${id}/account`, { accountId }),
     terminal: (id: string) => post<{ terminal: string }>(`/api/tasks/${id}/terminal`),

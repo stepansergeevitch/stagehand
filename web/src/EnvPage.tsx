@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, type Account, type ConfigDir, type Env, type EnvRules } from "./api";
+import { accountOrderOf, accountUsableWith, api, chromeBrowserLabel, type Account, type ConfigDir, type Env, type EnvRules } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -92,7 +92,7 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
                 </label>
             </Section>
 
-            <Section title="Claude config dir and AI accounts" hint="Every agent run for this environment (research, design, QA, implementation, helpers, the terminal) uses the config dir: its skills, hooks, subagents, MCP servers, CLAUDE.md and the commit/branch/PR rules. The AI accounts only supply the login: runs go to the first listed account that is not exhausted; when it hits its rate limit the next one takes over, and the task waits for a reset only when every listed account is exhausted." saving={saving === "claude"} onSave={() => save("claude", { configDirId: nul(dirId), accountOrder: order, chromeDeviceId: nul(chromeId), chromeBrowserName: browsers.find((b) => b.deviceId === chromeId)?.name ?? null })}>
+            <Section title="Claude config dir and AI accounts" hint="Every agent run for this environment (research, design, QA, implementation, helpers, the terminal) uses the config dir: its skills, hooks, subagents, MCP servers, CLAUDE.md and the commit/branch/PR rules. The AI accounts only supply the login: runs go to the first listed account that is not exhausted; when it hits its rate limit the next one takes over, and the task waits for a reset only when every listed account is exhausted." saving={saving === "claude"} onSave={() => { const b = browsers.find((x) => x.deviceId === chromeId); return save("claude", { configDirId: nul(dirId), accountOrder: order, chromeDeviceId: nul(chromeId), chromeBrowserName: b ? chromeBrowserLabel(b) : null }); }}>
                 <label>Config dir
                     <select value={dirId} onChange={(e) => setDirId(e.target.value)}>
                         <option value="">— server default —</option>
@@ -103,7 +103,7 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
                 <label>Chrome profile for browser QA
                     <select value={chromeId} onChange={(e) => setChromeId(e.target.value)}>
                         <option value="">— whichever profile is paired —</option>
-                        {browsers.map((b) => <option key={b.deviceId} value={b.deviceId}>{b.name} ({b.deviceId.slice(0, 8)})</option>)}
+                        {browsers.map((b) => <option key={b.deviceId} value={b.deviceId}>{chromeBrowserLabel(b)}{b.account ? ` · ${b.account}` : ""}{b.profile ? "" : ` (${b.deviceId.slice(0, 8)})`}</option>)}
                         {chromeId && !browsers.some((b) => b.deviceId === chromeId) && <option value={chromeId}>{env.chrome_browser_name ?? chromeId} (not seen by the last probe)</option>}
                     </select>
                     <span className="field-hint">
