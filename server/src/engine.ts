@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
@@ -9,7 +9,7 @@ import { authEnv, browserDirFor, mirrorConfigDir } from "./claude/accounts.js";
 import { backfillUsage, recordUsage } from "./usage.js";
 import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -63,6 +63,8 @@ interface DispatchOpts {
     attempt?: number;
     extraVars?: Record<string, string>;
     servicesReady?: boolean;
+    // Browser stages: the orchestrator has already executed the scenarios' `shell:` seed steps for this dispatch.
+    seedsDone?: boolean;
 }
 
 const FIVE_HOUR = "five_hour";
@@ -782,6 +784,7 @@ export class Engine extends EventEmitter {
             attempt: String(opts.attempt ?? 1),
             maxTurns: String(def.maxTurns ?? 100),
             seedHints: env.qa_seed_hints?.trim() ? env.qa_seed_hints.trim() : "(none configured for this environment — inspect the repo's configs/ and models to find the local database and API)",
+            seedReport: "(no shell seeds were run)",
             ...(opts.extraVars ?? {}),
         };
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
@@ -806,7 +809,9 @@ export class Engine extends EventEmitter {
                 .map(
                     (s) =>
                         `### ${s.id} — ${s.title}\nStart: \`${s.url}\` · Persona: ${s.persona}\n` +
-                        ((s.seed ?? []).length ? `Seed (do this first, yourself):\n${(s.seed ?? []).map((x, i) => `- seed ${i + 1}: ${x}`).join("\n")}\n` : "Seed: nothing beyond a logged-in user.\n") +
+                        ((s.seed ?? []).length
+                            ? `Seed:\n${(s.seed ?? []).map((x, i) => `- seed ${i + 1}${/^\s*(shell|sql)\s*:/i.test(x) ? " (run by the orchestrator — see the seed report)" : " (do this yourself)"}: ${x}`).join("\n")}\n`
+                            : "Seed: nothing beyond a logged-in user.\n") +
                         s.steps.map((st, i) => `${i + 1}. ${st.action} → **assert:** ${st.assert}${st.shot ? " **[shot]**" : ""}`).join("\n"),
                 )
                 .join("\n\n");
@@ -837,6 +842,14 @@ export class Engine extends EventEmitter {
         const cd = this.configDirOf(env);
         if (def.chrome && !cd.chrome_capable) {
             this.setTaskStatus(taskId, "blocked", `${def.label} · config dir ${cd.name} has no Chrome connection — probe it on the Config dirs page, then retry`);
+            return;
+        }
+        if (def.chrome && !opts.seedsDone) {
+            // Seed steps written as commands are run here, without an agent; only `ui:` steps reach the QA runner.
+            this.setTaskStatus(taskId, "running", `${def.label} · seeding data`);
+            void this.runShellSeeds(task, env, def)
+                .then((report) => this.dispatch(taskId, stage, { ...opts, seedsDone: true, extraVars: { ...(opts.extraVars ?? {}), seedReport: report } }))
+                .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · seeding failed: ${String((e as Error).message ?? e).slice(0, 160)}`));
             return;
         }
         const picked = this.pickAccount(task, def, env, cd);
@@ -928,6 +941,45 @@ export class Engine extends EventEmitter {
             this.active.delete(runId);
             this.onRunClosed(taskId, runId, def, account, outcome, opts);
         });
+    }
+
+    // Executes every `shell:` seed step of every scenario from the worktree (env vars applied, 120 s each) and returns a
+    // report for the prompt; failures are reported per step, never thrown. Output is kept in <taskDir>/qa/seed-<pass>.log.
+    private async runShellSeeds(task: TaskRow, env: EnvRow, def: StageDef): Promise<string> {
+        const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
+        const pass = def.stage === "qa_baseline" ? "before" : "after";
+        const logPath = join(this.taskDir(task.id), "qa", `seed-${pass}.log`);
+        const lines: string[] = [];
+        const log: string[] = [];
+        for (const s of design?.qa ?? []) {
+            (s.seed ?? []).forEach((step, i) => {
+                const m = /^\s*(shell|sql)\s*:\s*/i.exec(step);
+                if (!m) {
+                    lines.push(`${s.id} seed ${i + 1}: left for you (${/^\s*ui\s*:/i.test(step) ? "ui" : "not a shell command"})`);
+                    return;
+                }
+                const cmd = step.slice(m[0].length);
+                log.push(`### ${s.id} seed ${i + 1}\n$ ${cmd}`);
+                try {
+                    const out = execFileSync("bash", ["-lc", cmd], {
+                        cwd: task.worktree_path ?? env.path,
+                        env: { ...process.env, ...parseEnvVars(env.env_vars) },
+                        timeout: 120_000,
+                        maxBuffer: 4 * 1024 * 1024,
+                        stdio: ["ignore", "pipe", "pipe"],
+                    }).toString();
+                    log.push(out.trim() || "(no output)");
+                    lines.push(`${s.id} seed ${i + 1}: OK${out.trim() ? ` — ${out.trim().split("\n").slice(-1)[0]!.slice(0, 120)}` : ""}`);
+                } catch (e) {
+                    const err = e as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+                    const tail = String(err.stderr ?? err.stdout ?? err.message ?? e).trim().split("\n").slice(-3).join(" ").slice(0, 300);
+                    log.push(`FAILED: ${tail}`);
+                    lines.push(`${s.id} seed ${i + 1}: FAILED — ${tail}`);
+                }
+            });
+        }
+        writeFileSync(logPath, `${log.join("\n\n")}\n`);
+        return lines.length ? lines.join("\n") : "(no seed steps in the design)";
     }
 
     private async bringUpServices(task: TaskRow, env: EnvRow): Promise<boolean> {
