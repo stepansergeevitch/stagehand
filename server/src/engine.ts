@@ -748,6 +748,7 @@ export class Engine extends EventEmitter {
             taskDir,
             reviewerNotes: opts.notes ?? "",
             attempt: String(opts.attempt ?? 1),
+            maxTurns: String(def.maxTurns ?? 100),
             ...(opts.extraVars ?? {}),
         };
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
@@ -966,7 +967,14 @@ export class Engine extends EventEmitter {
                     return;
                 }
             }
-            const err = outcome.result?.result ?? outcome.stderr.trim().split("\n").slice(-3).join(" ") ?? `exit ${outcome.exitCode}`;
+            const stderrTail = outcome.stderr.trim().split("\n").slice(-3).join(" ").trim();
+            const err =
+                outcome.result?.result?.trim() ||
+                (outcome.result?.subtype === "error_max_turns"
+                    ? `stopped at the ${outcome.result.num_turns ?? "?"}-turn cap before writing ${def.outputFile ?? "its output"} — Retry resumes the session`
+                    : outcome.result
+                      ? `ended with ${outcome.result.subtype}`
+                      : stderrTail || `exit ${outcome.exitCode}`);
             finish("failed", err);
             this.setTaskStatus(taskId, "failed", `${def.label} · ${err.slice(0, 160)}`);
             return;

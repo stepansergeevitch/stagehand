@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, STAGE_LABEL, STAGE_ORDER, type Account, type QaPass, type Stage, type TaskDetail } from "./api";
 import { Terminal } from "./Terminal";
 import { Markdown } from "./Markdown";
@@ -561,28 +561,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 design ? (
                     <Card title="Design proposal" badge={<span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>}>
                         {task.stage === "design_proposal" && reviewBox}
-                        {designMd && <Sub title="design.md"><Markdown source={designMd} /></Sub>}
-                        <Sub title="Plan by layer">
-                            <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
-                        </Sub>
-                        <Sub title="Test plan">
-                            <table><tbody>{design.testPlan.map((t) => <tr key={t.file}><td><code>{t.file}</code></td><td><ul className="plain">{t.cases.map((c, i) => <li key={i}><code>{c}</code></li>)}</ul></td></tr>)}</tbody></table>
-                        </Sub>
-                        <Sub title={<>QA scenarios {design.qa.length === 0 && <span className="chip">none — {design.qaSkippedReason ?? "no reason given"}</span>}</>}>
-                            {design.qa.map((s) => (
-                                <details className="scenario" key={s.id} open>
-                                    <summary>
-                                        <h3><span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
-                                    </summary>
-                                    {s.seed && s.seed.length > 0 ? (
-                                        <div className="seed"><b>Seed</b><ul className="plain">{s.seed.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
-                                    ) : (
-                                        <div className="seed quiet">Seed: nothing beyond a logged-in user</div>
-                                    )}
-                                    <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
-                                </details>
-                            ))}
-                        </Sub>
+                        <DesignSections design={design} md={designMd} />
                     </Card>
                 ) : <div className="empty">No design proposal yet.</div>
             )}
@@ -671,6 +650,86 @@ const PrPanel = ({ detail }: { detail: TaskDetail }) => {
                 </div>
             )}
         </Card>
+    );
+};
+
+// design.md is split on its `## ` headings into subtabs; the structured plan / test plan / QA scenarios from design.json
+// are merged into the subtab whose heading they belong to, so each section is read in one place.
+interface MdSection { title: string; body: string }
+const splitSections = (md: string): { intro: string; sections: MdSection[] } => {
+    const lines = md.split("\n");
+    const sections: MdSection[] = [];
+    let intro: string[] = [];
+    let cur: MdSection | null = null;
+    let fence = false;
+    for (const line of lines) {
+        if (/^```/.test(line)) fence = !fence;
+        const h = !fence ? /^##\s+(.+?)\s*$/.exec(line) : null;
+        if (h) {
+            if (cur) sections.push(cur);
+            cur = { title: h[1]!.replace(/^\d+[.)]\s*/, ""), body: "" };
+            continue;
+        }
+        if (cur) cur.body += `${line}\n`;
+        else intro.push(line);
+    }
+    if (cur) sections.push(cur);
+    // Drop the H1 title line from the intro; what remains (if anything) is shown above the tabs.
+    intro = intro.filter((l) => !/^#\s/.test(l));
+    return { intro: intro.join("\n").trim(), sections };
+};
+
+const QaScenarios = ({ design }: { design: NonNullable<TaskDetail["design"]> }) => (
+    <>
+        {design.qa.length === 0 && <div className="quiet">none — {design.qaSkippedReason ?? "no reason given"}</div>}
+        {design.qa.map((s) => (
+            <details className="scenario" key={s.id} open>
+                <summary>
+                    <h3><span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
+                </summary>
+                {s.seed && s.seed.length > 0 ? (
+                    <div className="seed"><b>Seed</b><ul className="plain">{s.seed.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
+                ) : (
+                    <div className="seed quiet">Seed: nothing beyond a logged-in user</div>
+                )}
+                <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
+            </details>
+        ))}
+    </>
+);
+
+const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design"]>; md: string | null }) => {
+    const parsed = useMemo(() => (md ? splitSections(md) : { intro: "", sections: [] }), [md]);
+    // Structured data attaches to the matching markdown section; sections without a markdown twin still get a tab.
+    type Part = { key: string; title: string; md?: string; extra?: React.ReactNode };
+    const parts: Part[] = parsed.sections.map((s) => ({ key: s.title, title: s.title, md: s.body }));
+    const attach = (test: RegExp, title: string, extra: React.ReactNode) => {
+        const hit = parts.find((p) => test.test(p.title));
+        if (hit) hit.extra = extra;
+        else parts.push({ key: title, title, extra });
+    };
+    attach(/implementation|plan by layer/i, "Plan by layer", (
+        <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
+    ));
+    attach(/test plan/i, "Test plan", (
+        <table><tbody>{design.testPlan.map((t) => <tr key={t.file}><td><code>{t.file}</code></td><td><ul className="plain">{t.cases.map((c, i) => <li key={i}><code>{c}</code></li>)}</ul></td></tr>)}</tbody></table>
+    ));
+    attach(/qa/i, "QA scenarios", <QaScenarios design={design} />);
+    const [active, setActive] = useState(0);
+    const cur = parts[Math.min(active, parts.length - 1)];
+    return (
+        <>
+            {parsed.intro && <Markdown source={parsed.intro} />}
+            <div className="subtabs">
+                {parts.map((p, i) => <button key={p.key} className={i === active ? "active" : ""} onClick={() => setActive(i)}>{p.title}</button>)}
+            </div>
+            {cur && (
+                <div className="design-section">
+                    {cur.md && <Markdown source={cur.md} />}
+                    {cur.extra && <div className="design-structured">{cur.extra}</div>}
+                </div>
+            )}
+        </>
     );
 };
 

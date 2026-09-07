@@ -17,7 +17,7 @@ Follow the repo's coding guidelines (CLAUDE.md): UnitOfWork `uow=` never `db=`, 
 
 ## Output contract
 
-Write `{{taskDir}}/design.md` — the human-readable proposal covering all five points, written for the reviewer to approve or push back on.
+Write `{{taskDir}}/design.md` — the human-readable proposal covering all five points, written for the reviewer to approve or push back on. Use exactly one `## ` heading per point, in this order and with these titles: `## 1. Classification`, `## 2. Scope`, `## 3. Implementation plan by layer`, `## 4. Test plan`, `## 5. QA scenarios` (the reviewer's UI turns each into a tab). Write prose and bullet lists only — never paste the JSON from design.json into design.md; the UI renders the structured plan, test plan and scenarios itself under the matching tab.
 
 Write `{{taskDir}}/design.json` with exactly this shape:
 
