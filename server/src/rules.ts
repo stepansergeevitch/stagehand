@@ -25,7 +25,8 @@ export const Rules = z.object({
     ),
     prTemplatePath: z.string().nullable().default(null),
     // GitHub logins whose PR comments are shown under "Automation comments" instead of human comments.
-    automationHandles: z.array(z.string()).default(["github-actions[bot]", "copilot-pull-request-reviewer[bot]", "copilot[bot]", "claude[bot]", "coderabbitai[bot]", "sonarcloud[bot]", "dependabot[bot]", "codecov[bot]"]),
+    // "Copilot" (no [bot]) is the login GitHub uses for Copilot's line-level review comments.
+    automationHandles: z.array(z.string()).default(["Copilot", "copilot-pull-request-reviewer[bot]", "copilot-swe-agent[bot]", "copilot[bot]", "github-actions[bot]", "claude[bot]", "coderabbitai[bot]", "sonarcloud[bot]", "dependabot[bot]", "codecov[bot]"]),
 });
 export type Rules = z.infer<typeof Rules>;
 
