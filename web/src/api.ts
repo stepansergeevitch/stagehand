@@ -28,6 +28,7 @@ export interface Rules {
     commitPattern: string; commitForbid: string[]; commitHint: string; branchPattern: string; branchHint: string;
     allowCommit: boolean; allowPush: boolean; allowPrCreate: boolean; prRules: string; prTemplatePath: string | null;
 }
+export interface TaskManager { source: "clickup" | "linear"; label: string; configured: boolean; token: string | null; teamId: string | null; envs: string[] }
 export interface EnvRules { rules: Rules; defaults: Rules; prTemplates: Array<{ dir: string; path: string | null; overridden: boolean }>; guardHook: string }
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
@@ -77,6 +78,7 @@ export interface TaskDetail {
     pr: { title: string; body: string; base: string } | null;
     ticket: Ticket | null;
     reviews: Review[];
+    prState: { number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null; updated_at: string } | null;
 }
 
 const j = async <T,>(res: Response): Promise<T> => {
@@ -92,7 +94,7 @@ export const api = {
     addAccount: (name: string, email?: string) => post<{ account: Account; terminal: string | null }>("/api/accounts", { name, email }),
     refreshAccount: (id: string, probe: boolean) => post<Account>(`/api/accounts/${id}/refresh?probe=${probe ? 1 : 0}`),
     loginAccount: (id: string) => post<{ terminal: string }>(`/api/accounts/${id}/login`),
-    patchAccount: (id: string, body: { failover_enabled?: boolean; failover_threshold?: number }) =>
+    patchAccount: (id: string, body: { name?: string; failover_enabled?: boolean; failover_threshold?: number }) =>
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: {
@@ -110,6 +112,12 @@ export const api = {
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
     envRules: (id: string) => fetch(`/api/envs/${id}/rules`).then((r) => j<EnvRules>(r)),
+    deleteEnv: (id: string) => fetch(`/api/envs/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
+    deleteAccount: (id: string) => fetch(`/api/accounts/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
+    taskManagers: () => fetch("/api/task-managers").then((r) => j<TaskManager[]>(r)),
+    patchTaskManager: (source: "clickup" | "linear", body: { token?: string | null; teamId?: string | null }) =>
+        fetch(`/api/task-managers/${source}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<TaskManager>(r)),
+    testTaskManager: (source: "clickup" | "linear") => post<{ ok: boolean; count?: number; sample?: string[]; error?: string }>(`/api/task-managers/${source}/test`),
     adoptAccount: (name: string, configDir: string) => post<{ account: Account; terminal: string | null }>("/api/accounts?probe=1", { name, configDir, adopt: true }),
     tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),

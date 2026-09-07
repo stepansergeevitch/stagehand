@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, modelLabel, STAGE_LABEL, STAGE_ORDER, type Account, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
 import { TaskDetailView } from "./TaskDetail";
 import { EnvPage } from "./EnvPage";
+import { ManagePage, type ManageTab } from "./ManagePage";
 
 type Group = "Pinned" | "Needs input" | "Working" | "Idle" | "Failed" | "Completed" | "Stopped";
 
@@ -71,7 +72,8 @@ export const App = () => {
     const [terminal, setTerminal] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [moreOpen, setMoreOpen] = useState(false);
-    const [page, setPage] = useState<"tasks" | "env">("tasks");
+    const [page, setPage] = useState<"tasks" | "env" | "manage">("tasks");
+    const [manageTab, setManageTab] = useState<ManageTab>("envs");
 
     const reload = useCallback(async () => {
         const [a, e, t] = await Promise.all([api.accounts(), api.envs(), api.tasks()]);
@@ -82,6 +84,14 @@ export const App = () => {
     }, [envId]);
 
     const loadDetail = useCallback(async (id: string) => setDetail(await api.task(id)), []);
+
+    // A task from another env must not stay open after switching env; the config pages re-fetch accounts/envs on entry.
+    useEffect(() => {
+        if (selected && tasks.length && tasks.find((t) => t.id === selected)?.env_id !== envId) setSelected(null);
+    }, [envId, selected, tasks]);
+    useEffect(() => {
+        if (page !== "tasks") void reload();
+    }, [page, reload]);
 
     useEffect(() => {
         void reload();
@@ -150,21 +160,42 @@ export const App = () => {
                 <button className="more" onClick={() => setMoreOpen((v) => !v)} title="Accounts, env and settings">⋯</button>
                 <button className="primary" disabled={!env} onClick={() => setModal("task")}>+ task</button>
                 <span className="extra">
-                    <button onClick={() => setModal("env")}>+ env</button>
                     {env && <button onClick={() => setPage("env")}>configure env</button>}
+                    <button className={page === "manage" ? "active" : ""} onClick={() => setPage("manage")} title="Environments, AI accounts, task managers">Manage</button>
                 </span>
                 <span className="spacer" />
                 <span className="extra gauges">{accounts.map((a) => <Gauge key={a.id} a={a} />)}</span>
                 <span className="extra">
-                    <button onClick={() => setModal("account")}>+ account</button>
-                    <button onClick={() => setModal("settings")} title="Integrations & defaults">⚙</button>
+                    <button onClick={() => setModal("settings")} title="Default model">⚙</button>
                 </span>
             </header>
             {page === "env" && env && (
                 <div className="main page">
                     <main className="detail">
                         {error && <div className="blocked-box">{error}</div>}
-                        <EnvPage env={env} accounts={accounts} onBack={() => setPage("tasks")} onChanged={reload} onError={setError} />
+                        <EnvPage key={env.id} env={env} accounts={accounts} onBack={() => setPage("manage")} onChanged={reload} onError={setError} />
+                    </main>
+                </div>
+            )}
+            {page === "manage" && (
+                <div className="main page">
+                    <main className="detail">
+                        {error && <div className="blocked-box">{error}</div>}
+                        <ManagePage
+                            tab={manageTab}
+                            setTab={setManageTab}
+                            envs={envs}
+                            accounts={accounts}
+                            tasks={tasks}
+                            settings={settings}
+                            onBack={() => setPage("tasks")}
+                            onConfigureEnv={(id) => { setEnvId(id); setPage("env"); }}
+                            onAddEnv={() => setModal("env")}
+                            onAddAccount={() => setModal("account")}
+                            onChanged={reload}
+                            onError={setError}
+                            onTerminal={setTerminal}
+                        />
                     </main>
                 </div>
             )}

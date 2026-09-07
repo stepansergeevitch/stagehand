@@ -3,7 +3,7 @@ import { api, STAGE_LABEL, STAGE_ORDER, type Account, type QaPass, type Stage, t
 import { Terminal } from "./Terminal";
 import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
-import { DiffView, useDraftComments } from "./DiffView";
+import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
 import type { Env, LineComment, Review } from "./api";
 
 const parseComments = (r: Review): LineComment[] => {
@@ -59,15 +59,11 @@ const useArtifactText = (taskId: string, rel: string, exists: boolean): string |
     return text;
 };
 
-const Section = ({ title, badge, open, children }: { title: string; badge?: React.ReactNode; open: boolean; children: React.ReactNode }) => (
-    <details className="card" open={open}>
-        <summary>
-            <h2>
-                {title} {badge}
-            </h2>
-        </summary>
-        <div className="card-body">{children}</div>
-    </details>
+const Card = ({ title, badge, children }: { title: React.ReactNode; badge?: React.ReactNode; children: React.ReactNode }) => (
+    <section className="card">
+        <h2>{title} {badge}</h2>
+        {children}
+    </section>
 );
 
 // A collapsible sub-heading inside a card (open by default).
@@ -119,10 +115,51 @@ const TicketView = ({ detail, researchMd }: { detail: TaskDetail; researchMd: st
 };
 
 const RERUNNABLE: ReadonlySet<Stage> = new Set(["research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "pr_creation_review", "pr_red"]);
+const PR_STAGES: ReadonlySet<Stage> = new Set(["pr_waiting", "pr_red", "pr_green", "pr_approved", "done"]);
 
 const statusChip = (s: string) => {
     const cls = s === "waiting_user" || s === "blocked" ? "wait" : s === "running" ? "accent" : s === "failed" ? "bad" : s === "done" ? "ok" : s === "rate_limited" ? "warn" : "";
     return <span className={`chip ${cls}`}>{s.replace("_", " ")}</span>;
+};
+
+type Tab = "work" | "runs" | "design" | "code" | "comments" | "ticket";
+
+// PR status for the header widget, derived from the stage, the stored PR state and the status line.
+const PrWidget = ({ detail }: { detail: TaskDetail }) => {
+    const { task, prState, pr } = detail;
+    const checks = ((): Array<{ name?: string; context?: string; conclusion?: string; state?: string }> => {
+        try {
+            return prState?.checks_json ? (JSON.parse(prState.checks_json) as Array<{ name?: string; context?: string; conclusion?: string; state?: string }>) : [];
+        } catch {
+            return [];
+        }
+    })();
+    const failed = checks.filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
+    const passed = checks.filter((c) => /SUCCESS|NEUTRAL|SKIPPED/i.test(c.conclusion ?? c.state ?? ""));
+    const pending = checks.length - failed.length - passed.length;
+    let status: React.ReactNode;
+    if (prState?.merged_at) status = <span className="chip ok">merged</span>;
+    else if (prState?.url) {
+        const cls = failed.length ? "bad" : pending > 0 ? "warn" : prState.review_decision === "APPROVED" ? "ok" : "accent";
+        const text = failed.length ? `${failed.length} check(s) failing` : pending > 0 ? `${pending} check(s) running` : prState.review_decision === "APPROVED" ? "approved" : checks.length ? "checks green" : STAGE_LABEL[task.stage];
+        status = <span className={`chip ${cls}`}>{text}</span>;
+    } else if (task.stage === "pr_creation_review") status = <span className="chip wait">{task.status === "waiting_user" ? "draft ready — approve to create" : "drafting"}</span>;
+    else if (PR_STAGES.has(task.stage)) status = <span className="chip warn">not created yet</span>;
+    else if (pr) status = <span className="chip">draft</span>;
+    else status = <span className="chip">none yet</span>;
+    return (
+        <section className="card widget">
+            <h2>Pull request</h2>
+            <div className="widget-body">
+                {status}
+                {prState?.url && <a href={prState.url} target="_blank" rel="noreferrer">#{prState.number} ↗</a>}
+                {prState?.review_decision && <span className="chip">{prState.review_decision.toLowerCase().replace("_", " ")}</span>}
+                {checks.length > 0 && <span className="mono small">{passed.length}/{checks.length} checks passed{failed.length ? ` · failing: ${failed.map((c) => c.name ?? c.context).join(", ")}` : ""}</span>}
+                {!prState?.url && PR_STAGES.has(task.stage) && task.status_line && <span className="small">{task.status_line}</span>}
+                {task.branch && <code className="small">⎇ {task.branch}</code>}
+            </div>
+        </section>
+    );
 };
 
 export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal, onAction, onOpenTerminal, onCloseTerminal }: Props) => {
@@ -138,8 +175,159 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const currentIdx = STAGE_ORDER.indexOf(task.stage);
     const skipped = new Set<Stage>(design && design.qa.length === 0 ? ["qa_baseline", "manual_qa"] : []);
     const waiting = task.status === "waiting_user";
-    const [tab, setTab] = useState<"work" | "ticket">("work");
-    useEffect(() => setTab("work"), [task.id]);
+    const [tab, setTab] = useState<Tab>("work");
+    const [step, setStep] = useState<Stage>(task.stage);
+    useEffect(() => {
+        setTab("work");
+        setStep(task.stage);
+    }, [task.id]);
+    useEffect(() => setStep(task.stage), [task.stage]);
+    const prior: PriorComment[] = detail.reviews
+        .filter((r) => r.stage === "user_review" && r.verdict === "changes")
+        .flatMap((r, i) => parseComments(r).map((c) => ({ ...c, round: i + 1 })));
+
+    // Which workflow steps have something to show (or are the current one).
+    const stepHasContent = (s: Stage): boolean => {
+        switch (s) {
+            case "research": return !!research;
+            case "design_proposal": return !!design;
+            case "qa_baseline": return !!qaBefore;
+            case "implementation": return !!impl;
+            case "manual_qa": return !!qaAfter;
+            case "user_review": return detail.reviews.some((r) => r.stage === "user_review") || task.stage === "user_review";
+            case "pr_creation_review": return !!pr;
+            default: return PR_STAGES.has(s) && (!!detail.prState || s === task.stage);
+        }
+    };
+    const steps = STAGE_ORDER.filter((s, i) => i <= currentIdx && !skipped.has(s) && (stepHasContent(s) || s === task.stage));
+    // PR stages share one panel.
+    const stepKey = (s: Stage): Stage => (PR_STAGES.has(s) ? "pr_waiting" : s);
+
+    const reviewBox = waiting && (
+        <div className="review-box">
+            <b>{STAGE_LABEL[task.stage]} — your call.</b>
+            {task.stage === "user_review" && (
+                <label style={{ display: "block", margin: "6px 0" }}>
+                    On changes, send back to{" "}
+                    <select value={routeTo} onChange={(e) => setRouteTo(e.target.value as typeof routeTo)}>
+                        <option value="implementation">Implementation</option>
+                        <option value="design_proposal">Design Proposal</option>
+                    </select>
+                </label>
+            )}
+            <textarea placeholder={canComment ? "General comments (optional if you left line comments in Code changes)" : "Notes for Claude (required for 'Request changes')"} value={notes} onChange={(e) => setNotes(e.target.value)} />
+            {canComment && pending.length > 0 && (
+                <div className="pending-comments">
+                    {pending.length} line comment{pending.length === 1 ? "" : "s"} to send:
+                    <ul className="plain">
+                        {pending.map(([k, c]) => (
+                            <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+            <div className="actions">
+                <button
+                    className="primary"
+                    onClick={() => onAction(async () => { await api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}) }); clearComments(); setNotes(""); })}
+                >
+                    {task.stage === "pr_creation_review" ? "Approve & create PR" : "Approve"}
+                </button>
+                <button
+                    disabled={!notes.trim() && !(canComment && pending.length > 0)}
+                    onClick={() =>
+                        onAction(async () => {
+                            await api.review(task.id, {
+                                verdict: "changes",
+                                ...(notes.trim() ? { notes } : {}),
+                                ...(task.stage === "user_review" ? { routeTo, comments: pending.map(([, c]) => c) } : {}),
+                            });
+                            clearComments();
+                            setNotes("");
+                        })
+                    }
+                >
+                    Request changes{canComment && pending.length > 0 ? ` (${pending.length})` : ""}
+                </button>
+                {task.stage === "user_review" && <button onClick={() => setTab("code")}>Open Code changes to comment on lines</button>}
+            </div>
+            <ReviewHistory reviews={detail.reviews} stage={task.stage} />
+        </div>
+    );
+
+    const qaPanel = design && (qaBefore || qaAfter) && (
+        <Card title="QA evidence">
+            {task.status !== "running" && (
+                <div className="actions" style={{ marginTop: 0 }}>
+                    <button onClick={() => onAction(() => api.rerun(task.id, "qa_baseline"))}>Re-run QA baseline</button>
+                    {currentIdx >= STAGE_ORDER.indexOf("manual_qa") && <button onClick={() => onAction(() => api.rerun(task.id, "manual_qa"))}>Re-run Manual QA</button>}
+                </div>
+            )}
+            <QaGallery taskId={task.id} design={design} before={qaBefore} after={qaAfter} />
+        </Card>
+    );
+
+    const stepPanel = (s: Stage): React.ReactNode => {
+        switch (stepKey(s)) {
+            case "research":
+                return research ? (
+                    <Card title="Research" badge={<span className={`chip ${research.classification === "bug" ? "bad" : "accent"}`}>{research.classification}</span>}>
+                        <div className="kv"><b>Summary</b><span>{research.summary}</span><b>Branch</b><code>{research.branchName}</code><b>Areas</b><span>{research.affectedAreas.join(", ")}</span></div>
+                        {researchMd && <Sub title="research.md" open={false}><Markdown source={researchMd} /></Sub>}
+                    </Card>
+                ) : <div className="empty">no research yet</div>;
+            case "design_proposal":
+                return design ? (
+                    <Card title="Design proposal" badge={<span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>}>
+                        <div className="kv">
+                            <b>Plan</b><span>{design.plan.length} layer(s): {design.plan.map((p) => p.layer).join(", ")}</span>
+                            <b>Tests</b><span>{design.testPlan.reduce((n, t) => n + t.cases.length, 0)} case(s) in {design.testPlan.length} file(s)</span>
+                            <b>QA</b><span>{design.qa.length ? `${design.qa.length} scenario(s)` : `none — ${design.qaSkippedReason ?? "no reason given"}`}</span>
+                        </div>
+                        <div className="actions"><button onClick={() => setTab("design")}>Open the full proposal</button></div>
+                    </Card>
+                ) : <div className="empty">no design yet</div>;
+            case "qa_baseline":
+            case "manual_qa":
+                return qaPanel ?? <div className="empty">no QA evidence yet</div>;
+            case "implementation":
+                return impl ? (
+                    <Card title="Implementation" badge={<span className={`chip ${impl.gates.tests && impl.gates.typecheck ? "ok" : "bad"}`}>tests {impl.gates.tests ? "✓" : "✗"} · typecheck {impl.gates.typecheck ? "✓" : "✗"}</span>}>
+                        <div className="kv">
+                            <b>Coverage (new lines)</b><span>{impl.coverageNewLines ?? "—"}%</span>
+                            <b>Backend</b><span>{impl.tests.backend ?? "—"}</span>
+                            <b>Frontend</b><span>{impl.tests.frontend ?? "—"}</span>
+                            <b>Files</b><span>{impl.files.map((f) => <code key={f} style={{ marginRight: 8 }}>{f}</code>)}</span>
+                            <b>Commits</b><span>{impl.commits.length ? impl.commits.map((c) => <div key={c}><code>{c}</code></div>) : "none (uncommitted changes)"}</span>
+                        </div>
+                        {impl.notes && <Sub title="Notes from the implementer" open={false}><Markdown source={impl.notes} /></Sub>}
+                        <div className="actions"><button onClick={() => setTab("code")}>Open Code changes</button></div>
+                    </Card>
+                ) : <div className="empty">no implementation yet</div>;
+            case "user_review":
+                return (
+                    <>
+                        {task.stage === "user_review" ? reviewBox : <Card title="User Review"><ReviewHistory reviews={detail.reviews} stage="user_review" /><div className="actions"><button onClick={() => setTab("comments")}>PR comments</button></div></Card>}
+                    </>
+                );
+            case "pr_creation_review":
+                return (
+                    <>
+                        {task.stage === "pr_creation_review" && reviewBox}
+                        {pr ? (
+                            <Card title="PR draft">
+                                <div className="kv"><b>Title</b><span>{pr.title}</span><b>Base</b><code>{pr.base}</code></div>
+                                <Markdown source={pr.body} />
+                            </Card>
+                        ) : <div className="empty">no draft yet</div>}
+                    </>
+                );
+            case "pr_waiting":
+                return <PrPanel detail={detail} />;
+            default:
+                return null;
+        }
+    };
 
     return (
         <>
@@ -149,7 +337,6 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 <span>{STAGE_LABEL[task.stage]}</span>
                 {task.ticket_url ? <a href={task.ticket_url} target="_blank" rel="noreferrer">{task.source} ↗</a> : <span>{task.source}</span>}
                 {task.model && <span className="chip">{task.model}</span>}
-                {task.branch && <span>⎇ {task.branch}</span>}
                 <span>session {task.session_id.slice(0, 8)}</span>
                 <label>
                     account{" "}
@@ -166,6 +353,19 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 <button onClick={() => onAction(() => api.pin(task.id))}>{task.pinned ? "Unpin" : "Pin"}</button>
                 {terminal ? <button onClick={onCloseTerminal}>Close terminal</button> : <button disabled={task.status === "running"} onClick={onOpenTerminal}>Open terminal</button>}
             </div>
+
+            <div className="widgets">
+                {task.worktree_path ? (
+                    <section className="card widget">
+                        <h2>App</h2>
+                        <ServicesPanel taskId={task.id} env={env} onError={onError} />
+                    </section>
+                ) : (
+                    <section className="card widget"><h2>App</h2><div className="empty">no worktree yet</div></section>
+                )}
+                <PrWidget detail={detail} />
+            </div>
+
             <div className="timeline">
                 {STAGE_ORDER.map((s, i) => {
                     const runnable = RERUNNABLE.has(s) && i <= currentIdx && task.status !== "running" && !skipped.has(s);
@@ -185,20 +385,6 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     );
                 })}
             </div>
-
-            <div className="tabs" role="tablist">
-                <button role="tab" className={tab === "work" ? "active" : ""} onClick={() => setTab("work")}>Work</button>
-                <button role="tab" className={tab === "ticket" ? "active" : ""} onClick={() => setTab("ticket")}>Ticket</button>
-            </div>
-
-            {tab === "ticket" && <TicketView detail={detail} researchMd={researchMd} />}
-
-            {tab === "work" && (<>
-            {task.worktree_path && (
-                <Section title="App" open={true}>
-                    <ServicesPanel taskId={task.id} env={env} onError={onError} />
-                </Section>
-            )}
 
             {task.status === "blocked" && (
                 <div className="blocked-box">
@@ -224,178 +410,150 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 </div>
             )}
 
-            {waiting && (
-                <div className="review-box">
-                    <b>{STAGE_LABEL[task.stage]} — your call.</b>
-                    {task.stage === "user_review" && (
-                        <label style={{ display: "block", margin: "6px 0" }}>
-                            On changes, send back to{" "}
-                            <select value={routeTo} onChange={(e) => setRouteTo(e.target.value as typeof routeTo)}>
-                                <option value="implementation">Implementation</option>
-                                <option value="design_proposal">Design Proposal</option>
-                            </select>
-                        </label>
-                    )}
-                    <textarea placeholder={canComment ? "General comments (optional if you left line comments in the diff below)" : "Notes for Claude (required for 'Request changes')"} value={notes} onChange={(e) => setNotes(e.target.value)} />
-                    {canComment && pending.length > 0 && (
-                        <div className="pending-comments">
-                            {pending.length} line comment{pending.length === 1 ? "" : "s"} to send:
-                            <ul className="plain">
-                                {pending.map(([k, c]) => (
-                                    <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>
-                                ))}
-                            </ul>
-                        </div>
-                    )}
-                    <div className="actions">
-                        <button
-                            className="primary"
-                            onClick={() => onAction(async () => { await api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}) }); clearComments(); setNotes(""); })}
-                        >
-                            {task.stage === "pr_creation_review" ? "Approve & create PR" : "Approve"}
-                        </button>
-                        <button
-                            disabled={!notes.trim() && !(canComment && pending.length > 0)}
-                            onClick={() =>
-                                onAction(async () => {
-                                    await api.review(task.id, {
-                                        verdict: "changes",
-                                        ...(notes.trim() ? { notes } : {}),
-                                        ...(task.stage === "user_review" ? { routeTo, comments: pending.map(([, c]) => c) } : {}),
-                                    });
-                                    clearComments();
-                                    setNotes("");
-                                })
-                            }
-                        >
-                            Request changes{canComment && pending.length > 0 ? ` (${pending.length})` : ""}
-                        </button>
-                    </div>
-                    <ReviewHistory reviews={detail.reviews} stage={task.stage} />
-                </div>
-            )}
-
-            {task.branch && task.worktree_path && (
-                <Section title="Code changes" open={task.stage === "user_review"} badge={pending.length > 0 ? <span className="chip wait">{pending.length} 💬</span> : undefined}>
-                    <DiffView
-                        taskId={task.id}
-                        refreshKey={task.updated_at}
-                        comments={comments}
-                        prior={detail.reviews
-                            .filter((r) => r.stage === "user_review" && r.verdict === "changes")
-                            .flatMap((r, i) => parseComments(r).map((c) => ({ ...c, round: i + 1 })))}
-                        canComment={canComment}
-                        onChange={changeComment}
-                    />
-                </Section>
-            )}
-
-            {terminal && (
-                <section className="card">
-                    <h2>Terminal <code>{terminal}</code></h2>
-                    <Terminal session={terminal} />
-                </section>
-            )}
-
-            {task.status === "running" && (
-                <section className="card">
-                    <h2>Live</h2>
-                    <div className="feed">{feed.length === 0 ? <div className="k">waiting for events…</div> : feed.slice(-40).map((l, i) => <div key={i}>{l}</div>)}</div>
-                </section>
-            )}
-
-            {detail.ticket && (
-                <Section title="Ticket" open={task.stage === "research"} badge={<span className="chip">{detail.ticket.fetchedVia}</span>}>
-                    <div className="kv">
-                        <b>Title</b><span>{detail.ticket.title}</span>
-                        <b>Status</b><span>{detail.ticket.status ?? "—"}</span>
-                        {detail.ticket.parent && <><b>Parent</b><span>{detail.ticket.parent.id} — {detail.ticket.parent.title}</span></>}
-                    </div>
-                    {detail.ticket.acceptanceCriteria.length > 0 && (
-                        <Sub title="Acceptance criteria">
-                            <ul className="plain">{detail.ticket.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul>
-                        </Sub>
-                    )}
-                    <details><summary>Description</summary><Markdown source={detail.ticket.description} /></details>
-                </Section>
-            )}
-
-            {research && (
-                <Section title="Research" open={task.stage === "research" || (task.stage === "design_proposal" && !design)} badge={<span className={`chip ${research.classification === "bug" ? "bad" : "accent"}`}>{research.classification}</span>}>
-                    <div className="kv"><b>Summary</b><span>{research.summary}</span><b>Branch</b><code>{research.branchName}</code><b>Areas</b><span>{research.affectedAreas.join(", ")}</span></div>
-                    {researchMd && <details><summary>research.md</summary><Markdown source={researchMd} /></details>}
-                </Section>
-            )}
-
-            {design && (
-                <Section title="Design proposal" open={task.stage === "design_proposal"} badge={<span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>}>
-                    {designMd && <details open={task.stage === "design_proposal"}><summary>design.md</summary><Markdown source={designMd} /></details>}
-                    <Sub title="Plan by layer">
-                        <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
-                    </Sub>
-                    <Sub title="Test plan">
-                        <table><tbody>{design.testPlan.map((t) => <tr key={t.file}><td><code>{t.file}</code></td><td><ul className="plain">{t.cases.map((c, i) => <li key={i}><code>{c}</code></li>)}</ul></td></tr>)}</tbody></table>
-                    </Sub>
-                    <Sub title={<>QA scenarios {design.qa.length === 0 && <span className="chip">none — {design.qaSkippedReason ?? "no reason given"}</span>}</>}>
-                        {design.qa.map((s) => (
-                            <details className="scenario" key={s.id} open>
-                                <summary>
-                                    <h3><span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
-                                </summary>
-                                <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
-                            </details>
-                        ))}
-                    </Sub>
-                </Section>
-            )}
-
-            {impl && (
-                <Section title="Implementation" open={task.stage === "implementation" || task.stage === "user_review"} badge={<span className={`chip ${impl.gates.tests && impl.gates.typecheck ? "ok" : "bad"}`}>tests {impl.gates.tests ? "✓" : "✗"} · typecheck {impl.gates.typecheck ? "✓" : "✗"}</span>}>
-                    <div className="kv">
-                        <b>Coverage (new lines)</b><span>{impl.coverageNewLines ?? "—"}%</span>
-                        <b>Backend</b><span>{impl.tests.backend ?? "—"}</span>
-                        <b>Frontend</b><span>{impl.tests.frontend ?? "—"}</span>
-                        <b>Files</b><span>{impl.files.map((f) => <code key={f} style={{ marginRight: 8 }}>{f}</code>)}</span>
-                        <b>Commits</b><span>{impl.commits.map((c) => <div key={c}><code>{c}</code></div>)}</span>
-                    </div>
-                    {impl.notes && <Markdown source={impl.notes} />}
-                </Section>
-            )}
-
-            {(qaBefore || qaAfter) && design && (
-                <Section title="QA evidence" open={task.stage === "manual_qa" || task.stage === "user_review"}>
-                    {task.status !== "running" && (
-                        <div className="actions" style={{ marginTop: 0 }}>
-                            <button onClick={() => onAction(() => api.rerun(task.id, "qa_baseline"))}>Re-run QA baseline</button>
-                            {currentIdx >= STAGE_ORDER.indexOf("manual_qa") && <button onClick={() => onAction(() => api.rerun(task.id, "manual_qa"))}>Re-run Manual QA</button>}
-                        </div>
-                    )}
-                    <QaGallery taskId={task.id} design={design} before={qaBefore} after={qaAfter} />
-                </Section>
-            )}
-
-            {pr && (
-                <Section title="PR draft" open={task.stage === "pr_creation_review"}>
-                    <div className="kv"><b>Title</b><span>{pr.title}</span><b>Base</b><code>{pr.base}</code></div>
-                    <Markdown source={pr.body} />
-                </Section>
-            )}
-
-            <Section title="Runs" open={false} badge={<span className="chip">{runs.length}</span>}>
-                <div className="runs">
-                {runs.length === 0 && <div className="empty">none yet</div>}
-                {[...runs].reverse().map((r) => (
-                    <div className="run" key={r.id}>
-                        <span>{STAGE_LABEL[r.stage]} <small style={{ color: "var(--ink-3)" }}>#{r.attempt}</small></span>
-                        {statusChip(r.status)}
-                        <span className={r.error ? "err" : ""}>{r.error ?? r.last_event ?? ""}</span>
-                        <span className="mono" style={{ color: "var(--ink-3)" }}>{r.num_turns ? `${r.num_turns} turns` : ""}{r.cost_usd ? ` · $${r.cost_usd.toFixed(2)}` : ""}</span>
-                    </div>
+            <div className="tabs" role="tablist">
+                {([
+                    ["work", "Work"],
+                    ["runs", `Runs (${runs.length})`],
+                    ["design", "Design proposal"],
+                    ["code", `Code changes${pending.length ? ` (${pending.length} 💬)` : ""}`],
+                    ["comments", `PR comments${prior.length || pending.length ? ` (${prior.length + pending.length})` : ""}`],
+                    ["ticket", "Ticket"],
+                ] as Array<[Tab, string]>).map(([t, label]) => (
+                    <button key={t} role="tab" className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{label}</button>
                 ))}
-                </div>
-            </Section>
-            </>)}
+            </div>
+
+            {tab === "work" && (
+                <>
+                    <div className="subtabs">
+                        {steps.map((s) => (
+                            <button key={s} className={stepKey(step) === stepKey(s) ? "active" : ""} onClick={() => setStep(s)}>
+                                {PR_STAGES.has(s) ? "Pull request" : STAGE_LABEL[s]}{s === task.stage ? " ·" : ""}
+                            </button>
+                        ))}
+                    </div>
+                    {task.status === "running" && stepKey(step) === stepKey(task.stage) && (
+                        <Card title="Live">
+                            <div className="feed">{feed.length === 0 ? <div className="k">waiting for events…</div> : feed.slice(-40).map((l, i) => <div key={i}>{l}</div>)}</div>
+                        </Card>
+                    )}
+                    {waiting && stepKey(step) !== stepKey(task.stage) && task.stage !== "pr_creation_review" && task.stage !== "user_review" && reviewBox}
+                    {stepPanel(step)}
+                    {terminal && (
+                        <Card title={<>Terminal <code>{terminal}</code></>}>
+                            <Terminal session={terminal} />
+                        </Card>
+                    )}
+                </>
+            )}
+
+            {tab === "runs" && (
+                <Card title="Runs">
+                    <div className="runs">
+                        {runs.length === 0 && <div className="empty">none yet</div>}
+                        {[...runs].reverse().map((r) => (
+                            <div className="run" key={r.id}>
+                                <span>{STAGE_LABEL[r.stage]} <small style={{ color: "var(--ink-3)" }}>#{r.attempt}</small></span>
+                                {statusChip(r.status)}
+                                <span className={r.error ? "err" : ""}>{r.error ?? r.last_event ?? ""}</span>
+                                <span className="mono" style={{ color: "var(--ink-3)" }}>{r.num_turns ? `${r.num_turns} turns` : ""}{r.cost_usd ? ` · $${r.cost_usd.toFixed(2)}` : ""}</span>
+                            </div>
+                        ))}
+                    </div>
+                </Card>
+            )}
+
+            {tab === "design" && (
+                design ? (
+                    <Card title="Design proposal" badge={<span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>}>
+                        {task.stage === "design_proposal" && reviewBox}
+                        {designMd && <Sub title="design.md"><Markdown source={designMd} /></Sub>}
+                        <Sub title="Plan by layer">
+                            <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
+                        </Sub>
+                        <Sub title="Test plan">
+                            <table><tbody>{design.testPlan.map((t) => <tr key={t.file}><td><code>{t.file}</code></td><td><ul className="plain">{t.cases.map((c, i) => <li key={i}><code>{c}</code></li>)}</ul></td></tr>)}</tbody></table>
+                        </Sub>
+                        <Sub title={<>QA scenarios {design.qa.length === 0 && <span className="chip">none — {design.qaSkippedReason ?? "no reason given"}</span>}</>}>
+                            {design.qa.map((s) => (
+                                <details className="scenario" key={s.id} open>
+                                    <summary>
+                                        <h3><span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
+                                    </summary>
+                                    <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
+                                </details>
+                            ))}
+                        </Sub>
+                    </Card>
+                ) : <div className="empty">No design proposal yet.</div>
+            )}
+
+            {tab === "code" && (
+                task.branch && task.worktree_path ? (
+                    <Card title="Code changes" badge={pending.length > 0 ? <span className="chip wait">{pending.length} 💬</span> : undefined}>
+                        {canComment && <p className="field-hint">Tap a line to leave a comment; send them from the PR comments tab or the review box.</p>}
+                        <DiffView taskId={task.id} refreshKey={task.updated_at} comments={comments} prior={prior} canComment={canComment} onChange={changeComment} />
+                    </Card>
+                ) : <div className="empty">No branch yet.</div>
+            )}
+
+            {tab === "comments" && (
+                <>
+                    {task.stage === "user_review" && waiting ? reviewBox : (
+                        <Card title="PR comments">
+                            {pending.length > 0 && (
+                                <div className="pending-comments">
+                                    Draft line comments (sent with the next "Request changes" in User Review):
+                                    <ul className="plain">{pending.map(([k, c]) => <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>)}</ul>
+                                </div>
+                            )}
+                            <ReviewHistory reviews={detail.reviews} stage="user_review" />
+                            {!detail.reviews.some((r) => r.stage === "user_review") && pending.length === 0 && <div className="empty">No review comments yet.</div>}
+                            {detail.prState?.url && <p className="field-hint">GitHub PR: <a href={detail.prState.url} target="_blank" rel="noreferrer">{detail.prState.url}</a></p>}
+                        </Card>
+                    )}
+                </>
+            )}
+
+            {tab === "ticket" && <TicketView detail={detail} researchMd={researchMd} />}
         </>
+    );
+};
+
+// Details for the PR stages: checks, review, merge — everything the poller stored.
+const PrPanel = ({ detail }: { detail: TaskDetail }) => {
+    const { task, prState } = detail;
+    const checks = ((): Array<{ name?: string; context?: string; conclusion?: string; state?: string; detailsUrl?: string }> => {
+        try {
+            return prState?.checks_json ? (JSON.parse(prState.checks_json) as Array<{ name?: string; context?: string; conclusion?: string; state?: string; detailsUrl?: string }>) : [];
+        } catch {
+            return [];
+        }
+    })();
+    return (
+        <Card title="Pull request">
+            {!prState?.url && <p>{task.status_line ?? "No pull request yet."}</p>}
+            {prState?.url && (
+                <div className="kv">
+                    <b>PR</b><a href={prState.url} target="_blank" rel="noreferrer">#{prState.number} ↗</a>
+                    <b>Review</b><span>{prState.review_decision ? prState.review_decision.toLowerCase().replace("_", " ") : "no decision yet"}</span>
+                    <b>Merged</b><span>{prState.merged_at ? new Date(prState.merged_at).toLocaleString() : "not yet"}</span>
+                    <b>Checks</b>
+                    <span>
+                        {checks.length === 0 ? "none reported yet" : (
+                            <ul className="plain">
+                                {checks.map((c, i) => {
+                                    const st = c.conclusion ?? c.state ?? "pending";
+                                    const cls = /SUCCESS|NEUTRAL|SKIPPED/i.test(st) ? "ok" : /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(st) ? "bad" : "warn";
+                                    return <li key={i}><span className={`chip ${cls}`}>{st.toLowerCase()}</span> {c.name ?? c.context}</li>;
+                                })}
+                            </ul>
+                        )}
+                    </span>
+                    <b>Last poll</b><span>{new Date(prState.updated_at).toLocaleString()}</span>
+                </div>
+            )}
+        </Card>
     );
 };
 

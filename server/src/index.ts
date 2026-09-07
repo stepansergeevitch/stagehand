@@ -118,15 +118,31 @@ app.post("/api/accounts/:id/login", async (c) => {
 });
 
 app.patch("/api/accounts/:id", async (c) => {
-    const body = json(z.object({ failover_enabled: z.boolean().optional(), failover_threshold: z.number().min(0).max(1).optional() }), await c.req.json());
+    const body = json(
+        z.object({ name: z.string().regex(/^[a-z0-9-]+$/).optional(), failover_enabled: z.boolean().optional(), failover_threshold: z.number().min(0).max(1).optional() }),
+        await c.req.json(),
+    );
     const acc = accountById(c.req.param("id"));
     if (!acc) return c.json({ error: "not found" }, 404);
-    db.prepare(`UPDATE accounts SET failover_enabled = ?, failover_threshold = ? WHERE id = ?`).run(
+    db.prepare(`UPDATE accounts SET name = ?, failover_enabled = ?, failover_threshold = ? WHERE id = ?`).run(
+        body.name ?? acc.name,
         body.failover_enabled === undefined ? acc.failover_enabled : body.failover_enabled ? 1 : 0,
         body.failover_threshold ?? acc.failover_threshold,
         acc.id,
     );
     return c.json(accountById(acc.id));
+});
+
+// Deleting an account only forgets it in Stagehand (the config dir stays); refused while an env or task still points at it.
+app.delete("/api/accounts/:id", (c) => {
+    const acc = accountById(c.req.param("id"));
+    if (!acc) return c.json({ error: "not found" }, 404);
+    const envs = db.prepare(`SELECT name FROM envs WHERE default_account_id = ?`).all(acc.id) as Array<{ name: string }>;
+    const tasks = db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE account_id = ?`).get(acc.id) as { n: number };
+    if (envs.length || tasks.n) return c.json({ error: `in use by ${envs.map((e) => `env ${e.name}`).concat(tasks.n ? [`${tasks.n} task(s)`] : []).join(", ")} — reassign first` }, 400);
+    db.prepare(`DELETE FROM rate_limits WHERE account_id = ?`).run(acc.id);
+    db.prepare(`DELETE FROM accounts WHERE id = ?`).run(acc.id);
+    return c.json({ deleted: acc.id });
 });
 
 // ---------- envs ----------
@@ -142,6 +158,51 @@ const badCheckouts = async (env: { path: string; base_branch: string; repos: str
 };
 
 app.get("/api/envs", (c) => c.json(envsAll()));
+
+// Deleting an env is refused while it has tasks (delete those first — each delete offers worktree cleanup).
+app.delete("/api/envs/:id", (c) => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
+    if (!env) return c.json({ error: "not found" }, 404);
+    const tasks = db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE env_id = ?`).get(env.id) as { n: number };
+    if (tasks.n) return c.json({ error: `${tasks.n} task(s) still belong to this environment — delete them first` }, 400);
+    db.prepare(`DELETE FROM envs WHERE id = ?`).run(env.id);
+    return c.json({ deleted: env.id });
+});
+
+// ---------- task managers (ClickUp / Linear integrations) ----------
+
+const taskManagers = () => [
+    { source: "clickup" as const, label: "ClickUp", configured: !!cfg.clickupToken, token: mask(cfg.clickupToken), teamId: cfg.clickupTeamId, envs: envsAll().filter((e) => e.ticket_source === "clickup").map((e) => e.name) },
+    { source: "linear" as const, label: "Linear", configured: !!cfg.linearApiKey, token: mask(cfg.linearApiKey), teamId: null, envs: envsAll().filter((e) => e.ticket_source === "linear").map((e) => e.name) },
+];
+
+app.get("/api/task-managers", (c) => c.json(taskManagers()));
+
+app.patch("/api/task-managers/:source", async (c) => {
+    const source = c.req.param("source");
+    const body = json(z.object({ token: z.string().nullable().optional(), teamId: z.string().nullable().optional() }), await c.req.json());
+    if (source === "clickup") {
+        if (body.token !== undefined) cfg.clickupToken = body.token || null;
+        if (body.teamId !== undefined) cfg.clickupTeamId = body.teamId || null;
+        if (body.token !== undefined) cfg.clickupUserId = null;
+    } else if (source === "linear") {
+        if (body.token !== undefined) cfg.linearApiKey = body.token || null;
+    } else return c.json({ error: "unknown task manager" }, 404);
+    saveConfig(cfg);
+    return c.json(taskManagers().find((t) => t.source === source));
+});
+
+// Live check: fetch the user's tickets with the stored credentials.
+app.post("/api/task-managers/:source/test", async (c) => {
+    const source = c.req.param("source");
+    if (source !== "clickup" && source !== "linear") return c.json({ error: "unknown task manager" }, 404);
+    try {
+        const tickets = await listMyTickets(source, cfg);
+        return c.json({ ok: true, count: tickets.length, sample: tickets.slice(0, 3).map((t) => `${t.id} ${t.title}`) });
+    } catch (e) {
+        return c.json({ ok: false, error: String((e as Error).message ?? e) });
+    }
+});
 
 // Effective rules (defaults merged) and the PR templates found in the env's checkouts, for the environment page.
 app.get("/api/envs/:id/rules", (c) => {
@@ -332,6 +393,7 @@ app.get("/api/tasks/:id", (c) => {
         pr: engine.readArtifactJson(task.id, "pr.json"),
         ticket: engine.readArtifactJson(task.id, "ticket.json"),
         reviews: db.prepare(`SELECT * FROM reviews WHERE task_id = ? ORDER BY created_at`).all(task.id),
+        prState: db.prepare(`SELECT * FROM pr_state WHERE task_id = ?`).get(task.id) ?? null,
     });
 });
 
