@@ -3,6 +3,7 @@ import { api, STAGE_LABEL, STAGE_ORDER, type Account, type QaPass, type Stage, t
 import { Terminal } from "./Terminal";
 import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
+import { TaskCost } from "./TaskCost";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
 import type { Env, LineComment, PrComment, PrComments, Review } from "./api";
 
@@ -187,8 +188,8 @@ const statusChip = (s: string) => {
     return <span className={`chip ${cls}`}>{s.replace("_", " ")}</span>;
 };
 
-export type Tab = "work" | "runs" | "design" | "code" | "comments" | "ticket";
-export const TASK_TABS: readonly Tab[] = ["work", "runs", "design", "code", "comments", "ticket"];
+export type Tab = "work" | "runs" | "design" | "code" | "comments" | "ticket" | "cost";
+export const TASK_TABS: readonly Tab[] = ["work", "runs", "design", "code", "comments", "ticket", "cost"];
 
 // PR status for the header widget, derived from the stage, the stored PR state and the status line.
 const PrWidget = ({ detail }: { detail: TaskDetail }) => {
@@ -512,6 +513,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     ["code", `Code changes${pending.length ? ` (${pending.length} 💬)` : ""}`],
                     ["comments", `PR comments${prior.length || pending.length ? ` (${prior.length + pending.length})` : ""}`],
                     ["ticket", "Ticket"],
+                    ["cost", "Cost"],
                 ] as Array<[Tab, string]>).map(([t, label]) => (
                     <button key={t} role="tab" className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{label}</button>
                 ))}
@@ -612,6 +614,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             )}
 
             {tab === "ticket" && <TicketView detail={detail} onFetch={async () => { await api.fetchTicket(task.id); await onAction(async () => undefined); }} />}
+            {tab === "cost" && <TaskCost taskId={task.id} refreshKey={task.updated_at} />}
         </>
     );
 };

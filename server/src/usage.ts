@@ -111,6 +111,56 @@ const bucketRows = (rows: UsageRow[], keyOf: (r: UsageRow) => string, labelOf: (
         .sort((a, b) => b.cost - a.cost);
 };
 
+export interface TaskUsageRow {
+    key: string;
+    at: string;
+    stage: string | null;
+    kind: string;
+    status: string | null;
+    attempt: number | null;
+    models: string[];
+    turns: number | null;
+    durationMs: number | null;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+}
+export interface TaskUsage {
+    rows: TaskUsageRow[];
+    totals: { cost: number; input: number; output: number; cacheRead: number; cacheWrite: number; turns: number; durationMs: number; runs: number };
+    byStage: UsageBucket[];
+}
+
+// Everything one task consumed, one row per claude invocation (stage runs by run id, helpers by their usage row), oldest first.
+export const taskUsage = (db: DB, taskId: string): TaskUsage => {
+    const rows = db.prepare(`SELECT * FROM usage WHERE task_id = ? ORDER BY at`).all(taskId) as UsageRow[];
+    const runs = new Map((db.prepare(`SELECT id, stage, status, attempt, started_at FROM runs WHERE task_id = ?`).all(taskId) as Array<{ id: string; stage: string; status: string; attempt: number; started_at: string | null }>).map((r) => [r.id, r]));
+    const m = new Map<string, TaskUsageRow>();
+    for (const r of rows) {
+        const key = r.run_id ?? r.id;
+        let row = m.get(key);
+        if (!row) {
+            const run = r.run_id ? runs.get(r.run_id) : undefined;
+            row = { key, at: run?.started_at ?? r.at, stage: r.stage, kind: r.kind, status: run?.status ?? null, attempt: run?.attempt ?? null, models: [], turns: r.turns, durationMs: r.duration_ms, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+            m.set(key, row);
+        }
+        if (r.model && !row.models.includes(r.model)) row.models.push(r.model);
+        row.input += r.input_tokens;
+        row.output += r.output_tokens;
+        row.cacheRead += r.cache_read_tokens;
+        row.cacheWrite += r.cache_write_tokens;
+        row.cost += r.cost_usd;
+    }
+    const list = [...m.values()].sort((a, b) => a.at.localeCompare(b.at));
+    const totals = list.reduce(
+        (t, r) => ({ cost: t.cost + r.cost, input: t.input + r.input, output: t.output + r.output, cacheRead: t.cacheRead + r.cacheRead, cacheWrite: t.cacheWrite + r.cacheWrite, turns: t.turns + (r.turns ?? 0), durationMs: t.durationMs + (r.durationMs ?? 0), runs: t.runs + 1 }),
+        { cost: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, durationMs: 0, runs: 0 },
+    );
+    return { rows: list, totals, byStage: bucketRows(rows, (r) => r.stage ?? r.kind, (r) => ({ label: r.stage ?? r.kind })) };
+};
+
 export const usageReport = (db: DB, since: Date | null): UsageReport => {
     const rows = (since ? db.prepare(`SELECT * FROM usage WHERE at >= ? ORDER BY at`).all(since.toISOString()) : db.prepare(`SELECT * FROM usage ORDER BY at`).all()) as UsageRow[];
     const envs = new Map((db.prepare(`SELECT id, name FROM envs`).all() as Array<{ id: string; name: string }>).map((e) => [e.id, e.name]));

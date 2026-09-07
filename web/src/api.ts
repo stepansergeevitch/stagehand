@@ -71,6 +71,15 @@ export interface UsageReport {
     since: string | null; totals: Omit<UsageBucket, "key" | "label">;
     byEnv: UsageBucket[]; byAccount: UsageBucket[]; byTask: UsageBucket[]; byStage: UsageBucket[]; byModel: UsageBucket[]; byDay: UsageBucket[];
 }
+export interface TaskUsageRow {
+    key: string; at: string; stage: string | null; kind: string; status: string | null; attempt: number | null; models: string[];
+    turns: number | null; durationMs: number | null; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number;
+}
+export interface TaskUsage {
+    rows: TaskUsageRow[];
+    totals: { cost: number; input: number; output: number; cacheRead: number; cacheWrite: number; turns: number; durationMs: number; runs: number };
+    byStage: UsageBucket[];
+}
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
@@ -173,6 +182,7 @@ export const api = {
     createTask: (envId: string, ticket: string, accountId?: string, model?: string) => post<Task>("/api/tasks", { envId, ticket, accountId, model }),
     settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
     usage: (days: number) => fetch(`/api/usage?days=${days}`).then((r) => j<UsageReport>(r)),
+    taskUsage: (id: string) => fetch(`/api/tasks/${id}/usage`).then((r) => j<TaskUsage>(r)),
     patchSettings: (body: Partial<Omit<Settings, "models">>) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
     review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>

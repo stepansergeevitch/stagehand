@@ -14,7 +14,7 @@ import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
-import { recordUsage, usageReport } from "./usage.js";
+import { recordUsage, taskUsage, usageReport } from "./usage.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -674,6 +674,12 @@ app.post("/api/tasks/:id/stop", (c) => {
 app.post("/api/tasks/:id/retry", (c) => {
     engine.retry(c.req.param("id"));
     return c.json(engine.getTask(c.req.param("id")));
+});
+
+app.get("/api/tasks/:id/usage", (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    return c.json(taskUsage(db, task.id));
 });
 
 // Opens the task's app URL in the env's Chrome profile (the one browser QA uses) so the human can log in there — no agent.
