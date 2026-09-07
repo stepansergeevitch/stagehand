@@ -7,6 +7,7 @@ import { accountBrowserReady, accountOrderOf, accountUsableWith, now, parseEnvVa
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir } from "./claude/accounts.js";
 import { backfillUsage, recordUsage } from "./usage.js";
+import { notify, taskLink, type Notice } from "./notify.js";
 import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
 import { execFile, execFileSync } from "node:child_process";
@@ -68,6 +69,8 @@ interface DispatchOpts {
 }
 
 const FIVE_HOUR = "five_hour";
+// Task states in which nothing happens until a human acts (or, for rate limits, until the window resets).
+const NEEDS_HUMAN: ReadonlySet<TaskStatus> = new Set(["waiting_user", "blocked", "failed", "rate_limited"]);
 
 // Required `## ` sections of design.md, in order (numbering optional); mirrored in prompts/design.md.
 export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem", "Change", "Risks and edge cases", "Tests", "QA"] as const;
@@ -386,20 +389,20 @@ export class Engine extends EventEmitter {
         // One turn to open the page, ONE Bash loop to wait (osascript reads the live tab titles/URLs) — not a model turn per poll.
         const prompt =
             `${this.chromeSelectStep(account)} Load the browser tools with one ToolSearch (tabs_context_mcp, tabs_create_mcp, navigate). Create a new tab and navigate to ${appUrl}/. ` +
-            `A human will log in in this window — you must NOT type any credentials. Then run this single Bash command and wait for it (it brings Chrome to the front and polls the tab titles for up to 10 minutes):\n` +
-            `osascript -e 'tell application "Google Chrome" to activate'; for i in $(seq 1 60); do t=$(osascript -e 'tell application "Google Chrome" to get {title, URL} of active tab of front window' 2>/dev/null); ` +
+            `A human will log in in this window — you must NOT type any credentials. Then run this Bash command in the FOREGROUND (pass timeout 100000; never run it in the background) and wait for it; it polls the tab for 90 seconds. If it prints WAITING, run the exact same command again — up to 6 times in total — until it prints LOGGED_IN:\n` +
+            `osascript -e 'tell application "Google Chrome" to activate'; for i in $(seq 1 9); do t=$(osascript -e 'tell application "Google Chrome" to get {title, URL} of active tab of front window' 2>/dev/null); ` +
             // Origin-override hack (deal alt-port): Auth0 sends the browser back to the allowed origin; re-open the same query on the real app URL.
             `case "$t" in *auth0.com*|*"Welcome"*|*"Log in"*|*"Sign in"*|*"login"*) sleep 10;; *"${appUrl}"*) echo LOGGED_IN; exit 0;; ` +
             `*"localhost:3000/?code="*) u=$(osascript -e 'tell application "Google Chrome" to get URL of active tab of front window'); q=\${u#*localhost:3000/}; osascript -e "tell application \\"Google Chrome\\" to set URL of active tab of front window to \\"${appUrl}/$q\\""; sleep 8;; ` +
-            `*) sleep 10;; esac; done; echo TIMEOUT\n` +
-            `Reply with exactly one line: LOGGED_IN if the command printed LOGGED_IN, TIMEOUT if it printed TIMEOUT, or FAILED <reason> if the browser tools or the command did not work.`;
+            `*) sleep 10;; esac; done; echo WAITING\n` +
+            `Reply with exactly one line: LOGGED_IN if a run printed LOGGED_IN, TIMEOUT if all 6 runs printed WAITING, or FAILED <reason> if the browser tools or the command did not work.`;
         const run = startClaude({
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: chrome.configDir,
             extraEnv: { ...parseEnvVars(env.env_vars), ...chrome.extraEnv },
             chrome: true,
-            maxTurns: 12,
+            maxTurns: 20,
             model: this.cfg.stageModels.helper ?? "sonnet",
             allowedTools: ["Bash"],
         });
@@ -695,10 +698,32 @@ export class Engine extends EventEmitter {
     }
 
     private setTaskStatus(taskId: string, status: TaskStatus, line?: string): void {
+        const prev = this.getTask(taskId);
         this.db
             .prepare(`UPDATE tasks SET status = ?, status_line = COALESCE(?, status_line), updated_at = ? WHERE id = ?`)
             .run(status, line ?? null, now(), taskId);
-        this.emit("task", this.getTask(taskId));
+        const next = this.getTask(taskId);
+        this.emit("task", next);
+        if (next && prev && NEEDS_HUMAN.has(status) && (prev.status !== status || prev.status_line !== next.status_line)) this.notifyNeedsHuman(next);
+    }
+
+    // One push per distinct (task, status, line) within ten minutes: the human learns once that a task waits on them.
+    private readonly notified = new Map<string, number>();
+    private notifyNeedsHuman(task: TaskRow): void {
+        const key = `${task.id}|${task.status}|${task.status_line ?? ""}`;
+        const last = this.notified.get(key) ?? 0;
+        if (Date.now() - last < 10 * 60_000) return;
+        this.notified.set(key, Date.now());
+        const label = STAGE_DEFS[task.stage]?.label ?? task.stage;
+        const priority: Notice["priority"] = task.status === "blocked" || task.status === "failed" ? "high" : task.status === "rate_limited" ? "low" : "default";
+        const verb = task.status === "waiting_user" ? "needs your review" : task.status === "blocked" ? "is blocked" : task.status === "failed" ? "failed" : "is rate-limited";
+        void notify(this.cfg, {
+            title: `${task.ticket_id} ${verb} · ${label}`,
+            message: task.status_line ?? label,
+            priority,
+            tags: [task.status === "waiting_user" ? "eyes" : task.status === "failed" ? "x" : task.status === "blocked" ? "no_entry" : "hourglass"],
+            ...(taskLink(this.cfg, task.id) ? { url: taskLink(this.cfg, task.id)! } : {}),
+        });
     }
 
     private advance(taskId: string, stage: Stage): void {
@@ -1039,7 +1064,7 @@ export class Engine extends EventEmitter {
         const run = this.latestRun(task.id);
         if (run) this.db.prepare(`UPDATE runs SET resume_at = ? WHERE id = ?`).run(resumeAt, run.id);
         const local = new Date(resumeAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
-        this.db.prepare(`UPDATE tasks SET status = 'rate_limited', status_line = ?, updated_at = ? WHERE id = ?`).run(`${reason} · resumes at ${local}`, now(), task.id);
+        this.setTaskStatus(task.id, "rate_limited", `${reason} · resumes at ${local}`);
         this.emit("task", this.getTask(task.id));
     }
 

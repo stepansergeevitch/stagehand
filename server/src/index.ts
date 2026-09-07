@@ -15,6 +15,7 @@ import { listMyTickets } from "./my-tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
 import { recordUsage, taskUsage, usageReport } from "./usage.js";
+import { notify } from "./notify.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -607,7 +608,13 @@ app.get("/api/settings", (c) =>
         linearApiKey: mask(cfg.linearApiKey),
         defaultModel: cfg.defaultModel,
         models: MODEL_OPTIONS,
+        notifications: { ...cfg.notifications, ntfyToken: mask(cfg.notifications.ntfyToken) },
     }),
+);
+
+// Sends one test push through every configured channel.
+app.post("/api/notifications/test", async (c) =>
+    c.json(await notify(cfg, { title: "Stagehand test", message: "Pushes from Stagehand reach this device.", priority: "default", tags: ["white_check_mark"], ...(cfg.notifications.baseUrl ? { url: `${cfg.notifications.baseUrl.replace(/\/+$/, "")}/#/dashboard` } : {}) })),
 );
 
 app.patch("/api/settings", async (c) => {
@@ -617,12 +624,29 @@ app.patch("/api/settings", async (c) => {
             clickupTeamId: z.string().nullable().optional(),
             linearApiKey: z.string().nullable().optional(),
             defaultModel: z.string().nullable().optional(),
+            notifications: z
+                .object({
+                    macos: z.boolean().optional(),
+                    ntfyServer: z.string().optional(),
+                    ntfyTopic: z.string().nullable().optional(),
+                    ntfyToken: z.string().nullable().optional(),
+                    baseUrl: z.string().nullable().optional(),
+                })
+                .optional(),
         }),
         await c.req.json(),
     );
     if (body.clickupToken !== undefined) cfg.clickupToken = body.clickupToken;
     if (body.clickupTeamId !== undefined) cfg.clickupTeamId = body.clickupTeamId;
     if (body.linearApiKey !== undefined) cfg.linearApiKey = body.linearApiKey;
+    if (body.notifications) {
+        const n = body.notifications;
+        if (n.macos !== undefined) cfg.notifications.macos = n.macos;
+        if (n.ntfyServer !== undefined && n.ntfyServer.trim()) cfg.notifications.ntfyServer = n.ntfyServer.trim();
+        if (n.ntfyTopic !== undefined) cfg.notifications.ntfyTopic = n.ntfyTopic?.trim() || null;
+        if (n.ntfyToken !== undefined) cfg.notifications.ntfyToken = n.ntfyToken || null;
+        if (n.baseUrl !== undefined) cfg.notifications.baseUrl = n.baseUrl?.trim() || null;
+    }
     if (body.defaultModel !== undefined) cfg.defaultModel = body.defaultModel;
     saveConfig(cfg);
     return c.json({ ok: true });

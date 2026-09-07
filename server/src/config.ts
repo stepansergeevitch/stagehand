@@ -17,6 +17,17 @@ const ConfigSchema = z.object({
     clickupUserId: z.string().nullable().default(null),
     linearApiKey: z.string().nullable().default(null),
     defaultModel: z.string().nullable().default(null),
+    // Where to push "needs you" events: macOS notification centre, and ntfy (phone app subscribed to ntfyTopic).
+    notifications: z
+        .object({
+            macos: z.boolean().default(true),
+            ntfyServer: z.string().default("https://ntfy.sh"),
+            ntfyTopic: z.string().nullable().default(null),
+            ntfyToken: z.string().nullable().default(null),
+            // Public UI origin used for click-through links, e.g. https://your-host:4748
+            baseUrl: z.string().nullable().default(null),
+        })
+        .default({}),
     // Per-stage model defaults (task.model overrides); cheaper models for reading-heavy or mechanical stages.
     stageModels: z
         .object({
@@ -67,6 +78,7 @@ const defaults = (): Config => ({
     clickupUserId: null,
     linearApiKey: null,
     defaultModel: null,
+    notifications: { macos: true, ntfyServer: "https://ntfy.sh", ntfyTopic: null, ntfyToken: null, baseUrl: null },
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_red: null, helper: "sonnet" },
     publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },
 });

@@ -82,9 +82,11 @@ export interface TaskUsage {
     totals: { cost: number; input: number; output: number; cacheRead: number; cacheWrite: number; turns: number; durationMs: number; runs: number };
     byStage: UsageBucket[];
 }
+export interface Notifications { macos: boolean; ntfyServer: string; ntfyTopic: string | null; ntfyToken: string | null; baseUrl: string | null }
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
+    notifications: Notifications;
 }
 export interface Ticket {
     source: "clickup" | "linear"; id: string; url: string | null; title: string; status: string | null; description: string;
@@ -184,8 +186,9 @@ export const api = {
     settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
     usage: (days: number) => fetch(`/api/usage?days=${days}`).then((r) => j<UsageReport>(r)),
     taskUsage: (id: string) => fetch(`/api/tasks/${id}/usage`).then((r) => j<TaskUsage>(r)),
-    patchSettings: (body: Partial<Omit<Settings, "models">>) =>
+    patchSettings: (body: Partial<Omit<Settings, "models" | "notifications">> & { notifications?: Partial<Notifications> }) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
+    testNotification: () => post<{ macos: boolean; ntfy: boolean | null; error?: string }>("/api/notifications/test"),
     review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>
         post<Task>(`/api/tasks/${id}/review`, body),
     diff: (id: string) => fetch(`/api/tasks/${id}/diff`).then((r) => j<{ base: string; files: DiffFile[] }>(r)),

@@ -59,6 +59,7 @@ export const ManagePage = ({
             {tab === "dirs" && <ConfigDirList dirs={configDirs} onOpen={onOpenDir} act={act} />}
             {tab === "accounts" && <AccountList accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onError={onError} />}
             {tab === "managers" && <TaskManagerList onError={onError} />}
+            {tab === "managers" && settings && <NotificationsCard settings={settings} onChanged={onChanged} onError={onError} />}
         </div>
     );
 };
@@ -245,6 +246,31 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                 );
             })}
         </>
+    );
+};
+
+// Where Stagehand pushes "a task needs you" events: macOS notification centre and, for the phone, an ntfy topic.
+const NotificationsCard = ({ settings, onChanged, onError }: { settings: Settings; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
+    const n = settings.notifications;
+    const [f, setF] = useState({ macos: n.macos, ntfyServer: n.ntfyServer, ntfyTopic: n.ntfyTopic ?? "", ntfyToken: "", baseUrl: n.baseUrl ?? "" });
+    const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+    return (
+        <section className="card manager">
+            <h2>Notifications {n.ntfyTopic ? <span className="chip ok">phone via ntfy</span> : <span className="chip">desktop only</span>}</h2>
+            <p className="field-hint">Sent whenever a task starts waiting on you: review needed, blocked (login, missing data), failed, or parked on a rate limit — once per distinct reason. Phone: install the ntfy app (iOS/Android), subscribe to a private topic name, and enter it here; Stagehand posts to it. Set the public URL so a tap opens the task.</p>
+            <div className="env-fields manager-fields">
+                <label className="inline"><input type="checkbox" checked={f.macos} onChange={(e) => setF({ ...f, macos: e.target.checked })} /> macOS notification centre on this Mac</label>
+                <label>ntfy topic (a hard-to-guess name, e.g. stagehand-7f3a9c) <input value={f.ntfyTopic} onChange={(e) => setF({ ...f, ntfyTopic: e.target.value })} placeholder="not set — no phone pushes" /></label>
+                <label>ntfy server <input value={f.ntfyServer} onChange={(e) => setF({ ...f, ntfyServer: e.target.value })} /></label>
+                <label>ntfy access token (only for protected topics / self-hosted servers) <input value={f.ntfyToken} onChange={(e) => setF({ ...f, ntfyToken: e.target.value })} placeholder={n.ntfyToken ?? "not set"} /></label>
+                <label>Public URL of this UI for links in pushes <input value={f.baseUrl} onChange={(e) => setF({ ...f, baseUrl: e.target.value })} placeholder="https://your-host:4748" /></label>
+            </div>
+            <div className="actions">
+                <button className="primary" onClick={async () => { try { await api.patchSettings({ notifications: { macos: f.macos, ntfyServer: f.ntfyServer, ntfyTopic: f.ntfyTopic || null, ...(f.ntfyToken ? { ntfyToken: f.ntfyToken } : {}), baseUrl: f.baseUrl || null } }); setF({ ...f, ntfyToken: "" }); await onChanged(); setResult({ ok: true, text: "saved" }); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Save</button>
+                <button onClick={async () => { setResult({ ok: true, text: "sending…" }); try { const r = await api.testNotification(); setResult({ ok: !r.error, text: `desktop ${r.macos ? "sent" : "off"} · phone ${r.ntfy === null ? "not configured" : r.ntfy ? "sent" : `failed: ${r.error ?? "?"}`}` }); } catch (e) { setResult({ ok: false, text: String((e as Error).message ?? e) }); } }}>Send a test</button>
+            </div>
+            {result && <div className={`test-result ${result.ok ? "" : "bad"}`}>{result.text}</div>}
+        </section>
     );
 };
 
