@@ -3,9 +3,11 @@ import { api, modelLabel, STAGE_LABEL, STAGE_ORDER, type Account, type Env, type
 import { TaskDetailView } from "./TaskDetail";
 import { EnvPage } from "./EnvPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
+import { Dashboard, needsAttention } from "./Dashboard";
 
-type Page = "tasks" | "env" | ManageTab;
+type Page = "dashboard" | "tasks" | "env" | ManageTab;
 const NAV: { id: Page; label: string; hint: string }[] = [
+    { id: "dashboard", label: "Dashboard", hint: "Tasks needing your attention, per environment" },
     { id: "tasks", label: "Tasks", hint: "Tasks in the selected environment" },
     { id: "envs", label: "Environments", hint: "Repositories, services, rules" },
     { id: "accounts", label: "AI accounts", hint: "Claude config dirs and limits" },
@@ -80,7 +82,7 @@ export const App = () => {
     const [terminal, setTerminal] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [moreOpen, setMoreOpen] = useState(false);
-    const [page, setPage] = useState<Page>("tasks");
+    const [page, setPage] = useState<Page>("dashboard");
     const navActive: Page = page === "env" ? "envs" : page;
 
     const reload = useCallback(async () => {
@@ -134,6 +136,7 @@ export const App = () => {
     }, [selected, loadDetail]);
 
     const visible = useMemo(() => tasks.filter((t) => !envId || t.env_id === envId), [tasks, envId]);
+    const attention = useMemo(() => tasks.filter(needsAttention).length, [tasks]);
     const grouped = useMemo(() => {
         const m = new Map<Group, Task[]>();
         for (const t of visible) m.set(groupOf(t), [...(m.get(groupOf(t)) ?? []), t]);
@@ -157,20 +160,8 @@ export const App = () => {
         <div className="app">
             <header className={`topbar ${moreOpen ? "more-open" : ""}`}>
                 <span className="brand">Stagehand</span>
-                <label>
-                    env
-                    <select value={envId} onChange={(e) => setEnvId(e.target.value)}>
-                        {envs.map((e) => (
-                            <option key={e.id} value={e.id}>{e.name} ({e.base_branch})</option>
-                        ))}
-                    </select>
-                </label>
-                <button className="more" onClick={() => setMoreOpen((v) => !v)} title="Accounts, env and settings">⋯</button>
-                <button className="primary" disabled={!env} onClick={() => setModal("task")}>+ task</button>
-                <span className="extra">
-                    {env && <button onClick={() => setPage("env")}>configure env</button>}
-                </span>
                 <span className="spacer" />
+                <button className="more" onClick={() => setMoreOpen((v) => !v)} title="Accounts and settings">⋯</button>
                 <span className="extra gauges">{accounts.map((a) => <Gauge key={a.id} a={a} />)}</span>
                 <span className="extra">
                     <button onClick={() => setModal("settings")} title="Default model">⚙</button>
@@ -181,12 +172,21 @@ export const App = () => {
                     {NAV.map((n) => (
                         <button key={n.id} className={navActive === n.id ? "active" : ""} title={n.hint} onClick={() => setPage(n.id)}>
                             {n.label}
+                            {n.id === "dashboard" && attention > 0 && <span className="count alert">{attention}</span>}
                             {n.id === "tasks" && visible.length > 0 && <span className="count">{visible.length}</span>}
                             {n.id === "envs" && envs.length > 0 && <span className="count">{envs.length}</span>}
                             {n.id === "accounts" && accounts.length > 0 && <span className="count">{accounts.length}</span>}
                         </button>
                     ))}
                 </nav>
+                {page === "dashboard" && (
+                    <div className="main page">
+                        <main className="detail">
+                            {error && <div className="blocked-box">{error}</div>}
+                            <Dashboard envs={envs} tasks={tasks} onOpen={(t) => { setEnvId(t.env_id); setSelected(t.id); setPage("tasks"); }} />
+                        </main>
+                    </div>
+                )}
                 {page === "env" && env && (
                     <div className="main page">
                         <main className="detail">
@@ -217,6 +217,17 @@ export const App = () => {
                 )}
                 {page === "tasks" && <div className={`main ${selected ? "has-selection" : ""}`}>
                     <aside className="list">
+                        <div className="list-head">
+                            <select value={envId} onChange={(e) => setEnvId(e.target.value)} title="Environment">
+                                {envs.map((e) => (
+                                    <option key={e.id} value={e.id}>{e.name} ({e.base_branch})</option>
+                                ))}
+                            </select>
+                            <button className="new-task" disabled={!env} onClick={() => setModal("task")}>
+                                <span className="icon">+</span>
+                                <span className="name">New task</span>
+                            </button>
+                        </div>
                         {visible.length === 0 && <div className="empty">No tasks in this env yet.</div>}
                         {grouped.map(([g, list]) => (
                             <div key={g}>
