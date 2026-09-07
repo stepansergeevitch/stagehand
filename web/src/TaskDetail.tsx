@@ -674,8 +674,36 @@ const PrPanel = ({ detail }: { detail: TaskDetail }) => {
     );
 };
 
-const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: NonNullable<TaskDetail["design"]>; before: QaPass | null; after: QaPass | null }) => (
+// Full-size view of one screenshot: first click fits it to the viewport width, a second click shows it 1:1 (scrollable).
+const Lightbox = ({ src, caption, onClose }: { src: string; caption: string; onClose: () => void }) => {
+    const [natural, setNatural] = useState(false);
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose]);
+    return (
+        <div className="lightbox" onClick={onClose}>
+            <div className="lightbox-bar" onClick={(e) => e.stopPropagation()}>
+                <span>{caption}</span>
+                <span className="lightbox-actions">
+                    <button onClick={() => setNatural((v) => !v)}>{natural ? "Fit to width" : "Actual size"}</button>
+                    <a href={src} target="_blank" rel="noreferrer">Open in a tab ↗</a>
+                    <button onClick={onClose} aria-label="Close">×</button>
+                </span>
+            </div>
+            <img src={src} alt="" className={natural ? "natural" : ""} onClick={(e) => { e.stopPropagation(); setNatural((v) => !v); }} />
+        </div>
+    );
+};
+
+const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: NonNullable<TaskDetail["design"]>; before: QaPass | null; after: QaPass | null }) => {
+    const [zoom, setZoom] = useState<{ src: string; caption: string } | null>(null);
+    const shot = (file: string | undefined, caption: string, missing: string) =>
+        file ? <img src={api.artifactUrl(taskId, file)} alt="" onClick={() => setZoom({ src: api.artifactUrl(taskId, file), caption })} title="Click to inspect" /> : <div className="empty">{missing}</div>;
+    return (
     <>
+        {zoom && <Lightbox src={zoom.src} caption={zoom.caption} onClose={() => setZoom(null)} />}
         {[before, after].map((p) => p?.blockers.length ? <div key={p.pass} className="blocked-box">{p.pass}: {p.blockers.join(" · ")}</div> : null)}
         {design.qa.map((s) => {
             const b = before?.scenarios.find((x) => x.id === s.id);
@@ -706,8 +734,8 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                         const af = a?.shots.find((x) => x.step === step)?.file;
                         return (
                             <div className="gallery" key={step} style={{ marginTop: 8 }}>
-                                <figure>{bf ? <img src={api.artifactUrl(taskId, bf)} alt="" /> : <div className="empty">no before shot</div>}<figcaption>before · step {step} · {s.steps[step - 1]?.assert}</figcaption></figure>
-                                <figure>{af ? <img src={api.artifactUrl(taskId, af)} alt="" /> : <div className="empty">no after shot</div>}<figcaption>after · step {step}</figcaption></figure>
+                                <figure>{shot(bf, `${s.id} · before · step ${step} · ${s.steps[step - 1]?.assert ?? ""}`, "no before shot")}<figcaption>before · step {step} · {s.steps[step - 1]?.assert}</figcaption></figure>
+                                <figure>{shot(af, `${s.id} · after · step ${step} · ${s.steps[step - 1]?.assert ?? ""}`, "no after shot")}<figcaption>after · step {step}</figcaption></figure>
                             </div>
                         );
                     })}
@@ -715,4 +743,5 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
             );
         })}
     </>
-);
+    );
+};

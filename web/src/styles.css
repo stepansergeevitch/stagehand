@@ -158,7 +158,16 @@ th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; lette
 .runs .run .err { color: var(--bad); }
 .gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .gallery figure { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 6px; }
-.gallery figure img { width: 100%; display: block; border-radius: 2px; }
+.gallery figure img { width: 100%; display: block; border-radius: 2px; cursor: zoom-in; }
+/* screenshot lightbox */
+.lightbox { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .88); overflow: auto; cursor: zoom-out; padding: 48px 16px 24px; }
+.lightbox-bar { position: fixed; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px; background: rgba(0, 0, 0, .7); color: #e6ecf0; font-size: 12.5px; cursor: default; }
+.lightbox-bar span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lightbox-actions { display: inline-flex; gap: 8px; align-items: center; flex: none; }
+.lightbox-actions a { color: #9fd3e8; }
+.lightbox-actions button { background: transparent; color: inherit; border-color: #55636e; }
+.lightbox img { display: block; margin: 0 auto; max-width: 100%; height: auto; cursor: zoom-in; border-radius: 3px; }
+.lightbox img.natural { max-width: none; width: auto; cursor: zoom-out; }
 .gallery figcaption { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-top: 4px; }
 /* collapsible sub-headings inside cards, and folded markdown sections */
 details.sub > summary, details.scenario > summary, .markdown details.md-section > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; user-select: none; }
