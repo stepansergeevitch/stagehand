@@ -112,7 +112,7 @@ const post = <T,>(url: string, body?: unknown): Promise<T> =>
 export const api = {
     accounts: () => fetch("/api/accounts").then((r) => j<Account[]>(r)),
     addAccount: (name: string, email?: string) => post<{ account: Account; terminal: string }>("/api/accounts", { name, email }),
-    refreshAccount: (id: string) => post<Account>(`/api/accounts/${id}/refresh`),
+    refreshAccount: (id: string) => post<{ ok: boolean; detail: string; account: Account }>(`/api/accounts/${id}/refresh`),
     setupToken: (id: string) => post<{ terminal: string }>(`/api/accounts/${id}/setup-token`),
     configDirs: () => fetch("/api/config-dirs").then((r) => j<ConfigDir[]>(r)),
     addConfigDir: (name: string, path: string) => post<ConfigDir>("/api/config-dirs", { name, path }),

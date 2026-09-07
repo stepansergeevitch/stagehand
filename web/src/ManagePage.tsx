@@ -139,8 +139,10 @@ const ConfigDirList = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id: 
 };
 
 const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, onError }: { accounts: Account[]; envs: Env[]; tasks: Task[]; settings: Settings | null; onAdd: () => void; act: (fn: () => Promise<unknown>) => Promise<void>; onTerminal: (n: string) => void; onError: (m: string) => void }) => {
+    const onChangedSafe = () => act(async () => undefined);
     const [busy, setBusy] = useState<string | null>(null);
     const [rename, setRename] = useState<{ id: string; name: string } | null>(null);
+    const [verify, setVerify] = useState<Record<string, { ok: boolean; text: string }>>({});
     return (
         <>
             <p className="field-hint">An AI account is a provider login, stored as a long-lived token; it can run in any config dir. Accounts without a token are legacy browser logins tied to one directory.</p>
@@ -177,9 +179,22 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                         </div>
                         <div className="actions">
                             <button onClick={async () => { try { const r = await api.setupToken(a.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>{a.has_token ? "Renew token" : "Set up token"}</button>
-                            <button disabled={busy === a.id} onClick={async () => { setBusy(a.id); await act(() => api.refreshAccount(a.id)); setBusy(null); }}>{busy === a.id ? "Checking…" : "Verify"}</button>
+                            <button disabled={busy === a.id} onClick={async () => {
+                                setBusy(a.id);
+                                setVerify({ ...verify, [a.id]: { ok: true, text: "running a trivial agent turn…" } });
+                                try {
+                                    const r = await api.refreshAccount(a.id);
+                                    setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } }));
+                                    await onChangedSafe();
+                                } catch (e) {
+                                    setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } }));
+                                } finally {
+                                    setBusy(null);
+                                }
+                            }}>{busy === a.id ? "Checking…" : "Verify"}</button>
                             <button className="danger" disabled={used > 0} title={used > 0 ? "an env or task still uses it" : "forget this account and its token"} onClick={() => { if (confirm(`Forget account ${a.name} and its stored token?`)) void act(() => api.deleteAccount(a.id)); }}>Delete</button>
                         </div>
+                        {verify[a.id] && <div className={`test-result ${verify[a.id]!.ok ? "" : "bad"}`}>{verify[a.id]!.text}</div>}
                     </section>
                 );
             })}

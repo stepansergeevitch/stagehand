@@ -67,10 +67,16 @@ const emitAccount = (id: string): void => {
 
 // Token accounts are verified by a trivial run in the server's own config dir (also yields the default model);
 // legacy accounts by `claude auth status` inside the dir that holds their browser login.
-const refreshAccount = async (acc: AccountRow): Promise<AccountRow> => {
+interface Verification {
+    ok: boolean;
+    detail: string;
+}
+const refreshAccount = async (acc: AccountRow): Promise<Verification> => {
+    let result: Verification;
     if (acc.oauth_token) {
         const r = await probeDefaultModel(cfg.mainConfigDir, cfg.dataDir, authEnv(acc));
         db.prepare(`UPDATE accounts SET logged_in = ?, default_model = COALESCE(?, default_model) WHERE id = ?`).run(r.ok ? 1 : 0, r.model, acc.id);
+        result = r.ok ? { ok: true, detail: `token works — a trivial run answered on ${r.model}` } : { ok: false, detail: `token rejected: ${r.error ?? "run failed"}` };
     } else {
         const status = await readAuthStatus(acc.auth_dir);
         db.prepare(`UPDATE accounts SET logged_in = ?, email = COALESCE(?, email), org = COALESCE(?, org), plan = COALESCE(?, plan) WHERE id = ?`).run(
@@ -84,9 +90,12 @@ const refreshAccount = async (acc: AccountRow): Promise<AccountRow> => {
             const r = await probeDefaultModel(acc.auth_dir, cfg.dataDir);
             if (r.model) db.prepare(`UPDATE accounts SET default_model = ? WHERE id = ?`).run(r.model, acc.id);
         }
+        result = status.loggedIn
+            ? { ok: true, detail: `legacy login in ${acc.auth_dir} is valid (${status.email ?? "no email"}, ${status.subscriptionType ?? "unknown plan"}) — only usable in that dir; set up a token to use it anywhere` }
+            : { ok: false, detail: `no valid login in ${acc.auth_dir} — set up a token` };
     }
     emitAccount(acc.id);
-    return accountById(acc.id)!;
+    return result;
 };
 
 // Runs `claude setup-token` in a terminal the human completes in the browser. The pane output is mirrored to a file and the
@@ -177,7 +186,8 @@ app.post("/api/accounts/:id/setup-token", async (c) => {
 app.post("/api/accounts/:id/refresh", async (c) => {
     const acc = accountById(c.req.param("id"));
     if (!acc) return c.json({ error: "not found" }, 404);
-    return c.json(publicAccount(await refreshAccount(acc)));
+    const verification = await refreshAccount(acc);
+    return c.json({ ...verification, account: publicAccount(accountById(acc.id)!) });
 });
 
 app.patch("/api/accounts/:id", async (c) => {
