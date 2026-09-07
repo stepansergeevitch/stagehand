@@ -70,28 +70,46 @@ const parseResult = (stdout: string): ResultEvent | null => {
     }
 };
 
-export interface ProbeOutcome {
+export interface ChromeProbe {
     ok: boolean;
+    browsers: Array<{ deviceId: string; name: string }>;
     result: ResultEvent | null;
 }
 
-const probeChromeOnce = async (configDir: string, cwd: string, extraEnv: Record<string, string>): Promise<ProbeOutcome> => {
+// Runs WITHOUT an account token on purpose: Claude Code keeps Chrome integration off for token/API-key sessions, so the
+// bridge only answers under the dir's own browser login. Also lists the connected Chrome profiles (extension instances).
+const probeChromeOnce = async (configDir: string, cwd: string): Promise<ChromeProbe> => {
     const prompt =
-        "Use ToolSearch to load mcp__claude-in-chrome__tabs_context_mcp, then call it once. If it errors, wait 5 seconds and call it once more. " +
-        "Reply with exactly CHROME_OK if it returned tab data, otherwise CHROME_FAIL.";
+        "Use ToolSearch to load mcp__claude-in-chrome__list_connected_browsers and mcp__claude-in-chrome__tabs_context_mcp. " +
+        "Call list_connected_browsers once and remember its JSON. Then call tabs_context_mcp once; if it throws an error (for example \"extension is not connected\"), wait 5 seconds and call it once more. " +
+        "Never call AskUserQuestion, select_browser or switch_browser. " +
+        "Success means tabs_context_mcp returned without an error — an empty tab list or no tab group counts as success. " +
+        'Reply with exactly one line: CHROME_OK <the JSON array from list_connected_browsers> on success, otherwise CHROME_FAIL <the error text>.';
     try {
         const stdout = await runClaudeJson(
-            ["-p", prompt, "--chrome", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "6", "--no-session-persistence", "--model", "sonnet"],
+            ["-p", prompt, "--chrome", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "8", "--no-session-persistence", "--model", "sonnet"],
             cwd,
             configDir,
-            extraEnv,
+            {},
         );
         const result = parseResult(stdout);
-        console.error(`[probeChrome] ${configDir} cwd=${cwd} → ${result?.result ?? "unparseable"}`);
-        return { ok: (result?.result ?? "").includes("CHROME_OK"), result };
+        const text = result?.result ?? "";
+        console.error(`[probeChrome] ${configDir} cwd=${cwd} → ${text.slice(0, 200) || "unparseable"}`);
+        const ok = text.includes("CHROME_OK");
+        let browsers: ChromeProbe["browsers"] = [];
+        const m = /\[[\s\S]*\]/.exec(text);
+        if (ok && m) {
+            try {
+                const parsed = z.array(z.object({ deviceId: z.string(), name: z.string().optional() })).safeParse(JSON.parse(m[0]));
+                if (parsed.success) browsers = parsed.data.map((b) => ({ deviceId: b.deviceId, name: b.name ?? b.deviceId.slice(0, 8) }));
+            } catch {
+                /* browsers stay empty */
+            }
+        }
+        return { ok, browsers, result };
     } catch (e) {
         console.error(`[probeChrome] ${configDir} failed: ${String(e).slice(0, 300)}`);
-        return { ok: false, result: null };
+        return { ok: false, browsers: [], result: null };
     }
 };
 
@@ -117,12 +135,12 @@ export const probeDefaultModel = async (configDir: string, cwd: string, extraEnv
 
 // The extension bridge connects lazily and occasionally misses the first attempt; three tries separates "flaky" from "not this dir".
 // Every attempt's result is reported so the caller can record what the probes consumed.
-export const probeChrome = async (configDir: string, cwd: string, extraEnv: Record<string, string> = {}, attempts = 3, onResult?: (r: ResultEvent) => void): Promise<boolean> => {
+export const probeChrome = async (configDir: string, cwd: string, attempts = 3, onResult?: (r: ResultEvent) => void): Promise<{ ok: boolean; browsers: ChromeProbe["browsers"] }> => {
     for (let i = 0; i < attempts; i++) {
-        const { ok, result } = await probeChromeOnce(configDir, cwd, extraEnv);
+        const { ok, browsers, result } = await probeChromeOnce(configDir, cwd);
         if (result && onResult) onResult(result);
-        if (ok) return true;
+        if (ok) return { ok: true, browsers };
         await new Promise((r) => setTimeout(r, 3_000));
     }
-    return false;
+    return { ok: false, browsers: [] };
 };

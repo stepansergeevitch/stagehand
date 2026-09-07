@@ -71,8 +71,27 @@ export interface ConfigDirRow {
     path: string;
     chrome_capable: number | null;
     rules: string | null;
+    // The claude.ai browser login stored in this dir (`claude auth login`). The Chrome extension only works with it —
+    // token-authenticated sessions keep Chrome off — so browser stages run with this login, not an account token.
+    login_email: string | null;
+    login_ok: number | null;
+    // JSON [{deviceId, name}] — Chrome profiles with the extension, as seen by the last probe.
+    chrome_browsers: string | null;
     created_at: string;
 }
+
+export interface ChromeBrowser {
+    deviceId: string;
+    name: string;
+}
+export const chromeBrowsersOf = (d: Pick<ConfigDirRow, "chrome_browsers">): ChromeBrowser[] => {
+    try {
+        const v: unknown = d.chrome_browsers ? JSON.parse(d.chrome_browsers) : [];
+        return Array.isArray(v) ? v.filter((b): b is ChromeBrowser => !!b && typeof b === "object" && typeof (b as ChromeBrowser).deviceId === "string") : [];
+    } catch {
+        return [];
+    }
+};
 
 export interface EnvRow {
     id: string;
@@ -84,6 +103,9 @@ export interface EnvRow {
     // JSON array of account ids in priority order: the first one that can run in the env's config dir and is not
     // exhausted drives a run; when it hits a rate limit the next one takes over. default_account_id mirrors its head.
     account_order: string | null;
+    // Chrome profile (connected extension instance) browser stages select before touching a page; null = whatever is paired.
+    chrome_device_id: string | null;
+    chrome_browser_name: string | null;
     app_url: string | null;
     qa_script: string | null;
     be_command: string | null;
@@ -218,6 +240,9 @@ CREATE TABLE IF NOT EXISTS config_dirs (
     path TEXT NOT NULL UNIQUE,
     chrome_capable INTEGER,
     rules TEXT,
+    login_email TEXT,
+    login_ok INTEGER,
+    chrome_browsers TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS envs (
@@ -351,6 +376,11 @@ const MIGRATIONS: Array<[string, string]> = [
     ["accounts.oauth_token", `ALTER TABLE accounts ADD COLUMN oauth_token TEXT`],
     ["envs.config_dir_id", `ALTER TABLE envs ADD COLUMN config_dir_id TEXT REFERENCES config_dirs(id)`],
     ["envs.account_order", `ALTER TABLE envs ADD COLUMN account_order TEXT`],
+    ["envs.chrome_device_id", `ALTER TABLE envs ADD COLUMN chrome_device_id TEXT`],
+    ["envs.chrome_browser_name", `ALTER TABLE envs ADD COLUMN chrome_browser_name TEXT`],
+    ["config_dirs.login_email", `ALTER TABLE config_dirs ADD COLUMN login_email TEXT`],
+    ["config_dirs.login_ok", `ALTER TABLE config_dirs ADD COLUMN login_ok INTEGER`],
+    ["config_dirs.chrome_browsers", `ALTER TABLE config_dirs ADD COLUMN chrome_browsers TEXT`],
 ];
 
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>

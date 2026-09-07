@@ -173,6 +173,12 @@ const TicketView = ({ detail, onFetch }: { detail: TaskDetail; onFetch: () => Pr
     );
 };
 
+// Status lines that ask for a login carry the app URL; make it clickable so a closed automation window is not a dead end.
+const Linkified = ({ text }: { text: string }) => {
+    const parts = text.split(/(https?:\/\/[^\s)]+)/g);
+    return <>{parts.map((p, i) => (/^https?:\/\//.test(p) ? <a key={i} href={p} target="_blank" rel="noreferrer">{p}</a> : <span key={i}>{p}</span>))}</>;
+};
+
 const RERUNNABLE: ReadonlySet<Stage> = new Set(["research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "pr_creation_review", "pr_red"]);
 const PR_STAGES: ReadonlySet<Stage> = new Set(["pr_waiting", "pr_red", "pr_green", "pr_approved", "done"]);
 
@@ -473,7 +479,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
             {task.status === "blocked" && (
                 <div className="blocked-box">
-                    <b>Blocked.</b> {task.status_line}
+                    <b>Blocked.</b> <Linkified text={task.status_line ?? ""} />
                     {/log ?in/i.test(task.status_line ?? "") && !/waiting for you/.test(task.status_line ?? "") && (
                         <div className="actions" style={{ marginBottom: 0 }}>
                             <button className="primary" onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA</button>

@@ -26,9 +26,12 @@ export const accountOrderOf = (env: Pick<Env, "account_order" | "default_account
 export interface ConfigDirContents {
     exists: boolean; skills: string[]; agents: string[]; commands: string[]; hooks: string[]; plugins: number; mcpServers: string[]; hasClaudeMd: boolean; hasSettings: boolean;
 }
+export interface ChromeBrowser { deviceId: string; name: string }
 export interface ConfigDir {
     id: string; name: string; path: string; chrome_capable: number | null; rules: string | null; created_at: string;
-    contents: ConfigDirContents; envs: string[]; usable_accounts: string[];
+    login_email: string | null; login_ok: number | null; chrome_browsers: string | null;
+    contents: ConfigDirContents; envs: string[]; usable_accounts: string[]; browsers: ChromeBrowser[];
+    probe?: { ok: boolean; detail: string };
 }
 export interface ConfigDirRules { rules: Rules; defaults: Rules; guardHook: string }
 
@@ -41,7 +44,8 @@ export const modelLabel = (id: string | null | undefined, models: Array<{ value:
     return `${hit ? hit.label.replace(/\s*\(.*\)$/, "") : base}${long ? " · 1M context" : ""}`;
 };
 export interface Env {
-    id: string; name: string; path: string; base_branch: string; default_account_id: string | null; account_order: string | null; config_dir_id: string | null; app_url: string | null; qa_script: string | null;
+    id: string; name: string; path: string; base_branch: string; default_account_id: string | null; account_order: string | null; config_dir_id: string | null;
+    chrome_device_id: string | null; chrome_browser_name: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
     rules: string | null;
@@ -135,6 +139,8 @@ export const api = {
         fetch(`/api/config-dirs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<ConfigDir>(r)),
     deleteConfigDir: (id: string) => fetch(`/api/config-dirs/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     probeConfigDir: (id: string) => post<ConfigDir>(`/api/config-dirs/${id}/probe`),
+    loginConfigDir: (id: string) => post<{ terminal: string }>(`/api/config-dirs/${id}/login`),
+    refreshConfigDirLogin: (id: string) => post<ConfigDir>(`/api/config-dirs/${id}/refresh-login`),
     configDirRules: (id: string) => fetch(`/api/config-dirs/${id}/rules`).then((r) => j<ConfigDirRules>(r)),
     patchAccount: (id: string, body: { name?: string; failover_enabled?: boolean; failover_threshold?: number }) =>
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
@@ -146,7 +152,8 @@ export const api = {
     patchEnv: (
         id: string,
         body: {
-            name?: string; baseBranch?: string; defaultAccountId?: string | null; accountOrder?: string[]; configDirId?: string | null; appUrl?: string | null; qaScript?: string | null;
+            name?: string; baseBranch?: string; defaultAccountId?: string | null; accountOrder?: string[]; configDirId?: string | null;
+            chromeDeviceId?: string | null; chromeBrowserName?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
         },

@@ -22,7 +22,7 @@ const MODEL_OPTIONS = [
     { value: "opus", label: "Opus 5 (claude-opus-5)" },
     { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
 ];
-import { accountOrderOf, accountUsableWith, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, STAGES, type AccountRow, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
+import { accountOrderOf, accountUsableWith, chromeBrowsersOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, STAGES, type AccountRow, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
 import { authDirFor, authEnv, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
@@ -242,7 +242,15 @@ const configDirView = (d: ConfigDirRow) => ({
     contents: inspectConfigDir(d.path),
     envs: envsAll().filter((e) => e.config_dir_id === d.id).map((e) => e.name),
     usable_accounts: accountsAll().filter((a) => accountUsableWith(a, d.path)).map((a) => a.name),
+    browsers: chromeBrowsersOf(d),
 });
+
+// The dir's own browser login (what the Chrome bridge needs); the account it belongs to is matched by email.
+const refreshDirLogin = async (dir: ConfigDirRow): Promise<ConfigDirRow> => {
+    const status = await readAuthStatus(dir.path);
+    db.prepare(`UPDATE config_dirs SET login_ok = ?, login_email = ? WHERE id = ?`).run(status.loggedIn ? 1 : 0, status.email ?? null, dir.id);
+    return configDirById(dir.id)!;
+};
 
 app.get("/api/config-dirs", (c) => c.json(configDirsAll().map(configDirView)));
 
@@ -274,15 +282,39 @@ app.delete("/api/config-dirs/:id", (c) => {
     return c.json({ deleted: dir.id });
 });
 
-// Chrome is a property of the dir (its extension pairing); the probe runs with any account that can drive this dir.
+// Chrome is a property of the dir's browser login (the extension is bound to the claude.ai account signed in there;
+// token sessions get no bridge), so the probe runs under that login and records the connected Chrome profiles.
 app.post("/api/config-dirs/:id/probe", async (c) => {
+    const dir0 = configDirById(c.req.param("id"));
+    if (!dir0) return c.json({ error: "not found" }, 404);
+    const dir = await refreshDirLogin(dir0);
+    if (!dir.login_ok) {
+        db.prepare(`UPDATE config_dirs SET chrome_capable = 0, chrome_browsers = NULL WHERE id = ?`).run(dir.id);
+        return c.json({ ...configDirView(configDirById(dir.id)!), probe: { ok: false, detail: "no browser login in this dir — click Log in (browser) first" } });
+    }
+    const owner = accountsAll().find((a) => a.email && dir.login_email && a.email.toLowerCase() === dir.login_email.toLowerCase()) ?? null;
+    const r = await probeChrome(dir.path, cfg.dataDir, 3, (res) => recordUsage(db, { accountId: owner?.id ?? null, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, res));
+    db.prepare(`UPDATE config_dirs SET chrome_capable = ?, chrome_browsers = ? WHERE id = ?`).run(r.ok ? 1 : 0, r.ok ? JSON.stringify(r.browsers) : null, dir.id);
+    return c.json({
+        ...configDirView(configDirById(dir.id)!),
+        probe: { ok: r.ok, detail: r.ok ? `Chrome bridge answered as ${dir.login_email}; ${r.browsers.length} connected profile(s): ${r.browsers.map((b) => b.name).join(", ") || "none listed"}` : `no Chrome bridge under ${dir.login_email} — is the extension installed and signed into that claude.ai account?` },
+    });
+});
+
+// Opens `claude auth login` for this dir in a terminal (the browser OAuth form); the login is what the Chrome bridge uses.
+app.post("/api/config-dirs/:id/login", async (c) => {
     const dir = configDirById(c.req.param("id"));
     if (!dir) return c.json({ error: "not found" }, 404);
-    const acc = engine.usableAccounts(dir.path)[0];
-    if (!acc) return c.json({ error: "no AI account can run in this dir — set up a token first" }, 400);
-    const capable = await probeChrome(dir.path, cfg.dataDir, authEnv(acc), 3, (r) => recordUsage(db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, r));
-    db.prepare(`UPDATE config_dirs SET chrome_capable = ? WHERE id = ?`).run(capable ? 1 : 0, dir.id);
-    return c.json(configDirView(configDirById(dir.id)!));
+    const name = `sh-dirlogin-${dir.name.toLowerCase().replace(/[^a-z0-9-]+/g, "-")}`;
+    await killSession(name);
+    await ensureSession(name, dir.path, `claude auth login --claudeai; echo; echo '[stagehand] login finished — run Probe Chrome on the Config dirs page, then close this terminal.'; sleep 600`, { CLAUDE_CONFIG_DIR: dir.path });
+    return c.json({ terminal: name });
+});
+
+app.post("/api/config-dirs/:id/refresh-login", async (c) => {
+    const dir = configDirById(c.req.param("id"));
+    if (!dir) return c.json({ error: "not found" }, 404);
+    return c.json(configDirView(await refreshDirLogin(dir)));
 });
 
 app.get("/api/config-dirs/:id/rules", (c) => {
@@ -438,6 +470,8 @@ app.patch("/api/envs/:id", async (c) => {
             defaultAccountId: z.string().nullable().optional(),
             accountOrder: z.array(z.string()).optional(),
             configDirId: z.string().nullable().optional(),
+            chromeDeviceId: z.string().nullable().optional(),
+            chromeBrowserName: z.string().nullable().optional(),
             baseBranch: z.string().optional(),
             appUrl: z.string().nullable().optional(),
             qaScript: z.string().nullable().optional(),
@@ -468,12 +502,14 @@ app.patch("/api/envs/:id", async (c) => {
         if (bad) return c.json({ error: bad }, 400);
     }
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         order[0] ?? null,
         JSON.stringify(order),
         pick(body.configDirId, env.config_dir_id),
+        pick(body.chromeDeviceId, env.chrome_device_id),
+        pick(body.chromeBrowserName, env.chrome_browser_name),
         body.baseBranch ?? env.base_branch,
         pick(body.appUrl, env.app_url),
         pick(body.qaScript, env.qa_script),

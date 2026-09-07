@@ -22,12 +22,13 @@ const Section = ({ title, hint, children, onSave, saving }: { title: string; hin
 
 const List = ({ items, empty }: { items: string[]; empty: string }) => (items.length ? <span>{items.join(", ")}</span> : <span className="quiet">{empty}</span>);
 
-export const ConfigDirPage = ({ dir, onBack, onChanged, onError }: { dir: ConfigDir; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
+export const ConfigDirPage = ({ dir, onBack, onChanged, onError, onTerminal }: { dir: ConfigDir; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void; onTerminal: (name: string) => void }) => {
     const [saving, setSaving] = useState<string | null>(null);
     const [info, setInfo] = useState<ConfigDirRules | null>(null);
     const [r, setR] = useState<Rules | null>(null);
     const [name, setName] = useState(dir.name);
     const [probing, setProbing] = useState(false);
+    const [probe, setProbe] = useState<{ ok: boolean; detail: string } | null>(null);
     useEffect(() => {
         void api.configDirRules(dir.id).then((i) => { setInfo(i); setR(i.rules); }).catch((e: Error) => onError(e.message));
     }, [dir.id, dir.rules, onError]);
@@ -73,16 +74,22 @@ export const ConfigDirPage = ({ dir, onBack, onChanged, onError }: { dir: Config
                 </div>
             </Section>
 
-            <Section title="Chrome" hint="Browser QA stages need the Claude-in-Chrome bridge paired with this dir. The probe runs a tiny agent with any account that can run here.">
+            <Section title="Browser login and Chrome" hint="Claude Code disables the Chrome bridge for token sessions, so browser stages (QA, the login helper) run with the claude.ai login stored in this dir and are charged to the account with that email. Log in once with the browser form, then probe: the probe also lists the Chrome profiles that have the extension, which environments pick from.">
                 <div className="kv">
-                    <b>Status</b>
+                    <b>Browser login</b>
+                    <span>{dir.login_ok === null ? <span className="chip">unknown — probe</span> : dir.login_ok ? <span className="chip ok">{dir.login_email ?? "logged in"}</span> : <span className="chip bad">none</span>}</span>
+                    <b>Chrome bridge</b>
                     <span>{dir.chrome_capable === null ? <span className="chip">not probed</span> : dir.chrome_capable ? <span className="chip ok">connected</span> : <span className="chip bad">not connected</span>}</span>
+                    <b>Chrome profiles</b>
+                    <span>{dir.browsers.length ? dir.browsers.map((b) => `${b.name} (${b.deviceId.slice(0, 8)})`).join(", ") : <span className="quiet">none seen — install the extension in a Chrome profile signed into this claude.ai account, then probe</span>}</span>
                 </div>
                 <div className="actions">
-                    <button disabled={probing || dir.usable_accounts.length === 0} onClick={async () => { setProbing(true); try { await api.probeConfigDir(dir.id); await onChanged(); } catch (e) { onError(String((e as Error).message ?? e)); } finally { setProbing(false); } }}>
+                    <button onClick={async () => { try { const r = await api.loginConfigDir(dir.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Log in (browser)</button>
+                    <button disabled={probing} onClick={async () => { setProbing(true); setProbe({ ok: true, detail: "checking the login, then running a tiny --chrome agent…" }); try { const d = await api.probeConfigDir(dir.id); setProbe(d.probe ?? null); await onChanged(); } catch (e) { setProbe({ ok: false, detail: String((e as Error).message ?? e) }); } finally { setProbing(false); } }}>
                         {probing ? "Probing…" : "Probe Chrome"}
                     </button>
                 </div>
+                {probe && <div className={`test-result ${probe.ok ? "" : "bad"}`}>{probe.detail}</div>}
             </Section>
 
             {r && info && (

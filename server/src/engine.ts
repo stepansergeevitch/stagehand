@@ -240,13 +240,37 @@ export class Engine extends EventEmitter {
     // The Claude config dir every agent in this environment runs with; the server's own dir when none is set.
     configDirOf(env: EnvRow): ConfigDirRow {
         const row = env.config_dir_id ? (this.db.prepare(`SELECT * FROM config_dirs WHERE id = ?`).get(env.config_dir_id) as ConfigDirRow | undefined) : undefined;
-        return row ?? { id: "", name: "server default", path: this.cfg.mainConfigDir, chrome_capable: null, rules: null, created_at: "" };
+        return row ?? { id: "", name: "server default", path: this.cfg.mainConfigDir, chrome_capable: null, rules: null, login_email: null, login_ok: null, chrome_browsers: null, created_at: "" };
     }
 
     // Accounts that can drive a run in this config dir: any with a token, or a legacy login living in that very dir.
     usableAccounts(configDirPath: string): AccountRow[] {
         const all = this.db.prepare(`SELECT * FROM accounts WHERE logged_in = 1 ORDER BY created_at`).all() as AccountRow[];
         return all.filter((a) => accountUsableWith(a, configDirPath));
+    }
+
+    // Browser stages cannot use an account token (Claude Code disables the Chrome bridge for token sessions); they run with
+    // the config dir's own browser login and are charged to the account that login belongs to.
+    chromeContext(env: EnvRow, cd: ConfigDirRow, fallback: AccountRow | null): { ok: true; account: AccountRow | null; extraEnv: Record<string, string> } | { ok: false; reason: string } {
+        if (!cd.login_ok || !cd.login_email) return { ok: false, reason: `config dir ${cd.name} has no browser login — Config dirs → ${cd.name} → Log in (browser), then Probe Chrome` };
+        if (!cd.chrome_capable) return { ok: false, reason: `config dir ${cd.name} has no Chrome connection — Config dirs → ${cd.name} → Probe Chrome, then retry` };
+        const owner = (this.db.prepare(`SELECT * FROM accounts WHERE lower(email) = lower(?) ORDER BY created_at`).get(cd.login_email) as AccountRow | undefined) ?? fallback;
+        if (owner && this.exhausted(owner.id)) return { ok: false, reason: `${owner.name} (the browser login in ${cd.name}) is rate-limited; browser stages resume when its window resets` };
+        void env;
+        return { ok: true, account: owner, extraEnv: {} };
+    }
+
+    // The app URL browser stages and login prompts point at: the env's template with this task's own BE/FE filled in.
+    appUrlFor(task: TaskRow, env: EnvRow): string {
+        const be = this.services.get(task.id, "be");
+        const fe = this.services.get(task.id, "fe");
+        return (env.app_url ?? (fe ? "{{feUrl}}" : "https://localhost:3000")).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{beUrl\}\}/g, be?.url ?? "");
+    }
+
+    private chromeSelectStep(env: EnvRow): string {
+        return env.chrome_device_id
+            ? `Before any other browser tool, load mcp__claude-in-chrome__select_browser with ToolSearch and call it with deviceId "${env.chrome_device_id}" (Chrome profile "${env.chrome_browser_name ?? env.chrome_device_id}"). Never call switch_browser or AskUserQuestion.`
+            : "Never call switch_browser or AskUserQuestion; use whichever browser is already paired.";
     }
 
     private utilization(accountId: string, window = FIVE_HOUR): { utilization: number; resetsAt: number } | null {
@@ -311,16 +335,18 @@ export class Engine extends EventEmitter {
         if (!task) throw new Error("task not found");
         const env = this.env(task.env_id);
         const cd = this.configDirOf(env);
-        if (!cd.chrome_capable) throw new Error(`config dir ${cd.name} has no Chrome connection — probe it on the Config dirs page`);
-        const account = this.pickAccount(task, STAGE_DEFS.manual_qa, env, cd);
-        if (!account) throw new Error(`no account can run in config dir ${cd.name}`);
-        const be = this.services.get(taskId, "be");
-        const fe = this.services.get(taskId, "fe");
-        const appUrl = (env.app_url ?? (fe ? "{{feUrl}}" : "https://localhost:3000")).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{beUrl\}\}/g, be?.url ?? "");
-        this.setTaskStatus(taskId, "blocked", "waiting for you to log in in the automation Chrome window");
+        const chrome = this.chromeContext(env, cd, this.pickAccount(task, STAGE_DEFS.manual_qa, env, cd));
+        if (!chrome.ok) {
+            this.setTaskStatus(taskId, "blocked", chrome.reason);
+            throw new Error(chrome.reason);
+        }
+        const account = chrome.account;
+        const appUrl = this.appUrlFor(task, env);
+        const where = env.chrome_browser_name ? `Chrome profile "${env.chrome_browser_name}"` : "the automation Chrome window";
+        this.setTaskStatus(taskId, "blocked", `waiting for you to log in at ${appUrl} in ${where}`);
         // One turn to open the page, ONE Bash loop to wait (osascript reads the live tab titles/URLs) — not a model turn per poll.
         const prompt =
-            `Load the browser tools with one ToolSearch (tabs_context_mcp, tabs_create_mcp, navigate). Create a new tab and navigate to ${appUrl}/. ` +
+            `${this.chromeSelectStep(env)} Load the browser tools with one ToolSearch (tabs_context_mcp, tabs_create_mcp, navigate). Create a new tab and navigate to ${appUrl}/. ` +
             `A human will log in in this window — you must NOT type any credentials. Then run this single Bash command and wait for it (it brings Chrome to the front and polls the tab titles for up to 10 minutes):\n` +
             `osascript -e 'tell application "Google Chrome" to activate'; for i in $(seq 1 60); do t=$(osascript -e 'tell application "Google Chrome" to get {title, URL} of active tab of front window' 2>/dev/null); ` +
             // Origin-override hack (deal alt-port): Auth0 sends the browser back to the allowed origin; re-open the same query on the real app URL.
@@ -332,21 +358,21 @@ export class Engine extends EventEmitter {
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: cd.path,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(account) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...chrome.extraEnv },
             chrome: true,
             maxTurns: 12,
             model: this.cfg.stageModels.helper ?? "sonnet",
             allowedTools: ["Bash"],
         });
         const outcome = await run.done;
-        if (outcome.result) recordUsage(this.db, { accountId: account.id, envId: env.id, taskId, runId: null, kind: "qa-login", stage: null }, outcome.result);
+        if (outcome.result) recordUsage(this.db, { accountId: account?.id ?? null, envId: env.id, taskId, runId: null, kind: "qa-login", stage: null }, outcome.result);
         const text = outcome.result?.result ?? "";
         if (/LOGGED_IN/.test(text)) {
             this.setTaskStatus(taskId, "idle", "logged in — re-running the blocked stage");
             this.rerun(taskId, task.stage);
             return "logged_in";
         }
-        this.setTaskStatus(taskId, "blocked", /TIMEOUT/.test(text) ? "login window timed out — click Log in for QA again" : `login helper failed: ${text.slice(0, 120)}`);
+        this.setTaskStatus(taskId, "blocked", /TIMEOUT/.test(text) ? `login window timed out — open ${appUrl} in ${where}, log in, then retry (or click Log in for QA again)` : `login helper failed: ${text.slice(0, 120)} — open ${appUrl} in ${where} and log in yourself, then retry`);
         return /TIMEOUT/.test(text) ? "timeout" : "failed";
     }
 
@@ -734,10 +760,9 @@ export class Engine extends EventEmitter {
                     : " — the change is implemented; every assert is expected to hold.";
             const be = this.services.get(task.id, "be");
             const fe = this.services.get(task.id, "fe");
-            const appUrl = (env.app_url ?? (fe ? "{{feUrl}}" : "https://localhost:3000"))
-                .replace(/\{\{feUrl\}\}/g, fe?.url ?? "")
-                .replace(/\{\{beUrl\}\}/g, be?.url ?? "");
+            const appUrl = this.appUrlFor(task, env);
             vars["appUrl"] = appUrl;
+            vars["chromeSelect"] = this.chromeSelectStep(env);
             vars["firstUrl"] = scenarios[0]?.url ?? "/";
             const logs = [be ? `BE log: ${be.log_path}` : null, fe ? `FE log: ${fe.log_path}` : null].filter(Boolean).join("; ");
             vars["qaSetup"] = env.qa_script
@@ -779,10 +804,22 @@ export class Engine extends EventEmitter {
             this.setTaskStatus(taskId, "blocked", `${def.label} · config dir ${cd.name} has no Chrome connection — probe it on the Config dirs page, then retry`);
             return;
         }
-        const account = this.pickAccount(task, def, env, cd);
-        if (!account) {
+        const picked = this.pickAccount(task, def, env, cd);
+        if (!picked) {
             this.setTaskStatus(taskId, "blocked", `no AI account can run in config dir ${cd.name} — set up a token on the AI accounts page`);
             return;
+        }
+        // Browser stages run under the dir's browser login (no token) and are charged to the account owning that login.
+        let account = picked;
+        let runAuth: Record<string, string> = authEnv(picked);
+        if (def.chrome) {
+            const chrome = this.chromeContext(env, cd, picked);
+            if (!chrome.ok) {
+                this.setTaskStatus(taskId, "blocked", `${def.label} · ${chrome.reason}`);
+                return;
+            }
+            account = chrome.account ?? picked;
+            runAuth = chrome.extraEnv;
         }
         const util = this.utilization(account.id);
         if (util && util.utilization >= this.cfg.preflightUtilizationLimit) {
@@ -818,7 +855,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: cd.path,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(account) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...runAuth },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...(fresh ? {} : priorRuns.n === 0 ? { sessionId: task.session_id, name: task.ticket_id } : { resume: task.session_id }),
@@ -1034,7 +1071,9 @@ export class Engine extends EventEmitter {
             }
             const blockedByAuth = qa.blockers.some((b) => /auth0|log ?in/i.test(b));
             if (blockedByAuth) {
-                this.setTaskStatus(taskId, "blocked", `${def.label} · log into Northspyre in the automation Chrome window, then retry`);
+                const env = this.env(task.env_id);
+                const where = env.chrome_browser_name ? `Chrome profile "${env.chrome_browser_name}"` : "the automation Chrome window";
+                this.setTaskStatus(taskId, "blocked", `${def.label} · log in at ${this.appUrlFor(task, env)} in ${where} (or click Log in for QA), then retry`);
                 return;
             }
             const failed = qa.scenarios.filter((s) => s.outcome === "fail").length;
