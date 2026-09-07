@@ -431,6 +431,16 @@ app.post("/api/tasks/:id/review", async (c) => {
     return c.json(engine.getTask(c.req.param("id")));
 });
 
+app.get("/api/tasks/:id/pr-comments", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    try {
+        return c.json(await engine.prComments(task.id));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 502);
+    }
+});
+
 app.get("/api/tasks/:id/diff", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);

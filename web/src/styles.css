@@ -206,6 +206,13 @@ details.scenario > ol, details.scenario > div { margin-top: 6px; }
 .review-history summary { cursor: pointer; color: var(--ink-2); }
 .review-history .md { margin: 6px 0 0 14px; }
 .pending-comments { font-size: 12.5px; color: var(--ink-2); margin: 6px 0; }
+.gh-comments { display: grid; gap: 8px; }
+.gh-comment { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+.gh-comment.line { border-left: 3px solid var(--wait); }
+.gh-comment.review { border-left: 3px solid var(--accent); }
+.gh-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12.5px; margin-bottom: 4px; }
+.gh-head code { overflow-wrap: anywhere; }
+.gh-comment .markdown { font-size: 13px; }
 .pending-comments code { margin-right: 6px; }
 .hint-line { display: block; color: var(--bad); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
 /* environment configuration page */

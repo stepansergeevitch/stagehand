@@ -141,6 +141,8 @@ export const EnvPage = ({ env, accounts, onBack, onChanged, onError }: { env: En
                     <label><input type="checkbox" checked={r.allowPrCreate} onChange={(e) => setR({ ...r, allowPrCreate: e.target.checked })} /> Auto-creating the pull request (after you approve the draft) is allowed</label>
                     <label>PR description rules <textarea value={r.prRules} onChange={(e) => setR({ ...r, prRules: e.target.value })} className="tall" /></label>
                     <label>PR template path override (relative to the repo; empty = auto-detect) <input value={r.prTemplatePath ?? ""} onChange={(e) => setR({ ...r, prTemplatePath: nul(e.target.value) })} placeholder=".github/pull_request_template.md" /></label>
+                    <h3>GitHub comments</h3>
+                    <label>Automation handles (one GitHub login per line; their PR comments go to the "Automation comments" tab; anything ending in [bot] counts too) <textarea value={r.automationHandles.join("\n")} onChange={(e) => setR({ ...r, automationHandles: splitLines(e.target.value) })} /></label>
                     <div className="kv">
                         <b>Detected templates</b>
                         <span>{info.prTemplates.map((t) => `${t.dir === "." ? "" : `${t.dir}: `}${t.path ?? "none"}`).join(" · ")}{info.prTemplates.some((t) => t.overridden) ? " (override)" : ""}</span>

@@ -21,9 +21,12 @@ const CommentEditor = ({ initial, onSave, onCancel, onDelete }: { initial: strin
     );
 };
 
+// round > 0 = an earlier Stagehand review round; round 0 = a comment on the GitHub PR (author in `by`).
 export interface PriorComment extends LineComment {
     round: number;
+    by?: string;
 }
+const roundLabel = (p: PriorComment): string => (p.round > 0 ? `R${p.round}` : `PR${p.by ? ` · ${p.by}` : ""}`);
 
 // Where an earlier round's comment sits in the current diff. Lines move between rounds, so match by the quoted line
 // text (nearest to the original line number) rather than by number alone; unmatched ones are "outdated", like GitHub.
@@ -76,7 +79,7 @@ const FileDiff = ({
                 <div className="outdated">
                     {placed.outdated.map((c, i) => (
                         <div key={i} className="line-comment prior outdated-item">
-                            <b>R{c.round}</b> <span className="chip">outdated</span> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
+                            <b>{roundLabel(c)}</b> <span className="chip">outdated</span> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
                             <div>{c.text}</div>
                         </div>
                     ))}
@@ -102,8 +105,8 @@ const FileDiff = ({
                                     <span className="txt">{l.text || " "}</span>
                                 </div>
                                 {placed.byKey[key]?.map((p, pi) => (
-                                    <div key={pi} className="line-comment prior" title={`review round ${p.round}`}>
-                                        <b>R{p.round}</b> {p.text}
+                                    <div key={pi} className="line-comment prior" title={p.round > 0 ? `review round ${p.round}` : `GitHub PR comment by ${p.by ?? "?"}`}>
+                                        <b>{roundLabel(p)}</b> {p.text}
                                     </div>
                                 ))}
                                 {existing && editing !== key && (
@@ -197,7 +200,7 @@ export const DiffView = ({
                     <div className="outdated">
                         {gone.map((c, i) => (
                             <div key={i} className="line-comment prior outdated-item">
-                                <b>R{c.round}</b> <span className="chip">file no longer changed</span> <code>{c.path}:{c.line}</code>
+                                <b>{roundLabel(c)}</b> <span className="chip">file no longer changed</span> <code>{c.path}:{c.line}</code>
                                 <div>{c.text}</div>
                             </div>
                         ))}

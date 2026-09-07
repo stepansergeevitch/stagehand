@@ -26,8 +26,13 @@ export interface Env {
 }
 export interface Rules {
     commitPattern: string; commitForbid: string[]; commitHint: string; branchPattern: string; branchHint: string;
-    allowCommit: boolean; allowPush: boolean; allowPrCreate: boolean; prRules: string; prTemplatePath: string | null;
+    allowCommit: boolean; allowPush: boolean; allowPrCreate: boolean; prRules: string; prTemplatePath: string | null; automationHandles: string[];
 }
+export type PrComment =
+    | { kind: "review"; id: number; author: string; state: string; body: string; at: string; url: string }
+    | { kind: "line"; id: number; author: string; path: string; line: number | null; side: "old" | "new"; outdated: boolean; body: string; at: string; url: string; replyTo: number | null; snippet: string }
+    | { kind: "general"; id: number; author: string; body: string; at: string; url: string };
+export interface PrComments { number: number; repo: string; human: PrComment[]; automation: PrComment[]; fetchedAt: string }
 export interface TaskManager { source: "clickup" | "linear"; label: string; configured: boolean; token: string | null; teamId: string | null; envs: string[] }
 export interface EnvRules { rules: Rules; defaults: Rules; prTemplates: Array<{ dir: string; path: string | null; overridden: boolean }>; guardHook: string }
 export interface Settings {
@@ -128,6 +133,7 @@ export const api = {
     review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>
         post<Task>(`/api/tasks/${id}/review`, body),
     diff: (id: string) => fetch(`/api/tasks/${id}/diff`).then((r) => j<{ base: string; files: DiffFile[] }>(r)),
+    prComments: (id: string) => fetch(`/api/tasks/${id}/pr-comments`).then((r) => j<PrComments | null>(r)),
     myTickets: (envId: string) => fetch(`/api/envs/${envId}/my-tickets`).then((r) => j<{ source: "clickup" | "linear"; tickets: MyTicket[]; error?: string }>(r)),
     stop: (id: string) => post<Task>(`/api/tasks/${id}/stop`),
     retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),

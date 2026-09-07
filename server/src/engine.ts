@@ -25,6 +25,18 @@ export interface LineComment {
     text: string;
 }
 
+export type PrComment =
+    | { kind: "review"; id: number; author: string; state: string; body: string; at: string; url: string }
+    | { kind: "line"; id: number; author: string; path: string; line: number | null; side: "old" | "new"; outdated: boolean; body: string; at: string; url: string; replyTo: number | null; snippet: string }
+    | { kind: "general"; id: number; author: string; body: string; at: string; url: string };
+export interface PrComments {
+    number: number;
+    repo: string;
+    human: PrComment[];
+    automation: PrComment[];
+    fetchedAt: string;
+}
+
 export interface ReviewInput {
     verdict: "approve" | "changes";
     routeTo?: "implementation" | "design_proposal" | undefined;
@@ -439,6 +451,72 @@ export class Engine extends EventEmitter {
         if (manual.length) this.setTaskStatus(taskId, "idle", `PR Waiting · this env forbids it for agents — please ${manual.join(", ")}; Stagehand will pick the PR up by branch name`);
         else this.setTaskStatus(taskId, "idle", `PR Waiting · ${created.join(" ")}`);
     }
+
+    // Everything said on the GitHub PR: review summaries, line comments and general comments, split into human vs automation by the env's handle list.
+    async prComments(taskId: string): Promise<PrComments | null> {
+        const task = this.getTask(taskId);
+        if (!task) return null;
+        const state = this.db.prepare(`SELECT number FROM pr_state WHERE task_id = ?`).get(taskId) as { number: number | null } | undefined;
+        if (!state?.number) return null;
+        const cached = this.prCommentsCache.get(taskId);
+        if (cached && Date.now() - cached.at < 60_000) return cached.data;
+        const env = this.env(task.env_id);
+        const cwd = this.prCheckouts(task, env)[0]!;
+        const repo = (JSON.parse(await this.gh(cwd, ["repo", "view", "--json", "nameWithOwner"], env)) as { nameWithOwner: string }).nameWithOwner;
+        const n = state.number;
+        const [reviewsRaw, lineRaw, generalRaw] = await Promise.all([
+            this.gh(cwd, ["api", `repos/${repo}/pulls/${n}/reviews`, "--paginate"], env),
+            this.gh(cwd, ["api", `repos/${repo}/pulls/${n}/comments`, "--paginate"], env),
+            this.gh(cwd, ["api", `repos/${repo}/issues/${n}/comments`, "--paginate"], env),
+        ]);
+        const parse = <T,>(raw: string): T[] => {
+            // --paginate concatenates JSON arrays; make it one array.
+            try {
+                return JSON.parse(`[${raw.replace(/\]\s*\[/g, ",").replace(/^\[|\]$/g, "")}]`) as T[];
+            } catch {
+                return [];
+            }
+        };
+        type GhUser = { login: string };
+        const reviews = parse<{ id: number; user: GhUser; state: string; body: string; submitted_at: string; html_url: string }>(reviewsRaw)
+            .filter((r) => r.body?.trim() || r.state !== "COMMENTED")
+            .map((r) => ({ kind: "review" as const, id: r.id, author: r.user.login, state: r.state, body: r.body ?? "", at: r.submitted_at, url: r.html_url }));
+        const lines = parse<{ id: number; user: GhUser; path: string; line: number | null; original_line: number | null; side: string; body: string; created_at: string; html_url: string; in_reply_to_id?: number; diff_hunk?: string }>(lineRaw).map((c) => ({
+            kind: "line" as const,
+            id: c.id,
+            author: c.user.login,
+            path: c.path,
+            line: c.line ?? c.original_line ?? null,
+            side: c.side === "LEFT" ? ("old" as const) : ("new" as const),
+            outdated: c.line === null,
+            body: c.body,
+            at: c.created_at,
+            url: c.html_url,
+            replyTo: c.in_reply_to_id ?? null,
+            snippet: (c.diff_hunk ?? "").split("\n").pop()?.replace(/^[+\- ]/, "") ?? "",
+        }));
+        const general = parse<{ id: number; user: GhUser; body: string; created_at: string; html_url: string }>(generalRaw).map((c) => ({
+            kind: "general" as const,
+            id: c.id,
+            author: c.user.login,
+            body: c.body,
+            at: c.created_at,
+            url: c.html_url,
+        }));
+        const bots = new Set(rulesOf(env).automationHandles.map((h) => h.toLowerCase()));
+        const isBot = (login: string) => bots.has(login.toLowerCase()) || /\[bot\]$/i.test(login);
+        const all = [...reviews, ...lines, ...general];
+        const data: PrComments = {
+            number: n,
+            repo,
+            human: all.filter((c) => !isBot(c.author)),
+            automation: all.filter((c) => isBot(c.author)),
+            fetchedAt: now(),
+        };
+        this.prCommentsCache.set(taskId, { at: Date.now(), data });
+        return data;
+    }
+    private prCommentsCache = new Map<string, { at: number; data: PrComments }>();
 
     // Every few ticks: look the PR up (by stored number or by head branch) and move the task through pr_waiting → pr_green → pr_approved → done.
     private pollCounter = 0;

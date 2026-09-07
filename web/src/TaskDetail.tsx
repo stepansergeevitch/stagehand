@@ -4,7 +4,40 @@ import { Terminal } from "./Terminal";
 import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
-import type { Env, LineComment, Review } from "./api";
+import type { Env, LineComment, PrComment, PrComments, Review } from "./api";
+
+// GitHub PR comments of one kind (human or automation): review verdicts, line comments (path:line), general comments.
+const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, onRefresh }: { title: string; items: PrComment[] | null; loading: boolean; error: string | null; hasPr: boolean; url: string | null; fetchedAt: string | null; onRefresh: () => void }) => (
+    <Card title={title} badge={items ? <span className="chip">{items.length}</span> : undefined}>
+        {!hasPr && <div className="empty">No pull request yet — comments appear here once it exists.</div>}
+        {hasPr && (
+            <div className="actions" style={{ marginTop: 0 }}>
+                <button onClick={onRefresh} disabled={loading}>{loading ? "Loading…" : "Refresh"}</button>
+                {url && <a href={url} target="_blank" rel="noreferrer">open PR ↗</a>}
+                {fetchedAt && <span className="field-hint">fetched {new Date(fetchedAt).toLocaleTimeString()}</span>}
+            </div>
+        )}
+        {error && <div className="blocked-box">{error}</div>}
+        {items && items.length === 0 && <div className="empty">nothing here</div>}
+        {items && items.length > 0 && (
+            <div className="gh-comments">
+                {[...items].sort((a, b) => a.at.localeCompare(b.at)).map((c) => (
+                    <div key={`${c.kind}-${c.id}`} className={`gh-comment ${c.kind}`}>
+                        <div className="gh-head">
+                            <b>{c.author}</b>
+                            {c.kind === "review" && <span className={`chip ${c.state === "APPROVED" ? "ok" : c.state === "CHANGES_REQUESTED" ? "bad" : ""}`}>{c.state.toLowerCase().replace("_", " ")}</span>}
+                            {c.kind === "line" && <code>{c.path}{c.line !== null ? `:${c.line}` : ""}{c.outdated ? " (outdated)" : ""}</code>}
+                            {c.kind === "general" && <span className="chip">comment</span>}
+                            <span className="field-hint">{new Date(c.at).toLocaleString()}</span>
+                            <a href={c.url} target="_blank" rel="noreferrer">↗</a>
+                        </div>
+                        {c.body && <Markdown source={c.body} />}
+                    </div>
+                ))}
+            </div>
+        )}
+    </Card>
+);
 
 const parseComments = (r: Review): LineComment[] => {
     try {
@@ -182,9 +215,36 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
         setStep(task.stage);
     }, [task.id]);
     useEffect(() => setStep(task.stage), [task.stage]);
-    const prior: PriorComment[] = detail.reviews
-        .filter((r) => r.stage === "user_review" && r.verdict === "changes")
-        .flatMap((r, i) => parseComments(r).map((c) => ({ ...c, round: i + 1 })));
+    // GitHub PR comments (humans + automation), loaded when a tab needs them; line comments are also shown inline in the diff.
+    const [commentsTab, setCommentsTab] = useState<"user" | "pr" | "automation">("user");
+    const [gh, setGh] = useState<PrComments | null>(null);
+    const [ghLoading, setGhLoading] = useState(false);
+    const [ghError, setGhError] = useState<string | null>(null);
+    const loadGh = async () => {
+        if (!detail.prState?.number) return;
+        setGhLoading(true);
+        setGhError(null);
+        try {
+            setGh(await api.prComments(task.id));
+        } catch (e) {
+            setGhError(String((e as Error).message ?? e));
+        } finally {
+            setGhLoading(false);
+        }
+    };
+    useEffect(() => {
+        setGh(null);
+        if ((tab === "comments" || tab === "code") && detail.prState?.number) void loadGh();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [task.id, tab, detail.prState?.number]);
+    const prior: PriorComment[] = [
+        ...detail.reviews
+            .filter((r) => r.stage === "user_review" && r.verdict === "changes")
+            .flatMap((r, i) => parseComments(r).map((c) => ({ ...c, round: i + 1 }))),
+        ...(gh ? [...gh.human, ...gh.automation] : [])
+            .filter((c): c is Extract<PrComment, { kind: "line" }> => c.kind === "line" && c.line !== null)
+            .map((c) => ({ path: c.path, line: c.line ?? 0, side: c.side, snippet: c.snippet, text: c.body, round: 0, by: c.author })),
+    ];
 
     // Which workflow steps have something to show (or are the current one).
     const stepHasContent = (s: Stage): boolean => {
@@ -499,18 +559,36 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
             {tab === "comments" && (
                 <>
-                    {task.stage === "user_review" && waiting ? reviewBox : (
-                        <Card title="PR comments">
-                            {pending.length > 0 && (
-                                <div className="pending-comments">
-                                    Draft line comments (sent with the next "Request changes" in User Review):
-                                    <ul className="plain">{pending.map(([k, c]) => <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>)}</ul>
-                                </div>
-                            )}
-                            <ReviewHistory reviews={detail.reviews} stage="user_review" />
-                            {!detail.reviews.some((r) => r.stage === "user_review") && pending.length === 0 && <div className="empty">No review comments yet.</div>}
-                            {detail.prState?.url && <p className="field-hint">GitHub PR: <a href={detail.prState.url} target="_blank" rel="noreferrer">{detail.prState.url}</a></p>}
-                        </Card>
+                    <div className="subtabs">
+                        <button className={commentsTab === "user" ? "active" : ""} onClick={() => setCommentsTab("user")}>Human · User comments</button>
+                        <button className={commentsTab === "pr" ? "active" : ""} onClick={() => setCommentsTab("pr")}>Human · PR comments{gh ? ` (${gh.human.length})` : ""}</button>
+                        <button className={commentsTab === "automation" ? "active" : ""} onClick={() => setCommentsTab("automation")}>Automation comments{gh ? ` (${gh.automation.length})` : ""}</button>
+                    </div>
+                    {commentsTab === "user" && (
+                        task.stage === "user_review" && waiting ? reviewBox : (
+                            <Card title="Your comments before the PR">
+                                {pending.length > 0 && (
+                                    <div className="pending-comments">
+                                        Draft line comments (sent with the next "Request changes" in User Review):
+                                        <ul className="plain">{pending.map(([k, c]) => <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>)}</ul>
+                                    </div>
+                                )}
+                                <ReviewHistory reviews={detail.reviews} stage="user_review" />
+                                {!detail.reviews.some((r) => r.stage === "user_review") && pending.length === 0 && <div className="empty">No review comments yet.</div>}
+                            </Card>
+                        )
+                    )}
+                    {commentsTab !== "user" && (
+                        <PrCommentList
+                            title={commentsTab === "pr" ? "Comments on the pull request" : "Automation comments on the pull request"}
+                            items={gh ? (commentsTab === "pr" ? gh.human : gh.automation) : null}
+                            loading={ghLoading}
+                            error={ghError}
+                            hasPr={!!detail.prState?.url}
+                            url={detail.prState?.url ?? null}
+                            fetchedAt={gh?.fetchedAt ?? null}
+                            onRefresh={() => void loadGh()}
+                        />
                     )}
                 </>
             )}

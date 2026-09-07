@@ -24,6 +24,8 @@ export const Rules = z.object({
         ].join("\n"),
     ),
     prTemplatePath: z.string().nullable().default(null),
+    // GitHub logins whose PR comments are shown under "Automation comments" instead of human comments.
+    automationHandles: z.array(z.string()).default(["github-actions[bot]", "copilot-pull-request-reviewer[bot]", "copilot[bot]", "claude[bot]", "coderabbitai[bot]", "sonarcloud[bot]", "dependabot[bot]", "codecov[bot]"]),
 });
 export type Rules = z.infer<typeof Rules>;
 
