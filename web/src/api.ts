@@ -47,7 +47,7 @@ export const modelLabel = (id: string | null | undefined, models: Array<{ value:
 };
 export interface Env {
     id: string; name: string; path: string; base_branch: string; default_account_id: string | null; account_order: string | null; config_dir_id: string | null;
-    chrome_device_id: string | null; chrome_browser_name: string | null; app_url: string | null; qa_script: string | null;
+    chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
     rules: string | null;
@@ -164,7 +164,7 @@ export const api = {
         id: string,
         body: {
             name?: string; baseBranch?: string; defaultAccountId?: string | null; accountOrder?: string[]; configDirId?: string | null;
-            chromeDeviceId?: string | null; chromeBrowserName?: string | null; appUrl?: string | null; qaScript?: string | null;
+            chromeDeviceId?: string | null; chromeBrowserName?: string | null; qaSeedHints?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
         },

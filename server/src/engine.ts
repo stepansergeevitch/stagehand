@@ -753,6 +753,7 @@ export class Engine extends EventEmitter {
             reviewerNotes: opts.notes ?? "",
             attempt: String(opts.attempt ?? 1),
             maxTurns: String(def.maxTurns ?? 100),
+            seedHints: env.qa_seed_hints?.trim() ? env.qa_seed_hints.trim() : "(none configured for this environment — inspect the repo's configs/ and models to find the local database and API)",
             ...(opts.extraVars ?? {}),
         };
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {

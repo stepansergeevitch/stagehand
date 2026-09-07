@@ -115,6 +115,8 @@ export interface EnvRow {
     chrome_browser_name: string | null;
     app_url: string | null;
     qa_script: string | null;
+    // Free text for agents: how to create test data in this env (local DB connection, API auth, seed scripts, tables).
+    qa_seed_hints: string | null;
     be_command: string | null;
     fe_command: string | null;
     fe_url_template: string | null;
@@ -384,6 +386,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.config_dir_id", `ALTER TABLE envs ADD COLUMN config_dir_id TEXT REFERENCES config_dirs(id)`],
     ["envs.account_order", `ALTER TABLE envs ADD COLUMN account_order TEXT`],
     ["envs.chrome_device_id", `ALTER TABLE envs ADD COLUMN chrome_device_id TEXT`],
+    ["envs.qa_seed_hints", `ALTER TABLE envs ADD COLUMN qa_seed_hints TEXT`],
     ["envs.chrome_browser_name", `ALTER TABLE envs ADD COLUMN chrome_browser_name TEXT`],
     ["config_dirs.login_email", `ALTER TABLE config_dirs ADD COLUMN login_email TEXT`],
     ["config_dirs.login_ok", `ALTER TABLE config_dirs ADD COLUMN login_ok INTEGER`],

@@ -485,6 +485,7 @@ app.patch("/api/envs/:id", async (c) => {
             configDirId: z.string().nullable().optional(),
             chromeDeviceId: z.string().nullable().optional(),
             chromeBrowserName: z.string().nullable().optional(),
+            qaSeedHints: z.string().nullable().optional(),
             baseBranch: z.string().optional(),
             appUrl: z.string().nullable().optional(),
             qaScript: z.string().nullable().optional(),
@@ -515,7 +516,7 @@ app.patch("/api/envs/:id", async (c) => {
         if (bad) return c.json({ error: bad }, 400);
     }
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         order[0] ?? null,
@@ -523,6 +524,7 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.configDirId, env.config_dir_id),
         pick(body.chromeDeviceId, env.chrome_device_id),
         pick(body.chromeBrowserName, env.chrome_browser_name),
+        pick(body.qaSeedHints, env.qa_seed_hints),
         body.baseBranch ?? env.base_branch,
         pick(body.appUrl, env.app_url),
         pick(body.qaScript, env.qa_script),
