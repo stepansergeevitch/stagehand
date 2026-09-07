@@ -706,10 +706,14 @@ const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design
     // Structured data attaches to the matching markdown section; sections without a markdown twin still get a tab.
     type Part = { key: string; title: string; md?: string; extra?: React.ReactNode };
     const parts: Part[] = parsed.sections.map((s) => ({ key: s.title, title: s.title, md: s.body }));
-    const attach = (test: RegExp, title: string, extra: React.ReactNode) => {
+    // `replace` drops the markdown twin when the structured view is a superset of it (QA scenarios carry title, url,
+    // persona, seed and steps), so a section is never shown twice.
+    const attach = (test: RegExp, title: string, extra: React.ReactNode, replace = false) => {
         const hit = parts.find((p) => test.test(p.title));
-        if (hit) hit.extra = extra;
-        else parts.push({ key: title, title, extra });
+        if (hit) {
+            hit.extra = extra;
+            if (replace) delete hit.md;
+        } else parts.push({ key: title, title, extra });
     };
     attach(/^change|implementation|plan by layer/i, "Plan by layer", (
         <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
@@ -717,7 +721,7 @@ const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design
     attach(/^tests?\b|test plan/i, "Test plan", (
         <table><tbody>{design.testPlan.map((t) => <tr key={t.file}><td><code>{t.file}</code></td><td><ul className="plain">{t.cases.map((c, i) => <li key={i}><code>{c}</code></li>)}</ul></td></tr>)}</tbody></table>
     ));
-    attach(/qa/i, "QA scenarios", <QaScenarios design={design} />);
+    attach(/qa/i, "QA scenarios", <QaScenarios design={design} />, true);
     const [active, setActive] = useState(0);
     const cur = parts[Math.min(active, parts.length - 1)];
     return (

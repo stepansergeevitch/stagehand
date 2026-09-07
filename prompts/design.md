@@ -39,7 +39,7 @@ A table, one row per test:
 `Asserts` ≤ 15 words with concrete values or relations (`net_revenue == 9500 - 300`). Then one line `Run:` with the exact commands.
 
 ### 7. QA
-One line per scenario: `` `S1` — <title> — `<start url>` ``, then an indented `seed:` line naming the data it creates (or `nothing beyond a logged-in user`). No steps here — they live in design.json and the UI renders them under this section.
+One line per scenario: `` `S1` — <title> — `<start url>` ``, or `none — <reason>`. Nothing else: persona, seed and steps live in design.json, and the UI shows those (not this list) under the QA tab.
 
 ### Banned everywhere in design.md
 Restating the ticket; provenance remarks (`research.md`, `mempalace`, "confirmed", "per the ticket's note", "AC #n"); emphasis and hedging ("exactly", "explicitly", "it is worth noting", "importantly", "this is the … trap"); explaining why something is out of scope for more than one clause; JSON blocks; paragraphs longer than three lines; any claim without a path, symbol or number.
