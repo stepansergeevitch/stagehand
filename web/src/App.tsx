@@ -4,6 +4,14 @@ import { TaskDetailView } from "./TaskDetail";
 import { EnvPage } from "./EnvPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
 
+type Page = "tasks" | "env" | ManageTab;
+const NAV: { id: Page; label: string; hint: string }[] = [
+    { id: "tasks", label: "Tasks", hint: "Tasks in the selected environment" },
+    { id: "envs", label: "Environments", hint: "Repositories, services, rules" },
+    { id: "accounts", label: "AI accounts", hint: "Claude config dirs and limits" },
+    { id: "managers", label: "Task managers", hint: "ClickUp / Linear credentials" },
+];
+
 type Group = "Pinned" | "Needs input" | "Working" | "Idle" | "Failed" | "Completed" | "Stopped";
 
 const groupOf = (t: Task): Group => {
@@ -72,8 +80,8 @@ export const App = () => {
     const [terminal, setTerminal] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [moreOpen, setMoreOpen] = useState(false);
-    const [page, setPage] = useState<"tasks" | "env" | "manage">("tasks");
-    const [manageTab, setManageTab] = useState<ManageTab>("envs");
+    const [page, setPage] = useState<Page>("tasks");
+    const navActive: Page = page === "env" ? "envs" : page;
 
     const reload = useCallback(async () => {
         const [a, e, t] = await Promise.all([api.accounts(), api.envs(), api.tasks()]);
@@ -161,7 +169,6 @@ export const App = () => {
                 <button className="primary" disabled={!env} onClick={() => setModal("task")}>+ task</button>
                 <span className="extra">
                     {env && <button onClick={() => setPage("env")}>configure env</button>}
-                    <button className={page === "manage" ? "active" : ""} onClick={() => setPage("manage")} title="Environments, AI accounts, task managers">Manage</button>
                 </span>
                 <span className="spacer" />
                 <span className="extra gauges">{accounts.map((a) => <Gauge key={a.id} a={a} />)}</span>
@@ -169,79 +176,89 @@ export const App = () => {
                     <button onClick={() => setModal("settings")} title="Default model">⚙</button>
                 </span>
             </header>
-            {page === "env" && env && (
-                <div className="main page">
-                    <main className="detail">
-                        {error && <div className="blocked-box">{error}</div>}
-                        <EnvPage key={env.id} env={env} accounts={accounts} onBack={() => setPage("manage")} onChanged={reload} onError={setError} />
-                    </main>
-                </div>
-            )}
-            {page === "manage" && (
-                <div className="main page">
-                    <main className="detail">
-                        {error && <div className="blocked-box">{error}</div>}
-                        <ManagePage
-                            tab={manageTab}
-                            setTab={setManageTab}
-                            envs={envs}
-                            accounts={accounts}
-                            tasks={tasks}
-                            settings={settings}
-                            onBack={() => setPage("tasks")}
-                            onConfigureEnv={(id) => { setEnvId(id); setPage("env"); }}
-                            onAddEnv={() => setModal("env")}
-                            onAddAccount={() => setModal("account")}
-                            onChanged={reload}
-                            onError={setError}
-                            onTerminal={setTerminal}
-                        />
-                    </main>
-                </div>
-            )}
-            {page === "tasks" && <div className={`main ${selected ? "has-selection" : ""}`}>
-                <aside className="list">
-                    {visible.length === 0 && <div className="empty">No tasks in this env yet.</div>}
-                    {grouped.map(([g, list]) => (
-                        <div key={g}>
-                            <div className="group">{g}</div>
-                            {list.map((t) => {
-                                const [glyph, cls] = ICON[g];
-                                return (
-                                    <div key={t.id} className={`row ${selected === t.id ? "selected" : ""}`} onClick={() => setSelected(t.id)}>
-                                        <span className={`icon ${cls}`}>{glyph}</span>
-                                        <span className="name">{t.ticket_id}<small>{t.title ?? ""}</small></span>
-                                        <span className="age">{age(t.updated_at)}</span>
-                                        <span className="pr" />
-                                        <span className="status">{t.status_line ?? STAGE_LABEL[t.stage]}</span>
-                                    </div>
-                                );
-                            })}
-                        </div>
+            <div className="body">
+                <nav className="sidebar" aria-label="Sections">
+                    {NAV.map((n) => (
+                        <button key={n.id} className={navActive === n.id ? "active" : ""} title={n.hint} onClick={() => setPage(n.id)}>
+                            {n.label}
+                            {n.id === "tasks" && visible.length > 0 && <span className="count">{visible.length}</span>}
+                            {n.id === "envs" && envs.length > 0 && <span className="count">{envs.length}</span>}
+                            {n.id === "accounts" && accounts.length > 0 && <span className="count">{accounts.length}</span>}
+                        </button>
                     ))}
-                </aside>
-                <main className="detail">
-                    {selected && <button className="back" onClick={() => setSelected(null)}>← tasks</button>}
-                    {error && <div className="blocked-box">{error}</div>}
-                    {!detail && <div className="empty">Select a task, or add one.</div>}
-                    {detail && (
-                        <TaskDetailView
-                            detail={detail}
-                            accounts={accounts}
-                            env={envs.find((e) => e.id === detail.task.env_id)}
-                            onError={setError}
-                            feed={feed[detail.task.id] ?? []}
-                            terminal={terminal}
-                            onAction={run}
-                            onOpenTerminal={async () => {
-                                const r = await api.terminal(detail.task.id);
-                                setTerminal(r.terminal);
-                            }}
-                            onCloseTerminal={() => setTerminal(null)}
-                        />
-                    )}
-                </main>
-            </div>}
+                </nav>
+                {page === "env" && env && (
+                    <div className="main page">
+                        <main className="detail">
+                            {error && <div className="blocked-box">{error}</div>}
+                            <EnvPage key={env.id} env={env} accounts={accounts} onBack={() => setPage("envs")} onChanged={reload} onError={setError} />
+                        </main>
+                    </div>
+                )}
+                {(page === "envs" || page === "accounts" || page === "managers") && (
+                    <div className="main page">
+                        <main className="detail">
+                            {error && <div className="blocked-box">{error}</div>}
+                            <ManagePage
+                                tab={page}
+                                envs={envs}
+                                accounts={accounts}
+                                tasks={tasks}
+                                settings={settings}
+                                onConfigureEnv={(id) => { setEnvId(id); setPage("env"); }}
+                                onAddEnv={() => setModal("env")}
+                                onAddAccount={() => setModal("account")}
+                                onChanged={reload}
+                                onError={setError}
+                                onTerminal={setTerminal}
+                            />
+                        </main>
+                    </div>
+                )}
+                {page === "tasks" && <div className={`main ${selected ? "has-selection" : ""}`}>
+                    <aside className="list">
+                        {visible.length === 0 && <div className="empty">No tasks in this env yet.</div>}
+                        {grouped.map(([g, list]) => (
+                            <div key={g}>
+                                <div className="group">{g}</div>
+                                {list.map((t) => {
+                                    const [glyph, cls] = ICON[g];
+                                    return (
+                                        <div key={t.id} className={`row ${selected === t.id ? "selected" : ""}`} onClick={() => setSelected(t.id)}>
+                                            <span className={`icon ${cls}`}>{glyph}</span>
+                                            <span className="name">{t.ticket_id}<small>{t.title ?? ""}</small></span>
+                                            <span className="age">{age(t.updated_at)}</span>
+                                            <span className="pr" />
+                                            <span className="status">{t.status_line ?? STAGE_LABEL[t.stage]}</span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ))}
+                    </aside>
+                    <main className="detail">
+                        {selected && <button className="back" onClick={() => setSelected(null)}>← tasks</button>}
+                        {error && <div className="blocked-box">{error}</div>}
+                        {!detail && <div className="empty">Select a task, or add one.</div>}
+                        {detail && (
+                            <TaskDetailView
+                                detail={detail}
+                                accounts={accounts}
+                                env={envs.find((e) => e.id === detail.task.env_id)}
+                                onError={setError}
+                                feed={feed[detail.task.id] ?? []}
+                                terminal={terminal}
+                                onAction={run}
+                                onOpenTerminal={async () => {
+                                    const r = await api.terminal(detail.task.id);
+                                    setTerminal(r.terminal);
+                                }}
+                                onCloseTerminal={() => setTerminal(null)}
+                            />
+                        )}
+                    </main>
+                </div>}
+            </div>
             {modal === "task" && env && (
                 <Modal title={`New task in ${env.name}`} onClose={() => setModal(null)}>
                     <TaskForm accounts={accounts} env={env} settings={settings} onSubmit={async (ticket, acc, model) => { await run(() => api.createTask(env.id, ticket, acc, model)); setModal(null); }} />

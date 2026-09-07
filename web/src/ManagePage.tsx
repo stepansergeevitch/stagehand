@@ -13,14 +13,14 @@ const repoList = (json: string | null): string => {
     }
 };
 
+const TITLE: Record<ManageTab, string> = { envs: "Environments", accounts: "AI accounts", managers: "Task managers" };
+
 export const ManagePage = ({
     tab,
-    setTab,
     envs,
     accounts,
     tasks,
     settings,
-    onBack,
     onConfigureEnv,
     onAddEnv,
     onAddAccount,
@@ -29,12 +29,10 @@ export const ManagePage = ({
     onTerminal,
 }: {
     tab: ManageTab;
-    setTab: (t: ManageTab) => void;
     envs: Env[];
     accounts: Account[];
     tasks: Task[];
     settings: Settings | null;
-    onBack: () => void;
     onConfigureEnv: (id: string) => void;
     onAddEnv: () => void;
     onAddAccount: () => void;
@@ -52,15 +50,7 @@ export const ManagePage = ({
     };
     return (
         <div className="env-page manage-page">
-            <button className="back-link" onClick={onBack}>← tasks</button>
-            <h1>Manage</h1>
-            <div className="tabs" role="tablist">
-                {(["envs", "accounts", "managers"] as const).map((t) => (
-                    <button key={t} role="tab" className={tab === t ? "active" : ""} onClick={() => setTab(t)}>
-                        {t === "envs" ? `Environments (${envs.length})` : t === "accounts" ? `AI accounts (${accounts.length})` : "Task managers"}
-                    </button>
-                ))}
-            </div>
+            <h1>{TITLE[tab]}</h1>
             {tab === "envs" && <EnvList envs={envs} accounts={accounts} tasks={tasks} onConfigure={onConfigureEnv} onAdd={onAddEnv} onDelete={(id) => act(() => api.deleteEnv(id))} />}
             {tab === "accounts" && <AccountList accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onChanged={onChanged} />}
             {tab === "managers" && <TaskManagerList onError={onError} />}

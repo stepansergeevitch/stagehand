@@ -69,7 +69,7 @@ export const EnvPage = ({ env, accounts, onBack, onChanged, onError }: { env: En
 
     return (
         <div className="env-page">
-            <button className="back-link" onClick={onBack}>← tasks</button>
+            <button className="back-link" onClick={onBack}>← environments</button>
             <h1>{env.name}</h1>
             <div className="sub"><code>{env.path}</code></div>
 
