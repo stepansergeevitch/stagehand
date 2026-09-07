@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -196,10 +196,11 @@ const excludeFromGit = (checkout: string, patterns: string[]): void => {
 const readGitDir = (checkout: string): string | null => {
     const dotGit = join(checkout, ".git");
     if (!existsSync(dotGit)) return null;
+    if (statSync(dotGit).isDirectory()) return dotGit;
     const stat = readFileSync(dotGit, "utf8").trim();
     if (stat.startsWith("gitdir:")) {
         const wtGit = stat.slice(7).trim();
         return wtGit.includes("/worktrees/") ? wtGit.split("/worktrees/")[0]! : wtGit;
     }
-    return dotGit;
+    return null;
 };
