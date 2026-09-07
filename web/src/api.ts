@@ -10,8 +10,18 @@ export interface Account {
     id: string; name: string; provider: string; auth_dir: string; has_token: boolean; setting_up: boolean; email: string | null; org: string | null; plan: string | null;
     logged_in: number; failover_enabled: number; failover_threshold: number; default_model: string | null;
     limits: Array<{ window: string; utilization: number; resetsAt: number }>;
+    // Tokens of every kind and estimated cost since local midnight / over the last 7 days (from the usage table).
+    usage: { today: { tokens: number; cost: number }; week: { tokens: number; cost: number } };
 }
 export const accountUsableWith = (a: Account, configDirPath: string): boolean => a.logged_in === 1 && (a.has_token || a.auth_dir === configDirPath);
+// The env's account priority list (ids); falls back to the single default account.
+export const accountOrderOf = (env: Pick<Env, "account_order" | "default_account_id">): string[] => {
+    try {
+        const v: unknown = env.account_order ? JSON.parse(env.account_order) : null;
+        if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
+    } catch { /* fall through */ }
+    return env.default_account_id ? [env.default_account_id] : [];
+};
 
 export interface ConfigDirContents {
     exists: boolean; skills: string[]; agents: string[]; commands: string[]; hooks: string[]; plugins: number; mcpServers: string[]; hasClaudeMd: boolean; hasSettings: boolean;
@@ -31,7 +41,7 @@ export const modelLabel = (id: string | null | undefined, models: Array<{ value:
     return `${hit ? hit.label.replace(/\s*\(.*\)$/, "") : base}${long ? " · 1M context" : ""}`;
 };
 export interface Env {
-    id: string; name: string; path: string; base_branch: string; default_account_id: string | null; config_dir_id: string | null; app_url: string | null; qa_script: string | null;
+    id: string; name: string; path: string; base_branch: string; default_account_id: string | null; account_order: string | null; config_dir_id: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
     rules: string | null;
@@ -55,8 +65,11 @@ export interface UsageReport {
     since: string | null; totals: Omit<UsageBucket, "key" | "label">;
     byEnv: UsageBucket[]; byAccount: UsageBucket[]; byTask: UsageBucket[]; byStage: UsageBucket[]; byModel: UsageBucket[]; byDay: UsageBucket[];
 }
+export interface OrgUsageRow { day: string; product: string | null; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number; requests: number }
+export type OrgUsage = { configured: false } | { configured: true; error: string } | { configured: true; organizationId: string; refreshedAt: string | null; since: string; rows: OrgUsageRow[] };
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
+    anthropicAdminKey: string | null; anthropicUserId: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
 }
 export interface Ticket {
@@ -130,13 +143,13 @@ export const api = {
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: {
-        name: string; path: string; baseBranch: string; defaultAccountId?: string; configDirId?: string; appUrl?: string; qaScript?: string;
+        name: string; path: string; baseBranch: string; defaultAccountId?: string; accountOrder?: string[]; configDirId?: string; appUrl?: string; qaScript?: string;
         repos?: string[]; branchPrefix?: string; ticketSource: "clickup" | "linear"; envVars?: string;
     }) => post<Env>("/api/envs", body),
     patchEnv: (
         id: string,
         body: {
-            name?: string; baseBranch?: string; defaultAccountId?: string | null; configDirId?: string | null; appUrl?: string | null; qaScript?: string | null;
+            name?: string; baseBranch?: string; defaultAccountId?: string | null; accountOrder?: string[]; configDirId?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
         },
@@ -154,6 +167,7 @@ export const api = {
     createTask: (envId: string, ticket: string, accountId?: string, model?: string) => post<Task>("/api/tasks", { envId, ticket, accountId, model }),
     settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
     usage: (days: number) => fetch(`/api/usage?days=${days}`).then((r) => j<UsageReport>(r)),
+    orgUsage: (days: number) => fetch(`/api/usage/org?days=${days}`).then((r) => j<OrgUsage>(r)),
     patchSettings: (body: Partial<Omit<Settings, "models">>) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
     review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>

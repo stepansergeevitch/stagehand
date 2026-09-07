@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountUsableWith, api, type Account, type ConfigDir, type Env, type EnvRules } from "./api";
+import { accountOrderOf, accountUsableWith, api, type Account, type ConfigDir, type Env, type EnvRules } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -48,9 +48,18 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
 
     // ---- general
     const [g, setG] = useState({ name: env.name, repos: joinRepos(env.repos), baseBranch: env.base_branch, branchPrefix: env.branch_prefix ?? "", ticketSource: env.ticket_source });
-    // ---- claude config dir + default AI account
-    const [acc, setAcc] = useState(env.default_account_id ?? "");
+    // ---- claude config dir + AI accounts in priority order
+    const [order, setOrder] = useState<string[]>(() => accountOrderOf(env));
     const [dirId, setDirId] = useState(env.config_dir_id ?? "");
+    const move = (id: string, delta: number) => setOrder((o) => {
+        const i = o.indexOf(id);
+        const j = i + delta;
+        if (i < 0 || j < 0 || j >= o.length) return o;
+        const next = [...o];
+        [next[i], next[j]] = [next[j]!, next[i]!];
+        return next;
+    });
+    const toggle = (id: string) => setOrder((o) => (o.includes(id) ? o.filter((x) => x !== id) : [...o, id]));
     const dirPath = configDirs.find((d) => d.id === dirId)?.path ?? info?.configDir.path ?? "";
     // ---- services
     const [s, setS] = useState({
@@ -80,7 +89,7 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
                 </label>
             </Section>
 
-            <Section title="Claude config dir and AI account" hint="Every agent run for this environment (research, design, QA, implementation, helpers, the terminal) uses the config dir: its skills, hooks, subagents, MCP servers, CLAUDE.md and the commit/branch/PR rules. The AI account only supplies the login; when it hits a rate limit another usable account takes over (per-account failover toggle)." saving={saving === "claude"} onSave={() => save("claude", { configDirId: nul(dirId), defaultAccountId: nul(acc) })}>
+            <Section title="Claude config dir and AI accounts" hint="Every agent run for this environment (research, design, QA, implementation, helpers, the terminal) uses the config dir: its skills, hooks, subagents, MCP servers, CLAUDE.md and the commit/branch/PR rules. The AI accounts only supply the login: runs go to the first listed account that is not exhausted; when it hits its rate limit the next one takes over, and the task waits for a reset only when every listed account is exhausted." saving={saving === "claude"} onSave={() => save("claude", { configDirId: nul(dirId), accountOrder: order })}>
                 <label>Config dir
                     <select value={dirId} onChange={(e) => setDirId(e.target.value)}>
                         <option value="">— server default —</option>
@@ -88,15 +97,26 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
                     </select>
                     {dirId && <span className="field-hint"><a href="#" onClick={(e) => { e.preventDefault(); onOpenDir(dirId); }}>Edit this dir's rules and see what it contains</a></span>}
                 </label>
-                <label>Default AI account
-                    <select value={acc} onChange={(e) => setAcc(e.target.value)}>
-                        <option value="">— first account that can run in this dir —</option>
-                        {accounts.map((a) => {
-                            const ok = dirPath ? accountUsableWith(a, dirPath) : a.logged_in === 1;
-                            return <option key={a.id} value={a.id}>{a.name}{a.email ? ` · ${a.email}` : ""}{ok ? "" : a.logged_in ? " (cannot run in this dir — needs a token)" : " (not logged in)"}</option>;
-                        })}
-                    </select>
-                </label>
+                <div className="account-order">
+                    <span className="field-hint">AI accounts in priority order (tick to include, arrows to reorder; empty = any account that can run in this dir)</span>
+                    {[...order.map((id) => accounts.find((a) => a.id === id)).filter((a): a is Account => !!a), ...accounts.filter((a) => !order.includes(a.id))].map((a) => {
+                        const i = order.indexOf(a.id);
+                        const ok = dirPath ? accountUsableWith(a, dirPath) : a.logged_in === 1;
+                        return (
+                            <div key={a.id} className={`account-row ${i >= 0 ? "on" : ""}`}>
+                                <label className="inline"><input type="checkbox" checked={i >= 0} onChange={() => toggle(a.id)} /> {i >= 0 ? <b>{i + 1}.</b> : null} {a.name}{a.email ? ` · ${a.email}` : ""}</label>
+                                {a.plan && <span className="chip">{a.plan}</span>}
+                                {!ok && <span className="chip warn" title={a.logged_in ? "cannot run in this dir — needs a token" : "not logged in"}>{a.logged_in ? "needs a token" : "no auth"}</span>}
+                                {i >= 0 && (
+                                    <span className="order-buttons">
+                                        <button disabled={i === 0} onClick={() => move(a.id, -1)} title="higher priority">▲</button>
+                                        <button disabled={i === order.length - 1} onClick={() => move(a.id, 1)} title="lower priority">▼</button>
+                                    </span>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
                 {info && (
                     <div className="kv">
                         <b>Accounts that can run here</b><span>{info.usableAccounts.length ? info.usableAccounts.map((id) => accounts.find((a) => a.id === id)?.name ?? id).join(", ") : "none — set up a token on the AI accounts page"}</span>

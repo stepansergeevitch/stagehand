@@ -81,6 +81,9 @@ export interface EnvRow {
     base_branch: string;
     default_account_id: string | null;
     config_dir_id: string | null;
+    // JSON array of account ids in priority order: the first one that can run in the env's config dir and is not
+    // exhausted drives a run; when it hits a rate limit the next one takes over. default_account_id mirrors its head.
+    account_order: string | null;
     app_url: string | null;
     qa_script: string | null;
     be_command: string | null;
@@ -101,6 +104,16 @@ export interface EnvRow {
     rules: string | null;
     created_at: string;
 }
+
+export const accountOrderOf = (env: Pick<EnvRow, "account_order" | "default_account_id">): string[] => {
+    try {
+        const v: unknown = env.account_order ? JSON.parse(env.account_order) : null;
+        if (Array.isArray(v) && v.every((x) => typeof x === "string")) return v as string[];
+    } catch {
+        /* fall through */
+    }
+    return env.default_account_id ? [env.default_account_id] : [];
+};
 
 export const parseEnvVars = (text: string | null): Record<string, string> => {
     const out: Record<string, string> = {};
@@ -337,6 +350,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["accounts.provider", `ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic'`],
     ["accounts.oauth_token", `ALTER TABLE accounts ADD COLUMN oauth_token TEXT`],
     ["envs.config_dir_id", `ALTER TABLE envs ADD COLUMN config_dir_id TEXT REFERENCES config_dirs(id)`],
+    ["envs.account_order", `ALTER TABLE envs ADD COLUMN account_order TEXT`],
 ];
 
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>
@@ -348,6 +362,7 @@ const hasColumn = (db: Database.Database, table: string, column: string): boolea
 // rules that lived on the env move to that dir.
 export const migrateAccountsToConfigDirs = (db: Database.Database, opts: { mainConfigDir: string; scratchAccountsDir: string }): void => {
     if (hasColumn(db, "accounts", "config_dir")) db.exec(`ALTER TABLE accounts RENAME COLUMN config_dir TO auth_dir`);
+    db.exec(`UPDATE envs SET account_order = json_array(default_account_id) WHERE account_order IS NULL AND default_account_id IS NOT NULL`);
     const dirs = db.prepare(`SELECT COUNT(*) AS n FROM config_dirs`).get() as { n: number };
     const envs = db.prepare(`SELECT * FROM envs`).all() as EnvRow[];
     if (dirs.n > 0 || envs.every((e) => e.config_dir_id)) return;

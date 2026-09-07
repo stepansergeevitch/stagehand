@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { accountUsableWith, api, modelLabel, STAGE_LABEL, STAGE_ORDER, type Account, type ConfigDir, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
+import { accountOrderOf, accountUsableWith, api, modelLabel, STAGE_LABEL, STAGE_ORDER, type Account, type ConfigDir, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
 import { TaskDetailView } from "./TaskDetail";
 import { EnvPage } from "./EnvPage";
 import { ConfigDirPage } from "./ConfigDirPage";
@@ -59,19 +59,32 @@ const age = (iso: string): string => {
     return `${Math.floor(s / 86400)}d`;
 };
 
+const fmtTokens = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : String(n));
+const fmtMoney = (n: number): string => (n >= 100 ? `$${n.toFixed(0)}` : `$${n.toFixed(2)}`);
+
+// Subscription accounts: the two rate-limit windows as stacked bars (d = the rolling 5-hour window, w = the 7-day one).
+// Enterprise accounts have no windows to show; they get what was consumed today and this week instead.
 const Gauge = ({ a }: { a: Account }) => {
     const five = a.limits.find((l) => l.window === "five_hour");
     const week = a.limits.find((l) => l.window === "seven_day");
     const cls = (u: number) => (u >= 0.9 ? "bad" : u >= 0.6 ? "warn" : "");
+    const enterprise = a.plan === "enterprise";
+    const usage = a.usage ?? { today: { tokens: 0, cost: 0 }, week: { tokens: 0, cost: 0 } };
+    const title = `${a.email ?? "no auth"} · ${a.org ?? ""} · ${a.plan ?? ""}${five ? ` · 5h window ${Math.round(five.utilization * 100)}%` : ""}${week ? ` · 7d window ${Math.round(week.utilization * 100)}%` : ""}`;
     return (
-        <span className="gauge" title={`${a.email ?? "not logged in"} · ${a.org ?? ""} · ${a.plan ?? ""}`}>
-            <span>{a.name}</span>
-            <span className="bar"><i className={cls(five?.utilization ?? 0)} style={{ width: `${Math.round((five?.utilization ?? 0) * 100)}%` }} /></span>
-            <span>{five ? `${Math.round(five.utilization * 100)}%` : "—"}</span>
-            <span className="bar"><i className={cls(week?.utilization ?? 0)} style={{ width: `${Math.round((week?.utilization ?? 0) * 100)}%` }} /></span>
-            <span>{week ? `${Math.round(week.utilization * 100)}%` : "—"}</span>
-            {!a.logged_in && <span className="chip bad">no auth</span>}
-            {a.logged_in === 1 && !a.has_token && <span className="chip warn">legacy</span>}
+        <span className={`gauge ${enterprise ? "enterprise" : ""}`} title={title}>
+            <span className="gauge-name">{a.name}{!a.logged_in && <span className="chip bad">no auth</span>}{a.logged_in === 1 && !a.has_token && <span className="chip warn">legacy</span>}</span>
+            {enterprise ? (
+                <span className="gauge-usage">
+                    <span><small>today</small> {fmtTokens(usage.today.tokens)} · {fmtMoney(usage.today.cost)}</span>
+                    <span><small>week</small> {fmtTokens(usage.week.tokens)} · {fmtMoney(usage.week.cost)}</span>
+                </span>
+            ) : (
+                <span className="gauge-bars">
+                    <span className="gauge-row"><small>d</small><span className="bar"><i className={cls(five?.utilization ?? 0)} style={{ width: `${Math.round((five?.utilization ?? 0) * 100)}%` }} /></span><span>{five ? `${Math.round(five.utilization * 100)}%` : "—"}</span></span>
+                    <span className="gauge-row"><small>w</small><span className="bar"><i className={cls(week?.utilization ?? 0)} style={{ width: `${Math.round((week?.utilization ?? 0) * 100)}%` }} /></span><span>{week ? `${Math.round(week.utilization * 100)}%` : "—"}</span></span>
+                </span>
+            )}
         </span>
     );
 };
@@ -364,7 +377,7 @@ const PRIORITY_MARK: Record<number, string> = { 0: "·", 1: "🔴", 2: "🟠", 3
 
 const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; env: Env; settings: Settings | null; onSubmit: (ticket: string, accountId?: string, model?: string) => Promise<void> }) => {
     const [ticket, setTicket] = useState("");
-    const [acc, setAcc] = useState(accounts.find((a) => a.id === env.default_account_id)?.id ?? accounts[0]?.id ?? "");
+    const [acc, setAcc] = useState(accountOrderOf(env).find((id) => accounts.some((a) => a.id === id)) ?? accounts[0]?.id ?? "");
     const [model, setModel] = useState(settings?.defaultModel ?? "");
     const [mine, setMine] = useState<{ tickets: MyTicket[]; error?: string } | null>(null);
     useEffect(() => {
@@ -427,6 +440,8 @@ const SettingsForm = ({ settings, accounts, onSubmit }: { settings: Settings; ac
     const [clickupToken, setClickupToken] = useState("");
     const [clickupTeamId, setClickupTeamId] = useState(settings.clickupTeamId ?? "");
     const [linearApiKey, setLinearApiKey] = useState("");
+    const [adminKey, setAdminKey] = useState("");
+    const [adminUserId, setAdminUserId] = useState(settings.anthropicUserId ?? "");
     const [defaultModel, setDefaultModel] = useState(settings.defaultModel ?? "");
     return (
         <>
@@ -434,6 +449,8 @@ const SettingsForm = ({ settings, accounts, onSubmit }: { settings: Settings; ac
             <label>ClickUp personal API token (pk_…) <input value={clickupToken} onChange={(e) => setClickupToken(e.target.value)} placeholder={settings.clickupToken ?? "not set"} /></label>
             <label>ClickUp team id <input value={clickupTeamId} onChange={(e) => setClickupTeamId(e.target.value)} /></label>
             <label>Linear API key <input value={linearApiKey} onChange={(e) => setLinearApiKey(e.target.value)} placeholder={settings.linearApiKey ?? "not set"} /></label>
+            <label>Anthropic Admin API key (enterprise org, read:analytics scope — adds an organization section to Analytics) <input value={adminKey} onChange={(e) => setAdminKey(e.target.value)} placeholder={settings.anthropicAdminKey ?? "not set"} /></label>
+            <label>Anthropic user id to filter the organization report to (optional, user_…) <input value={adminUserId} onChange={(e) => setAdminUserId(e.target.value)} placeholder="whole organization" /></label>
             <label>Default Claude model
                 <select value={defaultModel} onChange={(e) => setDefaultModel(e.target.value)}>
                     {settings.models.map((m) => (
@@ -449,6 +466,8 @@ const SettingsForm = ({ settings, accounts, onSubmit }: { settings: Settings; ac
                 ...(clickupToken ? { clickupToken } : {}),
                 clickupTeamId: clickupTeamId || null,
                 ...(linearApiKey ? { linearApiKey } : {}),
+                ...(adminKey ? { anthropicAdminKey: adminKey } : {}),
+                anthropicUserId: adminUserId || null,
                 defaultModel: defaultModel || null,
             })}>Save</button>
         </>
@@ -497,9 +516,9 @@ const EnvForm = ({
                     {configDirs.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.path}</option>)}
                 </select>
             </label>
-            <label>Default AI account
+            <label>First AI account (the environment page lets you list more, in priority order)
                 <select value={acc} onChange={(e) => setAcc(e.target.value)}>
-                    <option value="">— first account that can run in the dir —</option>
+                    <option value="">— any account that can run in the dir —</option>
                     {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
             </label>

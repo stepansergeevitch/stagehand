@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager } from "./api";
+import { accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager } from "./api";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
 export type ManageTab = "envs" | "dirs" | "accounts" | "managers";
@@ -76,7 +76,7 @@ const EnvList = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, onDele
                         <b>Repos</b><span>{repoList(e.repos)}</span>
                         <b>Tasks</b><span>{n}</span>
                         <b>Config dir</b><span>{configDirs.find((d) => d.id === e.config_dir_id)?.name ?? "server default"}</span>
-                        <b>Default account</b><span>{accounts.find((a) => a.id === e.default_account_id)?.name ?? "first usable"}</span>
+                        <b>AI accounts</b><span>{accountOrderOf(e).map((id, i) => `${i + 1}. ${accounts.find((a) => a.id === id)?.name ?? "?"}`).join("  ") || "any that can run in the dir"}</span>
                     </div>
                     <div className="actions">
                         <button onClick={() => onConfigure(e.id)}>Configure</button>
@@ -138,6 +138,8 @@ const ConfigDirList = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id: 
     );
 };
 
+const fmtTokens = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : String(n));
+
 const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, onError }: { accounts: Account[]; envs: Env[]; tasks: Task[]; settings: Settings | null; onAdd: () => void; act: (fn: () => Promise<unknown>) => Promise<void>; onTerminal: (n: string) => void; onError: (m: string) => void }) => {
     const onChangedSafe = () => act(async () => undefined);
     const [busy, setBusy] = useState<string | null>(null);
@@ -173,9 +175,9 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                         <div className="kv">
                             <b>Runs in</b><span>{a.has_token ? "any config dir" : a.logged_in ? <>only <code>{a.auth_dir}</code> (set up a token to use it anywhere)</> : "nowhere yet — set up a token"}</span>
                             <b>Default model</b><span>{modelLabel(a.default_model, settings?.models) ?? "—"}</span>
-                            <b>Usage 5h / 7d</b><span className="mono">{five ? `${Math.round(five.utilization * 100)}%` : "—"} / {week ? `${Math.round(week.utilization * 100)}%` : "—"}</span>
-                            <b>Failover</b>
-                            <label className="inline"><input type="checkbox" checked={!!a.failover_enabled} onChange={(e) => void act(() => api.patchAccount(a.id, { failover_enabled: e.target.checked }))} /> when rate-limited, hand the task to another account at under {Math.round(a.failover_threshold * 100)}% usage</label>
+                            <b>Windows 5h / 7d</b><span className="mono">{five ? `${Math.round(five.utilization * 100)}%` : "—"} / {week ? `${Math.round(week.utilization * 100)}%` : "—"}</span>
+                            <b>Consumed today / week</b><span className="mono">{fmtTokens(a.usage?.today.tokens ?? 0)} · ${(a.usage?.today.cost ?? 0).toFixed(2)} / {fmtTokens(a.usage?.week.tokens ?? 0)} · ${(a.usage?.week.cost ?? 0).toFixed(2)}</span>
+                            <b>Used by</b><span>{envs.filter((e) => accountOrderOf(e).includes(a.id)).map((e) => `${e.name} (#${accountOrderOf(e).indexOf(a.id) + 1})`).join(", ") || "no environment lists it"}</span>
                         </div>
                         <div className="actions">
                             <button onClick={async () => { try { const r = await api.setupToken(a.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>{a.has_token ? "Renew token" : "Set up token"}</button>

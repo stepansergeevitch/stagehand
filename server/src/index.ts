@@ -15,6 +15,7 @@ import { listMyTickets } from "./my-tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
 import { usageReport } from "./usage.js";
+import { fetchOrgUsage } from "./admin-api.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -22,7 +23,7 @@ const MODEL_OPTIONS = [
     { value: "opus", label: "Opus 5 (claude-opus-5)" },
     { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
 ];
-import { accountUsableWith, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, STAGES, type AccountRow, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
+import { accountOrderOf, accountUsableWith, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, STAGES, type AccountRow, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
 import { authDirFor, authEnv, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
@@ -159,6 +160,16 @@ const resumeTokenSetups = async (): Promise<void> => {
     }
 };
 
+// Tokens (all kinds) and estimated cost this account consumed since local midnight and over the last 7 days.
+const accountUsage = (accountId: string): { today: { tokens: number; cost: number }; week: { tokens: number; cost: number } } => {
+    const q = db.prepare(`SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0) AS tokens, COALESCE(SUM(cost_usd), 0) AS cost FROM usage WHERE account_id = ? AND at >= ?`);
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const today = q.get(accountId, midnight.toISOString()) as { tokens: number; cost: number };
+    const week = q.get(accountId, new Date(Date.now() - 7 * 86_400_000).toISOString()) as { tokens: number; cost: number };
+    return { today, week };
+};
+
 app.get("/api/accounts", (c) => {
     const limits = db.prepare(`SELECT * FROM rate_limits`).all() as Array<{ account_id: string; window: string; utilization: number; resets_at: number }>;
     return c.json(
@@ -166,6 +177,7 @@ app.get("/api/accounts", (c) => {
             ...publicAccount(a),
             setting_up: tokenCaptures.has(a.id),
             limits: limits.filter((l) => l.account_id === a.id).map(({ window, utilization, resets_at }) => ({ window, utilization, resetsAt: resets_at })),
+            usage: accountUsage(a.id),
         })),
     );
 });
@@ -364,6 +376,7 @@ app.post("/api/envs", async (c) => {
             path: z.string().min(1),
             baseBranch: z.string().default("main"),
             defaultAccountId: z.string().optional(),
+            accountOrder: z.array(z.string()).optional(),
             configDirId: z.string().optional(),
             appUrl: z.string().optional(),
             qaScript: z.string().optional(),
@@ -387,15 +400,17 @@ app.post("/api/envs", async (c) => {
     const id = randomUUID();
     // A dir registered at <env>/.claude is the natural default; otherwise the first registered dir.
     const configDirId = body.configDirId ?? (configDirsAll().find((d) => d.path === join(body.path, ".claude")) ?? configDirsAll()[0])?.id ?? null;
+    const order = body.accountOrder ?? (body.defaultAccountId ? [body.defaultAccountId] : []);
     db.prepare(
-        `INSERT INTO envs (id, name, path, base_branch, default_account_id, config_dir_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO envs (id, name, path, base_branch, default_account_id, account_order, config_dir_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
         id,
         body.name,
         body.path,
         body.baseBranch,
-        body.defaultAccountId ?? null,
+        order[0] ?? null,
+        JSON.stringify(order),
         configDirId,
         body.appUrl ?? null,
         body.qaScript ?? null,
@@ -420,6 +435,7 @@ app.patch("/api/envs/:id", async (c) => {
         z.object({
             name: z.string().min(1).optional(),
             defaultAccountId: z.string().nullable().optional(),
+            accountOrder: z.array(z.string()).optional(),
             configDirId: z.string().nullable().optional(),
             baseBranch: z.string().optional(),
             appUrl: z.string().nullable().optional(),
@@ -441,17 +457,21 @@ app.patch("/api/envs/:id", async (c) => {
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
     if (!env) return c.json({ error: "not found" }, 404);
     if (body.configDirId && !configDirById(body.configDirId)) return c.json({ error: "unknown config dir" }, 400);
+    if (body.accountOrder?.some((id) => !accountById(id))) return c.json({ error: "unknown account in accountOrder" }, 400);
     const pick = <T,>(next: T | undefined, cur: T): T => (next === undefined ? cur : next);
+    // The ordered list is the source of truth; default_account_id mirrors its head for older readers.
+    const order = body.accountOrder ?? (body.defaultAccountId !== undefined ? (body.defaultAccountId ? [body.defaultAccountId] : []) : accountOrderOf(env));
     const repos = body.repos === undefined ? env.repos : body.repos && body.repos.length ? JSON.stringify(body.repos) : null;
     if (repos !== env.repos) {
         const bad = await badCheckouts({ path: env.path, base_branch: env.base_branch, repos });
         if (bad) return c.json({ error: bad }, 400);
     }
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, config_dir_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
-        pick(body.defaultAccountId, env.default_account_id),
+        order[0] ?? null,
+        JSON.stringify(order),
         pick(body.configDirId, env.config_dir_id),
         body.baseBranch ?? env.base_branch,
         pick(body.appUrl, env.app_url),
@@ -481,6 +501,22 @@ app.get("/api/usage", (c) => {
     return c.json(usageReport(db, since));
 });
 
+// Organization-wide token usage from the Anthropic Admin API (enterprise orgs; needs the admin key in Settings). Cached 15 min.
+const orgUsageCache = new Map<number, { at: number; data: unknown }>();
+app.get("/api/usage/org", async (c) => {
+    if (!cfg.anthropicAdminKey) return c.json({ configured: false });
+    const days = Math.min(Math.max(Number(c.req.query("days") ?? "7"), 1), 31);
+    const hit = orgUsageCache.get(days);
+    if (hit && Date.now() - hit.at < 15 * 60_000) return c.json({ configured: true, ...(hit.data as object) });
+    try {
+        const data = await fetchOrgUsage(cfg, days);
+        orgUsageCache.set(days, { at: Date.now(), data });
+        return c.json({ configured: true, ...data });
+    } catch (e) {
+        return c.json({ configured: true, error: String((e as Error).message ?? e) });
+    }
+});
+
 // ---------- tasks ----------
 
 app.get("/api/tasks", (c) => c.json(engine.listTasks(c.req.query("env"))));
@@ -502,6 +538,8 @@ app.get("/api/settings", (c) =>
         clickupToken: mask(cfg.clickupToken),
         clickupTeamId: cfg.clickupTeamId,
         linearApiKey: mask(cfg.linearApiKey),
+        anthropicAdminKey: mask(cfg.anthropicAdminKey),
+        anthropicUserId: cfg.anthropicUserId,
         defaultModel: cfg.defaultModel,
         models: MODEL_OPTIONS,
     }),
@@ -513,6 +551,8 @@ app.patch("/api/settings", async (c) => {
             clickupToken: z.string().nullable().optional(),
             clickupTeamId: z.string().nullable().optional(),
             linearApiKey: z.string().nullable().optional(),
+            anthropicAdminKey: z.string().nullable().optional(),
+            anthropicUserId: z.string().nullable().optional(),
             defaultModel: z.string().nullable().optional(),
         }),
         await c.req.json(),
@@ -520,6 +560,14 @@ app.patch("/api/settings", async (c) => {
     if (body.clickupToken !== undefined) cfg.clickupToken = body.clickupToken;
     if (body.clickupTeamId !== undefined) cfg.clickupTeamId = body.clickupTeamId;
     if (body.linearApiKey !== undefined) cfg.linearApiKey = body.linearApiKey;
+    if (body.anthropicAdminKey !== undefined) {
+        cfg.anthropicAdminKey = body.anthropicAdminKey;
+        orgUsageCache.clear();
+    }
+    if (body.anthropicUserId !== undefined) {
+        cfg.anthropicUserId = body.anthropicUserId;
+        orgUsageCache.clear();
+    }
     if (body.defaultModel !== undefined) cfg.defaultModel = body.defaultModel;
     saveConfig(cfg);
     return c.json({ ok: true });

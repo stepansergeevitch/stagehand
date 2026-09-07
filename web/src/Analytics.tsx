@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, STAGE_LABEL, type Stage, type UsageBucket, type UsageReport } from "./api";
+import { api, STAGE_LABEL, type OrgUsage, type OrgUsageRow, type Stage, type UsageBucket, type UsageReport } from "./api";
 
 // Token and cost usage as reported by claude's result events, sliced by environment, account, task, stage, model and day.
 
@@ -54,6 +54,57 @@ const Breakdown = ({ title, rows, total, labelOf, limit }: { title: string; rows
     );
 };
 
+// Organization-wide tokens from the Anthropic Admin API, grouped by a chosen dimension (tokens only — the API reports no cost).
+const sumBy = (rows: OrgUsageRow[], keyOf: (r: OrgUsageRow) => string): Array<{ key: string; input: number; output: number; cacheRead: number; cacheWrite: number; requests: number }> => {
+    const m = new Map<string, { key: string; input: number; output: number; cacheRead: number; cacheWrite: number; requests: number }>();
+    for (const r of rows) {
+        const key = keyOf(r);
+        const b = m.get(key) ?? { key, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, requests: 0 };
+        b.input += r.input; b.output += r.output; b.cacheRead += r.cacheRead; b.cacheWrite += r.cacheWrite; b.requests += r.requests;
+        m.set(key, b);
+    }
+    return [...m.values()].sort((a, b) => b.output - a.output);
+};
+
+const OrgSection = ({ days, onError }: { days: number; onError: (m: string) => void }) => {
+    const [data, setData] = useState<OrgUsage | null>(null);
+    const [group, setGroup] = useState<"product" | "model" | "day">("product");
+    useEffect(() => {
+        setData(null);
+        void api.orgUsage(Math.min(Math.max(days, 1), 31)).then(setData).catch((e: Error) => onError(e.message));
+    }, [days, onError]);
+    if (!data || !data.configured) return null;
+    if ("error" in data) return <section className="card"><h2>Organization (Anthropic Admin API)</h2><div className="test-result bad">{data.error}</div></section>;
+    const rows = sumBy(data.rows, (r) => (group === "product" ? r.product ?? "unattributed" : group === "model" ? r.model ?? "unattributed" : r.day));
+    return (
+        <section className="card usage-table">
+            <h2>Organization (Anthropic Admin API)</h2>
+            <p className="field-hint">Everything the organization consumed across Claude products, as reported by Anthropic — refreshed about every 4 hours (last: {data.refreshedAt ? new Date(data.refreshedAt).toLocaleString() : "no data yet"}), last {Math.min(days || 31, 31)} days, tokens only.</p>
+            <div className="subtabs">
+                {(["product", "model", "day"] as const).map((g) => <button key={g} className={group === g ? "active" : ""} onClick={() => setGroup(g)}>by {g}</button>)}
+            </div>
+            {rows.length === 0 && <div className="quiet">nothing reported for this period</div>}
+            {rows.length > 0 && (
+                <table>
+                    <thead><tr><th></th><th>Requests</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Input</th></tr></thead>
+                    <tbody>
+                        {rows.map((b) => (
+                            <tr key={b.key}>
+                                <td className="usage-label"><b>{b.key}</b></td>
+                                <td className="mono">{b.requests}</td>
+                                <td className="mono">{tokens(b.output)}</td>
+                                <td className="mono">{tokens(b.cacheRead)}</td>
+                                <td className="mono">{tokens(b.cacheWrite)}</td>
+                                <td className="mono">{tokens(b.input)}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            )}
+        </section>
+    );
+};
+
 export const Analytics = ({ onError }: { onError: (m: string) => void }) => {
     const [days, setDays] = useState(() => Number(localStorage.getItem("stagehand.usageDays") ?? "7"));
     const [report, setReport] = useState<UsageReport | null>(null);
@@ -85,6 +136,7 @@ export const Analytics = ({ onError }: { onError: (m: string) => void }) => {
                     <Breakdown title="By stage" rows={report.byStage} total={t.cost} labelOf={(b) => STAGE_LABEL[b.label as Stage] ?? b.label} />
                     <Breakdown title="By model" rows={report.byModel} total={t.cost} />
                     <Breakdown title="By day" rows={report.byDay} total={t.cost} limit={14} />
+                    <OrgSection days={days} onError={onError} />
                 </>
             )}
         </div>

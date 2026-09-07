@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { accountUsableWith, now, parseEnvVars, type AccountRow, type ConfigDirRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
+import { accountOrderOf, accountUsableWith, now, parseEnvVars, type AccountRow, type ConfigDirRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv } from "./claude/accounts.js";
 import { backfillUsage, recordUsage } from "./usage.js";
@@ -261,7 +261,7 @@ export class Engine extends EventEmitter {
                 `INSERT INTO tasks (id, env_id, ticket_id, source, ticket_url, model, session_id, account_id, stage, status, status_line, pinned, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'research', 'running', 'fetching ticket', 0, ?, ?)`,
             )
-            .run(id, env.id, ref.id, ref.source, ref.url, model ?? this.cfg.defaultModel, sessionId, accountId ?? env.default_account_id, ts, ts);
+            .run(id, env.id, ref.id, ref.source, ref.url, model ?? this.cfg.defaultModel, sessionId, accountId ?? accountOrderOf(env)[0] ?? null, ts, ts);
         this.taskDir(id);
         const task = this.getTask(id)!;
         this.emit("task", task);
@@ -651,12 +651,27 @@ export class Engine extends EventEmitter {
         this.dispatch(taskId, target);
     }
 
-    // The task's own account, else the env's default, else any account that can run in the env's config dir.
+    // An account is exhausted while its 5-hour window is at the pre-flight limit (the reset time is known, so it comes back on its own).
+    private exhausted(accountId: string): boolean {
+        const u = this.utilization(accountId);
+        return !!u && u.utilization >= this.cfg.preflightUtilizationLimit;
+    }
+
+    // The env's accounts in priority order (those that can run in its config dir); with no list, every usable account.
+    private accountCandidates(env: EnvRow, cd: ConfigDirRow): AccountRow[] {
+        const usable = this.usableAccounts(cd.path);
+        const ordered = accountOrderOf(env).map((id) => usable.find((a) => a.id === id)).filter((a): a is AccountRow => !!a);
+        return ordered.length ? ordered : usable;
+    }
+
+    // First candidate that is not exhausted; the task's current account keeps the run only while it is still fresh.
+    // When every candidate is exhausted the first one is returned and dispatch parks the task until its window resets.
     // Chrome is a property of the config dir, not the account, so it is checked by the caller.
     private pickAccount(task: TaskRow, _def: StageDef, env: EnvRow, cd: ConfigDirRow): AccountRow | null {
-        const usable = this.usableAccounts(cd.path);
-        const pick = (id: string | null): AccountRow | undefined => (id ? usable.find((a) => a.id === id) : undefined);
-        return pick(task.account_id) ?? pick(env.default_account_id) ?? usable[0] ?? null;
+        const candidates = this.accountCandidates(env, cd);
+        const current = task.account_id ? candidates.find((a) => a.id === task.account_id) : undefined;
+        if (current && !this.exhausted(current.id)) return current;
+        return candidates.find((a) => !this.exhausted(a.id)) ?? current ?? candidates[0] ?? null;
     }
 
     private runningCount(accountId: string): number {
@@ -866,15 +881,11 @@ export class Engine extends EventEmitter {
         this.emit("task", this.getTask(task.id));
     }
 
+    // Next account in the env's priority list that is not exhausted; null when the list has nobody else to offer.
     private findFailover(limited: AccountRow, task: TaskRow): AccountRow | null {
-        if (!limited.failover_enabled) return null;
-        const cd = this.configDirOf(this.env(task.env_id));
-        const candidates = this.usableAccounts(cd.path).filter((a) => a.id !== limited.id);
-        for (const c of candidates) {
-            const u = this.utilization(c.id);
-            if (!u || u.utilization < limited.failover_threshold) return c;
-        }
-        return null;
+        const env = this.env(task.env_id);
+        const candidates = this.accountCandidates(env, this.configDirOf(env)).filter((a) => a.id !== limited.id);
+        return candidates.find((a) => !this.exhausted(a.id)) ?? null;
     }
 
     private onRunClosed(taskId: string, runId: string, def: StageDef, account: AccountRow, outcome: RunOutcome, opts: DispatchOpts): void {
