@@ -25,6 +25,11 @@ export const ensureSession = async (name: string, cwd: string, command: string, 
     await tmux(["new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", cwd, `unset NODE_OPTIONS CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ${exports} ${command}`]);
 };
 
+// Mirror everything the pane prints into a file (tmux pipe-pane); used to pick a token out of an interactive command's output.
+export const pipePane = async (name: string, file: string): Promise<void> => {
+    await tmux(["pipe-pane", "-t", `=${name}`, "-o", `cat >> ${JSON.stringify(file)}`]);
+};
+
 export const killSession = async (name: string): Promise<void> => {
     await tmux(["kill-session", "-t", `=${name}`]);
 };

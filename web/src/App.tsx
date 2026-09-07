@@ -1,18 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, modelLabel, STAGE_LABEL, STAGE_ORDER, type Account, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
+import { accountUsableWith, api, modelLabel, STAGE_LABEL, STAGE_ORDER, type Account, type ConfigDir, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
 import { TaskDetailView } from "./TaskDetail";
 import { EnvPage } from "./EnvPage";
+import { ConfigDirPage } from "./ConfigDirPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
 import { Dashboard, needsAttention } from "./Dashboard";
 
-type Page = "dashboard" | "tasks" | "env" | ManageTab;
+type Page = "dashboard" | "tasks" | "env" | "dir" | ManageTab;
 const NAV: { id: Page; label: string; hint: string }[] = [
     { id: "dashboard", label: "Dashboard", hint: "Tasks needing your attention, per environment" },
     { id: "tasks", label: "Tasks", hint: "Tasks in the selected environment" },
-    { id: "envs", label: "Environments", hint: "Repositories, services, rules" },
-    { id: "accounts", label: "AI accounts", hint: "Claude config dirs and limits" },
+    { id: "envs", label: "Environments", hint: "Repositories, services, which config dir and account they use" },
+    { id: "dirs", label: "Config dirs", hint: "Claude config dirs: skills, hooks, rules, Chrome" },
+    { id: "accounts", label: "AI accounts", hint: "Provider logins (tokens), usage, failover" },
     { id: "managers", label: "Task managers", hint: "ClickUp / Linear credentials" },
 ];
+
+// Accounts that can drive runs in this env: any with a token, or a legacy login living in the env's config dir.
+const accountsFor = (env: Env | undefined, accounts: Account[], dirs: ConfigDir[]): Account[] => {
+    const dir = env?.config_dir_id ? dirs.find((d) => d.id === env.config_dir_id) : undefined;
+    return dir ? accounts.filter((a) => accountUsableWith(a, dir.path)) : accounts.filter((a) => a.logged_in === 1);
+};
 
 type Group = "Pinned" | "Needs input" | "Working" | "Idle" | "Failed" | "Completed" | "Stopped";
 
@@ -60,14 +68,16 @@ const Gauge = ({ a }: { a: Account }) => {
             <span>{five ? `${Math.round(five.utilization * 100)}%` : "—"}</span>
             <span className="bar"><i className={cls(week?.utilization ?? 0)} style={{ width: `${Math.round((week?.utilization ?? 0) * 100)}%` }} /></span>
             <span>{week ? `${Math.round(week.utilization * 100)}%` : "—"}</span>
-            {a.chrome_capable === 1 && <span className="chip ok">chrome</span>}
-            {!a.logged_in && <span className="chip bad">login</span>}
+            {!a.logged_in && <span className="chip bad">no auth</span>}
+            {a.logged_in === 1 && !a.has_token && <span className="chip warn">legacy</span>}
         </span>
     );
 };
 
 export const App = () => {
     const [accounts, setAccounts] = useState<Account[]>([]);
+    const [configDirs, setConfigDirs] = useState<ConfigDir[]>([]);
+    const [dirId, setDirId] = useState<string | null>(null);
     const [envs, setEnvs] = useState<Env[]>([]);
     const [tasks, setTasks] = useState<Task[]>([]);
     const [envId, setEnvId] = useState<string>(() => localStorage.getItem("stagehand.env") ?? "");
@@ -83,13 +93,14 @@ export const App = () => {
     const [error, setError] = useState<string | null>(null);
     const [moreOpen, setMoreOpen] = useState(false);
     const [page, setPage] = useState<Page>("dashboard");
-    const navActive: Page = page === "env" ? "envs" : page;
+    const navActive: Page = page === "env" ? "envs" : page === "dir" ? "dirs" : page;
 
     const reload = useCallback(async () => {
-        const [a, e, t] = await Promise.all([api.accounts(), api.envs(), api.tasks()]);
+        const [a, e, t, d] = await Promise.all([api.accounts(), api.envs(), api.tasks(), api.configDirs()]);
         setAccounts(a);
         setEnvs(e);
         setTasks(t);
+        setConfigDirs(d);
         if (!envId && e[0]) setEnvId(e[0].id);
     }, [envId]);
 
@@ -125,7 +136,7 @@ export const App = () => {
                 const a = msg.payload as { taskId: string; event: { kind: string; summary: string } };
                 setFeed((f) => ({ ...f, [a.taskId]: [...(f[a.taskId] ?? []).slice(-199), `${a.event.kind}: ${a.event.summary}`] }));
             }
-            if (msg.kind === "rate_limit") void api.accounts().then(setAccounts);
+            if (msg.kind === "rate_limit" || msg.kind === "account") void Promise.all([api.accounts(), api.configDirs()]).then(([a, d]) => { setAccounts(a); setConfigDirs(d); });
         };
         return () => ws.close();
     }, [selected, loadDetail]);
@@ -155,6 +166,7 @@ export const App = () => {
     };
 
     const env = envs.find((e) => e.id === envId);
+    const dir = dirId ? configDirs.find((d) => d.id === dirId) : undefined;
 
     return (
         <div className="app">
@@ -191,21 +203,31 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <EnvPage key={env.id} env={env} accounts={accounts} onBack={() => setPage("envs")} onChanged={reload} onError={setError} />
+                            <EnvPage key={env.id} env={env} accounts={accounts} configDirs={configDirs} onBack={() => setPage("envs")} onOpenDir={(id) => { setDirId(id); setPage("dir"); }} onChanged={reload} onError={setError} />
                         </main>
                     </div>
                 )}
-                {(page === "envs" || page === "accounts" || page === "managers") && (
+                {page === "dir" && dir && (
+                    <div className="main page">
+                        <main className="detail">
+                            {error && <div className="blocked-box">{error}</div>}
+                            <ConfigDirPage key={dir.id} dir={dir} onBack={() => setPage("dirs")} onChanged={reload} onError={setError} />
+                        </main>
+                    </div>
+                )}
+                {(page === "envs" || page === "dirs" || page === "accounts" || page === "managers") && (
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
                             <ManagePage
                                 tab={page}
                                 envs={envs}
+                                configDirs={configDirs}
                                 accounts={accounts}
                                 tasks={tasks}
                                 settings={settings}
                                 onConfigureEnv={(id) => { setEnvId(id); setPage("env"); }}
+                                onOpenDir={(id) => { setDirId(id); setPage("dir"); }}
                                 onAddEnv={() => setModal("env")}
                                 onAddAccount={() => setModal("account")}
                                 onChanged={reload}
@@ -254,7 +276,7 @@ export const App = () => {
                         {detail && (
                             <TaskDetailView
                                 detail={detail}
-                                accounts={accounts}
+                                accounts={accountsFor(envs.find((e) => e.id === detail.task.env_id), accounts, configDirs)}
                                 env={envs.find((e) => e.id === detail.task.env_id)}
                                 onError={setError}
                                 feed={feed[detail.task.id] ?? []}
@@ -272,12 +294,12 @@ export const App = () => {
             </div>
             {modal === "task" && env && (
                 <Modal title={`New task in ${env.name}`} onClose={() => setModal(null)}>
-                    <TaskForm accounts={accounts} env={env} settings={settings} onSubmit={async (ticket, acc, model) => { await run(() => api.createTask(env.id, ticket, acc, model)); setModal(null); }} />
+                    <TaskForm accounts={accountsFor(env, accounts, configDirs)} env={env} settings={settings} onSubmit={async (ticket, acc, model) => { await run(() => api.createTask(env.id, ticket, acc, model)); setModal(null); }} />
                 </Modal>
             )}
             {modal === "env" && (
                 <Modal title="Add environment" onClose={() => setModal(null)}>
-                    <EnvForm accounts={accounts} onSubmit={async (b) => { await run(() => api.addEnv(b)); setModal(null); }} />
+                    <EnvForm accounts={accounts} configDirs={configDirs} onSubmit={async (b) => { await run(() => api.addEnv(b)); setModal(null); }} />
                 </Modal>
             )}
             {modal === "settings" && settings && (
@@ -286,12 +308,16 @@ export const App = () => {
                 </Modal>
             )}
             {modal === "account" && (
-                <Modal title="Add account" onClose={() => setModal(null)}>
+                <Modal title="Add AI account" onClose={() => setModal(null)}>
                     <AccountForm onSubmit={async (name, email) => {
-                        const r = await api.addAccount(name, email);
-                        setModal(null);
-                        if (r.terminal) setTerminal(r.terminal);
-                        await reload();
+                        try {
+                            const r = await api.addAccount(name, email);
+                            setModal(null);
+                            setTerminal(r.terminal);
+                            await reload();
+                        } catch (e) {
+                            setError(String((e as Error).message ?? e));
+                        }
                     }} />
                 </Modal>
             )}
@@ -328,7 +354,7 @@ const PRIORITY_MARK: Record<number, string> = { 0: "·", 1: "🔴", 2: "🟠", 3
 
 const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; env: Env; settings: Settings | null; onSubmit: (ticket: string, accountId?: string, model?: string) => Promise<void> }) => {
     const [ticket, setTicket] = useState("");
-    const [acc, setAcc] = useState(env.default_account_id ?? accounts.find((a) => a.logged_in)?.id ?? "");
+    const [acc, setAcc] = useState(accounts.find((a) => a.id === env.default_account_id)?.id ?? accounts[0]?.id ?? "");
     const [model, setModel] = useState(settings?.defaultModel ?? "");
     const [mine, setMine] = useState<{ tickets: MyTicket[]; error?: string } | null>(null);
     useEffect(() => {
@@ -366,9 +392,10 @@ const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; 
             </label>
             <label>Ticket id or link <input autoFocus value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder="PRODUCT-8704 · https://app.clickup.com/t/… · https://linear.app/…/issue/…" /></label>
             {parsed && <span className={`chip ${parsed === "unrecognised" ? "bad" : "accent"}`}>{parsed}</span>}
-            <label>Account
+            <label>AI account
                 <select value={acc} onChange={(e) => setAcc(e.target.value)}>
-                    {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} · {a.email ?? "not logged in"}</option>)}
+                    {accounts.length === 0 && <option value="">— no account can run in this environment's config dir —</option>}
+                    {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.email ? ` · ${a.email}` : ""}</option>)}
                 </select>
             </label>
             <label>Claude model
@@ -381,7 +408,7 @@ const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; 
                 </select>
                 <span className="field-hint">Applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet.</span>
             </label>
-            <button className="primary" disabled={!ticket.trim() || parsed === "unrecognised"} onClick={() => onSubmit(ticket.trim(), acc || undefined, model || undefined)}>Start task</button>
+            <button className="primary" disabled={!ticket.trim() || parsed === "unrecognised" || accounts.length === 0} onClick={() => onSubmit(ticket.trim(), acc || undefined, model || undefined)}>Start task</button>
         </>
     );
 };
@@ -418,17 +445,22 @@ const SettingsForm = ({ settings, accounts, onSubmit }: { settings: Settings; ac
     );
 };
 
+const splitRepos = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
+
 const EnvForm = ({
     accounts,
+    configDirs,
     onSubmit,
 }: {
     accounts: Account[];
+    configDirs: ConfigDir[];
     onSubmit: (b: Parameters<typeof api.addEnv>[0]) => Promise<void>;
 }) => {
     const [name, setName] = useState("");
     const [path, setPath] = useState("");
     const [base, setBase] = useState("main");
     const [acc, setAcc] = useState("");
+    const [dirId, setDirId] = useState("");
     const [appUrl, setAppUrl] = useState("");
     const [qaScript, setQaScript] = useState("");
     const [repos, setRepos] = useState("");
@@ -449,9 +481,15 @@ const EnvForm = ({
             </label>
             <label>App URL for QA <input value={appUrl} onChange={(e) => setAppUrl(e.target.value)} placeholder="https://localhost:3000" /></label>
             <label>QA bring-up command <input value={qaScript} onChange={(e) => setQaScript(e.target.value)} placeholder="optional, run from the worktree before QA" /></label>
-            <label>Default account
+            <label>Claude config dir
+                <select value={dirId} onChange={(e) => setDirId(e.target.value)}>
+                    <option value="">— auto: {"<path>"}/.claude if registered, else the first dir —</option>
+                    {configDirs.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.path}</option>)}
+                </select>
+            </label>
+            <label>Default AI account
                 <select value={acc} onChange={(e) => setAcc(e.target.value)}>
-                    <option value="">— none —</option>
+                    <option value="">— first account that can run in the dir —</option>
                     {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
             </label>
@@ -465,6 +503,7 @@ const EnvForm = ({
                         baseBranch: base,
                         ticketSource,
                         ...(acc ? { defaultAccountId: acc } : {}),
+                        ...(dirId ? { configDirId: dirId } : {}),
                         ...(appUrl ? { appUrl } : {}),
                         ...(qaScript ? { qaScript } : {}),
                         ...(repoList.length ? { repos: repoList } : {}),
@@ -478,104 +517,15 @@ const EnvForm = ({
     );
 };
 
-const HELP = "Placeholders: {{port}} (this service's port), {{url}}, {{bePort}}, {{beUrl}} (FE only), {{worktree}}, {{taskDir}}. Runs from the task's worktree in tmux; output goes to <taskDir>/logs/<kind>.log.";
-
-const splitRepos = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
-const joinRepos = (json: string | null): string => {
-    try {
-        const v: unknown = json ? JSON.parse(json) : [];
-        return Array.isArray(v) ? v.join(", ") : "";
-    } catch {
-        return "";
-    }
-};
-
-const EnvEditForm = ({ env, accounts, onSubmit }: { env: Env; accounts: Account[]; onSubmit: (b: Parameters<typeof api.patchEnv>[1]) => Promise<void> }) => {
-    const [f, setF] = useState({
-        name: env.name,
-        baseBranch: env.base_branch,
-        repos: joinRepos(env.repos),
-        branchPrefix: env.branch_prefix ?? "",
-        ticketSource: env.ticket_source,
-        envVars: env.env_vars ?? "",
-        defaultAccountId: env.default_account_id ?? "",
-        appUrl: env.app_url ?? "",
-        beCommand: env.be_command ?? "",
-        feCommand: env.fe_command ?? "",
-        beUrlTemplate: env.be_url_template ?? "",
-        feUrlTemplate: env.fe_url_template ?? "",
-        bePort: env.be_port ? String(env.be_port) : "",
-        fePort: env.fe_port ? String(env.fe_port) : "",
-        setupCommand: env.setup_command ?? "",
-    });
-    const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
-    const nul = (s: string) => (s.trim() === "" ? null : s);
-    return (
-        <>
-            <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 12.5 }}>{HELP}</p>
-            <div className="two">
-                <label>Name <input value={f.name} onChange={set("name")} /></label>
-                <label>Base branch <input value={f.baseBranch} onChange={set("baseBranch")} /></label>
-                <label>Sub-repositories (comma-separated; empty = single repo) <input value={f.repos} onChange={set("repos")} placeholder="backend, frontend" /></label>
-                <label>Branch prefix <input value={f.branchPrefix} onChange={set("branchPrefix")} placeholder="e.g. stepanb/" /></label>
-                <label>Task system
-                    <select value={f.ticketSource} onChange={set("ticketSource")}>
-                        <option value="clickup">ClickUp</option><option value="linear">Linear</option>
-                    </select>
-                </label>
-                <label>Default account
-                    <select value={f.defaultAccountId} onChange={set("defaultAccountId")}>
-                        <option value="">— none —</option>
-                        {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                    </select>
-                </label>
-                <label>QA app URL <input value={f.appUrl} onChange={set("appUrl")} placeholder="{{feUrl}} or {{beUrl}} or a fixed URL" /></label>
-                <label>BE fixed port <input value={f.bePort} onChange={set("bePort")} placeholder="empty = pick free" /></label>
-                <label>FE fixed port <input value={f.fePort} onChange={set("fePort")} placeholder="empty = pick free" /></label>
-                <label>BE URL template <input value={f.beUrlTemplate} onChange={set("beUrlTemplate")} placeholder="http://localhost:{{port}}" /></label>
-                <label>FE URL template <input value={f.feUrlTemplate} onChange={set("feUrlTemplate")} placeholder="http://localhost:{{port}}" /></label>
-            </div>
-            <label>Environment variables (KEY=VALUE per line; exported into git, setup, BE/FE, Claude runs and the terminal for this env) <textarea value={f.envVars} onChange={set("envVars")} placeholder={"GH_CONFIG_DIR=/Users/you/code/project/.gh\nAWS_PROFILE=project"} /></label>
-            <label>Worktree setup command (runs once after a worktree is created; {"{{envPath}}"} / {"{{worktree}}"}) <textarea value={f.setupCommand} onChange={set("setupCommand")} placeholder="e.g. ln -sf {{envPath}}/.env .env; mkdir -p etc/ssl; ln -sf {{envPath}}/etc/ssl/*.pem etc/ssl/" /></label>
-            <label>BE command <textarea value={f.beCommand} onChange={set("beCommand")} placeholder="e.g. PORT={{port}} uv run manage run" /></label>
-            <label>FE command <textarea value={f.feCommand} onChange={set("feCommand")} placeholder="e.g. PORT={{port}} REACT_APP_API_BASE_URL={{beUrl}}/api npm start" /></label>
-            <button
-                className="primary"
-                onClick={() =>
-                    onSubmit({
-                        name: f.name,
-                        baseBranch: f.baseBranch,
-                        defaultAccountId: nul(f.defaultAccountId),
-                        appUrl: nul(f.appUrl),
-                        beCommand: nul(f.beCommand),
-                        feCommand: nul(f.feCommand),
-                        beUrlTemplate: nul(f.beUrlTemplate),
-                        feUrlTemplate: nul(f.feUrlTemplate),
-                        bePort: f.bePort.trim() ? Number(f.bePort) : null,
-                        fePort: f.fePort.trim() ? Number(f.fePort) : null,
-                        setupCommand: nul(f.setupCommand),
-                        repos: splitRepos(f.repos).length ? splitRepos(f.repos) : null,
-                        branchPrefix: nul(f.branchPrefix),
-                        ticketSource: f.ticketSource as "clickup" | "linear",
-                        envVars: nul(f.envVars),
-                    })
-                }
-            >
-                Save
-            </button>
-        </>
-    );
-};
-
 const AccountForm = ({ onSubmit }: { onSubmit: (name: string, email?: string) => Promise<void> }) => {
     const [name, setName] = useState("");
     const [email, setEmail] = useState("");
     return (
         <>
-            <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 13 }}>Opens the claude.ai login form in a terminal once; pick the right account on the page — the email is only a hint.</p>
+            <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 13 }}>Opens a terminal running <code>claude setup-token</code>: finish the claude.ai login in the browser (pick the right account there — the email below is only a label), paste the code back if asked. Stagehand stores the resulting long-lived token and closes the terminal; the account then works in any config dir.</p>
             <label>Name <input autoFocus value={name} onChange={(e) => setName(e.target.value.toLowerCase())} placeholder="northspyre" /></label>
-            <label>Email <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" /></label>
-            <button className="primary" disabled={!/^[a-z0-9-]+$/.test(name)} onClick={() => onSubmit(name, email || undefined)}>Log in</button>
+            <label>Email (label) <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" /></label>
+            <button className="primary" disabled={!/^[a-z0-9-]+$/.test(name)} onClick={() => onSubmit(name, email || undefined)}>Set up token</button>
         </>
     );
 };

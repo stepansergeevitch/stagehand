@@ -55,7 +55,7 @@ a { color: var(--accent); }
 .sidebar .count.alert { color: var(--warn); font-weight: 600; }
 /* dashboard: tasks needing attention, grouped by environment */
 .dashboard .card h2 .chip { font-weight: 400; }
-.dashboard .quiet { color: var(--ink-3); font-size: 12.5px; padding: 4px 0; }
+.quiet { color: var(--ink-3); font-size: 12.5px; padding: 4px 0; }
 .attn { display: grid; grid-template-columns: auto 1fr auto auto; gap: 4px 10px; align-items: baseline; padding: 7px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer; }
 .attn:hover { background: var(--bg); }
 .attn .name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }

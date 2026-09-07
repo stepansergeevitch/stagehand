@@ -3,8 +3,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { now, parseEnvVars, type AccountRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
+import { accountUsableWith, now, parseEnvVars, type AccountRow, type ConfigDirRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
+import { authEnv } from "./claude/accounts.js";
 import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
 import { execFile } from "node:child_process";
@@ -119,9 +120,10 @@ export class Engine extends EventEmitter {
         if (!task) return;
         const env = this.env(task.env_id);
         const ref = { source: task.source as "clickup" | "linear", id: task.ticket_id, url: task.ticket_url };
-        const account = this.pickAccount(task, STAGE_DEFS.research);
+        const cd = this.configDirOf(env);
+        const account = this.pickAccount(task, STAGE_DEFS.research, env, cd);
         this.setTaskStatus(taskId, "running", "fetching ticket");
-        void fetchTicket(ref, this.cfg, account?.config_dir ?? this.cfg.mainConfigDir, env.path, this.taskDir(taskId), parseEnvVars(env.env_vars))
+        void fetchTicket(ref, this.cfg, cd.path, env.path, this.taskDir(taskId), { ...parseEnvVars(env.env_vars), ...authEnv(account) })
             .then((ticket) => {
                 this.db.prepare(`UPDATE tasks SET title = ?, ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(ticket.title, ticket.url, now(), taskId);
                 this.dispatch(taskId, "research");
@@ -218,6 +220,18 @@ export class Engine extends EventEmitter {
         return this.db.prepare(`SELECT * FROM accounts WHERE id = ?`).get(id) as AccountRow | undefined;
     }
 
+    // The Claude config dir every agent in this environment runs with; the server's own dir when none is set.
+    configDirOf(env: EnvRow): ConfigDirRow {
+        const row = env.config_dir_id ? (this.db.prepare(`SELECT * FROM config_dirs WHERE id = ?`).get(env.config_dir_id) as ConfigDirRow | undefined) : undefined;
+        return row ?? { id: "", name: "server default", path: this.cfg.mainConfigDir, chrome_capable: null, rules: null, created_at: "" };
+    }
+
+    // Accounts that can drive a run in this config dir: any with a token, or a legacy login living in that very dir.
+    usableAccounts(configDirPath: string): AccountRow[] {
+        const all = this.db.prepare(`SELECT * FROM accounts WHERE logged_in = 1 ORDER BY created_at`).all() as AccountRow[];
+        return all.filter((a) => accountUsableWith(a, configDirPath));
+    }
+
     private utilization(accountId: string, window = FIVE_HOUR): { utilization: number; resetsAt: number } | null {
         const row = this.db.prepare(`SELECT utilization, resets_at FROM rate_limits WHERE account_id = ? AND window = ?`).get(accountId, window) as
             | { utilization: number; resets_at: number }
@@ -279,8 +293,10 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         const env = this.env(task.env_id);
-        const account = this.pickAccount(task, STAGE_DEFS.manual_qa);
-        if (!account) throw new Error("no account with Chrome connected");
+        const cd = this.configDirOf(env);
+        if (!cd.chrome_capable) throw new Error(`config dir ${cd.name} has no Chrome connection — probe it on the Config dirs page`);
+        const account = this.pickAccount(task, STAGE_DEFS.manual_qa, env, cd);
+        if (!account) throw new Error(`no account can run in config dir ${cd.name}`);
         const be = this.services.get(taskId, "be");
         const fe = this.services.get(taskId, "fe");
         const appUrl = (env.app_url ?? (fe ? "{{feUrl}}" : "https://localhost:3000")).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{beUrl\}\}/g, be?.url ?? "");
@@ -298,8 +314,8 @@ export class Engine extends EventEmitter {
         const run = startClaude({
             prompt,
             cwd: task.worktree_path ?? env.path,
-            configDir: account.config_dir,
-            extraEnv: parseEnvVars(env.env_vars),
+            configDir: cd.path,
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(account) },
             chrome: true,
             maxTurns: 12,
             model: this.cfg.stageModels.helper ?? "sonnet",
@@ -411,7 +427,7 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task?.branch) return;
         const env = this.env(task.env_id);
-        const rules = rulesOf(env);
+        const rules = rulesOf(this.configDirOf(env));
         const draft = this.readArtifactJson<{ title: string; body: string; base: string }>(taskId, "pr.json");
         const checkouts = this.prCheckouts(task, env);
         const created: string[] = [];
@@ -503,7 +519,7 @@ export class Engine extends EventEmitter {
             at: c.created_at,
             url: c.html_url,
         }));
-        const bots = new Set(rulesOf(env).automationHandles.map((h) => h.toLowerCase()));
+        const bots = new Set(rulesOf(this.configDirOf(env)).automationHandles.map((h) => h.toLowerCase()));
         const isBot = (login: string) => bots.has(login.toLowerCase()) || /\[bot\]$/i.test(login);
         const all = [...reviews, ...lines, ...general];
         const data: PrComments = {
@@ -627,14 +643,12 @@ export class Engine extends EventEmitter {
         this.dispatch(taskId, target);
     }
 
-    private pickAccount(task: TaskRow, def: StageDef): AccountRow | null {
-        const all = this.db.prepare(`SELECT * FROM accounts WHERE logged_in = 1`).all() as AccountRow[];
-        const preferred = task.account_id ? this.account(task.account_id) : undefined;
-        if (def.chrome) {
-            if (preferred?.chrome_capable) return preferred;
-            return all.find((a) => a.chrome_capable) ?? null;
-        }
-        return preferred ?? all[0] ?? null;
+    // The task's own account, else the env's default, else any account that can run in the env's config dir.
+    // Chrome is a property of the config dir, not the account, so it is checked by the caller.
+    private pickAccount(task: TaskRow, _def: StageDef, env: EnvRow, cd: ConfigDirRow): AccountRow | null {
+        const usable = this.usableAccounts(cd.path);
+        const pick = (id: string | null): AccountRow | undefined => (id ? usable.find((a) => a.id === id) : undefined);
+        return pick(task.account_id) ?? pick(env.default_account_id) ?? usable[0] ?? null;
     }
 
     private runningCount(accountId: string): number {
@@ -659,8 +673,8 @@ export class Engine extends EventEmitter {
             baseBranch: env.base_branch,
             repoLayout: describeRepoLayout(env, task.worktree_path),
             ...((): Record<string, string> => {
-                const r = rulesOf(env);
-                const templates = prTemplates(env);
+                const r = rulesOf(this.configDirOf(env));
+                const templates = prTemplates(env, r);
                 return {
                     commitRule: r.allowCommit
                         ? `Commit in small steps; every message must match \`${r.commitPattern}\` — ${r.commitHint}${r.commitForbid.length ? ` Never include ${r.commitForbid.map((f) => `\`${f}\``).join(", ")}.` : ""}`
@@ -726,9 +740,15 @@ export class Engine extends EventEmitter {
                 return;
             }
         }
-        const account = this.pickAccount(task, def);
+        const env = this.env(task.env_id);
+        const cd = this.configDirOf(env);
+        if (def.chrome && !cd.chrome_capable) {
+            this.setTaskStatus(taskId, "blocked", `${def.label} · config dir ${cd.name} has no Chrome connection — probe it on the Config dirs page, then retry`);
+            return;
+        }
+        const account = this.pickAccount(task, def, env, cd);
         if (!account) {
-            this.setTaskStatus(taskId, "blocked", def.chrome ? "no logged-in account with Chrome connected" : "no logged-in account");
+            this.setTaskStatus(taskId, "blocked", `no AI account can run in config dir ${cd.name} — set up a token on the AI accounts page`);
             return;
         }
         const util = this.utilization(account.id);
@@ -748,7 +768,6 @@ export class Engine extends EventEmitter {
         const priorRuns = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND kind = 'task-session'`).get(taskId) as { n: number };
         const vars = this.promptVars(task, def, opts);
         const prompt = renderPrompt(def.prompt, vars);
-        const env = this.env(task.env_id);
         const eventLogPath = join(this.cfg.dataDir, "runs", `${runId}.ndjson`);
 
         this.db
@@ -761,12 +780,12 @@ export class Engine extends EventEmitter {
         const stageModel = (this.cfg.stageModels as Record<string, string | null | undefined>)[def.stage];
         const explicitModel = task.model ?? stageModel ?? this.cfg.defaultModel ?? null;
 
-        const rulesMat = materializeRules(env, task.worktree_path, this.cfg.dataDir);
+        const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path, this.cfg.dataDir);
         const run = startClaude({
             prompt,
             cwd: task.worktree_path ?? env.path,
-            configDir: account.config_dir,
-            extraEnv: parseEnvVars(env.env_vars),
+            configDir: cd.path,
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(account) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...(fresh ? {} : priorRuns.n === 0 ? { sessionId: task.session_id, name: task.ticket_id } : { resume: task.session_id }),
@@ -841,10 +860,9 @@ export class Engine extends EventEmitter {
 
     private findFailover(limited: AccountRow, task: TaskRow): AccountRow | null {
         if (!limited.failover_enabled) return null;
-        const def = STAGE_DEFS[task.stage];
-        const candidates = this.db.prepare(`SELECT * FROM accounts WHERE logged_in = 1 AND id != ?`).all(limited.id) as AccountRow[];
+        const cd = this.configDirOf(this.env(task.env_id));
+        const candidates = this.usableAccounts(cd.path).filter((a) => a.id !== limited.id);
         for (const c of candidates) {
-            if (def.chrome && !c.chrome_capable) continue;
             const u = this.utilization(c.id);
             if (!u || u.utilization < limited.failover_threshold) return c;
         }

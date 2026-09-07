@@ -4,11 +4,23 @@ export type Stage =
 
 export type TaskStatus = "idle" | "queued" | "running" | "waiting_user" | "blocked" | "rate_limited" | "failed" | "done" | "stopped";
 
+// An AI provider login. `has_token` = long-lived OAuth token stored (works in any config dir); otherwise a legacy browser
+// login that lives in `auth_dir` and only works when that dir is the environment's config dir.
 export interface Account {
-    id: string; name: string; config_dir: string; email: string | null; org: string | null; plan: string | null;
-    logged_in: number; chrome_capable: number | null; failover_enabled: number; failover_threshold: number; default_model: string | null;
+    id: string; name: string; provider: string; auth_dir: string; has_token: boolean; setting_up: boolean; email: string | null; org: string | null; plan: string | null;
+    logged_in: number; failover_enabled: number; failover_threshold: number; default_model: string | null;
     limits: Array<{ window: string; utilization: number; resetsAt: number }>;
 }
+export const accountUsableWith = (a: Account, configDirPath: string): boolean => a.logged_in === 1 && (a.has_token || a.auth_dir === configDirPath);
+
+export interface ConfigDirContents {
+    exists: boolean; skills: string[]; agents: string[]; commands: string[]; hooks: string[]; plugins: number; mcpServers: string[]; hasClaudeMd: boolean; hasSettings: boolean;
+}
+export interface ConfigDir {
+    id: string; name: string; path: string; chrome_capable: number | null; rules: string | null; created_at: string;
+    contents: ConfigDirContents; envs: string[]; usable_accounts: string[];
+}
+export interface ConfigDirRules { rules: Rules; defaults: Rules; guardHook: string }
 
 // "claude-opus-5" → "Opus 5" using the settings model list; unknown ids are shown as-is.
 export const modelLabel = (id: string | null | undefined, models: Array<{ value: string; label: string }> | undefined): string | null => {
@@ -19,7 +31,7 @@ export const modelLabel = (id: string | null | undefined, models: Array<{ value:
     return `${hit ? hit.label.replace(/\s*\(.*\)$/, "") : base}${long ? " · 1M context" : ""}`;
 };
 export interface Env {
-    id: string; name: string; path: string; base_branch: string; default_account_id: string | null; app_url: string | null; qa_script: string | null;
+    id: string; name: string; path: string; base_branch: string; default_account_id: string | null; config_dir_id: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
     rules: string | null;
@@ -34,7 +46,10 @@ export type PrComment =
     | { kind: "general"; id: number; author: string; body: string; at: string; url: string };
 export interface PrComments { number: number; repo: string; human: PrComment[]; automation: PrComment[]; fetchedAt: string }
 export interface TaskManager { source: "clickup" | "linear"; label: string; configured: boolean; token: string | null; teamId: string | null; envs: string[] }
-export interface EnvRules { rules: Rules; defaults: Rules; prTemplates: Array<{ dir: string; path: string | null; overridden: boolean }>; guardHook: string }
+export interface EnvRules {
+    rules: Rules; prTemplates: Array<{ dir: string; path: string | null; overridden: boolean }>;
+    configDir: { id: string; name: string; path: string }; usableAccounts: string[];
+}
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
@@ -96,23 +111,29 @@ const post = <T,>(url: string, body?: unknown): Promise<T> =>
 
 export const api = {
     accounts: () => fetch("/api/accounts").then((r) => j<Account[]>(r)),
-    addAccount: (name: string, email?: string) => post<{ account: Account; terminal: string | null }>("/api/accounts", { name, email }),
-    refreshAccount: (id: string, probe: boolean) => post<Account>(`/api/accounts/${id}/refresh?probe=${probe ? 1 : 0}`),
-    loginAccount: (id: string) => post<{ terminal: string }>(`/api/accounts/${id}/login`),
+    addAccount: (name: string, email?: string) => post<{ account: Account; terminal: string }>("/api/accounts", { name, email }),
+    refreshAccount: (id: string) => post<Account>(`/api/accounts/${id}/refresh`),
+    setupToken: (id: string) => post<{ terminal: string }>(`/api/accounts/${id}/setup-token`),
+    configDirs: () => fetch("/api/config-dirs").then((r) => j<ConfigDir[]>(r)),
+    addConfigDir: (name: string, path: string) => post<ConfigDir>("/api/config-dirs", { name, path }),
+    patchConfigDir: (id: string, body: { name?: string; rules?: Partial<Rules> }) =>
+        fetch(`/api/config-dirs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<ConfigDir>(r)),
+    deleteConfigDir: (id: string) => fetch(`/api/config-dirs/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
+    probeConfigDir: (id: string) => post<ConfigDir>(`/api/config-dirs/${id}/probe`),
+    configDirRules: (id: string) => fetch(`/api/config-dirs/${id}/rules`).then((r) => j<ConfigDirRules>(r)),
     patchAccount: (id: string, body: { name?: string; failover_enabled?: boolean; failover_threshold?: number }) =>
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: {
-        name: string; path: string; baseBranch: string; defaultAccountId?: string; appUrl?: string; qaScript?: string;
+        name: string; path: string; baseBranch: string; defaultAccountId?: string; configDirId?: string; appUrl?: string; qaScript?: string;
         repos?: string[]; branchPrefix?: string; ticketSource: "clickup" | "linear"; envVars?: string;
     }) => post<Env>("/api/envs", body),
     patchEnv: (
         id: string,
         body: {
-            name?: string; baseBranch?: string; defaultAccountId?: string | null; appUrl?: string | null; qaScript?: string | null;
+            name?: string; baseBranch?: string; defaultAccountId?: string | null; configDirId?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
-            rules?: Partial<Rules>;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
@@ -123,7 +144,6 @@ export const api = {
     patchTaskManager: (source: "clickup" | "linear", body: { token?: string | null; teamId?: string | null }) =>
         fetch(`/api/task-managers/${source}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<TaskManager>(r)),
     testTaskManager: (source: "clickup" | "linear") => post<{ ok: boolean; count?: number; sample?: string[]; error?: string }>(`/api/task-managers/${source}/test`),
-    adoptAccount: (name: string, configDir: string) => post<{ account: Account; terminal: string | null }>("/api/accounts?probe=1", { name, configDir, adopt: true }),
     tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
     createTask: (envId: string, ticket: string, accountId?: string, model?: string) => post<Task>("/api/tasks", { envId, ticket, accountId, model }),

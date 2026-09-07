@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, type Account, type Env, type EnvRules, type Rules } from "./api";
+import { accountUsableWith, api, type Account, type ConfigDir, type Env, type EnvRules } from "./api";
 
-// Full-page environment configuration: general, Claude config dir (account), services, rules (skills + guard hook), PR templates.
+// Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
-const splitLines = (s: string): string[] => s.split("\n").map((x) => x.trim()).filter(Boolean);
 const splitRepos = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
 const joinRepos = (json: string | null): string => {
     try {
@@ -26,12 +25,14 @@ const Section = ({ title, hint, children, onSave, saving }: { title: string; hin
     </section>
 );
 
-export const EnvPage = ({ env, accounts, onBack, onChanged, onError }: { env: Env; accounts: Account[]; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
+export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChanged, onError }: {
+    env: Env; accounts: Account[]; configDirs: ConfigDir[]; onBack: () => void; onOpenDir: (id: string) => void; onChanged: () => Promise<void>; onError: (m: string) => void;
+}) => {
     const [saving, setSaving] = useState<string | null>(null);
     const [info, setInfo] = useState<EnvRules | null>(null);
     useEffect(() => {
         void api.envRules(env.id).then(setInfo).catch((e: Error) => onError(e.message));
-    }, [env.id, env.rules, onError]);
+    }, [env.id, env.config_dir_id, onError]);
 
     const save = async (section: string, body: Parameters<typeof api.patchEnv>[1]) => {
         setSaving(section);
@@ -47,22 +48,16 @@ export const EnvPage = ({ env, accounts, onBack, onChanged, onError }: { env: En
 
     // ---- general
     const [g, setG] = useState({ name: env.name, repos: joinRepos(env.repos), baseBranch: env.base_branch, branchPrefix: env.branch_prefix ?? "", ticketSource: env.ticket_source });
-    // ---- claude config dir
+    // ---- claude config dir + default AI account
     const [acc, setAcc] = useState(env.default_account_id ?? "");
-    const [adoptName, setAdoptName] = useState("");
-    const [adoptDir, setAdoptDir] = useState("");
+    const [dirId, setDirId] = useState(env.config_dir_id ?? "");
+    const dirPath = configDirs.find((d) => d.id === dirId)?.path ?? info?.configDir.path ?? "";
     // ---- services
     const [s, setS] = useState({
         appUrl: env.app_url ?? "", beCommand: env.be_command ?? "", feCommand: env.fe_command ?? "", beUrlTemplate: env.be_url_template ?? "", feUrlTemplate: env.fe_url_template ?? "",
         bePort: env.be_port ? String(env.be_port) : "", fePort: env.fe_port ? String(env.fe_port) : "", setupCommand: env.setup_command ?? "", envVars: env.env_vars ?? "",
     });
-    // ---- rules
-    const [r, setR] = useState<Rules | null>(null);
-    useEffect(() => {
-        if (info) setR(info.rules);
-    }, [info]);
-
-    const set = <T extends object>(setter: React.Dispatch<React.SetStateAction<T>>) => (k: keyof T) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
+    const set =<T extends object>(setter: React.Dispatch<React.SetStateAction<T>>) => (k: keyof T) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
         setter((prev) => ({ ...prev, [k]: e.target.type === "checkbox" ? (e.target as HTMLInputElement).checked : e.target.value }));
     const sg = set(setG);
     const ss = set(setS);
@@ -85,28 +80,30 @@ export const EnvPage = ({ env, accounts, onBack, onChanged, onError }: { env: En
                 </label>
             </Section>
 
-            <Section title="Claude config dir" hint="Every agent run for this environment (research, design, QA, implementation, helpers, the terminal) uses this Claude config dir: its login, skills, plugins, MCP servers and CLAUDE.md. A task can still override it." saving={saving === "claude"} onSave={() => save("claude", { defaultAccountId: nul(acc) })}>
+            <Section title="Claude config dir and AI account" hint="Every agent run for this environment (research, design, QA, implementation, helpers, the terminal) uses the config dir: its skills, hooks, subagents, MCP servers, CLAUDE.md and the commit/branch/PR rules. The AI account only supplies the login; when it hits a rate limit another usable account takes over (per-account failover toggle)." saving={saving === "claude"} onSave={() => save("claude", { configDirId: nul(dirId), defaultAccountId: nul(acc) })}>
                 <label>Config dir
+                    <select value={dirId} onChange={(e) => setDirId(e.target.value)}>
+                        <option value="">— server default —</option>
+                        {configDirs.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.path}{d.chrome_capable ? " · chrome" : ""}</option>)}
+                    </select>
+                    {dirId && <span className="field-hint"><a href="#" onClick={(e) => { e.preventDefault(); onOpenDir(dirId); }}>Edit this dir's rules and see what it contains</a></span>}
+                </label>
+                <label>Default AI account
                     <select value={acc} onChange={(e) => setAcc(e.target.value)}>
-                        <option value="">— none (first logged-in account) —</option>
-                        {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} · {a.config_dir}{a.logged_in ? "" : " (not logged in)"}</option>)}
+                        <option value="">— first account that can run in this dir —</option>
+                        {accounts.map((a) => {
+                            const ok = dirPath ? accountUsableWith(a, dirPath) : a.logged_in === 1;
+                            return <option key={a.id} value={a.id}>{a.name}{a.email ? ` · ${a.email}` : ""}{ok ? "" : a.logged_in ? " (cannot run in this dir — needs a token)" : " (not logged in)"}</option>;
+                        })}
                     </select>
                 </label>
-                <details>
-                    <summary>Adopt another directory as a config dir</summary>
-                    <div className="env-fields">
-                        <label>Account name <input value={adoptName} onChange={(e) => setAdoptName(e.target.value)} placeholder="dualentry" /></label>
-                        <label>Directory <input value={adoptDir} onChange={(e) => setAdoptDir(e.target.value)} placeholder="/Users/you/code/project/.claude" /></label>
-                        <button disabled={!adoptName || !adoptDir} onClick={async () => {
-                            try {
-                                const res = await api.adoptAccount(adoptName.trim(), adoptDir.trim());
-                                await onChanged();
-                                setAcc(res.account.id);
-                                setAdoptName(""); setAdoptDir("");
-                            } catch (e) { onError(String((e as Error).message ?? e)); }
-                        }}>Adopt (checks login and Chrome)</button>
+                {info && (
+                    <div className="kv">
+                        <b>Accounts that can run here</b><span>{info.usableAccounts.length ? info.usableAccounts.map((id) => accounts.find((a) => a.id === id)?.name ?? id).join(", ") : "none — set up a token on the AI accounts page"}</span>
+                        <b>Rules in effect</b><span>commits {info.rules.allowCommit ? "allowed" : "off"} · push {info.rules.allowPush ? "allowed" : "off"} · PR creation {info.rules.allowPrCreate ? "allowed" : "off"} · branch <code>{info.rules.branchPattern}</code></span>
+                        <b>PR templates</b><span>{info.prTemplates.map((t) => `${t.dir === "." ? "" : `${t.dir}: `}${t.path ?? "none"}`).join(" · ")}{info.prTemplates.some((t) => t.overridden) ? " (override)" : ""}</span>
                     </div>
-                </details>
+                )}
             </Section>
 
             <Section title="Services" hint="Placeholders: {{port}}, {{url}}, {{bePort}}, {{beUrl}} (FE only), {{worktree}}, {{taskDir}}, {{envPath}} (setup only). Commands run from the task's worktree in tmux." saving={saving === "services"} onSave={() => save("services", {
@@ -126,31 +123,6 @@ export const EnvPage = ({ env, accounts, onBack, onChanged, onError }: { env: En
                 <label>FE command <textarea value={s.feCommand} onChange={ss("feCommand")} /></label>
             </Section>
 
-            {r && info && (
-                <Section title="Rules" hint="The same three skills (/git-commit, /git-branch, /pr-description) and one guard hook are generated for every environment; only these values differ. The hook blocks a git commit, push, branch name or `gh pr create` that breaks them and tells the agent why." saving={saving === "rules"} onSave={() => save("rules", { rules: r })}>
-                    <h3>Commits</h3>
-                    <label><input type="checkbox" checked={r.allowCommit} onChange={(e) => setR({ ...r, allowCommit: e.target.checked })} /> Agents may create commits (off = they leave changes uncommitted and say so)</label>
-                    <label>Commit message pattern (regex on the first line) <input value={r.commitPattern} onChange={(e) => setR({ ...r, commitPattern: e.target.value })} /></label>
-                    <label>Forbidden in commit messages (regex per line) <textarea value={r.commitForbid.join("\n")} onChange={(e) => setR({ ...r, commitForbid: splitLines(e.target.value) })} /></label>
-                    <label>Commit message guidance (shown to agents) <input value={r.commitHint} onChange={(e) => setR({ ...r, commitHint: e.target.value })} /></label>
-                    <h3>Branches</h3>
-                    <label>Branch name pattern (regex, applied after the prefix) <input value={r.branchPattern} onChange={(e) => setR({ ...r, branchPattern: e.target.value })} /></label>
-                    <label>Branch name guidance <input value={r.branchHint} onChange={(e) => setR({ ...r, branchHint: e.target.value })} /></label>
-                    <h3>Push and pull requests</h3>
-                    <label><input type="checkbox" checked={r.allowPush} onChange={(e) => setR({ ...r, allowPush: e.target.checked })} /> Auto-pushing the task branch is allowed</label>
-                    <label><input type="checkbox" checked={r.allowPrCreate} onChange={(e) => setR({ ...r, allowPrCreate: e.target.checked })} /> Auto-creating the pull request (after you approve the draft) is allowed</label>
-                    <label>PR description rules <textarea value={r.prRules} onChange={(e) => setR({ ...r, prRules: e.target.value })} className="tall" /></label>
-                    <label>PR template path override (relative to the repo; empty = auto-detect) <input value={r.prTemplatePath ?? ""} onChange={(e) => setR({ ...r, prTemplatePath: nul(e.target.value) })} placeholder=".github/pull_request_template.md" /></label>
-                    <h3>GitHub comments</h3>
-                    <label>Automation handles (one GitHub login per line; their PR comments go to the "Automation comments" tab; anything ending in [bot] counts too) <textarea value={r.automationHandles.join("\n")} onChange={(e) => setR({ ...r, automationHandles: splitLines(e.target.value) })} /></label>
-                    <div className="kv">
-                        <b>Detected templates</b>
-                        <span>{info.prTemplates.map((t) => `${t.dir === "." ? "" : `${t.dir}: `}${t.path ?? "none"}`).join(" · ")}{info.prTemplates.some((t) => t.overridden) ? " (override)" : ""}</span>
-                        <b>Guard hook</b><code>{info.guardHook}</code>
-                    </div>
-                    <div className="actions"><button onClick={() => setR(info.defaults)}>Reset to defaults</button></div>
-                </Section>
-            )}
         </div>
     );
 };

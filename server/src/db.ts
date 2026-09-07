@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 export type Stage =
@@ -35,10 +36,15 @@ export const WAIT_STAGES: ReadonlySet<Stage> = new Set(["design_proposal", "user
 export type TaskStatus = "idle" | "running" | "waiting_user" | "blocked" | "rate_limited" | "failed" | "done" | "stopped";
 export type RunStatus = "queued" | "running" | "blocked" | "rate_limited" | "done" | "failed" | "stopped";
 
+// An AI provider login. Anthropic accounts carry a long-lived OAuth token (from `claude setup-token`), which lets the same
+// account run in any Claude config dir. Accounts without a token are legacy browser logins that live inside `auth_dir`
+// and therefore only work when that directory is the run's config dir.
 export interface AccountRow {
     id: string;
     name: string;
-    config_dir: string;
+    provider: string;
+    auth_dir: string;
+    oauth_token: string | null;
     email: string | null;
     org: string | null;
     plan: string | null;
@@ -51,12 +57,30 @@ export interface AccountRow {
     created_at: string;
 }
 
+export const hasToken = (a: Pick<AccountRow, "oauth_token">): boolean => !!a.oauth_token;
+// Whether this account can drive a run whose CLAUDE_CONFIG_DIR is `configDirPath`.
+export const accountUsableWith = (a: Pick<AccountRow, "logged_in" | "oauth_token" | "auth_dir">, configDirPath: string): boolean =>
+    a.logged_in === 1 && (hasToken(a) || a.auth_dir === configDirPath);
+
+// A Claude config dir on this host: skills, hooks, agents, commands, CLAUDE.md, MCP servers — the behaviour every agent
+// in an environment inherits. The commit/branch/PR rules Stagehand enforces are stored here too, so switching an
+// environment's dir switches its rules.
+export interface ConfigDirRow {
+    id: string;
+    name: string;
+    path: string;
+    chrome_capable: number | null;
+    rules: string | null;
+    created_at: string;
+}
+
 export interface EnvRow {
     id: string;
     name: string;
     path: string;
     base_branch: string;
     default_account_id: string | null;
+    config_dir_id: string | null;
     app_url: string | null;
     qa_script: string | null;
     be_command: string | null;
@@ -73,7 +97,7 @@ export interface EnvRow {
     ticket_source: "clickup" | "linear";
     // KEY=VALUE per line; exported into every process run for this env (git, setup, BE/FE, claude runs, terminal).
     env_vars: string | null;
-    // JSON (see rules.ts Rules): commit/branch/PR rules enforced by the generated skills and guard hook.
+    // Legacy: rules used to live on the env; they moved to config_dirs.rules (migrated on startup, kept for reference).
     rules: string | null;
     created_at: string;
 }
@@ -143,7 +167,9 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    config_dir TEXT NOT NULL UNIQUE,
+    auth_dir TEXT NOT NULL UNIQUE,
+    provider TEXT NOT NULL DEFAULT 'anthropic',
+    oauth_token TEXT,
     email TEXT,
     org TEXT,
     plan TEXT,
@@ -153,12 +179,21 @@ CREATE TABLE IF NOT EXISTS accounts (
     failover_threshold REAL NOT NULL DEFAULT 0.6,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS config_dirs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    path TEXT NOT NULL UNIQUE,
+    chrome_capable INTEGER,
+    rules TEXT,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS envs (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL UNIQUE,
     base_branch TEXT NOT NULL DEFAULT 'main',
     default_account_id TEXT REFERENCES accounts(id),
+    config_dir_id TEXT REFERENCES config_dirs(id),
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -259,7 +294,37 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.rules", `ALTER TABLE envs ADD COLUMN rules TEXT`],
     ["tasks.ticket_url", `ALTER TABLE tasks ADD COLUMN ticket_url TEXT`],
     ["tasks.model", `ALTER TABLE tasks ADD COLUMN model TEXT`],
+    ["accounts.provider", `ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic'`],
+    ["accounts.oauth_token", `ALTER TABLE accounts ADD COLUMN oauth_token TEXT`],
+    ["envs.config_dir_id", `ALTER TABLE envs ADD COLUMN config_dir_id TEXT REFERENCES config_dirs(id)`],
 ];
+
+const hasColumn = (db: Database.Database, table: string, column: string): boolean =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === column);
+
+// Accounts used to BE config dirs (accounts.config_dir). Now an account is a login and a config dir is its own thing;
+// the old column becomes auth_dir (where that legacy browser login lives) and each distinct real dir becomes a config_dirs
+// row. Environments point at the dir their default account used (or `<env>/.claude` when that was registered), and the
+// rules that lived on the env move to that dir.
+export const migrateAccountsToConfigDirs = (db: Database.Database, opts: { mainConfigDir: string; scratchAccountsDir: string }): void => {
+    if (hasColumn(db, "accounts", "config_dir")) db.exec(`ALTER TABLE accounts RENAME COLUMN config_dir TO auth_dir`);
+    const dirs = db.prepare(`SELECT COUNT(*) AS n FROM config_dirs`).get() as { n: number };
+    const envs = db.prepare(`SELECT * FROM envs`).all() as EnvRow[];
+    if (dirs.n > 0 || envs.every((e) => e.config_dir_id)) return;
+    const accounts = db.prepare(`SELECT * FROM accounts ORDER BY created_at`).all() as AccountRow[];
+    const insert = db.prepare(`INSERT OR IGNORE INTO config_dirs (id, name, path, chrome_capable, rules, created_at) VALUES (?, ?, ?, ?, NULL, ?)`);
+    const byPath = (p: string): ConfigDirRow | undefined => db.prepare(`SELECT * FROM config_dirs WHERE path = ?`).get(p) as ConfigDirRow | undefined;
+    const real = (p: string): boolean => !p.startsWith(`${opts.scratchAccountsDir}/`);
+    for (const a of accounts) if (real(a.auth_dir) && !byPath(a.auth_dir)) insert.run(randomUUID(), a.name, a.auth_dir, a.chrome_capable, now());
+    if (!byPath(opts.mainConfigDir)) insert.run(randomUUID(), "main", opts.mainConfigDir, null, now());
+    for (const env of envs) {
+        if (env.config_dir_id) continue;
+        const defaultAcc = env.default_account_id ? accounts.find((a) => a.id === env.default_account_id) : undefined;
+        const dir = byPath(join(env.path, ".claude")) ?? (defaultAcc && real(defaultAcc.auth_dir) ? byPath(defaultAcc.auth_dir) : undefined) ?? byPath(opts.mainConfigDir)!;
+        db.prepare(`UPDATE envs SET config_dir_id = ? WHERE id = ?`).run(dir.id, env.id);
+        if (env.rules && !dir.rules) db.prepare(`UPDATE config_dirs SET rules = ? WHERE id = ?`).run(env.rules, dir.id);
+    }
+};
 
 export type ServiceKind = "be" | "fe";
 export interface ServiceRow {
@@ -282,8 +347,7 @@ export const openDb = (dataDir: string): DB => {
     db.exec(SCHEMA);
     for (const [key, sql] of MIGRATIONS) {
         const [table, column] = key.split(".") as [string, string];
-        const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-        if (!cols.some((c) => c.name === column)) db.exec(sql);
+        if (!hasColumn(db, table, column)) db.exec(sql);
     }
     return db;
 };

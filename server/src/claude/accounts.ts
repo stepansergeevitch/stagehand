@@ -1,32 +1,13 @@
 import { execFile, spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { Config } from "../config.js";
+import type { AccountRow } from "../db.js";
 import { claudeEnv } from "./env.js";
 
 const execFileAsync = promisify(execFile);
-
-const SHARED_ENTRIES = [
-    "projects",
-    "settings.json",
-    "settings.local.json",
-    "plugins",
-    "skills",
-    "agents",
-    "commands",
-    "CLAUDE.md",
-    "MEMPALACE.md",
-    "statusline-command.sh",
-    "chrome",
-    "tasks",
-    "sessions",
-    "session-env",
-    "file-history",
-    "shell-snapshots",
-    "history.jsonl",
-];
 
 export const AuthStatus = z.object({
     loggedIn: z.boolean(),
@@ -37,31 +18,24 @@ export const AuthStatus = z.object({
 });
 export type AuthStatus = z.infer<typeof AuthStatus>;
 
-export const accountDirFor = (cfg: Config, name: string): string => join(cfg.accountsDir, name);
-
-export const scaffoldAccountDir = (cfg: Config, name: string): string => {
-    const dir = accountDirFor(cfg, name);
+// Scratch config dir used only while `claude setup-token` runs for this account (and by legacy browser logins).
+export const authDirFor = (cfg: Config, name: string): string => {
+    const dir = join(cfg.dataDir, "auth", name);
     mkdirSync(dir, { recursive: true });
-    for (const entry of SHARED_ENTRIES) {
-        const src = join(cfg.mainConfigDir, entry);
-        const dst = join(dir, entry);
-        if (existsSync(src) && !existsSync(dst)) symlinkSync(src, dst);
-    }
-    const mainJson = join(cfg.mainConfigDir, ".claude.json");
-    const accJson = join(dir, ".claude.json");
-    if (existsSync(mainJson) && !existsSync(accJson)) copyFileSync(mainJson, accJson);
     return dir;
 };
 
-export const loginCommand = (configDir: string, email?: string): string => {
-    const parts = [`CLAUDE_CONFIG_DIR=${JSON.stringify(configDir)}`, "claude", "auth", "login", "--claudeai"];
-    if (email) parts.push("--email", JSON.stringify(email));
-    return parts.join(" ");
-};
+// Environment that makes `claude` use this account: the long-lived OAuth token wins over whatever login the config dir holds.
+export const authEnv = (acc: Pick<AccountRow, "oauth_token"> | null | undefined): Record<string, string> =>
+    acc?.oauth_token ? { CLAUDE_CODE_OAUTH_TOKEN: acc.oauth_token } : {};
 
-export const readAuthStatus = async (configDir: string): Promise<AuthStatus> => {
+export const SETUP_TOKEN_COMMAND = "claude setup-token";
+// What `claude setup-token` prints once the browser flow completes.
+export const OAUTH_TOKEN_RE = /sk-ant-oat01-[A-Za-z0-9_-]{40,}/;
+
+export const readAuthStatus = async (configDir: string, extraEnv: Record<string, string> = {}): Promise<AuthStatus> => {
     try {
-        const { stdout } = await execFileAsync("claude", ["auth", "status"], { env: claudeEnv(configDir) });
+        const { stdout } = await execFileAsync("claude", ["auth", "status"], { env: claudeEnv(configDir, extraEnv) });
         const parsed = AuthStatus.safeParse(JSON.parse(stdout));
         return parsed.success ? parsed.data : { loggedIn: false };
     } catch {
@@ -70,9 +44,9 @@ export const readAuthStatus = async (configDir: string): Promise<AuthStatus> => 
 };
 
 // stdin must be closed: with an open pipe claude waits for input and the Chrome bridge never attaches.
-const runClaudeJson = (args: string[], cwd: string, configDir: string): Promise<string> =>
+const runClaudeJson = (args: string[], cwd: string, configDir: string, extraEnv: Record<string, string>): Promise<string> =>
     new Promise((resolve, reject) => {
-        const child = spawn("claude", args, { cwd, env: claudeEnv(configDir), stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn("claude", args, { cwd, env: claudeEnv(configDir, extraEnv), stdio: ["ignore", "pipe", "pipe"] });
         let out = "";
         let err = "";
         child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
@@ -85,7 +59,7 @@ const runClaudeJson = (args: string[], cwd: string, configDir: string): Promise<
         child.on("error", reject);
     });
 
-const probeChromeOnce = async (configDir: string, cwd: string): Promise<boolean> => {
+const probeChromeOnce = async (configDir: string, cwd: string, extraEnv: Record<string, string>): Promise<boolean> => {
     const prompt =
         "Use ToolSearch to load mcp__claude-in-chrome__tabs_context_mcp, then call it once. If it errors, wait 5 seconds and call it once more. " +
         "Reply with exactly CHROME_OK if it returned tab data, otherwise CHROME_FAIL.";
@@ -94,6 +68,7 @@ const probeChromeOnce = async (configDir: string, cwd: string): Promise<boolean>
             ["-p", prompt, "--chrome", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "6", "--no-session-persistence", "--model", "sonnet"],
             cwd,
             configDir,
+            extraEnv,
         );
         const res = z.object({ result: z.string().optional(), is_error: z.boolean().optional() }).safeParse(JSON.parse(stdout));
         console.error(`[probeChrome] ${configDir} cwd=${cwd} → ${res.success ? res.data.result : "unparseable"}`);
@@ -104,28 +79,30 @@ const probeChromeOnce = async (configDir: string, cwd: string): Promise<boolean>
     }
 };
 
-// Which model the account gets without --model: one trivial run, read back from the result's modelUsage.
-export const probeDefaultModel = async (configDir: string, cwd: string): Promise<string | null> => {
+// One trivial run: proves the account's auth works in this config dir and reveals the model it gets without --model.
+export const probeDefaultModel = async (configDir: string, cwd: string, extraEnv: Record<string, string> = {}): Promise<{ ok: boolean; model: string | null; error: string | null }> => {
     try {
         const stdout = await runClaudeJson(
             ["-p", "Reply with exactly OK", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "1", "--no-session-persistence", "--no-chrome"],
             cwd,
             configDir,
+            extraEnv,
         );
-        const res = z.object({ modelUsage: z.record(z.unknown()).optional() }).safeParse(JSON.parse(stdout));
+        const res = z.object({ is_error: z.boolean().optional(), result: z.string().optional(), modelUsage: z.record(z.unknown()).optional() }).safeParse(JSON.parse(stdout));
         const model = res.success ? Object.keys(res.data.modelUsage ?? {})[0] ?? null : null;
-        console.error(`[probeDefaultModel] ${configDir} → ${model ?? "unknown"}`);
-        return model;
+        const ok = res.success && !res.data.is_error && !!model;
+        console.error(`[probeDefaultModel] ${configDir} → ${ok ? model : `failed: ${res.success ? res.data.result?.slice(0, 120) : "unparseable"}`}`);
+        return { ok, model, error: ok ? null : (res.success ? res.data.result?.slice(0, 200) : null) ?? "no model usage reported" };
     } catch (e) {
         console.error(`[probeDefaultModel] ${configDir} failed: ${String(e).slice(0, 300)}`);
-        return null;
+        return { ok: false, model: null, error: String((e as Error).message ?? e).slice(0, 200) };
     }
 };
 
-// The extension bridge connects lazily and occasionally misses the first attempt; three tries separates "flaky" from "not this account".
-export const probeChrome = async (configDir: string, cwd: string, attempts = 3): Promise<boolean> => {
+// The extension bridge connects lazily and occasionally misses the first attempt; three tries separates "flaky" from "not this dir".
+export const probeChrome = async (configDir: string, cwd: string, extraEnv: Record<string, string> = {}, attempts = 3): Promise<boolean> => {
     for (let i = 0; i < attempts; i++) {
-        if (await probeChromeOnce(configDir, cwd)) return true;
+        if (await probeChromeOnce(configDir, cwd, extraEnv)) return true;
         await new Promise((r) => setTimeout(r, 3_000));
     }
     return false;

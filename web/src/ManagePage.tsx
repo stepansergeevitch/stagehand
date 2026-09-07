@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, modelLabel, type Account, type Env, type Settings, type Task, type TaskManager } from "./api";
+import { api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager } from "./api";
 
-// List / create / read / update / delete for the three things Stagehand is configured with.
-export type ManageTab = "envs" | "accounts" | "managers";
+// List / create / read / update / delete for the things Stagehand is configured with.
+export type ManageTab = "envs" | "dirs" | "accounts" | "managers";
 
 const repoList = (json: string | null): string => {
     try {
@@ -13,15 +13,17 @@ const repoList = (json: string | null): string => {
     }
 };
 
-const TITLE: Record<ManageTab, string> = { envs: "Environments", accounts: "AI accounts", managers: "Task managers" };
+const TITLE: Record<ManageTab, string> = { envs: "Environments", dirs: "Claude config dirs", accounts: "AI accounts", managers: "Task managers" };
 
 export const ManagePage = ({
     tab,
     envs,
+    configDirs,
     accounts,
     tasks,
     settings,
     onConfigureEnv,
+    onOpenDir,
     onAddEnv,
     onAddAccount,
     onChanged,
@@ -30,10 +32,12 @@ export const ManagePage = ({
 }: {
     tab: ManageTab;
     envs: Env[];
+    configDirs: ConfigDir[];
     accounts: Account[];
     tasks: Task[];
     settings: Settings | null;
     onConfigureEnv: (id: string) => void;
+    onOpenDir: (id: string) => void;
     onAddEnv: () => void;
     onAddAccount: () => void;
     onChanged: () => Promise<void>;
@@ -51,14 +55,15 @@ export const ManagePage = ({
     return (
         <div className="env-page manage-page">
             <h1>{TITLE[tab]}</h1>
-            {tab === "envs" && <EnvList envs={envs} accounts={accounts} tasks={tasks} onConfigure={onConfigureEnv} onAdd={onAddEnv} onDelete={(id) => act(() => api.deleteEnv(id))} />}
-            {tab === "accounts" && <AccountList accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onChanged={onChanged} />}
+            {tab === "envs" && <EnvList envs={envs} configDirs={configDirs} accounts={accounts} tasks={tasks} onConfigure={onConfigureEnv} onAdd={onAddEnv} onDelete={(id) => act(() => api.deleteEnv(id))} />}
+            {tab === "dirs" && <ConfigDirList dirs={configDirs} onOpen={onOpenDir} act={act} />}
+            {tab === "accounts" && <AccountList accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onError={onError} />}
             {tab === "managers" && <TaskManagerList onError={onError} />}
         </div>
     );
 };
 
-const EnvList = ({ envs, accounts, tasks, onConfigure, onAdd, onDelete }: { envs: Env[]; accounts: Account[]; tasks: Task[]; onConfigure: (id: string) => void; onAdd: () => void; onDelete: (id: string) => Promise<void> }) => (
+const EnvList = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, onDelete }: { envs: Env[]; configDirs: ConfigDir[]; accounts: Account[]; tasks: Task[]; onConfigure: (id: string) => void; onAdd: () => void; onDelete: (id: string) => Promise<void> }) => (
     <>
         <div className="actions" style={{ marginTop: 0 }}><button className="primary" onClick={onAdd}>+ Environment</button></div>
         {envs.map((e) => {
@@ -70,7 +75,8 @@ const EnvList = ({ envs, accounts, tasks, onConfigure, onAdd, onDelete }: { envs
                         <b>Path</b><code>{e.path}</code>
                         <b>Repos</b><span>{repoList(e.repos)}</span>
                         <b>Tasks</b><span>{n}</span>
-                        <b>Config dir</b><span>{accounts.find((a) => a.id === e.default_account_id)?.name ?? "—"}</span>
+                        <b>Config dir</b><span>{configDirs.find((d) => d.id === e.config_dir_id)?.name ?? "server default"}</span>
+                        <b>Default account</b><span>{accounts.find((a) => a.id === e.default_account_id)?.name ?? "first usable"}</span>
                     </div>
                     <div className="actions">
                         <button onClick={() => onConfigure(e.id)}>Configure</button>
@@ -82,23 +88,65 @@ const EnvList = ({ envs, accounts, tasks, onConfigure, onAdd, onDelete }: { envs
     </>
 );
 
-const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, onChanged }: { accounts: Account[]; envs: Env[]; tasks: Task[]; settings: Settings | null; onAdd: () => void; act: (fn: () => Promise<unknown>) => Promise<void>; onTerminal: (n: string) => void; onChanged: () => Promise<void> }) => {
-    const [adopt, setAdopt] = useState({ name: "", dir: "" });
+const ConfigDirList = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id: string) => void; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
+    const [add, setAdd] = useState({ name: "", path: "" });
+    const [probing, setProbing] = useState<string | null>(null);
+    return (
+        <>
+            <p className="field-hint">A config dir is a Claude directory on this host (skills, hooks, subagents, commands, MCP servers, CLAUDE.md) plus the commit/branch/PR rules Stagehand enforces. Environments point at one; any AI account with a token can run in any dir.</p>
+            <details className="card">
+                <summary>Register a config dir</summary>
+                <div className="card-body env-fields" style={{ maxWidth: 560 }}>
+                    <label>Name <input value={add.name} onChange={(e) => setAdd({ ...add, name: e.target.value })} placeholder="dualentry" /></label>
+                    <label>Directory <input value={add.path} onChange={(e) => setAdd({ ...add, path: e.target.value })} placeholder="/Users/you/code/project/.claude" /></label>
+                    <button className="primary" disabled={!add.name.trim() || !add.path.trim()} onClick={async () => { await act(() => api.addConfigDir(add.name.trim(), add.path.trim())); setAdd({ name: "", path: "" }); }}>Register</button>
+                </div>
+            </details>
+            {dirs.map((d) => {
+                const c = d.contents;
+                return (
+                    <section className="card item" key={d.id}>
+                        <h2>
+                            {d.name}
+                            {!c.exists && <span className="chip bad">missing on disk</span>}
+                            {d.chrome_capable === 1 ? <span className="chip ok">chrome</span> : d.chrome_capable === 0 ? <span className="chip">no chrome</span> : <span className="chip">chrome not probed</span>}
+                        </h2>
+                        <div className="kv">
+                            <b>Path</b><code>{d.path}</code>
+                            <b>Contains</b>
+                            <span>
+                                {[
+                                    `${c.skills.length} skill${c.skills.length === 1 ? "" : "s"}`,
+                                    c.hooks.length ? `hooks on ${c.hooks.join(", ")}` : "no hooks",
+                                    `${c.agents.length} subagent${c.agents.length === 1 ? "" : "s"}`,
+                                    `${c.mcpServers.length} MCP server${c.mcpServers.length === 1 ? "" : "s"}`,
+                                    c.hasClaudeMd ? "CLAUDE.md" : "no CLAUDE.md",
+                                ].join(" · ")}
+                            </span>
+                            <b>Used by</b><span>{d.envs.join(", ") || "no environment yet"}</span>
+                            <b>Runnable with</b><span>{d.usable_accounts.join(", ") || "no account (needs a token)"}</span>
+                        </div>
+                        <div className="actions">
+                            <button onClick={() => onOpen(d.id)}>Rules and contents</button>
+                            <button disabled={probing === d.id || d.usable_accounts.length === 0} title={d.usable_accounts.length === 0 ? "no account can run in this dir" : "run a tiny agent with --chrome to check the extension bridge"} onClick={async () => { setProbing(d.id); await act(() => api.probeConfigDir(d.id)); setProbing(null); }}>{probing === d.id ? "Probing…" : "Probe Chrome"}</button>
+                            <button className="danger" disabled={d.envs.length > 0} title={d.envs.length ? "an environment still uses it" : "forget this dir (nothing on disk changes)"} onClick={() => { if (confirm(`Forget config dir ${d.name}? Nothing on disk is touched.`)) void act(() => api.deleteConfigDir(d.id)); }}>Delete</button>
+                        </div>
+                    </section>
+                );
+            })}
+        </>
+    );
+};
+
+const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, onError }: { accounts: Account[]; envs: Env[]; tasks: Task[]; settings: Settings | null; onAdd: () => void; act: (fn: () => Promise<unknown>) => Promise<void>; onTerminal: (n: string) => void; onError: (m: string) => void }) => {
     const [busy, setBusy] = useState<string | null>(null);
     const [rename, setRename] = useState<{ id: string; name: string } | null>(null);
     return (
         <>
+            <p className="field-hint">An AI account is a provider login, stored as a long-lived token; it can run in any config dir. Accounts without a token are legacy browser logins tied to one directory.</p>
             <div className="actions" style={{ marginTop: 0 }}>
-                <button className="primary" onClick={onAdd}>+ Account (log in)</button>
+                <button className="primary" onClick={onAdd}>+ Account</button>
             </div>
-            <details className="card">
-                <summary>Adopt an existing Claude config dir</summary>
-                <div className="card-body env-fields" style={{ maxWidth: 560 }}>
-                    <label>Name <input value={adopt.name} onChange={(e) => setAdopt({ ...adopt, name: e.target.value })} placeholder="lowercase-name" /></label>
-                    <label>Directory <input value={adopt.dir} onChange={(e) => setAdopt({ ...adopt, dir: e.target.value })} placeholder="/Users/you/code/project/.claude" /></label>
-                    <button disabled={!adopt.name || !adopt.dir || busy === "adopt"} onClick={async () => { setBusy("adopt"); await act(() => api.adoptAccount(adopt.name.trim(), adopt.dir.trim())); setAdopt({ name: "", dir: "" }); setBusy(null); }}>{busy === "adopt" ? "Checking login and Chrome…" : "Adopt"}</button>
-                </div>
-            </details>
             {accounts.map((a) => {
                 const five = a.limits.find((l) => l.window === "five_hour");
                 const week = a.limits.find((l) => l.window === "seven_day");
@@ -115,21 +163,22 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                             ) : (
                                 <span onDoubleClick={() => setRename({ id: a.id, name: a.name })} title="double-click to rename">{a.name}</span>
                             )}
-                            {a.logged_in ? <span className="chip ok">{a.email ?? "logged in"}</span> : <span className="chip bad">not logged in</span>}
+                            <span className="chip">{a.provider}</span>
+                            {a.setting_up ? <span className="chip wait">token setup in progress</span> : a.has_token ? <span className="chip ok">token</span> : a.logged_in ? <span className="chip warn">legacy login</span> : <span className="chip bad">no auth</span>}
+                            {a.email && <span className="chip">{a.email}</span>}
                             {a.plan && <span className="chip">{a.plan}</span>}
-                            {a.chrome_capable === 1 && <span className="chip ok">chrome</span>}
                         </h2>
                         <div className="kv">
-                            <b>Config dir</b><code>{a.config_dir}</code>
+                            <b>Runs in</b><span>{a.has_token ? "any config dir" : a.logged_in ? <>only <code>{a.auth_dir}</code> (set up a token to use it anywhere)</> : "nowhere yet — set up a token"}</span>
                             <b>Default model</b><span>{modelLabel(a.default_model, settings?.models) ?? "—"}</span>
                             <b>Usage 5h / 7d</b><span className="mono">{five ? `${Math.round(five.utilization * 100)}%` : "—"} / {week ? `${Math.round(week.utilization * 100)}%` : "—"}</span>
                             <b>Failover</b>
-                            <label className="inline"><input type="checkbox" checked={!!a.failover_enabled} onChange={(e) => void act(() => api.patchAccount(a.id, { failover_enabled: e.target.checked }))} /> hand work to another account at {Math.round(a.failover_threshold * 100)}%</label>
+                            <label className="inline"><input type="checkbox" checked={!!a.failover_enabled} onChange={(e) => void act(() => api.patchAccount(a.id, { failover_enabled: e.target.checked }))} /> when rate-limited, hand the task to another account at under {Math.round(a.failover_threshold * 100)}% usage</label>
                         </div>
                         <div className="actions">
-                            <button disabled={busy === a.id} onClick={async () => { setBusy(a.id); await act(() => api.refreshAccount(a.id, true)); setBusy(null); }}>{busy === a.id ? "Probing…" : "Refresh + probe"}</button>
-                            <button onClick={async () => { try { const r = await api.loginAccount(a.id); onTerminal(r.terminal); } catch (e) { await onChanged(); } }}>Log in</button>
-                            <button className="danger" disabled={used > 0} title={used > 0 ? "an env or task still uses it" : "forget this account (config dir untouched)"} onClick={() => { if (confirm(`Forget account ${a.name}? Its config dir is not touched.`)) void act(() => api.deleteAccount(a.id)); }}>Delete</button>
+                            <button onClick={async () => { try { const r = await api.setupToken(a.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>{a.has_token ? "Renew token" : "Set up token"}</button>
+                            <button disabled={busy === a.id} onClick={async () => { setBusy(a.id); await act(() => api.refreshAccount(a.id)); setBusy(null); }}>{busy === a.id ? "Checking…" : "Verify"}</button>
+                            <button className="danger" disabled={used > 0} title={used > 0 ? "an env or task still uses it" : "forget this account and its token"} onClick={() => { if (confirm(`Forget account ${a.name} and its stored token?`)) void act(() => api.deleteAccount(a.id)); }}>Delete</button>
                         </div>
                     </section>
                 );

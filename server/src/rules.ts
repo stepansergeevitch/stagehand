@@ -30,9 +30,10 @@ export const Rules = z.object({
 });
 export type Rules = z.infer<typeof Rules>;
 
-export const rulesOf = (env: Pick<EnvRow, "rules">): Rules => {
+// Rules live on the Claude config dir an environment uses (a legacy env row still carries the same JSON shape).
+export const rulesOf = (holder: { rules: string | null }): Rules => {
     try {
-        return Rules.parse(env.rules ? JSON.parse(env.rules) : {});
+        return Rules.parse(holder.rules ? JSON.parse(holder.rules) : {});
     } catch {
         return Rules.parse({});
     }
@@ -64,8 +65,7 @@ export const detectPrTemplate = (repoPath: string): string | null => {
 };
 
 // One entry per checkout the env owns (the repo itself, or each sub-repo).
-export const prTemplates = (env: EnvRow): Array<{ dir: string; path: string | null; overridden: boolean }> => {
-    const rules = rulesOf(env);
+export const prTemplates = (env: EnvRow, rules: Rules): Array<{ dir: string; path: string | null; overridden: boolean }> => {
     const subs = envRepos(env);
     const dirs = subs.length ? subs : ["."];
     return dirs.map((dir, i) => {
@@ -144,8 +144,8 @@ const guardSettings = (rulesPath: string): string =>
     );
 
 // Writes ~/.stagehand/envs/<env>/{rules.json,settings.json} and the three skills into <worktree>/.claude/skills (git-excluded).
-export const materializeRules = (env: EnvRow, worktree: string | null, dataDir: string): Materialized => {
-    const rules = rulesOf(env);
+// `rules` come from the env's config dir; the branch prefix and PR templates are the env's own.
+export const materializeRules = (rules: Rules, env: EnvRow, worktree: string | null, dataDir: string): Materialized => {
     const dir = join(dataDir, "envs", env.id);
     mkdirSync(dir, { recursive: true });
     const rulesPath = join(dir, "rules.json");
@@ -153,7 +153,7 @@ export const materializeRules = (env: EnvRow, worktree: string | null, dataDir: 
     const settingsPath = join(dir, "settings.json");
     writeFileSync(settingsPath, guardSettings(rulesPath));
 
-    const templates = prTemplates(env);
+    const templates = prTemplates(env, rules);
     if (worktree && existsSync(worktree)) {
         const skillsDir = join(worktree, ".claude", "skills");
         const files: Record<string, string> = {

@@ -4,7 +4,7 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer as createHttpsServer } from "node:https";
 import { join, normalize } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -13,6 +13,7 @@ import { loadConfig, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
+import { inspectConfigDir } from "./config-dirs.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -20,15 +21,16 @@ const MODEL_OPTIONS = [
     { value: "opus", label: "Opus 5 (claude-opus-5)" },
     { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
 ];
-import { now, openDb, parseEnvVars, STAGES, type AccountRow, type EnvRow, type Stage } from "./db.js";
+import { accountUsableWith, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, STAGES, type AccountRow, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
-import { loginCommand, probeChrome, probeDefaultModel, readAuthStatus, scaffoldAccountDir } from "./claude/accounts.js";
+import { authDirFor, authEnv, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
 import { isGitRepo, repoPaths } from "./git.js";
-import { attach, ensureSession, killSession, loginSessionName, sessionExists, taskSessionName } from "./tmux.js";
+import { attach, ensureSession, killSession, loginSessionName, pipePane, sessionExists, taskSessionName } from "./tmux.js";
 
 const cfg = loadConfig();
 const db = openDb(cfg.dataDir);
+migrateAccountsToConfigDirs(db, { mainConfigDir: cfg.mainConfigDir, scratchAccountsDir: cfg.accountsDir });
 const services = new Services(db, cfg);
 const engine = new Engine(db, cfg, services);
 
@@ -50,71 +52,109 @@ app.onError((err, c) => c.json({ error: err.message }, 400));
 
 const accountsAll = (): AccountRow[] => db.prepare(`SELECT * FROM accounts ORDER BY created_at`).all() as AccountRow[];
 const accountById = (id: string): AccountRow | undefined => db.prepare(`SELECT * FROM accounts WHERE id = ?`).get(id) as AccountRow | undefined;
+const configDirsAll = (): ConfigDirRow[] => db.prepare(`SELECT * FROM config_dirs ORDER BY created_at`).all() as ConfigDirRow[];
+const configDirById = (id: string): ConfigDirRow | undefined => db.prepare(`SELECT * FROM config_dirs WHERE id = ?`).get(id) as ConfigDirRow | undefined;
 
-const refreshAccount = async (acc: AccountRow, probe: boolean): Promise<AccountRow> => {
-    const status = await readAuthStatus(acc.config_dir);
-    db.prepare(`UPDATE accounts SET logged_in = ?, email = ?, org = ?, plan = ? WHERE id = ?`).run(
-        status.loggedIn ? 1 : 0,
-        status.email ?? null,
-        status.orgName ?? null,
-        status.subscriptionType ?? null,
-        acc.id,
-    );
-    if (probe && status.loggedIn) {
-        const capable = await probeChrome(acc.config_dir, cfg.dataDir);
-        db.prepare(`UPDATE accounts SET chrome_capable = ? WHERE id = ?`).run(capable ? 1 : 0, acc.id);
+// The token never leaves the server; the UI only learns whether one is stored.
+const publicAccount = (a: AccountRow) => {
+    const { oauth_token, ...rest } = a;
+    return { ...rest, has_token: !!oauth_token };
+};
+const emitAccount = (id: string): void => {
+    const acc = accountById(id);
+    if (acc) engine.emit("account", publicAccount(acc));
+};
+
+// Token accounts are verified by a trivial run in the server's own config dir (also yields the default model);
+// legacy accounts by `claude auth status` inside the dir that holds their browser login.
+const refreshAccount = async (acc: AccountRow): Promise<AccountRow> => {
+    if (acc.oauth_token) {
+        const r = await probeDefaultModel(cfg.mainConfigDir, cfg.dataDir, authEnv(acc));
+        db.prepare(`UPDATE accounts SET logged_in = ?, default_model = COALESCE(?, default_model) WHERE id = ?`).run(r.ok ? 1 : 0, r.model, acc.id);
+    } else {
+        const status = await readAuthStatus(acc.auth_dir);
+        db.prepare(`UPDATE accounts SET logged_in = ?, email = COALESCE(?, email), org = COALESCE(?, org), plan = COALESCE(?, plan) WHERE id = ?`).run(
+            status.loggedIn ? 1 : 0,
+            status.email ?? null,
+            status.orgName ?? null,
+            status.subscriptionType ?? null,
+            acc.id,
+        );
+        if (status.loggedIn && !acc.default_model) {
+            const r = await probeDefaultModel(acc.auth_dir, cfg.dataDir);
+            if (r.model) db.prepare(`UPDATE accounts SET default_model = ? WHERE id = ?`).run(r.model, acc.id);
+        }
     }
-    if (status.loggedIn && (probe || !acc.default_model)) {
-        const model = await probeDefaultModel(acc.config_dir, cfg.dataDir);
-        if (model) db.prepare(`UPDATE accounts SET default_model = ? WHERE id = ?`).run(model, acc.id);
-    }
+    emitAccount(acc.id);
     return accountById(acc.id)!;
+};
+
+// Runs `claude setup-token` in a terminal the human completes in the browser; the pane output is mirrored to a file and
+// polled for the printed token, which is then stored and the terminal closed.
+const tokenCaptures = new Map<string, NodeJS.Timeout>();
+const startTokenSetup = async (acc: AccountRow): Promise<string> => {
+    const tmuxName = loginSessionName(acc.name);
+    await killSession(tmuxName);
+    const logFile = join(acc.auth_dir, "setup-token.log");
+    rmSync(logFile, { force: true });
+    await ensureSession(
+        tmuxName,
+        acc.auth_dir,
+        `${SETUP_TOKEN_COMMAND}; echo; echo '[stagehand] token setup finished — Stagehand stores the token and closes this terminal.'; sleep 900`,
+        { CLAUDE_CONFIG_DIR: acc.auth_dir },
+    );
+    await pipePane(tmuxName, logFile);
+    const started = Date.now();
+    clearInterval(tokenCaptures.get(acc.id));
+    const timer = setInterval(() => {
+        const text = existsSync(logFile) ? readFileSync(logFile, "utf8").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "") : "";
+        const m = OAUTH_TOKEN_RE.exec(text);
+        if (m) {
+            clearInterval(timer);
+            tokenCaptures.delete(acc.id);
+            rmSync(logFile, { force: true });
+            db.prepare(`UPDATE accounts SET oauth_token = ?, logged_in = 1 WHERE id = ?`).run(m[0], acc.id);
+            void killSession(tmuxName);
+            void refreshAccount(accountById(acc.id)!);
+        } else if (Date.now() - started > 20 * 60_000) {
+            clearInterval(timer);
+            tokenCaptures.delete(acc.id);
+            rmSync(logFile, { force: true });
+        }
+    }, 2_000);
+    tokenCaptures.set(acc.id, timer);
+    return tmuxName;
 };
 
 app.get("/api/accounts", (c) => {
     const limits = db.prepare(`SELECT * FROM rate_limits`).all() as Array<{ account_id: string; window: string; utilization: number; resets_at: number }>;
     return c.json(
         accountsAll().map((a) => ({
-            ...a,
+            ...publicAccount(a),
+            setting_up: tokenCaptures.has(a.id),
             limits: limits.filter((l) => l.account_id === a.id).map(({ window, utilization, resets_at }) => ({ window, utilization, resetsAt: resets_at })),
         })),
     );
 });
 
 app.post("/api/accounts", async (c) => {
-    const body = json(
-        z.object({
-            name: z.string().regex(/^[a-z0-9-]+$/),
-            email: z.string().email().optional(),
-            configDir: z.string().optional(),
-            adopt: z.boolean().default(false),
-        }),
-        await c.req.json(),
-    );
-    const dir = body.configDir ?? scaffoldAccountDir(cfg, body.name);
+    const body = json(z.object({ name: z.string().regex(/^[a-z0-9-]+$/), email: z.string().email().optional(), provider: z.literal("anthropic").default("anthropic") }), await c.req.json());
     const id = randomUUID();
-    db.prepare(`INSERT INTO accounts (id, name, config_dir, created_at) VALUES (?, ?, ?, ?)`).run(id, body.name, dir, now());
-    if (body.adopt) return c.json({ account: await refreshAccount(accountById(id)!, c.req.query("probe") === "1"), terminal: null });
-    const tmuxName = loginSessionName(body.name);
-    const cmd = `${loginCommand(dir, body.email).replace(/^CLAUDE_CONFIG_DIR=\S+ /, "")}; echo; echo 'Login finished — you can close this terminal.'; sleep 600`;
-    await ensureSession(tmuxName, cfg.dataDir, cmd, { CLAUDE_CONFIG_DIR: dir });
-    return c.json({ account: accountById(id), terminal: tmuxName });
+    db.prepare(`INSERT INTO accounts (id, name, provider, auth_dir, email, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(id, body.name, body.provider, authDirFor(cfg, body.name), body.email ?? null, now());
+    const terminal = await startTokenSetup(accountById(id)!);
+    return c.json({ account: publicAccount(accountById(id)!), terminal });
+});
+
+app.post("/api/accounts/:id/setup-token", async (c) => {
+    const acc = accountById(c.req.param("id"));
+    if (!acc) return c.json({ error: "not found" }, 404);
+    return c.json({ terminal: await startTokenSetup(acc) });
 });
 
 app.post("/api/accounts/:id/refresh", async (c) => {
     const acc = accountById(c.req.param("id"));
     if (!acc) return c.json({ error: "not found" }, 404);
-    const probe = c.req.query("probe") === "1";
-    return c.json(await refreshAccount(acc, probe));
-});
-
-app.post("/api/accounts/:id/login", async (c) => {
-    const acc = accountById(c.req.param("id"));
-    if (!acc) return c.json({ error: "not found" }, 404);
-    const tmuxName = loginSessionName(acc.name);
-    const cmd = `claude auth login --claudeai${acc.email ? ` --email ${JSON.stringify(acc.email)}` : ""}; echo; echo 'Login finished — you can close this terminal.'; sleep 600`;
-    await ensureSession(tmuxName, cfg.dataDir, cmd, { CLAUDE_CONFIG_DIR: acc.config_dir });
-    return c.json({ terminal: tmuxName });
+    return c.json(publicAccount(await refreshAccount(acc)));
 });
 
 app.patch("/api/accounts/:id", async (c) => {
@@ -130,19 +170,78 @@ app.patch("/api/accounts/:id", async (c) => {
         body.failover_threshold ?? acc.failover_threshold,
         acc.id,
     );
-    return c.json(accountById(acc.id));
+    emitAccount(acc.id);
+    return c.json(publicAccount(accountById(acc.id)!));
 });
 
-// Deleting an account only forgets it in Stagehand (the config dir stays); refused while an env or task still points at it.
+// Deleting an account only forgets it in Stagehand (its token and auth dir go, config dirs stay); refused while an env or task still points at it.
 app.delete("/api/accounts/:id", (c) => {
     const acc = accountById(c.req.param("id"));
     if (!acc) return c.json({ error: "not found" }, 404);
     const envs = db.prepare(`SELECT name FROM envs WHERE default_account_id = ?`).all(acc.id) as Array<{ name: string }>;
     const tasks = db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE account_id = ?`).get(acc.id) as { n: number };
     if (envs.length || tasks.n) return c.json({ error: `in use by ${envs.map((e) => `env ${e.name}`).concat(tasks.n ? [`${tasks.n} task(s)`] : []).join(", ")} — reassign first` }, 400);
+    clearInterval(tokenCaptures.get(acc.id));
+    tokenCaptures.delete(acc.id);
     db.prepare(`DELETE FROM rate_limits WHERE account_id = ?`).run(acc.id);
     db.prepare(`DELETE FROM accounts WHERE id = ?`).run(acc.id);
     return c.json({ deleted: acc.id });
+});
+
+// ---------- Claude config dirs ----------
+
+const configDirView = (d: ConfigDirRow) => ({
+    ...d,
+    contents: inspectConfigDir(d.path),
+    envs: envsAll().filter((e) => e.config_dir_id === d.id).map((e) => e.name),
+    usable_accounts: accountsAll().filter((a) => accountUsableWith(a, d.path)).map((a) => a.name),
+});
+
+app.get("/api/config-dirs", (c) => c.json(configDirsAll().map(configDirView)));
+
+app.post("/api/config-dirs", async (c) => {
+    const body = json(z.object({ name: z.string().min(1), path: z.string().min(1) }), await c.req.json());
+    const path = body.path.replace(/\/+$/, "");
+    if (!existsSync(path) || !statSync(path).isDirectory()) return c.json({ error: `${path} is not a directory` }, 400);
+    const id = randomUUID();
+    db.prepare(`INSERT INTO config_dirs (id, name, path, created_at) VALUES (?, ?, ?, ?)`).run(id, body.name, path, now());
+    return c.json(configDirView(configDirById(id)!));
+});
+
+app.patch("/api/config-dirs/:id", async (c) => {
+    const body = json(z.object({ name: z.string().min(1).optional(), rules: Rules.partial().optional() }), await c.req.json());
+    const dir = configDirById(c.req.param("id"));
+    if (!dir) return c.json({ error: "not found" }, 404);
+    const rules = body.rules === undefined ? dir.rules : JSON.stringify(Rules.parse({ ...rulesOf(dir), ...body.rules }));
+    db.prepare(`UPDATE config_dirs SET name = ?, rules = ? WHERE id = ?`).run(body.name ?? dir.name, rules, dir.id);
+    return c.json(configDirView(configDirById(dir.id)!));
+});
+
+// Forgets the dir in Stagehand (nothing on disk changes); refused while an environment uses it.
+app.delete("/api/config-dirs/:id", (c) => {
+    const dir = configDirById(c.req.param("id"));
+    if (!dir) return c.json({ error: "not found" }, 404);
+    const envs = envsAll().filter((e) => e.config_dir_id === dir.id);
+    if (envs.length) return c.json({ error: `used by ${envs.map((e) => `env ${e.name}`).join(", ")} — switch them first` }, 400);
+    db.prepare(`DELETE FROM config_dirs WHERE id = ?`).run(dir.id);
+    return c.json({ deleted: dir.id });
+});
+
+// Chrome is a property of the dir (its extension pairing); the probe runs with any account that can drive this dir.
+app.post("/api/config-dirs/:id/probe", async (c) => {
+    const dir = configDirById(c.req.param("id"));
+    if (!dir) return c.json({ error: "not found" }, 404);
+    const acc = engine.usableAccounts(dir.path)[0];
+    if (!acc) return c.json({ error: "no AI account can run in this dir — set up a token first" }, 400);
+    const capable = await probeChrome(dir.path, cfg.dataDir, authEnv(acc));
+    db.prepare(`UPDATE config_dirs SET chrome_capable = ? WHERE id = ?`).run(capable ? 1 : 0, dir.id);
+    return c.json(configDirView(configDirById(dir.id)!));
+});
+
+app.get("/api/config-dirs/:id/rules", (c) => {
+    const dir = configDirById(c.req.param("id"));
+    if (!dir) return c.json({ error: "not found" }, 404);
+    return c.json({ rules: rulesOf(dir), defaults: Rules.parse({}), guardHook: GUARD_HOOK });
 });
 
 // ---------- envs ----------
@@ -204,11 +303,13 @@ app.post("/api/task-managers/:source/test", async (c) => {
     }
 });
 
-// Effective rules (defaults merged) and the PR templates found in the env's checkouts, for the environment page.
+// The rules the env inherits from its config dir, plus the PR templates found in its checkouts, for the environment page.
 app.get("/api/envs/:id/rules", (c) => {
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
     if (!env) return c.json({ error: "not found" }, 404);
-    return c.json({ rules: rulesOf(env), defaults: Rules.parse({}), prTemplates: prTemplates(env), guardHook: GUARD_HOOK });
+    const cd = engine.configDirOf(env);
+    const rules = rulesOf(cd);
+    return c.json({ rules, prTemplates: prTemplates(env, rules), configDir: { id: cd.id, name: cd.name, path: cd.path }, usableAccounts: engine.usableAccounts(cd.path).map((a) => a.id) });
 });
 
 // Tickets assigned to the configured user in this env's task system, for the new-task dropdown.
@@ -229,6 +330,7 @@ app.post("/api/envs", async (c) => {
             path: z.string().min(1),
             baseBranch: z.string().default("main"),
             defaultAccountId: z.string().optional(),
+            configDirId: z.string().optional(),
             appUrl: z.string().optional(),
             qaScript: z.string().optional(),
             beCommand: z.string().optional(),
@@ -249,15 +351,18 @@ app.post("/api/envs", async (c) => {
     const bad = await badCheckouts({ path: body.path, base_branch: body.baseBranch ?? "main", repos });
     if (bad) return c.json({ error: bad }, 400);
     const id = randomUUID();
+    // A dir registered at <env>/.claude is the natural default; otherwise the first registered dir.
+    const configDirId = body.configDirId ?? (configDirsAll().find((d) => d.path === join(body.path, ".claude")) ?? configDirsAll()[0])?.id ?? null;
     db.prepare(
-        `INSERT INTO envs (id, name, path, base_branch, default_account_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO envs (id, name, path, base_branch, default_account_id, config_dir_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
         id,
         body.name,
         body.path,
         body.baseBranch,
         body.defaultAccountId ?? null,
+        configDirId,
         body.appUrl ?? null,
         body.qaScript ?? null,
         body.beCommand ?? null,
@@ -281,6 +386,7 @@ app.patch("/api/envs/:id", async (c) => {
         z.object({
             name: z.string().min(1).optional(),
             defaultAccountId: z.string().nullable().optional(),
+            configDirId: z.string().nullable().optional(),
             baseBranch: z.string().optional(),
             appUrl: z.string().nullable().optional(),
             qaScript: z.string().nullable().optional(),
@@ -295,13 +401,12 @@ app.patch("/api/envs/:id", async (c) => {
             branchPrefix: z.string().nullable().optional(),
             ticketSource: z.enum(["clickup", "linear"]).optional(),
             envVars: z.string().nullable().optional(),
-            rules: Rules.partial().optional(),
         }),
         await c.req.json(),
     );
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
     if (!env) return c.json({ error: "not found" }, 404);
-    const mergedRules = body.rules === undefined ? env.rules : JSON.stringify(Rules.parse({ ...rulesOf(env), ...body.rules }));
+    if (body.configDirId && !configDirById(body.configDirId)) return c.json({ error: "unknown config dir" }, 400);
     const pick = <T,>(next: T | undefined, cur: T): T => (next === undefined ? cur : next);
     const repos = body.repos === undefined ? env.repos : body.repos && body.repos.length ? JSON.stringify(body.repos) : null;
     if (repos !== env.repos) {
@@ -309,10 +414,11 @@ app.patch("/api/envs/:id", async (c) => {
         if (bad) return c.json({ error: bad }, 400);
     }
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, rules = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, config_dir_id = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         pick(body.defaultAccountId, env.default_account_id),
+        pick(body.configDirId, env.config_dir_id),
         body.baseBranch ?? env.base_branch,
         pick(body.appUrl, env.app_url),
         pick(body.qaScript, env.qa_script),
@@ -327,7 +433,6 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.branchPrefix, env.branch_prefix),
         body.ticketSource ?? env.ticket_source,
         pick(body.envVars, env.env_vars),
-        mergedRules,
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));
@@ -528,15 +633,17 @@ app.post("/api/tasks/:id/terminal", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
     if (task.status === "running") return c.json({ error: "a headless run owns this session right now; wait for it to finish" }, 409);
-    const acc = task.account_id ? accountById(task.account_id) : accountsAll().find((a) => a.logged_in);
-    if (!acc) return c.json({ error: "no logged-in account" }, 400);
-    const env = db.prepare(`SELECT path, env_vars FROM envs WHERE id = ?`).get(task.env_id) as { path: string; env_vars: string | null };
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
+    const cd = engine.configDirOf(env);
+    const usable = engine.usableAccounts(cd.path);
+    const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+    if (!acc) return c.json({ error: `no AI account can run in config dir ${cd.name}` }, 400);
     const name = taskSessionName(task.ticket_id);
     await ensureSession(
         name,
         task.worktree_path ?? env.path,
         `claude --resume ${task.session_id}; echo; echo '[stagehand] claude exited — press Enter to close'; read -r`,
-        { ...parseEnvVars(env.env_vars), CLAUDE_CONFIG_DIR: acc.config_dir },
+        { ...parseEnvVars(env.env_vars), ...authEnv(acc), CLAUDE_CONFIG_DIR: cd.path },
     );
     return c.json({ terminal: name });
 });
@@ -549,7 +656,7 @@ app.get(
         const listeners: Array<[string, (...args: unknown[]) => void]> = [];
         return {
             onOpen(_evt, ws) {
-                for (const kind of ["task", "activity", "rate_limit"]) {
+                for (const kind of ["task", "activity", "rate_limit", "account"]) {
                     const fn = (payload: unknown): void => ws.send(JSON.stringify({ kind, payload }));
                     engine.on(kind, fn);
                     listeners.push([kind, fn]);
