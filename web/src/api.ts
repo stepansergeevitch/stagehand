@@ -130,6 +130,7 @@ export interface TaskDetail {
     research: { classification: string; title: string; branchName: string; summary: string; affectedAreas: string[] } | null;
     design: Design | null; impl: Impl | null; qaBefore: QaPass | null; qaAfter: QaPass | null;
     pr: { title: string; body: string; base: string } | null;
+    prFix: { summary: string } | null;
     ticket: Ticket | null;
     reviews: Review[];
     prState: { number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null; updated_at: string } | null;
@@ -198,6 +199,7 @@ export const api = {
     retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),
     rerun: (id: string, stage: Stage) => post<Task>(`/api/tasks/${id}/rerun`, { stage }),
     qaLogin: (id: string) => post<{ started: true }>(`/api/tasks/${id}/qa-login`),
+    fixCi: (id: string) => post<{ started: true }>(`/api/tasks/${id}/fix-ci`),
     fetchTicket: (id: string) => post<Ticket>(`/api/tasks/${id}/fetch-ticket`),
     openApp: (id: string) => post<{ opened: string; profile: string }>(`/api/tasks/${id}/open-app`),
     pin: (id: string) => post<Task>(`/api/tasks/${id}/pin`),

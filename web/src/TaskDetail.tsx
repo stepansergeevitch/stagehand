@@ -230,7 +230,7 @@ const PrWidget = ({ detail }: { detail: TaskDetail }) => {
 };
 
 export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal, onAction, tab, setTab, onOpenTerminal, onCloseTerminal }: Props) => {
-    const { task, runs, design, impl, qaBefore, qaAfter, pr, research } = detail;
+    const { task, runs, design, impl, qaBefore, qaAfter, pr, prFix, research } = detail;
     const has = (p: string) => detail.artifacts.some((a) => a.path === p);
     const researchMd = useArtifactText(task.id, "research.md", has("research.md"));
     const designMd = useArtifactText(task.id, "design.md", has("design.md"));
@@ -323,7 +323,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     className="primary"
                     onClick={() => onAction(async () => { await api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}) }); clearComments(); setNotes(""); })}
                 >
-                    {task.stage === "pr_creation_review" ? "Approve & create PR" : "Approve"}
+                    {task.stage === "pr_creation_review" ? "Approve & create PR" : task.stage === "pr_red" ? "Approve & push" : "Approve"}
                 </button>
                 <button
                     disabled={!notes.trim() && !(canComment && pending.length > 0)}
@@ -415,7 +415,13 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     </>
                 );
             case "pr_waiting":
-                return <PrPanel detail={detail} />;
+                return (
+                    <>
+                        {task.stage === "pr_red" && reviewBox}
+                        {task.stage === "pr_red" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
+                        <PrPanel detail={detail} />
+                    </>
+                );
             default:
                 return null;
         }
@@ -481,6 +487,12 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {task.status === "blocked" && (
                 <div className="blocked-box">
                     <b>Blocked.</b> <Linkified text={task.status_line ?? ""} />
+                    {/check\(s\) failing/.test(task.status_line ?? "") && (
+                        <div className="actions" style={{ marginBottom: 0 }}>
+                            <button className="primary" onClick={() => onAction(() => api.fixCi(task.id))}>Fix CI</button>
+                            <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>The agent proposes a fix and commits it locally — nothing is pushed until you review the diff and approve.</span>
+                        </div>
+                    )}
                     {/log ?in/i.test(task.status_line ?? "") && !/waiting for you/.test(task.status_line ?? "") && (
                         <div className="actions" style={{ marginBottom: 0 }}>
                             <button className="primary" onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA</button>

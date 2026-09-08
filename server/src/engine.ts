@@ -553,7 +553,7 @@ export class Engine extends EventEmitter {
             .run(randomUUID(), taskId, task.stage, input.verdict, input.routeTo ?? null, input.notes ?? null, comments.length ? JSON.stringify(comments) : null, now());
 
         if (input.verdict === "changes") {
-            const target: Stage = task.stage === "design_proposal" ? "design_proposal" : (input.routeTo ?? "implementation");
+            const target: Stage = task.stage === "design_proposal" || task.stage === "pr_red" ? task.stage : (input.routeTo ?? "implementation");
             this.setStage(taskId, target);
             const hasContent = !!input.notes?.trim() || comments.length > 0;
             this.dispatch(taskId, target, {
@@ -565,6 +565,10 @@ export class Engine extends EventEmitter {
         if (!next) return;
         if (task.stage === "pr_creation_review") {
             void this.createPr(taskId);
+            return;
+        }
+        if (task.stage === "pr_red") {
+            void this.pushPrFix(taskId);
             return;
         }
         this.advance(taskId, next);
@@ -746,17 +750,8 @@ export class Engine extends EventEmitter {
             return;
         }
         if (failed.length) {
-            const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_red'`).get(task.id) as { n: number };
-            if (rounds.n >= 3) {
-                this.setTaskStatus(task.id, "blocked", `PR Red · ${failed.length} check(s) failing after 3 fix rounds · ${pr.url}`);
-                return;
-            }
-            this.setStage(task.id, "pr_red");
             const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");
-            this.dispatch(task.id, "pr_red", {
-                attempt: rounds.n + 1,
-                extraVars: { failureOutput: `Failing checks: ${names}. Read their logs with \`gh pr checks ${number}\` and \`gh run view --log-failed <run-id>\` before changing anything.` },
-            });
+            this.setTaskStatus(task.id, "blocked", `PR Waiting · ${failed.length} check(s) failing (${names}) — click Fix CI to have the agent propose a fix, or fix it yourself · ${pr.url}`);
             return;
         }
         if (pending.length) {
@@ -770,6 +765,56 @@ export class Engine extends EventEmitter {
         }
         if (task.stage !== "pr_green") this.setStage(task.id, "pr_green");
         this.setTaskStatus(task.id, "idle", `PR Green · checks passed, waiting for review · ${pr.url}`);
+    }
+
+    // Human-triggered only (button in the UI) — never automatic. Re-reads the checks fresh (the cached row can be
+    // up to ~2 minutes stale) and dispatches PR Red, which commits a fix locally but does not push; the human reviews
+    // the diff and approves or requests changes before pushPrFix() ever runs.
+    async startPrFix(taskId: string): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        const env = this.env(task.env_id);
+        const state = this.db.prepare(`SELECT number, url FROM pr_state WHERE task_id = ?`).get(taskId) as { number: number | null; url: string | null } | undefined;
+        if (!state?.number) throw new Error("no PR recorded for this task yet");
+        const cwd = this.prCheckouts(task, env)[0]!;
+        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(state.number), "--json", "statusCheckRollup"], env)) as {
+            statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
+        };
+        const failed = (pr.statusCheckRollup ?? []).filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
+        if (!failed.length) throw new Error("no failing checks right now — re-poll first");
+        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_red'`).get(taskId) as { n: number };
+        const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");
+        this.setStage(taskId, "pr_red");
+        this.dispatch(taskId, "pr_red", {
+            attempt: rounds.n + 1,
+            extraVars: { failureOutput: `Failing checks: ${names}. Read their logs with \`gh pr checks ${state.number}\` and \`gh run view --log-failed <run-id>\` before changing anything.` },
+        });
+    }
+
+    // After the human approves a PR-Red fix (already committed locally, never pushed): push it and resume PR polling.
+    private async pushPrFix(taskId: string): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task?.branch) return;
+        const env = this.env(task.env_id);
+        const rules = rulesOf(this.configDirOf(env));
+        if (!rules.allowPush) {
+            this.setStage(taskId, "pr_waiting");
+            this.setTaskStatus(taskId, "idle", `PR Waiting · this env forbids agent pushes — push \`${task.branch}\` yourself; Stagehand resumes polling once you do`);
+            return;
+        }
+        this.setTaskStatus(taskId, "running", "PR Red · pushing the approved fix");
+        try {
+            for (const cwd of this.prCheckouts(task, env)) {
+                const ahead = await this.git(cwd, ["log", "--oneline", `origin/${env.base_branch}..HEAD`], env).catch(() => "");
+                if (!ahead) continue;
+                await this.git(cwd, ["push", "origin", task.branch], env);
+            }
+        } catch (e) {
+            this.setTaskStatus(taskId, "failed", `push failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            return;
+        }
+        this.advance(taskId, "pr_waiting");
     }
 
     // ---------- stage machine ----------

@@ -666,6 +666,7 @@ app.get("/api/tasks/:id", (c) => {
         qaBefore: engine.readArtifactJson(task.id, "qa/before.json"),
         qaAfter: engine.readArtifactJson(task.id, "qa/after.json"),
         pr: engine.readArtifactJson(task.id, "pr.json"),
+        prFix: engine.readArtifactJson(task.id, "pr_fix.json"),
         ticket: engine.readArtifactJson(task.id, "ticket.json"),
         reviews: db.prepare(`SELECT * FROM reviews WHERE task_id = ? ORDER BY created_at`).all(task.id),
         prState: db.prepare(`SELECT * FROM pr_state WHERE task_id = ?`).get(task.id) ?? null,
@@ -767,6 +768,15 @@ app.post("/api/tasks/:id/qa-login", (c) => {
     const id = c.req.param("id");
     void engine.qaLogin(id).catch((e: unknown) => console.error("[qa-login]", String((e as Error).message ?? e)));
     return c.json({ started: true });
+});
+
+app.post("/api/tasks/:id/fix-ci", async (c) => {
+    try {
+        await engine.startPrFix(c.req.param("id"));
+        return c.json({ started: true });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
 });
 
 app.post("/api/tasks/:id/rerun", async (c) => {

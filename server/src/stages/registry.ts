@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ZodTypeAny } from "zod";
 import type { Stage } from "../db.js";
-import { DesignResult, ImplResult, PrDraft, QaPassResult, ResearchResult } from "./contracts.js";
+import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, ResearchResult } from "./contracts.js";
 
 const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "prompts");
 
@@ -89,7 +89,16 @@ export const STAGE_DEFS: Record<Stage, StageDef> = {
         next: "pr_waiting",
     },
     pr_waiting: { stage: "pr_waiting", kind: "poll", label: "PR Waiting", next: "pr_green" },
-    pr_red: { stage: "pr_red", kind: "auto", label: "PR Red", prompt: "pr-fix.md", maxTurns: 120, next: "pr_waiting" },
+    pr_red: {
+        stage: "pr_red",
+        kind: "wait",
+        label: "PR Red",
+        prompt: "pr-fix.md",
+        contract: PrFixResult,
+        outputFile: "pr_fix.json",
+        maxTurns: 120,
+        next: "pr_waiting",
+    },
     pr_green: { stage: "pr_green", kind: "poll", label: "PR Green", next: "pr_approved" },
     pr_approved: { stage: "pr_approved", kind: "poll", label: "PR Approved", next: "done" },
     done: { stage: "done", kind: "terminal", label: "Done", next: null },

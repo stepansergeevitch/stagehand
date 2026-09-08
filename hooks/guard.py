@@ -2,7 +2,9 @@
 """Stagehand guard hook (PreToolUse, Bash). Standard for every environment; the values come from $STAGEHAND_RULES.
 
 Blocks (exit 2, reason on stderr) git commits with a non-conforming message, commits/pushes/PR creation when the
-environment forbids them, badly named branches, and history rewrites. Anything else passes (exit 0).
+environment forbids them, badly named branches, history rewrites, and — unconditionally, in every environment,
+regardless of $STAGEHAND_RULES — anything that would post a comment or review to GitHub under the human's own
+account (gh CLI or a raw curl/wget to the GitHub API). Anything else passes (exit 0).
 """
 import json
 import os
@@ -44,6 +46,64 @@ def commit_messages(argv):
             i += 2; continue
         i += 1
     return out
+
+
+GH_COMMENT_OR_REVIEW_PATH = re.compile(r"(^|/)(issues|pulls)/[^/]+/(comments|reviews)(/|$)")
+GH_COMMENT_MUTATIONS = re.compile(r"addComment|addPullRequestReview|submitPullRequestReview|addDiscussionComment", re.IGNORECASE)
+
+
+def _flag_value(rest, *names):
+    for i, a in enumerate(rest):
+        if a in names and i + 1 < len(rest):
+            return rest[i + 1]
+        for n in names:
+            if a.startswith(f"{n}="):
+                return a[len(n) + 1:]
+    return None
+
+
+def gh_write_comment_or_review(words):
+    """`gh pr comment`, `gh pr review`, `gh issue comment`, or `gh api` writing to a comments/reviews endpoint or a
+    GraphQL comment/review mutation — every case where `gh` (authenticated as the human) would post to GitHub."""
+    if len(words) < 2:
+        return None
+    if words[1] == "pr" and len(words) > 2 and words[2] in ("comment", "review"):
+        return f"gh pr {words[2]}"
+    if words[1] == "issue" and len(words) > 2 and words[2] == "comment":
+        return "gh issue comment"
+    if words[1] == "api":
+        rest = words[2:]
+        explicit_method = _flag_value(rest, "-X", "--method")
+        has_data = any(a in ("-f", "-F", "--field", "--raw-field", "--input") or a.startswith(("-f=", "-F=", "--field=", "--raw-field=")) for a in rest)
+        # `gh api` defaults to POST (not GET) once any field/input data is given, same as curl with -d.
+        method = (explicit_method or ("POST" if has_data else "GET")).upper()
+        path = next((a for a in rest if not a.startswith("-")), "")
+        if path == "graphql":
+            if GH_COMMENT_MUTATIONS.search(" ".join(rest)):
+                return "gh api graphql (comment/review mutation)"
+        elif method in ("POST", "PUT", "PATCH") and GH_COMMENT_OR_REVIEW_PATH.search(path):
+            return f"gh api {method} {path}"
+    return None
+
+
+def http_write_comment_or_review(words):
+    """A raw curl/wget straight at the GitHub REST API's comments/reviews endpoints — the same thing `gh api` would
+    do, just bypassing it. Only fires for api.github.com (or a GitHub Enterprise host with '/api/v3/' in the URL)."""
+    url = next((a for a in words[1:] if re.match(r"^https?://", a)), None)
+    if not url or not ("api.github.com" in url or "/api/v3/" in url):
+        return None
+    if not GH_COMMENT_OR_REVIEW_PATH.search(url):
+        return None
+    rest = words[1:]
+    method = (_flag_value(rest, "-X", "--request", "--method") or "").upper()
+    has_data = any(
+        a in ("-d", "--data", "--data-raw", "--data-binary", "-F", "--form", "--post-data", "--post-file", "--body-data", "--body-file")
+        or a.startswith(("-d", "--data=", "--data-raw=", "--data-binary=", "--post-data=", "--post-file=", "--body-data=", "--body-file="))
+        for a in rest
+    )
+    if method in ("POST", "PUT", "PATCH") or (not method and has_data):
+        return f"{words[0]} {method or 'POST'} {url}"
+    return None
 
 
 def check_segment(words, rules):
@@ -98,9 +158,17 @@ def check_segment(words, rules):
                     block(f"branch '{name}' must start with '{prefix}'. {rules.get('branchHint') or ''}")
                 if pattern and not re.search(pattern, bare):
                     block(f"branch '{name}' does not match {pattern} after the prefix. {rules.get('branchHint') or ''}")
-    elif prog == "gh" and len(words) > 2 and words[1] == "pr" and words[2] in ("create", "merge"):
-        if not rules.get("allowPrCreate", True):
-            block("creating or merging pull requests is not allowed in this environment — draft only; the human creates it")
+    elif prog == "gh":
+        reason = gh_write_comment_or_review(words)
+        if reason:
+            block(f"{reason} would post to GitHub under the human's own account — never allowed. The human posts PR/issue comments and reviews themselves.")
+        if len(words) > 2 and words[1] == "pr" and words[2] in ("create", "merge"):
+            if not rules.get("allowPrCreate", True):
+                block("creating or merging pull requests is not allowed in this environment — draft only; the human creates it")
+    elif prog in ("curl", "wget"):
+        reason = http_write_comment_or_review(words)
+        if reason:
+            block(f"{reason} would post to GitHub under the human's own account — never allowed. The human posts PR/issue comments and reviews themselves.")
 
 
 def main():

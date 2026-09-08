@@ -72,3 +72,8 @@ export const PrDraft = z.object({
     base: z.string(),
 });
 export type PrDraft = z.infer<typeof PrDraft>;
+
+export const PrFixResult = z.object({
+    summary: z.string(),
+});
+export type PrFixResult = z.infer<typeof PrFixResult>;
