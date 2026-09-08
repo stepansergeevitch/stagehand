@@ -373,3 +373,4 @@ label.inline { display: inline-flex; align-items: center; gap: 4px; }
 .qa-obs-label { font-size: 13px; color: var(--ink-2); white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
 .qa-obs-text { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.45; color: var(--ink); }
 .qa-obs-text li { margin: 1px 0; }
+.qa-blockers { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: start; margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn, #d9a400); }

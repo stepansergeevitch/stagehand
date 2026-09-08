@@ -768,7 +768,9 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
     return (
     <>
         {zoom && <Lightbox src={zoom.src} caption={zoom.caption} onClose={() => setZoom(null)} />}
-        {[before, after].map((p) => p?.blockers.length ? <div key={p.pass} className="blocked-box">{p.pass}: {p.blockers.join(" · ")}</div> : null)}
+        {[before, after].map((p) => p?.blockers.length ? (
+            <div key={p.pass} className="qa-blockers"><span className="qa-obs-label">{p.pass} blockers</span><ul className="qa-obs-text">{p.blockers.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
+        ) : null)}
         {design.qa.map((s) => {
             const b = before?.scenarios.find((x) => x.id === s.id);
             const a = after?.scenarios.find((x) => x.id === s.id);
