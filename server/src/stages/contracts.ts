@@ -35,7 +35,7 @@ export const DesignResult = z.object({
     scope: z.object({ inScope: z.array(z.string()), outOfScope: z.array(z.string()) }),
     plan: z.array(z.object({ layer: z.string(), changes: z.array(z.string()) })),
     testPlan: z.array(z.object({ file: z.string(), cases: z.array(z.string()) })),
-    qa: z.array(QaScenario).max(3),
+    qa: z.array(QaScenario).max(10),
     qaSkippedReason: z.string().nullable().default(null),
 });
 export type DesignResult = z.infer<typeof DesignResult>;
