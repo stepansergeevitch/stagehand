@@ -289,10 +289,14 @@ app.delete("/api/config-dirs/:id", (c) => {
 // The Chrome extension is bound to the claude.ai account signed into a Chrome profile, and only a browser login (not a
 // token) gets the bridge, so both live on the account: its browser dir holds the login, the probe runs there.
 // A browser login may live in the account's auth dir (a real config dir such as the main one) or in the Stagehand-owned
-// browser dir; the first one found wins and is remembered as login_dir.
+// browser dir; the Stagehand-owned one wins when both are valid — it is the one every env can use via mirrorConfigDir
+// (engine.browserDir), while the auth dir only ever satisfies the one env whose path happens to equal it. Checking
+// auth_dir first would permanently starve the Stagehand dir: once auth_dir has a login (the common case — it is
+// wherever the account was first set up), it never expires, so the Stagehand dir's login would never be picked up
+// no matter how many times the human completes it there.
 const refreshBrowserLogin = async (acc: AccountRow): Promise<AccountRow> => {
     const own = browserDirFor(cfg, acc);
-    const candidates = [...new Set([acc.auth_dir, own])];
+    const candidates = [...new Set([own, acc.auth_dir])];
     let found: { dir: string; email: string | null; plan: string | null } | null = null;
     for (const dir of candidates) {
         const status = await readAuthStatus(dir);
