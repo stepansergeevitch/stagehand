@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, now, parseEnvVars, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
-import { authEnv, browserDirFor, mirrorConfigDir } from "./claude/accounts.js";
+import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
 import { backfillUsage, recordUsage } from "./usage.js";
 import { notify, taskLink, type Notice } from "./notify.js";
@@ -67,6 +67,8 @@ interface DispatchOpts {
     servicesReady?: boolean;
     // Browser stages: the orchestrator has already executed the scenarios' `shell:` seed steps for this dispatch.
     seedsDone?: boolean;
+    // Browser stages: a live probe just confirmed the Chrome extension answers for this dispatch — skip re-probing.
+    chromeVerified?: boolean;
 }
 
 const FIVE_HOUR = "five_hour";
@@ -1034,6 +1036,27 @@ export class Engine extends EventEmitter {
                 // Every Chrome-ready account is at its cap: park with a resume time rather than blocking (the list was already tried).
                 if (chrome.exhausted) this.queueRateLimited(task, chrome.exhausted.account, chrome.exhausted.resetsAt, `${def.label} · ${chrome.reason}`, { failover: false });
                 else this.setTaskStatus(taskId, "blocked", `${def.label} · ${chrome.reason}`);
+                return;
+            }
+            // The account's chrome_capable flag is only as fresh as the last manual Probe Chrome — it can go stale (the
+            // extension disconnects, Chrome restarts, a new config dir was never introduced to it). Confirm live, once,
+            // right before spending a full QA run on a bridge that will not answer.
+            if (!opts.chromeVerified) {
+                this.setTaskStatus(taskId, "running", `${def.label} · confirming the Chrome bridge is connected`);
+                void probeChrome(chrome.configDir, task.worktree_path ?? env.path, 1)
+                    .then((r) => {
+                        if (r.ok) {
+                            this.dispatch(taskId, stage, { ...opts, chromeVerified: true });
+                            return;
+                        }
+                        this.db.prepare(`UPDATE accounts SET chrome_capable = 0, chrome_device_id = NULL, chrome_browser_name = NULL WHERE id = ?`).run(chrome.account.id);
+                        this.setTaskStatus(
+                            taskId,
+                            "blocked",
+                            `${def.label} · Chrome extension is not connected for ${chrome.account.name} (checked ${chrome.configDir}) — open Chrome, confirm the extension is installed and signed into this account, then AI accounts → Probe Chrome`,
+                        );
+                    })
+                    .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · Chrome check failed: ${String((e as Error).message ?? e).slice(0, 160)}`));
                 return;
             }
             account = chrome.account;
