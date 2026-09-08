@@ -481,13 +481,10 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {task.status === "blocked" && (
                 <div className="blocked-box">
                     <b>Blocked.</b> <Linkified text={task.status_line ?? ""} />
-                    {/log ?in/i.test(task.status_line ?? "") && (
+                    {/log ?in/i.test(task.status_line ?? "") && !/waiting for you/.test(task.status_line ?? "") && (
                         <div className="actions" style={{ marginBottom: 0 }}>
-                            <button className="primary" onClick={async () => { try { const r = await api.openApp(task.id); onError(`Opened ${r.opened} in Chrome profile "${r.profile}" — log in there, then Retry.`); } catch (e) { onError(String((e as Error).message ?? e)); } }}>
-                                Open app in the QA Chrome profile
-                            </button>
-                            {!/waiting for you/.test(task.status_line ?? "") && <button onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA (agent waits and re-runs)</button>}
-                            <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Open app: the exact URL in the Chrome profile QA uses, no agent — log in, then Retry. Log in for QA: an agent opens it, waits for the login and re-runs the stage by itself.</span>
+                            <button className="primary" onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA</button>
+                            <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Opens the app in the QA Chrome profile; you log in there, Stagehand watches the tab (and moves an Auth0 return from localhost:3000 to the app's port), then re-runs the stage. No agent, no cost.</span>
                         </div>
                     )}
                 </div>
@@ -718,9 +715,10 @@ const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design
     attach(/^change|implementation|plan by layer/i, "Plan by layer", (
         <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
     ));
-    attach(/^tests?\b|test plan/i, "Test plan", (
-        <table><tbody>{design.testPlan.map((t) => <tr key={t.file}><td><code>{t.file}</code></td><td><ul className="plain">{t.cases.map((c, i) => <li key={i}><code>{c}</code></li>)}</ul></td></tr>)}</tbody></table>
-    ));
+    // The Tests table in design.md already lists every case, so design.json's testPlan is not repeated here. A pre-template
+    // `Run: \`cmd\`` line is shown as a code block like the current template's fenced one.
+    const tests = parts.find((p) => /^tests?\b|test plan/i.test(p.title));
+    if (tests?.md) tests.md = tests.md.replace(/^(\**Run:?\**)\s*`([^`\n]+)`\s*$/im, "$1\n\n```bash\n$2\n```");
     attach(/qa/i, "QA scenarios", <QaScenarios design={design} />, true);
     const [active, setActive] = useState(0);
     const cur = parts[Math.min(active, parts.length - 1)];

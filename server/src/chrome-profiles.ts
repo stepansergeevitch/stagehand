@@ -85,3 +85,30 @@ export const openInProfile = (browser: string, profileDir: string, url: string):
         const app = APP_NAMES[browser] ?? "Google Chrome";
         execFile("open", ["-na", app, "--args", `--profile-directory=${profileDir}`, url], (err) => (err ? reject(err) : resolve()));
     });
+
+export interface ChromeTab { window: number; tab: number; url: string; title: string }
+
+const osascript = (script: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+        execFile("osascript", ["-e", script], { timeout: 15_000 }, (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
+    });
+
+// Every tab of every window of the running Chrome (all profiles share one process), with 1-based indices that
+// `setTabUrl` accepts. Empty when Chrome is not running.
+export const listChromeTabs = async (browser = "Google"): Promise<ChromeTab[]> => {
+    const app = APP_NAMES[browser] ?? "Google Chrome";
+    const script =
+        `if application "${app}" is not running then return ""\n` +
+        `set sep to character id 9\ntell application "${app}"\n set out to ""\n repeat with w from 1 to count of windows\n  repeat with t from 1 to count of tabs of window w\n` +
+        `   set out to out & w & sep & t & sep & (URL of tab t of window w) & sep & (title of tab t of window w) & linefeed\n  end repeat\n end repeat\n return out\nend tell`;
+    const out = await osascript(script).catch(() => "");
+    return out.split("\n").filter(Boolean).map((line) => {
+        const [w, t, url = "", ...title] = line.split("\t");
+        return { window: Number(w), tab: Number(t), url, title: title.join("\t") };
+    });
+};
+
+export const setChromeTabUrl = (tabRef: Pick<ChromeTab, "window" | "tab">, url: string, browser = "Google"): Promise<void> => {
+    const app = APP_NAMES[browser] ?? "Google Chrome";
+    return osascript(`tell application "${app}" to set URL of tab ${tabRef.tab} of window ${tabRef.window} to "${url.replace(/"/g, '\\"')}"`).then(() => undefined);
+};

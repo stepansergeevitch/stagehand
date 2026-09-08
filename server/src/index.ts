@@ -745,13 +745,11 @@ app.post("/api/tasks/:id/open-app", async (c) => {
     if (!task) return c.json({ error: "not found" }, 404);
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
     const url = engine.appUrlFor(task, env);
-    const candidates = engine.browserAccounts(env);
-    const acc = candidates.find((a) => a.id === task.account_id) ?? candidates[0];
-    const browser = acc ? chromeBrowsersOf(acc).find((b) => b.deviceId === acc.chrome_device_id) : undefined;
-    if (!browser?.profileDir) return c.json({ error: acc ? `${acc.name}'s Chrome profile is not resolved — AI accounts → ${acc.name} → Probe Chrome, then pick the profile` : "no account has a Chrome-paired browser login — AI accounts → Log in (browser) + Probe Chrome", url }, 400);
+    const picked = engine.qaBrowser(task, env);
+    if ("error" in picked) return c.json({ error: picked.error, url }, 400);
     try {
-        await openInProfile(browser.browser ?? "Google", browser.profileDir, url);
-        return c.json({ opened: url, profile: chromeBrowserLabel(browser) });
+        await openInProfile(picked.browser.browser ?? "Google", picked.browser.profileDir!, url);
+        return c.json({ opened: url, profile: chromeBrowserLabel(picked.browser) });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e), url }, 500);
     }

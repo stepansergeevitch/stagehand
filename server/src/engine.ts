@@ -3,9 +3,10 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { accountBrowserReady, accountOrderOf, accountUsableWith, now, parseEnvVars, type AccountRow, type ConfigDirRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
+import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, now, parseEnvVars, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir } from "./claude/accounts.js";
+import { listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
 import { backfillUsage, recordUsage } from "./usage.js";
 import { notify, taskLink, type Notice } from "./notify.js";
 import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
@@ -74,7 +75,38 @@ const NEEDS_HUMAN: ReadonlySet<TaskStatus> = new Set(["waiting_user", "blocked",
 
 // Required `## ` sections of design.md, in order (numbering optional); mirrored in prompts/design.md.
 export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem", "Change", "Risks and edge cases", "Tests", "QA"] as const;
-export const DESIGN_MAX_WORDS = 700;
+export const DESIGN_MAX_WORDS = 800;
+const LOGIN_POLL_MS = 3_000;
+const LOGIN_WAIT_MS = 15 * 60_000;
+type ChromeTabLike = { url: string; title: string };
+const tabKey = (t: { window: number; tab: number; url: string }): string => `${t.window}:${t.tab}:${t.url}`;
+
+// The proposal is for a human: a fixed section order and a hard word cap keep it dense. Violations go back to the agent
+// through the normal contract-retry path.
+export const designMdProblems = (md: string): string | null => {
+    const problems: string[] = [];
+    const headings = [...md.matchAll(/^##\s+(.+?)\s*$/gm)].map((m) => m[1]!.replace(/^\d+[.)]\s*/, "").toLowerCase());
+    for (const want of DESIGN_SECTIONS) if (!headings.some((h) => h.startsWith(want.toLowerCase()))) problems.push(`design.md is missing the section "## ${want}"`);
+    const words = md.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
+    if (words > DESIGN_MAX_WORDS) problems.push(`design.md is ${words} words; the cap is ${DESIGN_MAX_WORDS} — cut repetition, provenance remarks and prose around tables, keep every path:line`);
+    if (/^\s*```json/m.test(md)) problems.push("design.md contains a JSON block — describe scenarios and plans in prose/tables; design.json carries the structure");
+    const section = (name: string): string | null => {
+        const m = new RegExp(`^##\\s+(?:\\d+[.)]\\s*)?${name}[^\\n]*\\n([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "im").exec(md);
+        return m ? m[1]! : null;
+    };
+    const change = section("Change");
+    if (change !== null && !/^\s*\**Summary:?\**\s*\S/im.test(change)) problems.push("the Change section must open with a `Summary:` line — the whole change in 1–3 imperative clauses, before the table");
+    const risks = section("Risks and edge cases");
+    if (risks !== null) {
+        const bullets = risks.split("\n").filter((l) => /^\s*[-*]\s+\S/.test(l));
+        const missing = bullets.filter((l) => !/action:/i.test(l)).length;
+        if (missing) problems.push(`${missing} bullet(s) in Risks and edge cases have no \`→ action: …\` part — every case names what to do about it`);
+    }
+    const tests = section("Tests");
+    if (tests !== null && !/^\s*\**Run:?\**\s*\n+\s*```/im.test(tests)) problems.push("the Tests section must end with `Run:` followed by a fenced ```bash block with the exact commands (not inline code)");
+    if (/mempalace|research\.md|as research (found|showed)|per the ticket'?s? (own )?note/i.test(md)) problems.push("design.md refers to where facts came from (research.md, mempalace, ticket notes) — state the facts only");
+    return problems.length ? problems.join("; ") : null;
+};
 
 // One paragraph for prompts: where the code lives and how the worktree is laid out.
 const describeRepoLayout = (env: EnvRow, worktree: string | null): string => {
@@ -370,52 +402,101 @@ export class Engine extends EventEmitter {
         this.dispatch(taskId, task.stage, { notes: "Previous attempt did not complete. Continue from the current state of the task directory." });
     }
 
-    // Opens the app in the automation Chrome profile and waits for a human to log in there. The profile persists,
-    // so this is needed once per app session lifetime (core: 365 days; deal: the Auth0 tenant's session).
+    // The Chrome profile browser QA uses for this task (resolved to something `open --profile-directory` accepts).
+    qaBrowser(task: TaskRow, env: EnvRow): { account: AccountRow; browser: ChromeBrowser } | { error: string } {
+        const candidates = this.browserAccounts(env);
+        const account = candidates.find((a) => a.id === task.account_id) ?? candidates[0];
+        if (!account) return { error: "no account has a Chrome-paired browser login — AI accounts → Log in (browser) + Probe Chrome" };
+        const browser = chromeBrowsersOf(account).find((b) => b.deviceId === account.chrome_device_id);
+        if (!browser?.profileDir) return { error: `${account.name}'s Chrome profile is not resolved — AI accounts → ${account.name} → Probe Chrome, then pick the profile` };
+        return { account, browser };
+    }
+
+    // Opens the app in the QA Chrome profile and waits for a human to log in there — no agent: the server polls Chrome's
+    // tabs through osascript. The profile persists, so this is needed once per app session lifetime (core: 365 days;
+    // deal: the Auth0 tenant's session). Deal alt-port hack: Auth0 sends the browser back to https://localhost:3000/?code=…
+    // (whatever listens there); the poll moves such a tab to the task's real port, where the SDK completes the login.
     async qaLogin(taskId: string): Promise<"logged_in" | "timeout" | "failed"> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         const env = this.env(task.env_id);
-        const cd = this.configDirOf(env);
-        const chrome = this.chromeContext(env, cd, task);
-        if (!chrome.ok) {
-            this.setTaskStatus(taskId, "blocked", chrome.reason);
-            throw new Error(chrome.reason);
+        const picked = this.qaBrowser(task, env);
+        if ("error" in picked) {
+            this.setTaskStatus(taskId, "blocked", picked.error);
+            throw new Error(picked.error);
         }
-        const account = chrome.account;
-        const appUrl = this.appUrlFor(task, env);
-        const where = account.chrome_browser_name ? `Chrome profile "${account.chrome_browser_name}"` : "the automation Chrome window";
-        this.setTaskStatus(taskId, "blocked", `waiting for you to log in at ${appUrl} in ${where}`);
-        // One turn to open the page, ONE Bash loop to wait (osascript reads the live tab titles/URLs) — not a model turn per poll.
-        const prompt =
-            `${this.chromeSelectStep(account)} Load the browser tools with one ToolSearch (tabs_context_mcp, tabs_create_mcp, navigate). Create a new tab and navigate to ${appUrl}/. ` +
-            `A human will log in in this window — you must NOT type any credentials. Then run this Bash command in the FOREGROUND (pass timeout 100000; never run it in the background) and wait for it; it polls the tab for 90 seconds. If it prints WAITING, run the exact same command again — up to 6 times in total — until it prints LOGGED_IN:\n` +
-            `osascript -e 'tell application "Google Chrome" to activate'; for i in $(seq 1 9); do t=$(osascript -e 'tell application "Google Chrome" to get {title, URL} of active tab of front window' 2>/dev/null); ` +
-            // Origin-override hack (deal alt-port): Auth0 sends the browser back to the allowed origin; re-open the same query on the real app URL.
-            `case "$t" in *auth0.com*|*"Welcome"*|*"Log in"*|*"Sign in"*|*"login"*) sleep 10;; *"${appUrl}"*) echo LOGGED_IN; exit 0;; ` +
-            `*"localhost:3000/?code="*) u=$(osascript -e 'tell application "Google Chrome" to get URL of active tab of front window'); q=\${u#*localhost:3000/}; osascript -e "tell application \\"Google Chrome\\" to set URL of active tab of front window to \\"${appUrl}/$q\\""; sleep 8;; ` +
-            `*) sleep 10;; esac; done; echo WAITING\n` +
-            `Reply with exactly one line: LOGGED_IN if a run printed LOGGED_IN, TIMEOUT if all 6 runs printed WAITING, or FAILED <reason> if the browser tools or the command did not work.`;
-        const run = startClaude({
-            prompt,
-            cwd: task.worktree_path ?? env.path,
-            configDir: chrome.configDir,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...chrome.extraEnv },
-            chrome: true,
-            maxTurns: 20,
-            model: this.cfg.stageModels.helper ?? "sonnet",
-            allowedTools: ["Bash"],
-        });
-        const outcome = await run.done;
-        if (outcome.result) recordUsage(this.db, { accountId: account.id, envId: env.id, taskId, runId: null, kind: "qa-login", stage: null }, outcome.result);
-        const text = outcome.result?.result ?? "";
-        if (/LOGGED_IN/.test(text)) {
-            this.setTaskStatus(taskId, "idle", "logged in — re-running the blocked stage");
-            this.rerun(taskId, task.stage);
-            return "logged_in";
+        const { browser } = picked;
+        const appUrl = this.appUrlFor(task, env).replace(/\/+$/, "");
+        const where = `Chrome profile "${chromeBrowserLabel(browser)}"`;
+        const helpLine = `log in at ${appUrl} in ${where}; the helper watches the tab and re-runs the stage by itself`;
+        if (this.loginWaits.has(taskId)) {
+            this.setTaskStatus(taskId, "blocked", `waiting for you to ${helpLine}`);
+            return "failed";
         }
-        this.setTaskStatus(taskId, "blocked", /TIMEOUT/.test(text) ? `login window timed out — open ${appUrl} in ${where}, log in, then retry (or click Log in for QA again)` : `login helper failed: ${text.slice(0, 120)} — open ${appUrl} in ${where} and log in yourself, then retry`);
-        return /TIMEOUT/.test(text) ? "timeout" : "failed";
+        this.loginWaits.add(taskId);
+        try {
+            const kind = browser.browser ?? "Google";
+            // Tabs that exist before the open are stale (earlier attempts); only tabs that appear or change afterwards count.
+            const before = new Set((await listChromeTabs(kind)).map(tabKey));
+            await openInProfile(kind, browser.profileDir!, `${appUrl}/`);
+            this.setTaskStatus(taskId, "blocked", `waiting for you to ${helpLine}`);
+            const outcome = await this.waitForLogin(appUrl, kind, LOGIN_WAIT_MS, before);
+            if (outcome === "logged_in") {
+                this.setTaskStatus(taskId, "idle", "logged in — re-running the blocked stage");
+                this.helperReruns.add(taskId);
+                this.rerun(taskId, task.stage);
+                return "logged_in";
+            }
+            this.setTaskStatus(taskId, "blocked", `login window timed out — ${helpLine.replace("the helper watches", "click Log in for QA again; the helper watches")}`);
+            return "timeout";
+        } catch (e) {
+            const msg = String((e as Error).message ?? e).slice(0, 120);
+            this.setTaskStatus(taskId, "blocked", `login helper failed: ${msg} — ${helpLine}`);
+            return "failed";
+        } finally {
+            this.loginWaits.delete(taskId);
+        }
+    }
+
+    private readonly loginWaits = new Set<string>();
+    // Tasks whose current run was started by the login helper: if that run is auth-blocked again, the helper's
+    // "logged in" was wrong (a stale tab) and restarting it would loop — the human is asked instead.
+    private readonly helperReruns = new Set<string>();
+
+    // Polls every tab (all profiles) until one sits on the app, not on a login page and not on an Auth0 callback, for
+    // three consecutive polls. A callback that landed on https://localhost:3000 (alt-port deal FE) is re-opened on the
+    // app's port in the same tab once it has been there for two polls — the app's own FE on 3000 strips that query
+    // within a second, so a query that stays belongs to a login that started on another port.
+    private async waitForLogin(appUrl: string, browserKind: string, budgetMs: number, stale: Set<string>): Promise<"logged_in" | "timeout"> {
+        const origin = new URL(appUrl).origin;
+        const altPort = !/^https?:\/\/localhost:3000$/.test(origin);
+        const isCallback = (u: string) => /^https?:\/\/localhost:3000\/\?(?=.*\bcode=)(?=.*\bstate=)/.test(u);
+        const loginish = (t: ChromeTabLike) => /auth0\.com|\/callback|[?&](code|error)=/.test(t.url) || /welcome|log ?in|sign ?in/i.test(t.title);
+        let stableSince = 0;
+        let stableUrl = "";
+        let callbackSeen = "";
+        const until = Date.now() + budgetMs;
+        while (Date.now() < until) {
+            const tabs = (await listChromeTabs(browserKind)).filter((t) => !stale.has(tabKey(t)));
+            const cb = tabs.find((t) => isCallback(t.url));
+            if (altPort && cb) {
+                if (callbackSeen === cb.url) {
+                    await setChromeTabUrl(cb, `${appUrl}/${cb.url.slice(cb.url.indexOf("/?") + 1)}`, browserKind).catch(() => undefined);
+                    callbackSeen = "";
+                } else callbackSeen = cb.url;
+            } else callbackSeen = "";
+            const onApp = tabs.find((t) => t.url.startsWith(`${origin}/`) && !loginish(t));
+            if (onApp) {
+                if (onApp.url !== stableUrl) {
+                    stableUrl = onApp.url;
+                    stableSince = Date.now();
+                } else if (Date.now() - stableSince >= 2 * LOGIN_POLL_MS) return "logged_in";
+            } else {
+                stableUrl = "";
+            }
+            await new Promise((r) => setTimeout(r, LOGIN_POLL_MS));
+        }
+        return "timeout";
     }
 
     rerun(taskId: string, stage: Stage): void {
@@ -1171,20 +1252,10 @@ export class Engine extends EventEmitter {
         return { ok: true, data: parsed.data };
     }
 
-    // The proposal is for a human: a fixed section order and a hard word cap keep it dense. Violations go back to the agent
-    // through the normal contract-retry path.
     private designMdProblems(taskId: string): string | null {
         const p = join(this.taskDir(taskId), "design.md");
         if (!existsSync(p)) return "design.md was not written";
-        const md = readFileSync(p, "utf8");
-        const problems: string[] = [];
-        const headings = [...md.matchAll(/^##\s+(.+?)\s*$/gm)].map((m) => m[1]!.replace(/^\d+[.)]\s*/, "").toLowerCase());
-        for (const want of DESIGN_SECTIONS) if (!headings.some((h) => h.startsWith(want.toLowerCase()))) problems.push(`design.md is missing the section "## ${want}"`);
-        const words = md.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
-        if (words > DESIGN_MAX_WORDS) problems.push(`design.md is ${words} words; the cap is ${DESIGN_MAX_WORDS} — cut repetition, provenance remarks and prose around tables, keep every path:line`);
-        if (/^\s*```json/m.test(md)) problems.push("design.md contains a JSON block — describe scenarios and plans in prose/tables; design.json carries the structure");
-        if (/mempalace|research\.md|as research (found|showed)|per the ticket'?s? (own )?note/i.test(md)) problems.push("design.md refers to where facts came from (research.md, mempalace, ticket notes) — state the facts only");
-        return problems.length ? problems.join("; ") : null;
+        return designMdProblems(readFileSync(p, "utf8"));
     }
 
     private afterStage(taskId: string, def: StageDef, data: unknown): void {
@@ -1241,11 +1312,16 @@ export class Engine extends EventEmitter {
                 const env = this.env(task.env_id);
                 const acc = this.browserAccounts(env).find((a) => a.id === task.account_id) ?? this.browserAccounts(env)[0];
                 const where = acc?.chrome_browser_name ? `Chrome profile "${acc.chrome_browser_name}"` : "the automation Chrome window";
+                if (this.helperReruns.delete(taskId)) {
+                    this.setTaskStatus(taskId, "blocked", `${def.label} · still not logged in at ${this.appUrlFor(task, env)} in ${where} — log in there (a tab that only looks logged in is not enough: reload it), then click Log in for QA`);
+                    return;
+                }
                 this.setTaskStatus(taskId, "blocked", `${def.label} · log in at ${this.appUrlFor(task, env)} in ${where} — opening it for you`);
                 // Start the login helper right away: it opens the app in the QA Chrome profile, waits for the human, and re-runs the stage.
                 void this.qaLogin(taskId).catch((e: unknown) => console.warn(`[stagehand] auto login helper ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
                 return;
             }
+            this.helperReruns.delete(taskId);
             const failed = qa.scenarios.filter((s) => s.outcome === "fail").length;
             const needsHuman = qa.scenarios.filter((s) => s.outcome === "needs_human").length;
             if (def.stage === "manual_qa" && (failed > 0 || needsHuman > 0)) {
