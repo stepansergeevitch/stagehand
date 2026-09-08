@@ -52,7 +52,7 @@ export const STAGE_DEFS: Record<Stage, StageDef> = {
         outputFile: "qa/before.json",
         chrome: true,
         freshSession: true,
-        maxTurns: 160,
+        maxTurns: 320,
         next: "implementation",
     },
     implementation: {
@@ -74,7 +74,7 @@ export const STAGE_DEFS: Record<Stage, StageDef> = {
         outputFile: "qa/after.json",
         chrome: true,
         freshSession: true,
-        maxTurns: 160,
+        maxTurns: 320,
         next: "user_review",
     },
     user_review: { stage: "user_review", kind: "wait", label: "User Review", next: "pr_creation_review" },
