@@ -1390,10 +1390,24 @@ export class Engine extends EventEmitter {
                 return;
             }
             this.helperReruns.delete(taskId);
+            const blocked = qa.scenarios.filter((s) => s.outcome === "blocked");
             const failed = qa.scenarios.filter((s) => s.outcome === "fail").length;
             const needsHuman = qa.scenarios.filter((s) => s.outcome === "needs_human").length;
-            if (def.stage === "manual_qa" && (failed > 0 || needsHuman > 0)) {
-                const parts = [failed > 0 ? `${failed} scenario(s) failed` : null, needsHuman > 0 ? `${needsHuman} need your own check` : null].filter(Boolean);
+            // A baseline with even one blocked scenario is not a solid base to build on: that scenario has no real
+            // "before" state to diff manual_qa against later. Unlike bridge-miss/auth (handled and retried above),
+            // this covers everything else that can block a scenario (an environment problem, a data issue, ...) —
+            // qa_baseline must not silently sail into implementation on a partial or empty result.
+            if (def.stage === "qa_baseline" && blocked.length > 0) {
+                const reason = qa.blockers[0] ?? blocked[0]!.observation;
+                this.setTaskStatus(
+                    taskId,
+                    "blocked",
+                    `QA baseline · ${blocked.length}/${qa.scenarios.length} scenario(s) blocked, not a solid baseline — ${reason} — fix it, then Retry`,
+                );
+                return;
+            }
+            if (def.stage === "manual_qa" && (failed > 0 || needsHuman > 0 || blocked.length > 0)) {
+                const parts = [failed > 0 ? `${failed} scenario(s) failed` : null, needsHuman > 0 ? `${needsHuman} need your own check` : null, blocked.length > 0 ? `${blocked.length} blocked` : null].filter(Boolean);
                 this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`Manual QA · ${parts.join(" · ")}`, now(), taskId);
             }
         }
