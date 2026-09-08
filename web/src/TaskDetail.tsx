@@ -791,8 +791,16 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                             <b>Please verify this one yourself.</b> {a.observation}
                         </div>
                     )}
-                    {b?.observation && <div style={{ fontSize: 13, color: "var(--ink-2)" }}>before: {b.observation}</div>}
-                    {a?.observation && <div style={{ fontSize: 13, color: "var(--ink-2)" }}>after: {a.observation}</div>}
+                    {(b?.observation || a?.observation) && (
+                        <div className="qa-obs">
+                            {[b, a].map((p) => p?.observation ? (
+                                <div key={p === b ? "before" : "after"} className="qa-obs-row">
+                                    <span className="qa-obs-label">{p === b ? "Before" : "After"} {chip(p.outcome)}</span>
+                                    <ul className="qa-obs-text">{p.observation.split(/;\s+/).map((frag, i) => <li key={i}>{frag}</li>)}</ul>
+                                </div>
+                            ) : null)}
+                        </div>
+                    )}
                     {shots.map((step) => {
                         const bf = b?.shots.find((x) => x.step === step)?.file;
                         const af = a?.shots.find((x) => x.step === step)?.file;
