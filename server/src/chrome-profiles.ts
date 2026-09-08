@@ -112,3 +112,17 @@ export const setChromeTabUrl = (tabRef: Pick<ChromeTab, "window" | "tab">, url: 
     const app = APP_NAMES[browser] ?? "Google Chrome";
     return osascript(`tell application "${app}" to set URL of tab ${tabRef.tab} of window ${tabRef.window} to "${url.replace(/"/g, '\\"')}"`).then(() => undefined);
 };
+
+// Quits and relaunches the browser entirely — closes every window/tab, not just the automation profile. A brand-new
+// CLAUDE_CONFIG_DIR's first Chrome bridge connection often fails until the browser is restarted once (confirmed
+// 2026-09-08: the extension's own error names this — "If this is your first time connecting to Chrome, you may need
+// to restart Chrome for the installation to take effect" — and a probe that failed before a restart succeeded right
+// after, from the same directory, with nothing else changed). Used only as an explicit, human-triggered fallback
+// (the Probe Chrome button) after a first probe attempt fails — never from an unattended background dispatch.
+export const restartChrome = async (browser = "Google"): Promise<void> => {
+    const app = APP_NAMES[browser] ?? "Google Chrome";
+    await new Promise<void>((resolve) => execFile("osascript", ["-e", `tell application "${app}" to quit`], () => resolve()));
+    await new Promise((r) => setTimeout(r, 2_000));
+    await new Promise<void>((resolve, reject) => execFile("open", ["-a", app], (err) => (err ? reject(err) : resolve())));
+    await new Promise((r) => setTimeout(r, 3_000));
+};

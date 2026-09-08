@@ -194,7 +194,7 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                             <b>Browser login</b>
                             <span>
                                 {a.login_ok === null ? <span className="chip">unknown — probe</span> : a.login_ok ? <span className="chip ok">in {a.login_dir ?? a.auth_dir}</span> : <span className="chip bad">none</span>}
-                                <span className="field-hint">Browser stages (QA, login helper) need a claude.ai browser login plus a Chrome profile whose Claude extension is signed into this account; tokens get no Chrome bridge. A login in the account's own config dir serves envs using that dir; "Log in (browser)" adds one in {a.browser_dir}, which serves every env (the env's config dir is mirrored in).</span>
+                                <span className="field-hint">Browser stages (QA, login helper) need a claude.ai browser login plus a Chrome profile whose Claude extension is signed into this account; tokens get no Chrome bridge. A login in the account's own config dir serves envs using that dir; "Log in (browser)" adds one in {a.browser_dir}, which serves every env (the env's config dir is mirrored in). "Probe Chrome" restarts Chrome automatically (closing all its windows/tabs) if the first connection attempt fails — a brand-new login location's first connection often needs that once.</span>
                             </span>
                             <b>Chrome profile</b>
                             <span>

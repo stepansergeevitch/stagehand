@@ -15,6 +15,7 @@ import { listMyTickets } from "./my-tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
 import { recordUsage, taskUsage, usageReport } from "./usage.js";
+import { type ResultEvent } from "./claude/runner.js";
 import { notify } from "./notify.js";
 
 const MODEL_OPTIONS = [
@@ -24,7 +25,7 @@ const MODEL_OPTIONS = [
     { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
 ];
 import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
-import { matchChromeProfiles, openInProfile } from "./chrome-profiles.js";
+import { matchChromeProfiles, openInProfile, restartChrome } from "./chrome-profiles.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
 import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
@@ -334,7 +335,15 @@ app.post("/api/accounts/:id/probe-chrome", async (c) => {
         emitAccount(acc.id);
         return c.json({ ok: false, detail: `no browser login in ${acc.auth_dir} or ${browserDirFor(cfg, acc)} — click Log in (browser) first`, account: publicAccount(accountById(acc.id)!) });
     }
-    const r = await probeChrome(dir, cfg.dataDir, 3, (res) => recordUsage(db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, res));
+    const onProbeResult = (res: ResultEvent) => recordUsage(db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, res);
+    let r = await probeChrome(dir, cfg.dataDir, 3, onProbeResult);
+    let restarted = false;
+    if (!r.ok) {
+        // A brand-new browser dir's first connection often needs Chrome restarted once before the extension notices it.
+        await restartChrome();
+        restarted = true;
+        r = await probeChrome(dir, cfg.dataDir, 2, onProbeResult);
+    }
     const matches = matchChromeProfiles(r.browsers.map((b) => b.deviceId));
     const browsers: ChromeBrowser[] = r.browsers.map((b) => {
         const m = matches.get(b.deviceId);
@@ -354,8 +363,8 @@ app.post("/api/accounts/:id/probe-chrome", async (c) => {
     return c.json({
         ok: r.ok,
         detail: r.ok
-            ? `Chrome bridge answered as ${acc.email ?? acc.name}; ${browsers.length} connected profile(s): ${browsers.map((b) => `${chromeBrowserLabel(b)}${b.account ? ` (${b.account})` : ""}`).join(", ") || "none listed"}`
-            : `no Chrome bridge under ${acc.email ?? acc.name} — install the Claude extension in a Chrome profile and sign it into this claude.ai account, then probe again`,
+            ? `Chrome bridge answered as ${acc.email ?? acc.name}${restarted ? " (needed a Chrome restart first)" : ""}; ${browsers.length} connected profile(s): ${browsers.map((b) => `${chromeBrowserLabel(b)}${b.account ? ` (${b.account})` : ""}`).join(", ") || "none listed"}`
+            : `no Chrome bridge under ${acc.email ?? acc.name} even after restarting Chrome — install the Claude extension in a Chrome profile and sign it into this claude.ai account, then probe again`,
         account: publicAccount(accountById(acc.id)!),
     });
 });
