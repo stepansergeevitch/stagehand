@@ -206,7 +206,11 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                                 ) : <span className="chip bad">no Chrome bridge under this login</span>}
                             </span>
                             <b>Default model</b><span>{modelLabel(a.default_model, settings?.models) ?? "—"}</span>
-                            <b>Windows 5h / 7d</b><span className="mono">{five ? `${Math.round(five.utilization * 100)}%` : "—"} / {week ? `${Math.round(week.utilization * 100)}%` : "—"}</span>
+                            <b>Windows 5h / 7d</b>
+                            <span className="mono">
+                                {five ? (five.expired ? "? (reset since)" : `${Math.round(five.utilization * 100)}%`) : "—"} / {week ? (week.expired ? "?" : `${Math.round(week.utilization * 100)}%`) : "—"}
+                                {five?.updatedAt && <span className="field-hint">as of {new Date(five.updatedAt).toLocaleString()}{a.windows.length ? ` · one window ≈ ${a.windows.map((w) => `$${w.usdPerWindow.toFixed(0)} (${w.window === "five_hour" ? "5 h" : w.window === "seven_day" ? "7 d" : w.window})`).join(", ")} of estimated cost` : ""}</span>}
+                            </span>
                             <b>Consumed today / week</b><span className="mono">{fmtTokens(a.usage?.today.tokens ?? 0)} · ${(a.usage?.today.cost ?? 0).toFixed(2)} / {fmtTokens(a.usage?.week.tokens ?? 0)} · ${(a.usage?.week.cost ?? 0).toFixed(2)}</span>
                             <b>Used by</b><span>{envs.filter((e) => accountOrderOf(e).includes(a.id)).map((e) => `${e.name} (#${accountOrderOf(e).indexOf(a.id) + 1})`).join(", ") || "no environment lists it"}</span>
                         </div>
@@ -239,6 +243,9 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                                     setBusy(null);
                                 }
                             }}>{busy === a.id ? "Checking…" : "Verify"}</button>
+                            {a.plan !== "enterprise" && a.logged_in === 1 && (
+                                <button disabled={a.refreshing_limits} onClick={async () => { setVerify((v) => ({ ...v, [a.id]: { ok: true, text: "refreshing the rate-limit windows (one tiny Sonnet turn)…" } })); try { const r = await api.refreshLimits(a.id); setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } })); await onChangedSafe(); } catch (e) { setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } })); } }}>{a.refreshing_limits ? "Refreshing…" : "Refresh limits"}</button>
+                            )}
                             <button className="danger" disabled={used > 0} title={used > 0 ? "an env or task still uses it" : "forget this account and its token"} onClick={() => { if (confirm(`Forget account ${a.name} and its stored token?`)) void act(() => api.deleteAccount(a.id)); }}>Delete</button>
                         </div>
                         {verify[a.id] && <div className={`test-result ${verify[a.id]!.ok ? "" : "bad"}`}>{verify[a.id]!.text}</div>}
@@ -252,21 +259,22 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
 // Where Stagehand pushes "a task needs you" events: macOS notification centre and, for the phone, an ntfy topic.
 const NotificationsCard = ({ settings, onChanged, onError }: { settings: Settings; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
     const n = settings.notifications;
-    const [f, setF] = useState({ macos: n.macos, ntfyServer: n.ntfyServer, ntfyTopic: n.ntfyTopic ?? "", ntfyToken: "", baseUrl: n.baseUrl ?? "" });
+    const [f, setF] = useState({ macos: n.macos, ntfyServer: n.ntfyServer, ntfyTopic: n.ntfyTopic ?? "", ntfyToken: "", baseUrl: n.baseUrl ?? "", localBaseUrl: n.localBaseUrl ?? "http://localhost:5173" });
     const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
     return (
         <section className="card manager">
             <h2>Notifications {n.ntfyTopic ? <span className="chip ok">phone via ntfy</span> : <span className="chip">desktop only</span>}</h2>
             <p className="field-hint">Sent whenever a task starts waiting on you: review needed, blocked (login, missing data), failed, or parked on a rate limit — once per distinct reason. Phone: install the ntfy app (iOS/Android), subscribe to a private topic name, and enter it here; Stagehand posts to it. Set the public URL so a tap opens the task.</p>
             <div className="env-fields manager-fields">
-                <label className="inline"><input type="checkbox" checked={f.macos} onChange={(e) => setF({ ...f, macos: e.target.checked })} /> macOS notification centre on this Mac</label>
+                <label className="inline"><input type="checkbox" checked={f.macos} onChange={(e) => setF({ ...f, macos: e.target.checked })} /> macOS notification centre on this Mac <span className="chip">{settings.desktopNotifier}</span></label>
+                <label>URL of this UI on this Mac (a click on the desktop notification opens the task there) <input value={f.localBaseUrl} onChange={(e) => setF({ ...f, localBaseUrl: e.target.value })} placeholder="http://localhost:5173" /></label>
                 <label>ntfy topic (a hard-to-guess name, e.g. stagehand-7f3a9c) <input value={f.ntfyTopic} onChange={(e) => setF({ ...f, ntfyTopic: e.target.value })} placeholder="not set — no phone pushes" /></label>
                 <label>ntfy server <input value={f.ntfyServer} onChange={(e) => setF({ ...f, ntfyServer: e.target.value })} /></label>
                 <label>ntfy access token (only for protected topics / self-hosted servers) <input value={f.ntfyToken} onChange={(e) => setF({ ...f, ntfyToken: e.target.value })} placeholder={n.ntfyToken ?? "not set"} /></label>
                 <label>Public URL of this UI for links in pushes <input value={f.baseUrl} onChange={(e) => setF({ ...f, baseUrl: e.target.value })} placeholder="https://your-host:4748" /></label>
             </div>
             <div className="actions">
-                <button className="primary" onClick={async () => { try { await api.patchSettings({ notifications: { macos: f.macos, ntfyServer: f.ntfyServer, ntfyTopic: f.ntfyTopic || null, ...(f.ntfyToken ? { ntfyToken: f.ntfyToken } : {}), baseUrl: f.baseUrl || null } }); setF({ ...f, ntfyToken: "" }); await onChanged(); setResult({ ok: true, text: "saved" }); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Save</button>
+                <button className="primary" onClick={async () => { try { await api.patchSettings({ notifications: { macos: f.macos, ntfyServer: f.ntfyServer, ntfyTopic: f.ntfyTopic || null, ...(f.ntfyToken ? { ntfyToken: f.ntfyToken } : {}), baseUrl: f.baseUrl || null, localBaseUrl: f.localBaseUrl || "http://localhost:5173" } }); setF({ ...f, ntfyToken: "" }); await onChanged(); setResult({ ok: true, text: "saved" }); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Save</button>
                 <button onClick={async () => { setResult({ ok: true, text: "sending…" }); try { const r = await api.testNotification(); setResult({ ok: !r.error, text: `desktop ${r.macos ? "sent" : "off"} · phone ${r.ntfy === null ? "not configured" : r.ntfy ? "sent" : `failed: ${r.error ?? "?"}`}` }); } catch (e) { setResult({ ok: false, text: String((e as Error).message ?? e) }); } }}>Send a test</button>
             </div>
             {result && <div className={`test-result ${result.ok ? "" : "bad"}`}>{result.text}</div>}

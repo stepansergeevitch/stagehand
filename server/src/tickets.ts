@@ -158,8 +158,9 @@ export const fetchTicket = async (
     taskDir: string,
     extraEnv: Record<string, string> = {},
     onResult?: (result: unknown) => void,
+    outFile = "ticket.json",
 ): Promise<Ticket> => {
-    const outPath = join(taskDir, "ticket.json");
+    const outPath = join(taskDir, outFile);
     const restConfigured = ref.source === "clickup" ? !!cfg.clickupToken : !!cfg.linearApiKey;
     let ticket: Ticket;
     if (restConfigured) {
@@ -172,12 +173,22 @@ export const fetchTicket = async (
 };
 
 // Server-side only (ClickUp/Linear REST); refuses instead of spawning an agent when no token is configured.
-export const fetchTicketRest = async (ref: TicketRef, cfg: Config, taskDir: string): Promise<Ticket> => {
+export const fetchTicketRest = async (ref: TicketRef, cfg: Config, taskDir: string, outFile = "ticket.json"): Promise<Ticket> => {
     const restConfigured = ref.source === "clickup" ? !!cfg.clickupToken : !!cfg.linearApiKey;
     if (!restConfigured) throw new Error(`no ${ref.source === "clickup" ? "ClickUp" : "Linear"} token configured — add one under Task managers, then fetch again`);
     const ticket = ref.source === "clickup" ? await fetchClickUpRest(ref, cfg) : await fetchLinearRest(ref, cfg);
-    writeFileSync(join(taskDir, "ticket.json"), JSON.stringify(ticket, null, 2));
+    writeFileSync(join(taskDir, outFile), JSON.stringify(ticket, null, 2));
     return ticket;
+};
+
+// Where a batch task keeps the tickets beyond its first one.
+export const extraTicketFile = (id: string): string => `tickets/${id.replace(/[^A-Za-z0-9_-]/g, "_")}.json`;
+
+// Several tickets rendered as one brief: the agent treats them as a single change set on one branch.
+export const renderTicketsForPrompt = (tickets: Ticket[]): string => {
+    if (tickets.length <= 1) return tickets[0] ? renderTicketForPrompt(tickets[0]) : "";
+    const ids = tickets.map((t) => t.id).join(", ");
+    return `## This task covers ${tickets.length} tickets: ${ids}\n\nImplement all of them together on this one branch as one change set (one PR per repository). The branch name, the design and the PR must cover every ticket; keep each ticket's acceptance criteria separately verifiable.\n\n${tickets.map((t) => renderTicketForPrompt(t)).join("\n\n---\n\n")}`;
 };
 
 export const renderTicketForPrompt = (t: Ticket): string => {

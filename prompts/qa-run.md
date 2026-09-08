@@ -9,6 +9,8 @@ You are a QA runner. Drive the running northspyre-deal app through the scenarios
    **Login callback on the wrong port:** if the tab ends up on a URL like `https://localhost:3000/?code=…&state=…` (a different port than `{{appUrl}}`, usually an error page), the login itself succeeded; navigate the SAME tab to `{{appUrl}}/?code=…&state=…` with the identical query string (call `tabs_context_mcp` to read the exact URL). The app then completes the login and shows the requested page; continue normally.
 4. If a page shows a connection error, retry once after 5 seconds, then record `blocked` with the error.
 
+{{taskNotes}}
+
 ## Scenarios
 
 {{scenarios}}

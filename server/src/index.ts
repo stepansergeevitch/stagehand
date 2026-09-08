@@ -14,9 +14,9 @@ import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
-import { recordUsage, taskUsage, usageReport } from "./usage.js";
+import { recordUsage, taskUsage, usageReport, windowShares } from "./usage.js";
 import { type ResultEvent } from "./claude/runner.js";
-import { notify } from "./notify.js";
+import { desktopNotifier, notify } from "./notify.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -28,7 +28,7 @@ import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf
 import { matchChromeProfiles, openInProfile, restartChrome } from "./chrome-profiles.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
-import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
+import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, probeRateLimits, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
 import { isGitRepo, repoPaths } from "./git.js";
 import { attach, capturePane, ensureSession, killSession, loginSessionName, pipePane, sessionExists, taskSessionName } from "./tmux.js";
 
@@ -175,16 +175,83 @@ const accountUsage = (accountId: string): { today: { tokens: number; cost: numbe
 };
 
 app.get("/api/accounts", (c) => {
-    const limits = db.prepare(`SELECT * FROM rate_limits`).all() as Array<{ account_id: string; window: string; utilization: number; resets_at: number }>;
+    const limits = db.prepare(`SELECT * FROM rate_limits`).all() as Array<{ account_id: string; window: string; utilization: number; resets_at: number; updated_at: string }>;
+    const shares = windowShares(db);
     return c.json(
         accountsAll().map((a) => ({
             ...publicAccount(a),
             setting_up: tokenCaptures.has(a.id),
-            limits: limits.filter((l) => l.account_id === a.id).map(({ window, utilization, resets_at }) => ({ window, utilization, resetsAt: resets_at })),
+            refreshing_limits: limitRefreshes.has(a.id),
+            // A window whose reset instant has passed no longer says anything: the utilisation is unknown (0 at the reset,
+            // plus whatever ran since) until the next run or a refresh reports it.
+            limits: limits.filter((l) => l.account_id === a.id).map(({ window, utilization, resets_at, updated_at }) => ({ window, utilization, resetsAt: resets_at, updatedAt: updated_at, expired: resets_at * 1000 < Date.now() })),
             usage: accountUsage(a.id),
+            windows: shares.filter((s) => s.accountId === a.id).map(({ window, usdPerWindow, samples }) => ({ window, usdPerWindow, samples })),
         })),
     );
 });
+
+// Refreshes an account's rate-limit windows with one trivial streamed turn (the stream reports the current utilisation).
+const limitRefreshes = new Set<string>();
+const refreshLimits = async (acc: AccountRow): Promise<{ ok: boolean; detail: string }> => {
+    if (limitRefreshes.has(acc.id)) return { ok: false, detail: "already refreshing" };
+    limitRefreshes.add(acc.id);
+    emitAccount(acc.id);
+    try {
+        const dir = acc.oauth_token ? cfg.mainConfigDir : acc.auth_dir;
+        const r = await probeRateLimits(dir, cfg.dataDir, authEnv(acc));
+        if (r.result) recordUsage(db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, r.result);
+        if (r.limits) engine.recordRateLimit(acc.id, r.limits);
+        const w = r.limits?.unifiedWindows ?? {};
+        return r.limits
+            ? { ok: true, detail: `windows refreshed: ${Object.entries(w).map(([k, v]) => `${k} ${Math.round(v.utilization * 100)}%`).join(", ")}` }
+            : { ok: false, detail: r.error ?? "no rate-limit information in the run" };
+    } finally {
+        limitRefreshes.delete(acc.id);
+        emitAccount(acc.id);
+    }
+};
+
+app.post("/api/accounts/:id/refresh-limits", async (c) => {
+    const acc = accountById(c.req.param("id"));
+    if (!acc) return c.json({ error: "not found" }, 404);
+    if (!acc.logged_in) return c.json({ ok: false, detail: "account is not logged in" });
+    return c.json(await refreshLimits(acc));
+});
+
+// Background upkeep, so the UI learns about expired windows and lost logins before a run hits them:
+// - a subscription account whose 5-hour window has reset and has had no event since is probed once (cheap, Sonnet, 1 turn);
+// - every account's browser login is re-read (`claude auth status`, no agent) every 15 minutes.
+const REFRESH_TICK_MS = 5 * 60_000;
+const autoRefreshed = new Map<string, number>();
+const autoRefresh = async (): Promise<void> => {
+    for (const acc of accountsAll()) {
+        if (!acc.logged_in || acc.plan === "enterprise") continue;
+        const five = db.prepare(`SELECT resets_at, updated_at FROM rate_limits WHERE account_id = ? AND window = 'five_hour'`).get(acc.id) as { resets_at: number; updated_at: string } | undefined;
+        if (!five) continue;
+        const expired = five.resets_at * 1000 < Date.now();
+        const stale = Date.now() - new Date(five.updated_at).getTime() > 15 * 60_000;
+        const recently = Date.now() - (autoRefreshed.get(acc.id) ?? 0) < 60 * 60_000;
+        const running = (db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE account_id = ? AND status = 'running'`).get(acc.id) as { n: number }).n > 0;
+        if (expired && stale && !recently && !running) {
+            autoRefreshed.set(acc.id, Date.now());
+            await refreshLimits(acc).catch(() => undefined);
+        }
+    }
+};
+let loginTick = 0;
+const autoLoginRefresh = async (): Promise<void> => {
+    if (++loginTick % 3 !== 0) return; // every 15 min
+    for (const acc of accountsAll()) {
+        const before = acc.login_ok;
+        const after = await refreshBrowserLogin(acc).catch(() => null);
+        if (after && after.login_ok !== before) {
+            emitAccount(acc.id);
+            console.log(`[stagehand] browser login for ${acc.name}: ${after.login_ok ? "present" : "GONE"} (${after.login_dir ?? "no dir"})`);
+        }
+    }
+};
+setInterval(() => void autoRefresh().then(autoLoginRefresh), REFRESH_TICK_MS).unref();
 
 app.post("/api/accounts", async (c) => {
     const body = json(z.object({ name: z.string().regex(/^[a-z0-9-]+$/), email: z.string().email().optional(), provider: z.literal("anthropic").default("anthropic") }), await c.req.json());
@@ -482,6 +549,7 @@ app.post("/api/envs", async (c) => {
             branchPrefix: z.string().optional(),
             ticketSource: z.enum(["clickup", "linear"]).default("clickup"),
             envVars: z.string().optional(),
+            cleanupCommand: z.string().optional(),
         }),
         await c.req.json(),
     );
@@ -493,8 +561,8 @@ app.post("/api/envs", async (c) => {
     const configDirId = body.configDirId ?? (configDirsAll().find((d) => d.path === join(body.path, ".claude")) ?? configDirsAll()[0])?.id ?? null;
     const order = body.accountOrder ?? (body.defaultAccountId ? [body.defaultAccountId] : []);
     db.prepare(
-        `INSERT INTO envs (id, name, path, base_branch, default_account_id, account_order, config_dir_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO envs (id, name, path, base_branch, default_account_id, account_order, config_dir_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, cleanup_command, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
         id,
         body.name,
@@ -516,6 +584,7 @@ app.post("/api/envs", async (c) => {
         body.branchPrefix ?? null,
         body.ticketSource ?? "clickup",
         body.envVars ?? null,
+        body.cleanupCommand ?? null,
         now(),
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(id));
@@ -545,6 +614,7 @@ app.patch("/api/envs/:id", async (c) => {
             branchPrefix: z.string().nullable().optional(),
             ticketSource: z.enum(["clickup", "linear"]).optional(),
             envVars: z.string().nullable().optional(),
+            cleanupCommand: z.string().nullable().optional(),
         }),
         await c.req.json(),
     );
@@ -561,7 +631,7 @@ app.patch("/api/envs/:id", async (c) => {
         if (bad) return c.json({ error: bad }, 400);
     }
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         order[0] ?? null,
@@ -584,10 +654,28 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.branchPrefix, env.branch_prefix),
         body.ticketSource ?? env.ticket_source,
         pick(body.envVars, env.env_vars),
+        pick(body.cleanupCommand, env.cleanup_command),
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));
 });
+
+// Per environment: which accounts can run its agent stages and which can run its browser stages, and what is missing —
+// shown up front (dashboard, new-task form) instead of being discovered when a stage blocks.
+app.get("/api/readiness", (c) =>
+    c.json(
+        envsAll().map((env) => {
+            const cd = engine.configDirOf(env);
+            const run = engine.usableAccounts(cd.path);
+            const browser = engine.browserAccounts(env).filter((a) => engine.browserDir(a, cd) !== null);
+            const warnings: string[] = [];
+            if (run.length === 0) warnings.push(`no AI account can run in config dir ${cd.name} — set up a token on the AI accounts page`);
+            if (browser.length === 0) warnings.push("no account can drive Chrome for this environment — QA stages will block (AI accounts → Log in (browser), Probe Chrome)");
+            if (env.ticket_source === "clickup" ? !cfg.clickupToken : !cfg.linearApiKey) warnings.push(`no ${env.ticket_source} token — tickets are fetched by an agent through MCP (slower, may fail)`);
+            return { envId: env.id, envName: env.name, configDir: cd.name, run: run.map((a) => a.name), browser: browser.map((a) => a.name), warnings };
+        }),
+    ),
+);
 
 // ---------- usage analytics ----------
 
@@ -602,12 +690,56 @@ app.get("/api/usage", (c) => {
 
 app.get("/api/tasks", (c) => c.json(engine.listTasks(c.req.query("env"))));
 
+// `tickets` + mode "each": one task per ticket; mode "batch": one task covering all of them (one branch, one PR per repo).
 app.post("/api/tasks", async (c) => {
     const body = json(
-        z.object({ envId: z.string(), ticket: z.string().min(3), accountId: z.string().optional(), model: z.string().optional() }),
+        z.object({
+            envId: z.string(),
+            ticket: z.string().min(3).optional(),
+            tickets: z.array(z.string().min(3)).optional(),
+            mode: z.enum(["each", "batch"]).default("each"),
+            accountId: z.string().optional(),
+            model: z.string().optional(),
+            notes: z.string().optional(),
+        }),
         await c.req.json(),
     );
-    return c.json(engine.createTask(body.envId, body.ticket, body.accountId, body.model));
+    const tickets = [...new Set([...(body.ticket ? [body.ticket] : []), ...(body.tickets ?? [])].map((t) => t.trim()).filter(Boolean))];
+    if (tickets.length === 0) return c.json({ error: "no ticket given" }, 400);
+    const created = body.mode === "batch" || tickets.length === 1 ? [engine.createTask(body.envId, tickets, body.accountId, body.model, body.notes)] : tickets.map((t) => engine.createTask(body.envId, [t], body.accountId, body.model, body.notes));
+    return c.json({ tasks: created });
+});
+
+app.patch("/api/tasks/:id", async (c) => {
+    const body = json(z.object({ notes: z.string().nullable().optional() }), await c.req.json());
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    if (body.notes !== undefined) engine.setNotes(task.id, body.notes);
+    return c.json(engine.getTask(task.id));
+});
+
+// Send a task back to an earlier stage (e.g. after an accidental Approve) with notes; allowed from any non-running state.
+app.post("/api/tasks/:id/return", async (c) => {
+    const body = json(
+        z.object({
+            stage: z.enum(STAGES as [Stage, ...Stage[]]),
+            notes: z.string().optional(),
+            comments: z.array(z.object({ path: z.string().min(1), line: z.number().int().positive(), side: z.enum(["new", "old"]), snippet: z.string(), text: z.string().min(1) })).optional(),
+        }),
+        await c.req.json(),
+    );
+    engine.returnTo(c.req.param("id"), body.stage, body.notes, body.comments);
+    return c.json(engine.getTask(c.req.param("id")));
+});
+
+// Stops the task's BE/FE and tmux session, runs the env's cleanup command, removes the worktree and local branch.
+// ?force=1 discards unpushed commits / uncommitted changes instead of refusing.
+app.post("/api/tasks/:id/cleanup", async (c) => {
+    try {
+        return c.json(await engine.cleanup(c.req.param("id"), c.req.query("force") === "1"));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
 });
 
 // ---------- settings (integrations, defaults) ----------
@@ -622,12 +754,23 @@ app.get("/api/settings", (c) =>
         defaultModel: cfg.defaultModel,
         models: MODEL_OPTIONS,
         notifications: { ...cfg.notifications, ntfyToken: mask(cfg.notifications.ntfyToken) },
+        desktopNotifier: desktopNotifier(),
     }),
 );
 
 // Sends one test push through every configured channel.
 app.post("/api/notifications/test", async (c) =>
-    c.json(await notify(cfg, { title: "Stagehand test", message: "Pushes from Stagehand reach this device.", priority: "default", tags: ["white_check_mark"], ...(cfg.notifications.baseUrl ? { url: `${cfg.notifications.baseUrl.replace(/\/+$/, "")}/#/dashboard` } : {}) })),
+    c.json(
+        await notify(cfg, {
+            title: "Stagehand test",
+            message: "Pushes from Stagehand reach this device.",
+            priority: "default",
+            tags: ["white_check_mark"],
+            ...(cfg.notifications.baseUrl ? { url: `${cfg.notifications.baseUrl.replace(/\/+$/, "")}/#/dashboard` } : {}),
+            localUrl: `${cfg.notifications.localBaseUrl.replace(/\/+$/, "")}/#/dashboard`,
+            group: "stagehand-test",
+        }),
+    ),
 );
 
 app.patch("/api/settings", async (c) => {
@@ -644,6 +787,7 @@ app.patch("/api/settings", async (c) => {
                     ntfyTopic: z.string().nullable().optional(),
                     ntfyToken: z.string().nullable().optional(),
                     baseUrl: z.string().nullable().optional(),
+                    localBaseUrl: z.string().optional(),
                 })
                 .optional(),
         }),
@@ -659,6 +803,7 @@ app.patch("/api/settings", async (c) => {
         if (n.ntfyTopic !== undefined) cfg.notifications.ntfyTopic = n.ntfyTopic?.trim() || null;
         if (n.ntfyToken !== undefined) cfg.notifications.ntfyToken = n.ntfyToken || null;
         if (n.baseUrl !== undefined) cfg.notifications.baseUrl = n.baseUrl?.trim() || null;
+        if (n.localBaseUrl !== undefined && n.localBaseUrl.trim()) cfg.notifications.localBaseUrl = n.localBaseUrl.trim();
     }
     if (body.defaultModel !== undefined) cfg.defaultModel = body.defaultModel;
     saveConfig(cfg);
@@ -681,6 +826,7 @@ app.get("/api/tasks/:id", (c) => {
         pr: engine.readArtifactJson(task.id, "pr.json"),
         prFix: engine.readArtifactJson(task.id, "pr_fix.json"),
         ticket: engine.readArtifactJson(task.id, "ticket.json"),
+        tickets: engine.tickets(task),
         reviews: db.prepare(`SELECT * FROM reviews WHERE task_id = ? ORDER BY created_at`).all(task.id),
         prState: db.prepare(`SELECT * FROM pr_state WHERE task_id = ?`).get(task.id) ?? null,
     });

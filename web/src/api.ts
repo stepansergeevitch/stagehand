@@ -12,10 +12,15 @@ export interface Account {
     // Browser stages need this account's claude.ai browser login (in browser_dir) and a Chrome profile whose extension is signed into it.
     login_ok: number | null; login_dir: string | null; chrome_capable: number | null; chrome_device_id: string | null; chrome_browser_name: string | null;
     browsers: ChromeBrowser[]; browser_dir: string;
-    limits: Array<{ window: string; utilization: number; resetsAt: number }>;
+    // `expired`: the window's reset instant has passed and nothing reported since — the utilisation is unknown, not this number.
+    limits: Array<{ window: string; utilization: number; resetsAt: number; updatedAt: string; expired: boolean }>;
+    refreshing_limits: boolean;
     // Tokens of every kind and estimated cost since local midnight / over the last 7 days (from the usage table).
     usage: { today: { tokens: number; cost: number }; week: { tokens: number; cost: number } };
+    // Subscription accounts: how many estimated dollars one full window holds, learned from runs (empty until a run moved a window).
+    windows: Array<{ window: string; usdPerWindow: number; samples: number }>;
 }
+export interface Readiness { envId: string; envName: string; configDir: string; run: string[]; browser: string[]; warnings: string[] }
 export const accountBrowserReady = (a: Account): boolean => a.login_ok === 1 && a.chrome_capable === 1;
 export const accountUsableWith = (a: Account, configDirPath: string): boolean => a.logged_in === 1 && (a.has_token || a.auth_dir === configDirPath);
 // The env's account priority list (ids); falls back to the single default account.
@@ -52,7 +57,7 @@ export interface Env {
     chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
-    rules: string | null;
+    rules: string | null; cleanup_command: string | null;
 }
 export interface Rules {
     commitPattern: string; commitForbid: string[]; commitHint: string; branchPattern: string; branchHint: string;
@@ -68,25 +73,40 @@ export interface EnvRules {
     rules: Rules; prTemplates: Array<{ dir: string; path: string | null; overridden: boolean }>;
     configDir: { id: string; name: string; path: string }; usableAccounts: string[]; browserAccounts: string[];
 }
-export interface UsageBucket { key: string; label: string; sub?: string; runs: number; cost: number; input: number; output: number; cacheRead: number; cacheWrite: number; turns: number; durationMs: number }
+export interface UsageBucket {
+    key: string; label: string; sub?: string; runs: number; cost: number; input: number; output: number; cacheRead: number; cacheWrite: number; turns: number; durationMs: number;
+    // Subscription accounts: this bucket's cost as a fraction of the account's 5-hour / 7-day window (null = not calibrated yet).
+    fiveHour?: number | null; sevenDay?: number | null;
+}
+export interface WindowShare { accountId: string; accountName: string; window: string; usdPerWindow: number; samples: number }
 export interface UsageReport {
     since: string | null; totals: Omit<UsageBucket, "key" | "label">;
     byEnv: UsageBucket[]; byAccount: UsageBucket[]; byTask: UsageBucket[]; byStage: UsageBucket[]; byModel: UsageBucket[]; byDay: UsageBucket[];
+    shares: WindowShare[];
 }
 export interface TaskUsageRow {
-    key: string; at: string; stage: string | null; kind: string; status: string | null; attempt: number | null; models: string[];
+    key: string; accountId: string | null; at: string; stage: string | null; kind: string; status: string | null; attempt: number | null; models: string[];
     turns: number | null; durationMs: number | null; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number;
 }
 export interface TaskUsage {
     rows: TaskUsageRow[];
     totals: { cost: number; input: number; output: number; cacheRead: number; cacheWrite: number; turns: number; durationMs: number; runs: number };
     byStage: UsageBucket[];
+    byAccount: Array<{ accountId: string; accountName: string; cost: number; fiveHour: number | null; sevenDay: number | null }>;
+    shares: WindowShare[];
 }
-export interface Notifications { macos: boolean; ntfyServer: string; ntfyTopic: string | null; ntfyToken: string | null; baseUrl: string | null }
+// Cost → "% of the account's window" using the calibration list; null when unknown.
+export const windowPct = (shares: WindowShare[], accountId: string | null, window: string, cost: number): number | null => {
+    const s = accountId ? shares.find((x) => x.accountId === accountId && x.window === window) : undefined;
+    return s && s.usdPerWindow > 0 ? (cost / s.usdPerWindow) * 100 : null;
+};
+export const pct = (v: number | null | undefined): string => (v == null ? "—" : v >= 10 ? `${Math.round(v)}%` : v >= 1 ? `${v.toFixed(1)}%` : `${v.toFixed(2)}%`);
+export interface Notifications { macos: boolean; ntfyServer: string; ntfyTopic: string | null; ntfyToken: string | null; baseUrl: string | null; localBaseUrl: string }
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
     notifications: Notifications;
+    desktopNotifier: string;
 }
 export interface Ticket {
     source: "clickup" | "linear"; id: string; url: string | null; title: string; status: string | null; description: string;
@@ -96,8 +116,15 @@ export interface Service { id: string; task_id: string; kind: "be" | "fe"; port:
 export interface Task {
     id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
     branch: string | null; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
-    pinned: number; created_at: string; updated_at: string;
+    pinned: number; notes: string | null; extra_tickets: string | null; created_at: string; updated_at: string;
 }
+export const extraTicketIds = (t: Pick<Task, "extra_tickets">): string[] => {
+    try {
+        const v: unknown = t.extra_tickets ? JSON.parse(t.extra_tickets) : [];
+        return Array.isArray(v) ? v.map((x: { id?: unknown }) => (typeof x?.id === "string" ? x.id : null)).filter((x): x is string => !!x) : [];
+    } catch { return []; }
+};
+export const taskLabel = (t: Pick<Task, "ticket_id" | "extra_tickets">): string => { const x = extraTicketIds(t); return x.length ? `${t.ticket_id} +${x.length}` : t.ticket_id; };
 export interface Run {
     id: string; task_id: string; stage: Stage; kind: string; status: string; account_id: string; started_at: string | null;
     finished_at: string | null; resume_at: string | null; error: string | null; result_json: string | null; cost_usd: number | null;
@@ -132,6 +159,8 @@ export interface TaskDetail {
     pr: { title: string; body: string; base: string } | null;
     prFix: { summary: string } | null;
     ticket: Ticket | null;
+    // Every stored ticket of the task (one, or several for a batch task), in order.
+    tickets: Ticket[];
     reviews: Review[];
     prState: { number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null; updated_at: string } | null;
 }
@@ -171,10 +200,13 @@ export const api = {
             chromeDeviceId?: string | null; chromeBrowserName?: string | null; qaSeedHints?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
+            cleanupCommand?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
     envRules: (id: string) => fetch(`/api/envs/${id}/rules`).then((r) => j<EnvRules>(r)),
+    readiness: () => fetch("/api/readiness").then((r) => j<Readiness[]>(r)),
+    refreshLimits: (id: string) => post<{ ok: boolean; detail: string }>(`/api/accounts/${id}/refresh-limits`),
     deleteEnv: (id: string) => fetch(`/api/envs/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     deleteAccount: (id: string) => fetch(`/api/accounts/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     taskManagers: () => fetch("/api/task-managers").then((r) => j<TaskManager[]>(r)),
@@ -183,7 +215,13 @@ export const api = {
     testTaskManager: (source: "clickup" | "linear") => post<{ ok: boolean; count?: number; sample?: string[]; error?: string }>(`/api/task-managers/${source}/test`),
     tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
-    createTask: (envId: string, ticket: string, accountId?: string, model?: string) => post<Task>("/api/tasks", { envId, ticket, accountId, model }),
+    // mode "each": one task per ticket; "batch": one task covering every ticket.
+    createTasks: (body: { envId: string; tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string }) => post<{ tasks: Task[] }>("/api/tasks", body),
+    patchTask: (id: string, body: { notes?: string | null }) =>
+        fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Task>(r)),
+    returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[] }) => post<Task>(`/api/tasks/${id}/return`, body),
+    cleanup: (id: string, force = false) => post<{ done: string[]; skipped: string[] }>(`/api/tasks/${id}/cleanup${force ? "?force=1" : ""}`),
+    deleteTask: (id: string, keepWorktree = false) => fetch(`/api/tasks/${id}${keepWorktree ? "?worktree=keep" : ""}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
     usage: (days: number) => fetch(`/api/usage?days=${days}`).then((r) => j<UsageReport>(r)),
     taskUsage: (id: string) => fetch(`/api/tasks/${id}/usage`).then((r) => j<TaskUsage>(r)),

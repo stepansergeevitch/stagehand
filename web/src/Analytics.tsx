@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, STAGE_LABEL, type Stage, type UsageBucket, type UsageReport } from "./api";
+import { api, pct, STAGE_LABEL, type Stage, type UsageBucket, type UsageReport } from "./api";
+import { storage } from "./storage";
 
 // Token and cost usage as reported by claude's result events, sliced by environment, account, task, stage, model and day.
 
@@ -22,7 +23,7 @@ const Tile = ({ label, value, sub }: { label: string; value: string; sub?: strin
     </div>
 );
 
-const Breakdown = ({ title, rows, total, labelOf, limit }: { title: string; rows: UsageBucket[]; total: number; labelOf?: (b: UsageBucket) => string; limit?: number }) => {
+const Breakdown = ({ title, rows, total, labelOf, limit, windows }: { title: string; rows: UsageBucket[]; total: number; labelOf?: (b: UsageBucket) => string; limit?: number; windows?: boolean }) => {
     const [all, setAll] = useState(false);
     const shown = limit && !all ? rows.slice(0, limit) : rows;
     return (
@@ -31,13 +32,14 @@ const Breakdown = ({ title, rows, total, labelOf, limit }: { title: string; rows
             {rows.length === 0 && <div className="quiet">nothing in this period</div>}
             {rows.length > 0 && (
                 <table>
-                    <thead><tr><th></th><th>Cost</th><th>Share</th><th>Runs</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Input</th><th>Time</th></tr></thead>
+                    <thead><tr><th></th><th>Cost</th><th>Share</th>{windows && <th title="This cost as a share of the account's 5-hour / 7-day subscription window, calibrated from runs">5h / 7d window</th>}<th>Runs</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Input</th><th>Time</th></tr></thead>
                     <tbody>
                         {shown.map((b) => (
                             <tr key={b.key}>
                                 <td className="usage-label"><b>{labelOf ? labelOf(b) : b.label}</b>{b.sub && <small>{b.sub}</small>}</td>
                                 <td className="mono">{money(b.cost)}</td>
                                 <td><span className="share"><i style={{ width: `${total > 0 ? Math.round((b.cost / total) * 100) : 0}%` }} /><span>{total > 0 ? Math.round((b.cost / total) * 100) : 0}%</span></span></td>
+                                {windows && <td className="mono">{b.fiveHour == null && b.sevenDay == null ? <span title="enterprise, or no run has moved this account's windows yet">—</span> : `${pct(b.fiveHour == null ? null : b.fiveHour * 100)} / ${pct(b.sevenDay == null ? null : b.sevenDay * 100)}`}</td>}
                                 <td className="mono">{b.runs}</td>
                                 <td className="mono">{tokens(b.output)}</td>
                                 <td className="mono">{tokens(b.cacheRead)}</td>
@@ -55,10 +57,10 @@ const Breakdown = ({ title, rows, total, labelOf, limit }: { title: string; rows
 };
 
 export const Analytics = ({ onError }: { onError: (m: string) => void }) => {
-    const [days, setDays] = useState(() => Number(localStorage.getItem("stagehand.usageDays") ?? "7"));
+    const [days, setDays] = useState(() => Number(storage.get("stagehand.usageDays") ?? "7"));
     const [report, setReport] = useState<UsageReport | null>(null);
     useEffect(() => {
-        localStorage.setItem("stagehand.usageDays", String(days));
+        storage.set("stagehand.usageDays", String(days));
         setReport(null);
         void api.usage(days).then(setReport).catch((e: Error) => onError(e.message));
     }, [days, onError]);
@@ -80,7 +82,12 @@ export const Analytics = ({ onError }: { onError: (m: string) => void }) => {
                         <Tile label="Agent time" value={hours(t.durationMs)} sub={`input ${tokens(t.input)}`} />
                     </div>
                     <Breakdown title="By environment" rows={report.byEnv} total={t.cost} />
-                    <Breakdown title="By AI account" rows={report.byAccount} total={t.cost} />
+                    <Breakdown title="By AI account" rows={report.byAccount} total={t.cost} windows />
+                    {report.shares.length > 0 && (
+                        <p className="field-hint">
+                            Window shares: one full window ≈ {report.shares.map((s) => `${money(s.usdPerWindow)} (${s.accountName}, ${s.window === "five_hour" ? "5 h" : s.window === "seven_day" ? "7 d" : s.window}, ${s.samples} sample${s.samples === 1 ? "" : "s"})`).join(" · ")} — learned from how far each run moved the account's limit; refines with every run.
+                        </p>
+                    )}
                     <Breakdown title="By task" rows={report.byTask} total={t.cost} limit={10} />
                     <Breakdown title="By stage" rows={report.byStage} total={t.cost} labelOf={(b) => STAGE_LABEL[b.label as Stage] ?? b.label} />
                     <Breakdown title="By model" rows={report.byModel} total={t.cost} />

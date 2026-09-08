@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, modelLabel, STAGE_LABEL, STAGE_ORDER, type Account, type ConfigDir, type Env, type MyTicket, type Settings, type Task, type TaskDetail } from "./api";
+import { accountOrderOf, accountUsableWith, api, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
 import { TASK_TABS, TaskDetailView, type Tab as TaskTab } from "./TaskDetail";
 import { EnvPage } from "./EnvPage";
 import { ConfigDirPage } from "./ConfigDirPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
 import { Dashboard, needsAttention } from "./Dashboard";
 import { Analytics } from "./Analytics";
+import { storage } from "./storage";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { LazyTerminal } from "./LazyTerminal";
 
 type Page = "dashboard" | "tasks" | "analytics" | "env" | "dir" | ManageTab;
 const NAV: { id: Page; label: string; hint: string }[] = [
@@ -97,16 +100,24 @@ const fmtMoney = (n: number): string => (n >= 100 ? `$${n.toFixed(0)}` : `$${n.t
 
 // Subscription accounts: the two rate-limit windows as stacked bars (d = the rolling 5-hour window, w = the 7-day one).
 // Enterprise accounts have no windows to show; they get what was consumed today and this week instead.
-const Gauge = ({ a }: { a: Account }) => {
+const Gauge = ({ a, onRefresh }: { a: Account; onRefresh: () => void }) => {
     const five = a.limits.find((l) => l.window === "five_hour");
     const week = a.limits.find((l) => l.window === "seven_day");
     const cls = (u: number) => (u >= 0.9 ? "bad" : u >= 0.6 ? "warn" : "");
     const enterprise = a.plan === "enterprise";
     const usage = a.usage ?? { today: { tokens: 0, cost: 0 }, week: { tokens: 0, cost: 0 } };
-    const title = `${a.email ?? "no auth"} · ${a.org ?? ""} · ${a.plan ?? ""}${five ? ` · 5h window ${Math.round(five.utilization * 100)}%` : ""}${week ? ` · 7d window ${Math.round(week.utilization * 100)}%` : ""}${enterprise ? " · what Stagehand ran on this account (tasks, helpers, probes)" : ""}`;
+    // A window past its reset instant says nothing about now; show it as unknown until a run or a refresh reports it.
+    const val = (l: typeof five) => (!l ? "—" : l.expired ? "?" : `${Math.round(l.utilization * 100)}%`);
+    const fill = (l: typeof five) => (!l || l.expired ? 0 : l.utilization);
+    const stale = !!five?.expired || !!week?.expired;
+    const asOf = five?.updatedAt ? new Date(five.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
+    const title = `${a.email ?? "no auth"} · ${a.org ?? ""} · ${a.plan ?? ""}${five ? ` · 5h window ${val(five)}` : ""}${week ? ` · 7d window ${val(week)}` : ""}${asOf ? ` · as of ${asOf}` : ""}${stale ? " · window reset since — click ↻ to refresh (one tiny Sonnet turn)" : ""}${enterprise ? " · what Stagehand ran on this account (tasks, helpers, probes)" : ""}`;
     return (
-        <span className={`gauge ${enterprise ? "enterprise" : ""}`} title={title}>
-            <span className="gauge-name">{a.name}{!a.logged_in && <span className="chip bad">no auth</span>}{a.logged_in === 1 && !a.has_token && <span className="chip warn">legacy</span>}</span>
+        <span className={`gauge ${enterprise ? "enterprise" : ""} ${stale ? "stale" : ""}`} title={title}>
+            <span className="gauge-name">
+                {a.name}{!a.logged_in && <span className="chip bad">no auth</span>}{a.logged_in === 1 && !a.has_token && <span className="chip warn">legacy</span>}
+                {!enterprise && a.logged_in === 1 && <button className="refresh" disabled={a.refreshing_limits} onClick={onRefresh} title="Refresh the windows now (one tiny Sonnet turn)">{a.refreshing_limits ? "…" : "↻"}</button>}
+            </span>
             {enterprise ? (
                 <span className="gauge-usage">
                     <span><small>today</small> {fmtTokens(usage.today.tokens)} · {fmtMoney(usage.today.cost)}</span>
@@ -114,8 +125,8 @@ const Gauge = ({ a }: { a: Account }) => {
                 </span>
             ) : (
                 <span className="gauge-bars">
-                    <span className="gauge-row"><small>d</small><span className="bar"><i className={cls(five?.utilization ?? 0)} style={{ width: `${Math.round((five?.utilization ?? 0) * 100)}%` }} /></span><span>{five ? `${Math.round(five.utilization * 100)}%` : "—"}</span></span>
-                    <span className="gauge-row"><small>w</small><span className="bar"><i className={cls(week?.utilization ?? 0)} style={{ width: `${Math.round((week?.utilization ?? 0) * 100)}%` }} /></span><span>{week ? `${Math.round(week.utilization * 100)}%` : "—"}</span></span>
+                    <span className="gauge-row"><small>d</small><span className="bar"><i className={cls(fill(five))} style={{ width: `${Math.round(fill(five) * 100)}%` }} /></span><span>{val(five)}</span></span>
+                    <span className="gauge-row"><small>w</small><span className="bar"><i className={cls(fill(week))} style={{ width: `${Math.round(fill(week) * 100)}%` }} /></span><span>{val(week)}</span></span>
                 </span>
             )}
         </span>
@@ -129,7 +140,7 @@ export const App = () => {
     const [dirId, setDirId] = useState<string | null>(initial.dirId);
     const [envs, setEnvs] = useState<Env[]>([]);
     const [tasks, setTasks] = useState<Task[]>([]);
-    const [envId, setEnvId] = useState<string>(() => initial.envId ?? localStorage.getItem("stagehand.env") ?? "");
+    const [envId, setEnvId] = useState<string>(() => initial.envId ?? storage.get("stagehand.env") ?? "");
     const [selected, setSelectedRaw] = useState<string | null>(initial.selected);
     const [taskTab, setTaskTab] = useState<TaskTab>(initial.taskTab);
     // Opening a different task starts on its Work tab; a hash-driven change keeps the tab it names.
@@ -141,6 +152,7 @@ export const App = () => {
     const [feed, setFeed] = useState<Record<string, string[]>>({});
     const [modal, setModal] = useState<"task" | "env" | "account" | null>(null);
     const [settings, setSettings] = useState<Settings | null>(null);
+    const [readiness, setReadiness] = useState<Readiness[]>([]);
     useEffect(() => {
         void api.settings().then(setSettings).catch(() => undefined);
     }, [modal]);
@@ -173,11 +185,12 @@ export const App = () => {
     }, []);
 
     const reload = useCallback(async () => {
-        const [a, e, t, d, s] = await Promise.all([api.accounts(), api.envs(), api.tasks(), api.configDirs(), api.settings().catch(() => null)]);
+        const [a, e, t, d, s, r] = await Promise.all([api.accounts(), api.envs(), api.tasks(), api.configDirs(), api.settings().catch(() => null), api.readiness().catch(() => [] as Readiness[])]);
         setAccounts(a);
         setEnvs(e);
         setTasks(t);
         setConfigDirs(d);
+        setReadiness(r);
         if (s) setSettings(s);
         if (!envId && e[0]) setEnvId(e[0].id);
     }, [envId]);
@@ -200,7 +213,7 @@ export const App = () => {
     }, [reload]);
 
     useEffect(() => {
-        localStorage.setItem("stagehand.env", envId);
+        storage.set("stagehand.env", envId);
     }, [envId]);
 
     useEffect(() => {
@@ -255,7 +268,7 @@ export const App = () => {
                 <span className="brand">Stagehand</span>
                 <span className="spacer" />
                 <button className="more" onClick={() => setMoreOpen((v) => !v)} title="Account usage">⋯</button>
-                <span className="extra gauges">{accounts.map((a) => <Gauge key={a.id} a={a} />)}</span>
+                <span className="extra gauges">{accounts.map((a) => <Gauge key={a.id} a={a} onRefresh={() => void api.refreshLimits(a.id).then((r) => { if (!r.ok) setError(`limits refresh (${a.name}): ${r.detail}`); }).then(reload).catch((e: Error) => setError(e.message))} />)}</span>
             </header>
             <div className="body">
                 <nav className="sidebar" aria-label="Sections">
@@ -273,7 +286,7 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <Dashboard envs={envs} tasks={tasks} onOpen={(t) => { setEnvId(t.env_id); setSelected(t.id); setPage("tasks"); }} />
+                            <ErrorBoundary label="Dashboard"><Dashboard envs={envs} tasks={tasks} readiness={readiness} onOpen={(t) => { setEnvId(t.env_id); setSelected(t.id); setPage("tasks"); }} /></ErrorBoundary>
                         </main>
                     </div>
                 )}
@@ -281,7 +294,7 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <Analytics onError={setError} />
+                            <ErrorBoundary label="Analytics"><Analytics onError={setError} /></ErrorBoundary>
                         </main>
                     </div>
                 )}
@@ -345,7 +358,7 @@ export const App = () => {
                                     return (
                                         <div key={t.id} className={`row ${selected === t.id ? "selected" : ""}`} onClick={() => setSelected(t.id)}>
                                             <span className={`icon ${cls}`}>{glyph}</span>
-                                            <span className="name">{t.ticket_id}<small>{t.title ?? ""}</small></span>
+                                            <span className="name">{taskLabel(t)}<small>{t.title ?? ""}</small></span>
                                             <span className="age">{age(t.updated_at)}</span>
                                             <span className="pr" />
                                             <span className="status">{t.status_line ?? STAGE_LABEL[t.stage]}</span>
@@ -360,6 +373,7 @@ export const App = () => {
                         {error && <div className="blocked-box">{error}</div>}
                         {!detail && <div className="empty">Select a task, or add one.</div>}
                         {detail && (
+                            <ErrorBoundary key={detail.task.id} label="Task view">
                             <TaskDetailView
                                 detail={detail}
                                 accounts={accountsFor(envs.find((e) => e.id === detail.task.env_id), accounts, configDirs)}
@@ -376,13 +390,14 @@ export const App = () => {
                                 }}
                                 onCloseTerminal={() => setTerminal(null)}
                             />
+                            </ErrorBoundary>
                         )}
                     </main>
                 </div>}
             </div>
             {modal === "task" && env && (
                 <Modal title={`New task in ${env.name}`} onClose={() => setModal(null)}>
-                    <TaskForm accounts={accountsFor(env, accounts, configDirs)} env={env} settings={settings} onSubmit={async (ticket, acc, model) => { await run(() => api.createTask(env.id, ticket, acc, model)); setModal(null); }} />
+                    <TaskForm accounts={accountsFor(env, accounts, configDirs)} env={env} settings={settings} readiness={readiness.find((r) => r.envId === env.id)} onSubmit={async (body) => { await run(() => api.createTasks({ envId: env.id, ...body })); setModal(null); }} />
                 </Modal>
             )}
             {modal === "env" && (
@@ -435,11 +450,23 @@ const Modal = ({ title, children, onClose, wide }: { title: string; children: Re
 // ClickUp and Linear both use 1 = urgent … 4 = low; 0/null = unset.
 const PRIORITY_MARK: Record<number, string> = { 0: "·", 1: "🔴", 2: "🟠", 3: "🟡", 4: "🔵" };
 
-const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; env: Env; settings: Settings | null; onSubmit: (ticket: string, accountId?: string, model?: string) => Promise<void> }) => {
+// Splits pasted ticket ids/links (one per line, or separated by commas/spaces).
+const splitTickets = (s: string): string[] => [...new Set(s.split(/[\n,;]+|\s+(?=[A-Za-z]|https?:)/).map((x) => x.trim()).filter(Boolean))];
+const looksLikeTicket = (s: string): boolean => /app\.clickup\.com\/t\//.test(s) || /linear\.app\/.+\/issue\//.test(s) || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(s) || /^[a-z0-9]{6,12}$/i.test(s);
+
+const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
+    accounts: Account[]; env: Env; settings: Settings | null; readiness: Readiness | undefined;
+    onSubmit: (body: { tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string }) => Promise<void>;
+}) => {
     const [ticket, setTicket] = useState("");
+    const [mode, setMode] = useState<"each" | "batch">("each");
+    const [notes, setNotes] = useState("");
     const [acc, setAcc] = useState(accountOrderOf(env).find((id) => accounts.some((a) => a.id === id)) ?? accounts[0]?.id ?? "");
     const [model, setModel] = useState(settings?.defaultModel ?? "");
     const [mine, setMine] = useState<{ tickets: MyTicket[]; error?: string } | null>(null);
+    const list = splitTickets(ticket);
+    const bad = list.filter((t) => !looksLikeTicket(t));
+    const toggle = (id: string) => setTicket(list.includes(id) ? list.filter((x) => x !== id).join("\n") : [...list, id].join("\n"));
     useEffect(() => {
         setMine(null);
         void api.myTickets(env.id).then(setMine).catch((e: Error) => setMine({ tickets: [], error: e.message }));
@@ -449,32 +476,46 @@ const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; 
         for (const t of mine?.tickets ?? []) m.set(t.group, [...(m.get(t.group) ?? []), t]);
         return [...m.entries()];
     }, [mine]);
-    const parsed = (() => {
-        const s = ticket.trim();
-        if (/app\.clickup\.com\/t\//.test(s)) return "ClickUp link";
-        if (/linear\.app\/.+\/issue\//.test(s)) return "Linear link";
-        if (/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(s)) return `${env.ticket_source} id`;
-        return s ? "unrecognised" : "";
-    })();
     return (
         <>
+            {readiness && readiness.warnings.length > 0 && (
+                <div className="blocked-box" style={{ marginBottom: 0 }}>
+                    <b>Before you start:</b>
+                    <ul className="plain">{readiness.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+                </div>
+            )}
+            {readiness && readiness.warnings.length === 0 && <span className="field-hint">Ready: agents run as {readiness.run.join(" → ")}; browser QA as {readiness.browser.join(" → ")}.</span>}
             <label>
                 My tickets{" "}
                 {mine === null ? <span className="chip">loading…</span> : mine.error ? <span className="chip bad" title={mine.error}>unavailable</span> : <span className="chip">{mine.tickets.length}{env.ticket_source === "clickup" ? " in current sprint" : " assigned"}</span>}
-                <select value={mine?.tickets.some((t) => t.id === ticket) ? ticket : ""} onChange={(e) => setTicket(e.target.value)} disabled={!mine || mine.tickets.length === 0}>
-                    <option value="">— pick one (sorted by priority) —</option>
-                    {groups.map(([g, list]) => (
-                        <optgroup key={g} label={g}>
-                            {list.map((t) => (
-                                <option key={t.id} value={t.id}>{PRIORITY_MARK[t.priority ?? 0] ?? "·"} {t.id} · {t.title.length > 70 ? `${t.title.slice(0, 70)}…` : t.title} [{t.status}]</option>
-                            ))}
-                        </optgroup>
-                    ))}
-                </select>
+                {mine && mine.tickets.length > 0 && (
+                    <div className="ticket-picker">
+                        {groups.map(([g, tl]) => (
+                            <div key={g}>
+                                <div className="group">{g}</div>
+                                {tl.map((t) => (
+                                    <label key={t.id} className="inline ticket-option">
+                                        <input type="checkbox" checked={list.includes(t.id)} onChange={() => toggle(t.id)} />
+                                        <span>{PRIORITY_MARK[t.priority ?? 0] ?? "·"} <b>{t.id}</b> {t.title.length > 70 ? `${t.title.slice(0, 70)}…` : t.title} <span className="chip">{t.status}</span></span>
+                                    </label>
+                                ))}
+                            </div>
+                        ))}
+                    </div>
+                )}
                 {mine?.error && <span className="hint-line">{mine.error}</span>}
             </label>
-            <label>Ticket id or link <input autoFocus value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder="PRODUCT-8704 · https://app.clickup.com/t/… · https://linear.app/…/issue/…" /></label>
-            {parsed && <span className={`chip ${parsed === "unrecognised" ? "bad" : "accent"}`}>{parsed}</span>}
+            <label>Ticket ids or links (one per line for several) <textarea autoFocus value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder={"PRODUCT-8704\nhttps://app.clickup.com/t/…\nhttps://linear.app/…/issue/…"} style={{ minHeight: 60 }} /></label>
+            {list.length > 0 && <span className={`chip ${bad.length ? "bad" : "accent"}`}>{bad.length ? `unrecognised: ${bad.join(", ")}` : `${list.length} ticket${list.length === 1 ? "" : "s"}`}</span>}
+            {list.length > 1 && (
+                <label>Dispatch
+                    <select value={mode} onChange={(e) => setMode(e.target.value as "each" | "batch")}>
+                        <option value="each">One task per ticket — each gets its own branch and PR ({list.length} tasks)</option>
+                        <option value="batch">One task for all — one branch, one PR per repository</option>
+                    </select>
+                </label>
+            )}
+            <label>Extra instructions for the agents (optional; every stage sees them) <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Constraints, where the code lives, what to skip, how to test…" style={{ minHeight: 60 }} /></label>
             <label>AI account
                 <select value={acc} onChange={(e) => setAcc(e.target.value)}>
                     {accounts.length === 0 && <option value="">— no account can run in this environment's config dir —</option>}
@@ -491,7 +532,9 @@ const TaskForm = ({ accounts, env, settings, onSubmit }: { accounts: Account[]; 
                 </select>
                 <span className="field-hint">Applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet.</span>
             </label>
-            <button className="primary" disabled={!ticket.trim() || parsed === "unrecognised" || accounts.length === 0} onClick={() => onSubmit(ticket.trim(), acc || undefined, model || undefined)}>Start task</button>
+            <button className="primary" disabled={list.length === 0 || bad.length > 0 || accounts.length === 0} onClick={() => onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}) })}>
+                {list.length > 1 ? (mode === "each" ? `Start ${list.length} tasks` : `Start 1 task for ${list.length} tickets`) : "Start task"}
+            </button>
         </>
     );
 };
@@ -579,14 +622,6 @@ const AccountForm = ({ onSubmit }: { onSubmit: (name: string, email?: string) =>
             <button className="primary" disabled={!/^[a-z0-9-]+$/.test(name)} onClick={() => onSubmit(name, email || undefined)}>Set up token</button>
         </>
     );
-};
-
-const LazyTerminal = ({ session }: { session: string }) => {
-    const [T, setT] = useState<null | (typeof import("./Terminal"))["Terminal"]>(null);
-    useEffect(() => {
-        void import("./Terminal").then((m) => setT(() => m.Terminal));
-    }, []);
-    return T ? <T session={session} /> : <div className="term" />;
 };
 
 export { STAGE_ORDER };

@@ -4,6 +4,8 @@ CI is red on the PR for ticket {{ticketId}} (worktree {{worktree}}, branch `{{br
 
 {{failureOutput}}
 
+{{taskNotes}}
+
 {{reviewerNotes}}
 
 ## Rules

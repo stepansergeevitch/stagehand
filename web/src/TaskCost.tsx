@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, STAGE_LABEL, type Stage, type TaskUsage } from "./api";
+import { api, pct, STAGE_LABEL, windowPct, type Stage, type TaskUsage } from "./api";
 import { hours, money, tokens } from "./Analytics";
 
 // Cost tab of a task: what every claude invocation for this task consumed, in order, plus totals and a per-stage split.
@@ -24,13 +24,20 @@ export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: s
                 <div className="tile"><div className="tile-label">Output tokens</div><div className="tile-value">{tokens(t.output)}</div><div className="tile-sub">{t.turns} turns</div></div>
                 <div className="tile"><div className="tile-label">Cache read</div><div className="tile-value">{tokens(t.cacheRead)}</div><div className="tile-sub">write {tokens(t.cacheWrite)}</div></div>
                 <div className="tile"><div className="tile-label">Agent time</div><div className="tile-value">{hours(t.durationMs)}</div><div className="tile-sub">input {tokens(t.input)}</div></div>
+                {data.byAccount.filter((a) => a.fiveHour != null || a.sevenDay != null).map((a) => (
+                    <div className="tile" key={a.accountId} title="This task's cost on the account as a share of its subscription windows, calibrated from how far runs moved the limit">
+                        <div className="tile-label">{a.accountName} · window share</div>
+                        <div className="tile-value">{pct(a.fiveHour == null ? null : a.fiveHour * 100)} <small>of 5 h</small></div>
+                        <div className="tile-sub">{pct(a.sevenDay == null ? null : a.sevenDay * 100)} of 7 d · {money(a.cost)}</div>
+                    </div>
+                ))}
             </div>
             {data.rows.length === 0 && <div className="quiet">nothing recorded yet</div>}
             {data.rows.length > 0 && (
                 <>
                     <h3>Per run</h3>
                     <table>
-                        <thead><tr><th>Started</th><th>Stage</th><th>Status</th><th>Model</th><th>Turns</th><th>Time</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Input</th><th>Cost</th><th>Share</th></tr></thead>
+                        <thead><tr><th>Started</th><th>Stage</th><th>Status</th><th>Model</th><th>Turns</th><th>Time</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Input</th><th>Cost</th><th>Share</th>{data.shares.length > 0 && <th title="of the account's 5-hour window">5h win.</th>}</tr></thead>
                         <tbody>
                             {data.rows.map((r) => (
                                 <tr key={r.key}>
@@ -46,6 +53,7 @@ export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: s
                                     <td className="mono">{tokens(r.input)}</td>
                                     <td className="mono">{money(r.cost)}</td>
                                     <td><span className="share"><i style={{ width: `${t.cost > 0 ? Math.round((r.cost / t.cost) * 100) : 0}%` }} /><span>{t.cost > 0 ? Math.round((r.cost / t.cost) * 100) : 0}%</span></span></td>
+                                    {data.shares.length > 0 && <td className="mono">{pct(windowPct(data.shares, r.accountId, "five_hour", r.cost))}</td>}
                                 </tr>
                             ))}
                         </tbody>

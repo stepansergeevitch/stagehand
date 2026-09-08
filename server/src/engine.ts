@@ -3,12 +3,12 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, now, parseEnvVars, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
+import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
-import { backfillUsage, recordUsage } from "./usage.js";
-import { notify, taskLink, type Notice } from "./notify.js";
+import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage } from "./usage.js";
+import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
 import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
 import { execFile, execFileSync } from "node:child_process";
@@ -16,7 +16,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 import type { Services } from "./services.js";
-import { fetchTicket, fetchTicketRest, parseTicketRef, renderTicketForPrompt, Ticket } from "./tickets.js";
+import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
+import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { DesignResult, QaPassResult, ResearchResult, type QaScenario } from "./stages/contracts.js";
 
@@ -76,8 +77,9 @@ const FIVE_HOUR = "five_hour";
 const NEEDS_HUMAN: ReadonlySet<TaskStatus> = new Set(["waiting_user", "blocked", "failed", "rate_limited"]);
 
 // Required `## ` sections of design.md, in order (numbering optional); mirrored in prompts/design.md.
-export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem", "Change", "Risks and edge cases", "Tests", "QA"] as const;
-export const DESIGN_MAX_WORDS = 800;
+export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem", "Proposed changes", "Change", "Risks and edge cases", "Tests", "QA"] as const;
+export const DESIGN_MAX_WORDS = 900;
+const PROPOSED_MAX_WORDS = 120;
 const LOGIN_POLL_MS = 3_000;
 const LOGIN_WAIT_MS = 15 * 60_000;
 type ChromeTabLike = { url: string; title: string };
@@ -96,6 +98,13 @@ export const designMdProblems = (md: string): string | null => {
         const m = new RegExp(`^##\\s+(?:\\d+[.)]\\s*)?${name}[^\\n]*\\n([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "im").exec(md);
         return m ? m[1]! : null;
     };
+    const proposed = section("Proposed changes");
+    if (proposed !== null) {
+        const words = proposed.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
+        if (words === 0) problems.push("the Proposed changes section is empty — 2–6 short bullets saying in plain words what changes and why");
+        else if (words > PROPOSED_MAX_WORDS) problems.push(`the Proposed changes section is ${words} words; keep it under ${PROPOSED_MAX_WORDS} — plain words, no tables, no code`);
+        if (/^\s*\|/m.test(proposed)) problems.push("the Proposed changes section must not contain a table — the Change table follows in its own section");
+    }
     const change = section("Change");
     if (change !== null && !/^\s*\**Summary:?\**\s*\S/im.test(change)) problems.push("the Change section must open with a `Summary:` line — the whole change in 1–3 imperative clauses, before the table");
     const risks = section("Risks and edge cases");
@@ -138,6 +147,8 @@ export class Engine extends EventEmitter {
         this.recoverInterrupted();
         const n = backfillUsage(this.db, this.cfg.dataDir);
         if (n) console.log(`[stagehand] usage backfilled for ${n} run(s)`);
+        const c = backfillCalibration(this.db, this.cfg.dataDir);
+        if (c) console.log(`[stagehand] rate-limit windows calibrated from ${c} run(s)`);
     }
 
     stopScheduler(): void {
@@ -165,17 +176,26 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task) return;
         const env = this.env(task.env_id);
-        const ref = { source: task.source as "clickup" | "linear", id: task.ticket_id, url: task.ticket_url };
+        const ref: TicketRef = { source: task.source as "clickup" | "linear", id: task.ticket_id, url: task.ticket_url };
+        const extras = extraTicketsOf(task);
         const cd = this.configDirOf(env);
         const account = this.pickAccount(task, STAGE_DEFS.research, env, cd);
-        this.setTaskStatus(taskId, "running", "fetching ticket");
+        this.setTaskStatus(taskId, "running", extras.length ? `fetching ${extras.length + 1} tickets` : "fetching ticket");
         const onResult = (raw: unknown): void => {
             const parsed = ResultEvent.safeParse(raw);
             if (parsed.success) recordUsage(this.db, { accountId: account?.id ?? null, envId: env.id, taskId, runId: null, kind: "ticket-fetch", stage: null }, parsed.data);
         };
-        void fetchTicket(ref, this.cfg, cd.path, env.path, this.taskDir(taskId), { ...parseEnvVars(env.env_vars), ...authEnv(account) }, onResult)
-            .then((ticket) => {
-                this.db.prepare(`UPDATE tasks SET title = ?, ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(ticket.title, ticket.url, now(), taskId);
+        const fetchOne = (r: TicketRef, file: string): Promise<Ticket> => fetchTicket(r, this.cfg, cd.path, env.path, this.taskDir(taskId), { ...parseEnvVars(env.env_vars), ...authEnv(account) }, onResult, file);
+        if (extras.length) mkdirSync(join(this.taskDir(taskId), "tickets"), { recursive: true });
+        void fetchOne(ref, "ticket.json")
+            .then(async (ticket) => {
+                const titles = [ticket.title];
+                for (const x of extras) {
+                    const t = await fetchOne(x, extraTicketFile(x.id)).catch(() => null);
+                    if (t) titles.push(t.title);
+                }
+                const title = extras.length ? `${ticket.title}${titles.length > 1 ? ` + ${titles.slice(1).join(" + ")}` : ""}` : ticket.title;
+                this.db.prepare(`UPDATE tasks SET title = ?, ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(title.slice(0, 300), ticket.url, now(), taskId);
                 this.dispatch(taskId, "research");
             })
             .catch((e: unknown) => {
@@ -360,18 +380,23 @@ export class Engine extends EventEmitter {
 
     // ---------- task creation ----------
 
-    createTask(envId: string, ticketInput: string, accountId?: string, model?: string): TaskRow {
+    // One task per call. `tickets` holds one ticket, or several for a batch task (one branch / one PR set covering them all).
+    createTask(envId: string, tickets: string[], accountId?: string, model?: string, notes?: string): TaskRow {
         const env = this.env(envId);
-        const ref = parseTicketRef(ticketInput, env.ticket_source);
+        const refs = tickets.map((t) => parseTicketRef(t, env.ticket_source));
+        const ref = refs[0];
+        if (!ref) throw new Error("no ticket given");
+        const seen = new Set<string>();
+        const extras = refs.slice(1).filter((r) => r.id !== ref.id && !seen.has(r.id) && seen.add(r.id));
         const id = randomUUID();
         const sessionId = randomUUID();
         const ts = now();
         this.db
             .prepare(
-                `INSERT INTO tasks (id, env_id, ticket_id, source, ticket_url, model, session_id, account_id, stage, status, status_line, pinned, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'research', 'running', 'fetching ticket', 0, ?, ?)`,
+                `INSERT INTO tasks (id, env_id, ticket_id, source, ticket_url, model, session_id, account_id, stage, status, status_line, pinned, notes, extra_tickets, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'research', 'running', 'fetching ticket', 0, ?, ?, ?, ?)`,
             )
-            .run(id, env.id, ref.id, ref.source, ref.url, model ?? this.cfg.defaultModel, sessionId, accountId ?? accountOrderOf(env)[0] ?? null, ts, ts);
+            .run(id, env.id, ref.id, ref.source, ref.url, model ?? this.cfg.defaultModel, sessionId, accountId ?? accountOrderOf(env)[0] ?? null, notes?.trim() || null, extras.length ? JSON.stringify(extras) : null, ts, ts);
         this.taskDir(id);
         const task = this.getTask(id)!;
         this.emit("task", task);
@@ -545,6 +570,90 @@ export class Engine extends EventEmitter {
         this.emit("task", this.getTask(taskId));
     }
 
+    setNotes(taskId: string, notes: string | null): void {
+        this.db.prepare(`UPDATE tasks SET notes = ?, updated_at = ? WHERE id = ?`).run(notes?.trim() || null, now(), taskId);
+        this.emit("task", this.getTask(taskId));
+    }
+
+    // "I approved by mistake" / "I want this redone": send the task back to an earlier stage with notes, from any
+    // non-running state. Stages with a prompt run again with the notes as reviewer notes (like Request changes);
+    // User Review just waits for the human again.
+    returnTo(taskId: string, stage: Stage, notes?: string, comments?: LineComment[]): void {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        const idx = STAGES.indexOf(stage);
+        const cur = STAGES.indexOf(task.stage);
+        if (idx < 0 || idx > cur) throw new Error(`cannot return to ${stage} from ${task.stage}`);
+        const def = STAGE_DEFS[stage];
+        const cs = comments ?? [];
+        const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE task_id = ? AND stage = ? AND verdict = 'changes'`).get(taskId, stage) as { n: number };
+        this.db
+            .prepare(`INSERT INTO reviews (id, task_id, stage, verdict, route_to, notes, comments, created_at) VALUES (?, ?, ?, 'changes', ?, ?, ?, ?)`)
+            .run(randomUUID(), taskId, stage, stage, notes?.trim() || null, cs.length ? JSON.stringify(cs) : null, now());
+        this.setStage(taskId, stage);
+        if (!def.prompt) {
+            this.setTaskStatus(taskId, "waiting_user", `${def.label} · returned by you — needs you`);
+            return;
+        }
+        const hasContent = !!notes?.trim() || cs.length > 0;
+        this.dispatch(taskId, stage, {
+            notes: hasContent
+                ? `${renderReviewNotes(prior.n + 1, notes, cs)}\n\n(The task was sent back to this stage by the human after a later stage; later stages will run again after you.)`
+                : "The human sent the task back to this stage without notes; re-examine the work and improve it. Later stages will run again after you.",
+        });
+    }
+
+    // Everything a finished task still holds on this machine: its BE/FE, its tmux session, its worktree and local branch.
+    // The task itself, its artifacts and history stay. Refuses to drop commits that exist nowhere else unless forced.
+    async cleanup(taskId: string, force: boolean): Promise<{ done: string[]; skipped: string[] }> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        const env = this.env(task.env_id);
+        const vars = parseEnvVars(env.env_vars);
+        const done: string[] = [];
+        const skipped: string[] = [];
+        if (task.worktree_path && task.branch) {
+            const checkouts = this.prCheckouts(task, env).filter((p) => existsSync(p));
+            if (!force) {
+                for (const cwd of checkouts) {
+                    const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch], env).catch(() => "");
+                    const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `origin/${env.base_branch}..HEAD`], env).catch(() => "");
+                    const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
+                    if (ahead || dirty) {
+                        const what = [ahead ? `${ahead.split("\n").length} unpushed commit(s)` : null, dirty ? "uncommitted changes" : null].filter(Boolean).join(" and ");
+                        throw new Error(`${relative(task.worktree_path, cwd) || "the worktree"} has ${what} that exist nowhere else — push them first, or clean up anyway to discard them`);
+                    }
+                }
+            }
+        }
+        await this.services.stopAll(taskId);
+        done.push("BE/FE stopped");
+        await killSession(taskSessionName(task.ticket_id));
+        if (task.worktree_path && existsSync(task.worktree_path)) {
+            if (env.cleanup_command) {
+                this.setTaskStatus(taskId, task.status, "cleanup · running the environment's cleanup command");
+                try {
+                    await runWorktreeSetup(task.worktree_path, env.path, env.cleanup_command, vars);
+                    done.push("cleanup command ran");
+                } catch (e) {
+                    skipped.push(`cleanup command failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                }
+            }
+            if (task.branch) {
+                await removeWorktreeAndBranch(env, task.worktree_path, task.branch, vars).catch((e: unknown) => skipped.push(`worktree: ${String((e as Error).message ?? e).slice(0, 160)}`));
+                if (!existsSync(task.worktree_path)) done.push("worktree and local branch removed");
+            }
+        } else if (task.worktree_path) done.push("worktree already gone");
+        if (task.worktree_path && !existsSync(task.worktree_path)) this.db.prepare(`UPDATE tasks SET worktree_path = NULL, updated_at = ? WHERE id = ?`).run(now(), taskId);
+        rmSync(join(this.taskDir(taskId), "logs"), { recursive: true, force: true });
+        const line = `cleaned up · ${done.join(", ")}${skipped.length ? ` · ${skipped.join("; ")}` : ""}`;
+        this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(line, now(), taskId);
+        this.emit("task", this.getTask(taskId));
+        return { done, skipped };
+    }
+
     review(taskId: string, input: ReviewInput): void {
         const task = this.getTask(taskId);
         if (!task || task.status !== "waiting_user") throw new Error("task is not waiting for review");
@@ -602,6 +711,7 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         const rules = rulesOf(this.configDirOf(env));
         const draft = this.readArtifactJson<{ title: string; body: string; base: string }>(taskId, "pr.json");
+        const existing = this.db.prepare(`SELECT number, url FROM pr_state WHERE task_id = ?`).get(taskId) as { number: number | null; url: string | null } | undefined;
         const checkouts = this.prCheckouts(task, env);
         const created: string[] = [];
         const manual: string[] = [];
@@ -619,6 +729,11 @@ export class Engine extends EventEmitter {
             } catch (e) {
                 this.setTaskStatus(taskId, "failed", `push failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
                 return;
+            }
+            // A task sent back after its PR existed just needs the push; the open PR picks the new commits up.
+            if (existing?.number) {
+                created.push(existing.url ?? `#${existing.number}`);
+                continue;
             }
             if (!rules.allowPrCreate || !draft) {
                 manual.push(`${label}open the PR from \`${task.branch}\``);
@@ -851,6 +966,8 @@ export class Engine extends EventEmitter {
             priority,
             tags: [task.status === "waiting_user" ? "eyes" : task.status === "failed" ? "x" : task.status === "blocked" ? "no_entry" : "hourglass"],
             ...(taskLink(this.cfg, task.id) ? { url: taskLink(this.cfg, task.id)! } : {}),
+            localUrl: localTaskLink(this.cfg, task.id),
+            group: `stagehand-${task.id}`,
         });
     }
 
@@ -907,19 +1024,35 @@ export class Engine extends EventEmitter {
         return row.n;
     }
 
+    // The stored tickets of a task: ticket.json plus tickets/<id>.json for a batch; missing or invalid files are skipped.
+    tickets(task: TaskRow): Ticket[] {
+        const files = ["ticket.json", ...extraTicketsOf(task).map((x) => extraTicketFile(x.id))];
+        const out: Ticket[] = [];
+        for (const f of files) {
+            const raw = this.readArtifactJson<unknown>(task.id, f);
+            const parsed = raw ? Ticket.safeParse(raw) : null;
+            if (parsed?.success) out.push(parsed.data);
+        }
+        return out;
+    }
+
     private promptVars(task: TaskRow, def: StageDef, opts: DispatchOpts): Record<string, string> {
         const env = this.env(task.env_id);
         const taskDir = this.taskDir(task.id);
-        const ticketRaw = this.readArtifactJson<unknown>(task.id, "ticket.json");
-        const ticketParsed = ticketRaw ? Ticket.safeParse(ticketRaw) : null;
+        const tickets = this.tickets(task);
+        const extras = extraTicketsOf(task);
+        const allIds = [task.ticket_id, ...extras.map((x) => x.id)];
         const vars: Record<string, string> = {
-            ticketId: task.ticket_id,
+            ticketId: allIds.join(" + "),
             ticketIdUpper: task.ticket_id.toUpperCase(),
+            ticketIds: allIds.join(", "),
             ticketSource: task.source,
             ticketUrl: task.ticket_url ?? "",
-            ticket: ticketParsed?.success
-                ? renderTicketForPrompt(ticketParsed.data)
-                : `(Stagehand could not fetch the ticket server-side. Fetch ${task.source} ticket ${task.ticket_id} yourself with the ${task.source} MCP tool — for ClickUp: mcp__clickup__clickup_get_task with detail_level "detailed", and its parent if any. If that fails too, write the output file with classification "feature", title "TICKET FETCH FAILED" and the error in summary.)`,
+            ticket: tickets.length
+                ? renderTicketsForPrompt(tickets) +
+                  (tickets.length < allIds.length ? `\n\n(Stagehand could not fetch ${allIds.filter((id) => !tickets.some((t) => t.id === id)).join(", ")} server-side — fetch them yourself with the ${task.source} MCP tool.)` : "")
+                : `(Stagehand could not fetch the ticket server-side. Fetch ${task.source} ticket ${allIds.join(", ")} yourself with the ${task.source} MCP tool — for ClickUp: mcp__clickup__clickup_get_task with detail_level "detailed", and its parent if any. If that fails too, write the output file with classification "feature", title "TICKET FETCH FAILED" and the error in summary.)`,
+            taskNotes: task.notes?.trim() ? `## Instructions from the human for this task (apply them throughout)\n\n${task.notes.trim()}` : "",
             envPath: env.path,
             baseBranch: env.base_branch,
             repoLayout: describeRepoLayout(env, task.worktree_path),
@@ -1191,7 +1324,7 @@ export class Engine extends EventEmitter {
         return true;
     }
 
-    private recordRateLimit(accountId: string, info: RateLimitInfo): void {
+    recordRateLimit(accountId: string, info: RateLimitInfo): void {
         const windows = info.unifiedWindows ?? {};
         const upsert = this.db.prepare(
             `INSERT INTO rate_limits (account_id, window, utilization, resets_at, updated_at) VALUES (?, ?, ?, ?, ?)
@@ -1236,6 +1369,7 @@ export class Engine extends EventEmitter {
                 .prepare(`UPDATE runs SET status = ?, finished_at = ?, error = ?, result_json = ?, cost_usd = ?, num_turns = ? WHERE id = ?`)
                 .run(status, now(), error ?? null, resultJson ?? null, outcome.result?.total_cost_usd ?? null, outcome.result?.num_turns ?? null, runId);
             if (outcome.result) recordUsage(this.db, { accountId: account.id, envId: task.env_id, taskId, runId, kind: "stage", stage: def.stage }, outcome.result);
+            calibrateWindows(this.db, account.id, outcome.firstRateLimit, outcome.lastRateLimit, outcome.result?.total_cost_usd);
         };
 
         const limited = outcome.lastRateLimit && outcome.lastRateLimit.status !== "allowed";

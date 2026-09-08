@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, STAGE_LABEL, STAGE_ORDER, type Account, type QaPass, type Stage, type TaskDetail } from "./api";
-import { Terminal } from "./Terminal";
+import { api, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type QaPass, type Stage, type TaskDetail, type Ticket } from "./api";
+import { LazyTerminal } from "./LazyTerminal";
 import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
@@ -113,6 +113,49 @@ const Sub = ({ title, open = true, children }: { title: React.ReactNode; open?: 
 
 // The ticket as it was fetched from ClickUp/Linear: everything Claude was given, unabridged. Without a stored copy the tab
 // tries one server-side fetch (REST token only, never an agent run) and otherwise shows a plain message with the link.
+const TicketCard = ({ ticket, source }: { ticket: Ticket; source: string }) => (
+    <section className="card ticket-view">
+        <h2>{ticket.id} {ticket.title}</h2>
+        <div className="sub">
+            {ticket.status && <span className="chip">{ticket.status}</span>}
+            <span className="chip">{ticket.source} · {ticket.fetchedVia}</span>
+            {ticket.url && <a href={ticket.url} target="_blank" rel="noreferrer">open in {source} ↗</a>}
+        </div>
+        {ticket.acceptanceCriteria.length > 0 && (
+            <Sub title="Acceptance criteria">
+                <ul className="plain">{ticket.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul>
+            </Sub>
+        )}
+        <Sub title="Description">
+            {ticket.description.trim() ? <Markdown source={ticket.description} /> : <div className="empty">no description</div>}
+        </Sub>
+        {ticket.parent && (
+            <Sub title={<>Parent · {ticket.parent.id} {ticket.parent.title}</>} open={false}>
+                {ticket.parent.description.trim() ? <Markdown source={ticket.parent.description} /> : <div className="empty">no description</div>}
+            </Sub>
+        )}
+    </section>
+);
+
+// The human's own instructions for the task, editable at any time (the next stage run picks the new text up).
+const NotesCard = ({ detail, onSave }: { detail: TaskDetail; onSave: (notes: string) => Promise<void> }) => {
+    const [text, setText] = useState(detail.task.notes ?? "");
+    const [editing, setEditing] = useState(false);
+    useEffect(() => setText(detail.task.notes ?? ""), [detail.task.id, detail.task.notes]);
+    return (
+        <section className="card">
+            <h2>Your instructions {detail.task.notes ? <span className="chip accent">given to every stage</span> : <span className="chip">none</span>}</h2>
+            {!editing && (detail.task.notes ? <div className="md">{detail.task.notes}</div> : <div className="quiet">Extra context for the agents: constraints, where to look, what to skip. Applies to every stage that runs after you save.</div>)}
+            {editing && <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="e.g. Only touch the backend; the FE change ships separately. Use the existing BidRepository." />}
+            <div className="actions" style={{ marginBottom: 0 }}>
+                {!editing && <button onClick={() => setEditing(true)}>{detail.task.notes ? "Edit" : "Add instructions"}</button>}
+                {editing && <button className="primary" onClick={async () => { await onSave(text); setEditing(false); }}>Save</button>}
+                {editing && <button onClick={() => { setText(detail.task.notes ?? ""); setEditing(false); }}>Cancel</button>}
+            </div>
+        </section>
+    );
+};
+
 const TicketView = ({ detail, onFetch }: { detail: TaskDetail; onFetch: () => Promise<void> }) => {
     const { task, ticket } = detail;
     const [state, setState] = useState<"idle" | "fetching" | "failed">("idle");
@@ -149,28 +192,41 @@ const TicketView = ({ detail, onFetch }: { detail: TaskDetail; onFetch: () => Pr
             </section>
         );
     }
+    const all = detail.tickets.length ? detail.tickets : [ticket];
     return (
-        <section className="card ticket-view">
-            <h2>{ticket.id} {ticket.title}</h2>
-            <div className="sub">
-                {ticket.status && <span className="chip">{ticket.status}</span>}
-                <span className="chip">{ticket.source} · {ticket.fetchedVia}</span>
-                {(ticket.url ?? task.ticket_url) && <a href={ticket.url ?? task.ticket_url ?? ""} target="_blank" rel="noreferrer">open in {task.source} ↗</a>}
+        <>
+            {all.length > 1 && <p className="field-hint">Batch task: {all.length} tickets on one branch, one PR per repository.</p>}
+            {all.map((t) => <TicketCard key={t.id} ticket={{ ...t, url: t.url ?? (t.id === task.ticket_id ? task.ticket_url : null) }} source={task.source} />)}
+        </>
+    );
+};
+
+// Stages a task can be sent back to with notes (from any non-running state — e.g. after an accidental Approve).
+const RETURNABLE: Stage[] = ["design_proposal", "implementation", "user_review", "pr_creation_review"];
+const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"]; pending: LineComment[]; onSend: (stage: Stage, notes: string, withComments: boolean) => Promise<void>; onClose: () => void }) => {
+    const idx = STAGE_ORDER.indexOf(task.stage);
+    const options = RETURNABLE.filter((s) => STAGE_ORDER.indexOf(s) <= idx);
+    const [stage, setStage] = useState<Stage>(options[options.length - 1] ?? "design_proposal");
+    const [notes, setNotes] = useState("");
+    if (options.length === 0) return null;
+    const runs = stage !== "user_review";
+    return (
+        <div className="review-box">
+            <b>Send the task back</b> — later stages run again after it.
+            <label style={{ display: "block", margin: "6px 0" }}>
+                Return to{" "}
+                <select value={stage} onChange={(e) => setStage(e.target.value as Stage)}>
+                    {options.map((s) => <option key={s} value={s}>{STAGE_LABEL[s]}{s === task.stage ? " (current)" : ""}</option>)}
+                </select>
+                <span className="field-hint">{runs ? `${STAGE_LABEL[stage]} runs again with your notes as reviewer notes.` : "User Review waits for you again; no agent runs."}</span>
+            </label>
+            <textarea placeholder={runs ? "What should change (required)" : "Notes for yourself (optional)"} value={notes} onChange={(e) => setNotes(e.target.value)} />
+            {stage === "implementation" && pending.length > 0 && <div className="field-hint">{pending.length} draft line comment(s) from Code changes go along.</div>}
+            <div className="actions" style={{ marginBottom: 0 }}>
+                <button className="primary" disabled={runs && !notes.trim() && !(stage === "implementation" && pending.length > 0)} onClick={() => void onSend(stage, notes, stage === "implementation")}>Send back to {STAGE_LABEL[stage]}</button>
+                <button onClick={onClose}>Cancel</button>
             </div>
-            {ticket.acceptanceCriteria.length > 0 && (
-                <Sub title="Acceptance criteria">
-                    <ul className="plain">{ticket.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul>
-                </Sub>
-            )}
-            <Sub title="Description">
-                {ticket.description.trim() ? <Markdown source={ticket.description} /> : <div className="empty">no description</div>}
-            </Sub>
-            {ticket.parent && (
-                <Sub title={<>Parent · {ticket.parent.id} {ticket.parent.title}</>} open={false}>
-                    {ticket.parent.description.trim() ? <Markdown source={ticket.parent.description} /> : <div className="empty">no description</div>}
-                </Sub>
-            )}
-        </section>
+        </div>
     );
 };
 
@@ -235,6 +291,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const researchMd = useArtifactText(task.id, "research.md", has("research.md"));
     const designMd = useArtifactText(task.id, "design.md", has("design.md"));
     const [notes, setNotes] = useState("");
+    const [returning, setReturning] = useState(false);
     const [routeTo, setRouteTo] = useState<"implementation" | "design_proposal">("implementation");
     const [comments, changeComment, clearComments] = useDraftComments(task.id);
     const pending = Object.entries(comments);
@@ -277,6 +334,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             .filter((c): c is Extract<PrComment, { kind: "line" }> => c.kind === "line" && c.line !== null)
             .map((c) => ({ path: c.path, line: c.line ?? 0, side: c.side, snippet: c.snippet, text: c.body, round: 0, by: c.author })),
     ];
+
+    const proposedMd = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^proposed changes/i.test(s.title))?.body.trim() ?? null : null), [designMd]);
 
     // Which workflow steps have something to show (or are the current one).
     const stepHasContent = (s: Stage): boolean => {
@@ -371,6 +430,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             case "design_proposal":
                 return design ? (
                     <Card title="Design proposal" badge={<span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>}>
+                        {proposedMd && <div className="proposed"><b>Proposed changes</b><Markdown source={proposedMd} /></div>}
                         <div className="kv">
                             <b>Plan</b><span>{design.plan.length} layer(s): {design.plan.map((p) => p.layer).join(", ")}</span>
                             <b>Tests</b><span>{design.testPlan.reduce((n, t) => n + t.cases.length, 0)} case(s) in {design.testPlan.length} file(s)</span>
@@ -429,7 +489,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
     return (
         <>
-            <h1>{task.ticket_id} {task.title ?? ""}</h1>
+            <h1>{taskLabel(task)} {task.title ?? ""}</h1>
             <div className="sub">
                 {statusChip(task.status)}
                 <span>{STAGE_LABEL[task.stage]}</span>
@@ -450,7 +510,44 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 )}
                 <button onClick={() => onAction(() => api.pin(task.id))}>{task.pinned ? "Unpin" : "Pin"}</button>
                 {terminal ? <button onClick={onCloseTerminal}>Close terminal</button> : <button disabled={task.status === "running"} onClick={onOpenTerminal}>Open terminal</button>}
+                {task.status !== "running" && currentIdx > 0 && <button onClick={() => setReturning((v) => !v)} title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)">{returning ? "Cancel return" : "Return to a stage…"}</button>}
+                {task.status !== "running" && task.worktree_path && (
+                    <button
+                        title="Stop BE/FE, run the env's cleanup command, remove the worktree and local branch; the task and its history stay"
+                        onClick={() => {
+                            if (!confirm(`Clean up ${task.ticket_id}? BE/FE stop, the worktree and local branch ${task.branch ?? ""} are removed. Pushed commits and the PR are untouched.`)) return;
+                            void onAction(async () => {
+                                try {
+                                    await api.cleanup(task.id);
+                                } catch (e) {
+                                    const msg = String((e as Error).message ?? e);
+                                    if (/nowhere else/.test(msg) && confirm(`${msg}\n\nDiscard them and clean up anyway?`)) await api.cleanup(task.id, true);
+                                    else throw e;
+                                }
+                            });
+                        }}
+                    >
+                        Clean up
+                    </button>
+                )}
+                {task.status !== "running" && (
+                    <button className="danger" title="Forget this task: artifacts, runs, worktree and local branch" onClick={() => { if (confirm(`Delete task ${task.ticket_id} with its artifacts, worktree and local branch? The PR (if any) stays on GitHub.`)) void onAction(() => api.deleteTask(task.id)); }}>Delete</button>
+                )}
             </div>
+            {returning && (
+                <ReturnBox
+                    task={task}
+                    pending={pending.map(([, c]) => c)}
+                    onClose={() => setReturning(false)}
+                    onSend={async (stage, text, withComments) => {
+                        await onAction(async () => {
+                            await api.returnTo(task.id, { stage, ...(text.trim() ? { notes: text } : {}), ...(withComments ? { comments: pending.map(([, c]) => c) } : {}) });
+                            if (withComments) clearComments();
+                        });
+                        setReturning(false);
+                    }}
+                />
+            )}
 
             <div className="widgets">
                 {task.worktree_path ? (
@@ -521,7 +618,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     ["design", "Design proposal"],
                     ["code", `Code changes${pending.length ? ` (${pending.length} 💬)` : ""}`],
                     ["comments", `PR comments${prior.length || pending.length ? ` (${prior.length + pending.length})` : ""}`],
-                    ["ticket", "Ticket"],
+                    ["ticket", `Ticket${detail.tickets.length > 1 ? `s (${detail.tickets.length})` : ""}${task.notes ? " · notes" : ""}`],
                     ["cost", "Cost"],
                 ] as Array<[Tab, string]>).map(([t, label]) => (
                     <button key={t} role="tab" className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{label}</button>
@@ -546,7 +643,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     {stepPanel(step)}
                     {terminal && (
                         <Card title={<>Terminal <code>{terminal}</code></>}>
-                            <Terminal session={terminal} />
+                            <LazyTerminal session={terminal} />
                         </Card>
                     )}
                 </>
@@ -622,7 +719,12 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 </>
             )}
 
-            {tab === "ticket" && <TicketView detail={detail} onFetch={async () => { await api.fetchTicket(task.id); await onAction(async () => undefined); }} />}
+            {tab === "ticket" && (
+                <>
+                    <NotesCard detail={detail} onSave={(text) => onAction(() => api.patchTask(task.id, { notes: text.trim() || null }))} />
+                    <TicketView detail={detail} onFetch={async () => { await api.fetchTicket(task.id); await onAction(async () => undefined); }} />
+                </>
+            )}
             {tab === "cost" && <TaskCost taskId={task.id} refreshKey={task.updated_at} />}
         </>
     );
@@ -732,7 +834,7 @@ const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design
     const tests = parts.find((p) => /^tests?\b|test plan/i.test(p.title));
     if (tests?.md) tests.md = tests.md.replace(/^(\**Run:?\**)\s*`([^`\n]+)`\s*$/im, "$1\n\n```bash\n$2\n```");
     attach(/qa/i, "QA scenarios", <QaScenarios design={design} />, true);
-    const [active, setActive] = useState(0);
+    const [active, setActive] = useState(() => Math.max(0, parts.findIndex((p) => /^proposed changes/i.test(p.title))));
     const cur = parts[Math.min(active, parts.length - 1)];
     return (
         <>

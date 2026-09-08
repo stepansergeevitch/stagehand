@@ -43,6 +43,22 @@ a { color: var(--accent); }
 .gauge .bar i { display: block; height: 100%; background: var(--accent); }
 .gauge .bar i.warn { background: var(--warn); }
 .gauge .bar i.bad { background: var(--bad); }
+.gauge.stale .gauge-bars { opacity: .6; }
+.gauge button.refresh { border: 0; background: transparent; padding: 0 2px; min-height: 0; font-size: 12px; color: var(--ink-3); line-height: 1; }
+.gauge button.refresh:hover { color: var(--accent); }
+/* uncaught errors (outside React's render path) — one line at the bottom, tap to dismiss */
+.fatal { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 80; padding: 8px 12px; background: var(--bad-soft); color: var(--bad); border: 1px solid var(--bad); border-radius: 6px; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; cursor: pointer; }
+.render-error pre { font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; color: var(--ink-2); }
+/* new-task form: tick tickets from the current sprint; several = batch or one task each */
+.ticket-picker { display: grid; gap: 2px; max-height: 240px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; margin-top: 4px; font-size: 13px; }
+.ticket-picker .group { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 4px 0 2px; }
+.ticket-option { display: flex; align-items: baseline; gap: 6px; font-weight: 400; }
+.ticket-option span { overflow-wrap: anywhere; }
+/* design proposal: the plain-words section shown on the step card */
+.proposed { margin: 0 0 10px; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 4px; }
+.proposed > b { display: block; font-size: 12px; color: var(--accent); margin-bottom: 2px; }
+.proposed .markdown { max-width: none; }
+.dashboard .group { padding: 10px 0 2px; font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
 .chip { display: inline-block; padding: 1px 7px; border-radius: 999px; font-family: var(--mono); font-size: 11px; background: var(--code); color: var(--ink-2); }
 .chip.ok { background: var(--ok-soft); color: var(--ok); }
 .chip.warn { background: var(--warn-soft); color: var(--warn); }

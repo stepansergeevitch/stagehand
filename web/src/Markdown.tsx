@@ -4,6 +4,14 @@ import DOMPurify from "dompurify";
 
 marked.setOptions({ gfm: true, breaks: false });
 
+// Links inside rendered markdown (ticket descriptions, PR bodies, design notes) open in a new tab.
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.tagName === "A" && node.hasAttribute("href")) {
+        node.setAttribute("target", "_blank");
+        node.setAttribute("rel", "noopener noreferrer");
+    }
+});
+
 const HEADING = /^H([1-6])$/;
 const level = (el: Element): number => Number(HEADING.exec(el.tagName)?.[1] ?? 0);
 

@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import type { AccountRow } from "../db.js";
 import { claudeEnv } from "./env.js";
-import { ResultEvent } from "./runner.js";
+import { RateLimitInfo, ResultEvent } from "./runner.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -169,6 +169,42 @@ export const probeDefaultModel = async (configDir: string, cwd: string, extraEnv
     } catch (e) {
         console.error(`[probeDefaultModel] ${configDir} failed: ${String(e).slice(0, 300)}`);
         return { ok: false, model: null, error: String((e as Error).message ?? e).slice(0, 200), result: null };
+    }
+};
+
+// One trivial streamed turn: the stream carries a rate_limit_event with the account's current window utilisation, so
+// the top-bar gauges can be refreshed without waiting for the next real run. Costs a few hundred tokens on Sonnet.
+export const probeRateLimits = async (configDir: string, cwd: string, extraEnv: Record<string, string> = {}): Promise<{ ok: boolean; limits: RateLimitInfo | null; result: ResultEvent | null; error: string | null }> => {
+    try {
+        const stdout = await runClaudeJson(
+            ["-p", "Reply with exactly OK", "--output-format", "stream-json", "--verbose", "--permission-mode", "auto", "--max-turns", "1", "--no-session-persistence", "--no-chrome", "--model", "sonnet"],
+            cwd,
+            configDir,
+            extraEnv,
+        );
+        let limits: RateLimitInfo | null = null;
+        let result: ResultEvent | null = null;
+        for (const line of stdout.split("\n")) {
+            if (!line.trim()) continue;
+            let ev: Record<string, unknown>;
+            try {
+                ev = JSON.parse(line) as Record<string, unknown>;
+            } catch {
+                continue;
+            }
+            if (ev["type"] === "rate_limit_event") {
+                const p = RateLimitInfo.safeParse(ev["rate_limit_info"]);
+                if (p.success && p.data.unifiedWindows) limits = p.data;
+            }
+            if (ev["type"] === "result") {
+                const p = ResultEvent.safeParse(ev);
+                if (p.success) result = p.data;
+            }
+        }
+        const ok = !!result && !result.is_error;
+        return { ok, limits, result, error: ok ? (limits ? null : "the run reported no rate-limit windows (API-key or enterprise session?)") : result?.result?.slice(0, 200) ?? "run failed" };
+    } catch (e) {
+        return { ok: false, limits: null, result: null, error: String((e as Error).message ?? e).slice(0, 200) };
     }
 };
 

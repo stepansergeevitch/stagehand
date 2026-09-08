@@ -99,6 +99,9 @@ export interface RunOutcome {
     exitCode: number | null;
     signal: NodeJS.Signals | null;
     stderr: string;
+    // First and last rate-limit snapshots the run emitted: together with the run's cost they calibrate how many dollars
+    // a subscription window holds (see engine.calibrateWindows).
+    firstRateLimit: RateLimitInfo | null;
     lastRateLimit: RateLimitInfo | null;
 }
 
@@ -171,6 +174,7 @@ export const startClaude = (spec: RunSpec): ClaudeRun => {
 
     let result: ResultEvent | null = null;
     let lastRateLimit: RateLimitInfo | null = null;
+    let firstRateLimit: RateLimitInfo | null = null;
     let stderr = "";
     let buffer = "";
 
@@ -192,6 +196,7 @@ export const startClaude = (spec: RunSpec): ClaudeRun => {
             const parsed = RateLimitInfo.safeParse(ev["rate_limit_info"]);
             if (parsed.success) {
                 lastRateLimit = parsed.data;
+                firstRateLimit ??= parsed.data;
                 emitter.emit("rate_limit", parsed.data);
             }
         }
@@ -214,12 +219,12 @@ export const startClaude = (spec: RunSpec): ClaudeRun => {
         child.on("close", (code, signal) => {
             if (buffer) handleLine(buffer);
             log?.end();
-            resolve({ result, exitCode: code, signal, stderr: stderr.slice(-4000), lastRateLimit });
+            resolve({ result, exitCode: code, signal, stderr: stderr.slice(-4000), firstRateLimit, lastRateLimit });
         });
         child.on("error", (err) => {
             stderr += String(err);
             log?.end();
-            resolve({ result: null, exitCode: null, signal: null, stderr: stderr.slice(-4000), lastRateLimit });
+            resolve({ result: null, exitCode: null, signal: null, stderr: stderr.slice(-4000), firstRateLimit, lastRateLimit });
         });
     });
 

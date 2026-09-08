@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type DiffFile, type DiffLine, type LineComment } from "./api";
+import { storage } from "./storage";
 
 // Tap a line → write a comment anchored to it. Drafts live in localStorage until the review is sent.
 export const commentKey = (c: Pick<LineComment, "path" | "side" | "line">): string => `${c.path}:${c.side}:${c.line}`;
@@ -138,14 +139,14 @@ export const useDraftComments = (taskId: string): [Record<string, LineComment>, 
     const storageKey = `stagehand.review.${taskId}`;
     const [comments, setComments] = useState<Record<string, LineComment>>(() => {
         try {
-            return JSON.parse(localStorage.getItem(storageKey) ?? "{}") as Record<string, LineComment>;
+            return JSON.parse(storage.get(storageKey) ?? "{}") as Record<string, LineComment>;
         } catch {
             return {};
         }
     });
     useEffect(() => {
         try {
-            localStorage.setItem(storageKey, JSON.stringify(comments));
+            storage.set(storageKey, JSON.stringify(comments));
         } catch {
             /* storage unavailable */
         }

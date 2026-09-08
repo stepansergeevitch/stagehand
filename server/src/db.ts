@@ -144,6 +144,8 @@ export interface EnvRow {
     env_vars: string | null;
     // Legacy: rules used to live on the env; they moved to config_dirs.rules (migrated on startup, kept for reference).
     rules: string | null;
+    // Runs from the worktree before it is removed by "Clean up" (drop a per-task database, free caches, …); {{worktree}} / {{envPath}} placeholders.
+    cleanup_command: string | null;
     created_at: string;
 }
 
@@ -187,9 +189,22 @@ export interface TaskRow {
     status: TaskStatus;
     status_line: string | null;
     pinned: number;
+    // Free text from the human at creation (or later): constraints, hints, what to focus on — injected into every stage prompt.
+    notes: string | null;
+    // JSON array of {source,id,url} for the other tickets a batch task covers (ticket_id is the first one).
+    extra_tickets: string | null;
     created_at: string;
     updated_at: string;
 }
+
+export const extraTicketsOf = (t: Pick<TaskRow, "extra_tickets">): Array<{ source: "clickup" | "linear"; id: string; url: string | null }> => {
+    try {
+        const v: unknown = t.extra_tickets ? JSON.parse(t.extra_tickets) : [];
+        return Array.isArray(v) ? v.filter((x): x is { source: "clickup" | "linear"; id: string; url: string | null } => !!x && typeof x === "object" && typeof (x as { id?: unknown }).id === "string") : [];
+    } catch {
+        return [];
+    }
+};
 
 export interface RunRow {
     id: string;
@@ -235,6 +250,21 @@ export interface RateLimitRow {
     window: string;
     utilization: number;
     resets_at: number;
+    updated_at: string;
+}
+
+// How many dollars (claude's list-price estimate) one full rate-limit window of a subscription account holds, learned from
+// runs: a run that moved the window's utilization by Δu while costing $c says the window is worth c/Δu. Rolling average.
+export interface WindowCalibrationRow {
+    account_id: string;
+    window: string;
+    usd_per_window: number;
+    samples: number;
+    // Accumulator: utilisation and reset instant when the current measurement started, and the cost spent since.
+    // A sample is taken once the window moved enough (the 7-day window moves ~1% per run, so single runs are too noisy).
+    anchor_u: number | null;
+    anchor_resets: number | null;
+    anchor_cost: number;
     updated_at: string;
 }
 
@@ -360,6 +390,17 @@ CREATE TABLE IF NOT EXISTS usage (
 );
 CREATE INDEX IF NOT EXISTS usage_at ON usage(at);
 CREATE INDEX IF NOT EXISTS usage_run ON usage(run_id);
+CREATE TABLE IF NOT EXISTS window_calibration (
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    window TEXT NOT NULL,
+    usd_per_window REAL NOT NULL,
+    samples INTEGER NOT NULL DEFAULT 1,
+    anchor_u REAL,
+    anchor_resets INTEGER,
+    anchor_cost REAL NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, window)
+);
 CREATE TABLE IF NOT EXISTS reviews (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id),
@@ -407,6 +448,12 @@ const MIGRATIONS: Array<[string, string]> = [
     ["config_dirs.login_email", `ALTER TABLE config_dirs ADD COLUMN login_email TEXT`],
     ["config_dirs.login_ok", `ALTER TABLE config_dirs ADD COLUMN login_ok INTEGER`],
     ["config_dirs.chrome_browsers", `ALTER TABLE config_dirs ADD COLUMN chrome_browsers TEXT`],
+    ["tasks.notes", `ALTER TABLE tasks ADD COLUMN notes TEXT`],
+    ["tasks.extra_tickets", `ALTER TABLE tasks ADD COLUMN extra_tickets TEXT`],
+    ["envs.cleanup_command", `ALTER TABLE envs ADD COLUMN cleanup_command TEXT`],
+    ["window_calibration.anchor_u", `ALTER TABLE window_calibration ADD COLUMN anchor_u REAL`],
+    ["window_calibration.anchor_resets", `ALTER TABLE window_calibration ADD COLUMN anchor_resets INTEGER`],
+    ["window_calibration.anchor_cost", `ALTER TABLE window_calibration ADD COLUMN anchor_cost REAL NOT NULL DEFAULT 0`],
 ];
 
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>
