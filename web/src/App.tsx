@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { accountOrderOf, accountUsableWith, api, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
 import { TASK_TABS, TaskDetailView, type Tab as TaskTab } from "./TaskDetail";
 import { EnvPage } from "./EnvPage";
@@ -459,6 +459,61 @@ const PRIORITY_MARK: Record<number, string> = { 0: "·", 1: "🔴", 2: "🟠", 3
 const splitTickets = (s: string): string[] => [...new Set(s.split(/[\n,;]+|\s+(?=[A-Za-z]|https?:)/).map((x) => x.trim()).filter(Boolean))];
 const looksLikeTicket = (s: string): boolean => /app\.clickup\.com\/t\//.test(s) || /linear\.app\/.+\/issue\//.test(s) || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(s) || /^[a-z0-9]{6,12}$/i.test(s);
 
+// The sprint's tickets in a dropdown (closed by default, so the form stays short): search box, checkboxes, picked ones as chips.
+const TicketPicker = ({ groups, selected, onToggle }: { groups: Array<[string, MyTicket[]]>; selected: string[]; onToggle: (id: string) => void }) => {
+    const [open, setOpen] = useState(false);
+    const [q, setQ] = useState("");
+    const ref = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (!open) return;
+        const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+        const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+        document.addEventListener("mousedown", onDown);
+        document.addEventListener("keydown", onKey, true);
+        return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey, true); };
+    }, [open]);
+    const all = groups.flatMap(([, tl]) => tl);
+    const picked = all.filter((t) => selected.includes(t.id));
+    const needle = q.trim().toLowerCase();
+    const match = (t: MyTicket) => !needle || t.id.toLowerCase().includes(needle) || t.title.toLowerCase().includes(needle);
+    return (
+        <div className="ticket-dropdown" ref={ref}>
+            <button type="button" className="ticket-dropdown-toggle" onClick={() => setOpen((v) => !v)}>
+                {picked.length ? `${picked.length} picked` : "Pick from my tickets"} <span className="caret">{open ? "▴" : "▾"}</span>
+            </button>
+            {picked.length > 0 && (
+                <span className="ticket-chips">
+                    {picked.map((t) => <span key={t.id} className="chip accent" title={t.title}>{t.id} <button type="button" className="chip-x" onClick={() => onToggle(t.id)} aria-label={`remove ${t.id}`}>×</button></span>)}
+                </span>
+            )}
+            {open && (
+                <div className="ticket-menu">
+                    <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by id or title…" />
+                    <div className="ticket-menu-list">
+                        {groups.map(([g, tl]) => {
+                            const shown = tl.filter(match);
+                            if (shown.length === 0) return null;
+                            return (
+                                <div key={g}>
+                                    <div className="group">{g}</div>
+                                    {shown.map((t) => (
+                                        <label key={t.id} className={`inline ticket-option ${selected.includes(t.id) ? "picked" : ""}`}>
+                                            <input type="checkbox" checked={selected.includes(t.id)} onChange={() => onToggle(t.id)} />
+                                            <span>{PRIORITY_MARK[t.priority ?? 0] ?? "·"} <b>{t.id}</b> {t.title.length > 70 ? `${t.title.slice(0, 70)}…` : t.title} <span className="chip">{t.status}</span></span>
+                                        </label>
+                                    ))}
+                                </div>
+                            );
+                        })}
+                        {all.filter(match).length === 0 && <div className="quiet">nothing matches</div>}
+                    </div>
+                    <div className="actions" style={{ margin: "6px 0 0" }}><button type="button" className="primary" onClick={() => setOpen(false)}>Done{picked.length ? ` (${picked.length})` : ""}</button></div>
+                </div>
+            )}
+        </div>
+    );
+};
+
 const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
     accounts: Account[]; env: Env; settings: Settings | null; readiness: Readiness | undefined;
     onSubmit: (body: { tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string }) => Promise<void>;
@@ -490,26 +545,13 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                 </div>
             )}
             {readiness && readiness.warnings.length === 0 && <span className="field-hint">Ready: agents run as {readiness.run.join(" → ")}; browser QA as {readiness.browser.join(" → ")}.</span>}
-            <label>
-                My tickets{" "}
-                {mine === null ? <span className="chip">loading…</span> : mine.error ? <span className="chip bad" title={mine.error}>unavailable</span> : <span className="chip">{mine.tickets.length}{env.ticket_source === "clickup" ? " in current sprint" : " assigned"}</span>}
-                {mine && mine.tickets.length > 0 && (
-                    <div className="ticket-picker">
-                        {groups.map(([g, tl]) => (
-                            <div key={g}>
-                                <div className="group">{g}</div>
-                                {tl.map((t) => (
-                                    <label key={t.id} className="inline ticket-option">
-                                        <input type="checkbox" checked={list.includes(t.id)} onChange={() => toggle(t.id)} />
-                                        <span>{PRIORITY_MARK[t.priority ?? 0] ?? "·"} <b>{t.id}</b> {t.title.length > 70 ? `${t.title.slice(0, 70)}…` : t.title} <span className="chip">{t.status}</span></span>
-                                    </label>
-                                ))}
-                            </div>
-                        ))}
-                    </div>
-                )}
+            <div className="ticket-field">
+                <span className="ticket-field-label">My tickets{" "}
+                    {mine === null ? <span className="chip">loading…</span> : mine.error ? <span className="chip bad" title={mine.error}>unavailable</span> : <span className="chip">{mine.tickets.length}{env.ticket_source === "clickup" ? " in current sprint" : " assigned"}</span>}
+                </span>
+                {mine && mine.tickets.length > 0 && <TicketPicker groups={groups} selected={list} onToggle={toggle} />}
                 {mine?.error && <span className="hint-line">{mine.error}</span>}
-            </label>
+            </div>
             <label>Ticket ids or links (one per line for several) <textarea autoFocus value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder={"PRODUCT-8704\nhttps://app.clickup.com/t/…\nhttps://linear.app/…/issue/…"} style={{ minHeight: 60 }} /></label>
             {list.length > 0 && <span className={`chip ${bad.length ? "bad" : "accent"}`}>{bad.length ? `unrecognised: ${bad.join(", ")}` : `${list.length} ticket${list.length === 1 ? "" : "s"}`}</span>}
             {list.length > 1 && (

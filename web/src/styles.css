@@ -49,11 +49,24 @@ a { color: var(--accent); }
 /* uncaught errors (outside React's render path) — one line at the bottom, tap to dismiss */
 .fatal { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 80; padding: 8px 12px; background: var(--bad-soft); color: var(--bad); border: 1px solid var(--bad); border-radius: 6px; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; cursor: pointer; }
 .render-error pre { font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; color: var(--ink-2); }
-/* new-task form: tick tickets from the current sprint; several = batch or one task each */
-.ticket-picker { display: grid; gap: 2px; max-height: 240px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; margin-top: 4px; font-size: 13px; }
-.ticket-picker .group { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 4px 0 2px; }
-.ticket-option { display: flex; align-items: baseline; gap: 6px; font-weight: 400; }
+/* new-task form: tick tickets from the current sprint in a dropdown; several = batch or one task each */
+.ticket-field { display: grid; gap: 4px; }
+.ticket-field-label { font-size: 13px; color: var(--ink-2); }
+.ticket-dropdown { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ticket-dropdown-toggle { text-align: left; }
+.ticket-dropdown-toggle .caret { color: var(--ink-3); margin-left: 4px; }
+.ticket-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.ticket-chips .chip { display: inline-flex; align-items: center; gap: 2px; }
+.chip-x { border: 0; background: transparent; padding: 0 0 0 2px; min-height: 0; font-size: 12px; line-height: 1; color: inherit; cursor: pointer; }
+.ticket-menu { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; width: min(560px, calc(100vw - 48px)); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 8px 10px; display: grid; gap: 6px; }
+.ticket-menu > input { width: 100%; }
+.ticket-menu-list { display: grid; gap: 2px; max-height: min(320px, 50vh); overflow: auto; font-size: 13px; }
+.ticket-menu-list .group { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 4px 0 2px; }
+.ticket-option { display: flex; align-items: baseline; gap: 6px; font-weight: 400; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+.ticket-option:hover { background: var(--bg); }
+.ticket-option.picked { background: var(--accent-soft); }
 .ticket-option span { overflow-wrap: anywhere; }
+@media (max-width: 760px) { .ticket-menu { position: fixed; left: 12px; right: 12px; width: auto; top: auto; bottom: 12px; max-height: 70vh; } }
 /* design proposal: the plain-words section shown on the step card */
 .proposed { margin: 0 0 10px; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 4px; }
 .proposed > b { display: block; font-size: 12px; color: var(--accent); margin-bottom: 2px; }
