@@ -1,6 +1,59 @@
-import { useEffect, useMemo, useState } from "react";
-import { api, type DiffFile, type DiffLine, type LineComment } from "./api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type LineComment } from "./api";
 import { storage } from "./storage";
+
+// Which slice of the branch the diff shows: everything vs the base (default, the only view that takes line comments),
+// only what is uncommitted, or a hand-picked set of commits.
+export type DiffFilter = { kind: "all" } | { kind: "uncommitted" } | { kind: "commits"; shas: string[] };
+
+const ago = (iso: string): string => {
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 3600) return `${Math.max(1, Math.floor(s / 60))}m`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h`;
+    return `${Math.floor(s / 86400)}d`;
+};
+
+// A dropdown over the branch's commits: tick any number of them (newest first), or switch to all / uncommitted.
+const CommitPicker = ({ commits, uncommitted, filter, onChange }: { commits: BranchCommit[]; uncommitted: boolean; filter: DiffFilter; onChange: (f: DiffFilter) => void }) => {
+    const [open, setOpen] = useState(false);
+    const ref = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (!open) return;
+        const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+        const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+        document.addEventListener("mousedown", onDown);
+        document.addEventListener("keydown", onKey);
+        return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+    }, [open]);
+    const picked = new Set(filter.kind === "commits" ? filter.shas : []);
+    const toggle = (sha: string) => {
+        const next = new Set(picked);
+        next.has(sha) ? next.delete(sha) : next.add(sha);
+        onChange(next.size === 0 ? { kind: "all" } : { kind: "commits", shas: [...next] });
+    };
+    const label = filter.kind === "all" ? "All changes" : filter.kind === "uncommitted" ? "Uncommitted only" : `${picked.size} commit${picked.size === 1 ? "" : "s"}`;
+    const multiRepo = commits.some((c) => c.repo);
+    return (
+        <div className="commit-picker" ref={ref}>
+            <button className={filter.kind === "all" ? "" : "on"} onClick={() => setOpen((v) => !v)} title="Show the diff of specific commits">{label} ▾</button>
+            {open && (
+                <div className="commit-menu">
+                    <label className="inline commit-row"><input type="radio" checked={filter.kind === "all"} onChange={() => onChange({ kind: "all" })} /> <span>All changes vs base</span></label>
+                    <label className="inline commit-row"><input type="radio" checked={filter.kind === "uncommitted"} onChange={() => onChange({ kind: "uncommitted" })} disabled={!uncommitted} /> <span>Uncommitted only{uncommitted ? "" : " (nothing uncommitted)"}</span></label>
+                    <div className="commit-menu-head">Commits on the branch · newest first · tick any</div>
+                    {commits.length === 0 && <div className="quiet">no commits yet</div>}
+                    {commits.map((c) => (
+                        <label key={c.sha} className={`inline commit-row ${picked.has(c.sha) ? "picked" : ""}`}>
+                            <input type="checkbox" checked={picked.has(c.sha)} onChange={() => toggle(c.sha)} />
+                            <span className="commit-text"><code>{c.short}</code> {c.subject}<small>{multiRepo && c.repo ? `${c.repo} · ` : ""}{c.author} · {ago(c.at)} ago</small></span>
+                        </label>
+                    ))}
+                    {picked.size > 0 && <div className="actions" style={{ margin: "6px 0 0" }}><button onClick={() => onChange({ kind: "all" })}>Clear</button><button className="primary" onClick={() => setOpen(false)}>Show {picked.size}</button></div>}
+                </div>
+            )}
+        </div>
+    );
+};
 
 // Tap a line → write a comment anchored to it. Drafts live in localStorage until the review is sent.
 export const commentKey = (c: Pick<LineComment, "path" | "side" | "line">): string => `${c.path}:${c.side}:${c.line}`;
@@ -179,24 +232,39 @@ export const DiffView = ({
     canComment: boolean;
     onChange: (key: string, c: LineComment | null) => void;
 }) => {
-    const [diff, setDiff] = useState<{ base: string; files: DiffFile[] } | null>(null);
+    const [diff, setDiff] = useState<DiffResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [filter, setFilter] = useState<DiffFilter>({ kind: "all" });
+    const [branch, setBranch] = useState<{ commits: BranchCommit[]; uncommitted: boolean }>({ commits: [], uncommitted: false });
+    useEffect(() => {
+        setFilter({ kind: "all" });
+    }, [taskId]);
+    useEffect(() => {
+        void api.commits(taskId).then(setBranch).catch(() => undefined);
+    }, [taskId, refreshKey]);
     useEffect(() => {
         setDiff(null);
-        void api.diff(taskId).then(setDiff).catch((e: Error) => setError(e.message));
-    }, [taskId, refreshKey]);
+        setError(null);
+        const f = filter.kind === "all" ? undefined : filter.kind === "uncommitted" ? { uncommitted: true as const } : { shas: filter.shas };
+        void api.diff(taskId, f).then(setDiff).catch((e: Error) => setError(e.message));
+    }, [taskId, refreshKey, filter]);
+    // Line comments anchor to line numbers of the full diff (the current file); a commit slice numbers lines differently.
+    const commentsOn = canComment && filter.kind === "all";
+    const picker = <CommitPicker commits={branch.commits} uncommitted={branch.uncommitted} filter={filter} onChange={setFilter} />;
     if (error) return <div className="blocked-box">diff: {error}</div>;
-    if (!diff) return <div className="empty">loading diff…</div>;
-    if (diff.files.length === 0) return <div className="empty">No changes against {diff.base} yet.</div>;
+    if (!diff) return <div className="diff"><div className="diff-summary mono">{picker} loading diff…</div></div>;
     const adds = diff.files.reduce((n, f) => n + f.additions, 0);
     const dels = diff.files.reduce((n, f) => n + f.deletions, 0);
     return (
         <div className="diff">
             <div className="diff-summary mono">
-                {diff.files.length} file{diff.files.length === 1 ? "" : "s"} vs origin/{diff.base} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>
-                {canComment && <span className="hint"> · tap a line to comment</span>}
+                {picker}
+                {diff.files.length} file{diff.files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>
+                {commentsOn && <span className="hint"> · tap a line to comment</span>}
+                {canComment && !commentsOn && <span className="hint"> · switch to All changes to comment on lines</span>}
             </div>
-            {(() => {
+            {diff.files.length === 0 && <div className="empty">{diff.filtered ? "Nothing in this selection." : `No changes against ${diff.base} yet.`}</div>}
+            {!diff.filtered && (() => {
                 const known = new Set(diff.files.map((f) => f.path));
                 const gone = prior.filter((p) => !known.has(p.path));
                 return gone.length > 0 ? (
@@ -210,7 +278,12 @@ export const DiffView = ({
                     </div>
                 ) : null;
             })()}
-            {diff.files.map((f) => <FileDiff key={f.path} file={f} comments={comments} prior={prior} canComment={canComment} onChange={onChange} />)}
+            {diff.groups.map((g, gi) => (
+                <div key={gi} className="diff-group">
+                    {diff.filtered && diff.groups.length > 1 && <div className="diff-group-head mono">{g.label} · {g.files.length} file{g.files.length === 1 ? "" : "s"}</div>}
+                    {g.files.map((f) => <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} canComment={commentsOn} onChange={onChange} />)}
+                </div>
+            ))}
         </div>
     );
 };

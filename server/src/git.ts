@@ -217,6 +217,95 @@ export const worktreeDiff = async (env: RepoLayout, worktree: string, vars: Vars
     return all;
 };
 
+// ---------- per-commit view of the same changes ----------
+
+export interface BranchCommit {
+    sha: string;
+    short: string;
+    subject: string;
+    author: string;
+    at: string;
+    // Sub-repo directory for a multi-repo worktree ("" for a single repo).
+    repo: string;
+}
+
+// Every checkout the worktree holds, with its path prefix for file names: [dir, prefix] pairs.
+const checkoutsOf = (env: RepoLayout, worktree: string): Array<{ checkout: string; prefix: string; repo: string }> => {
+    const subs = envRepos(env);
+    if (subs.length === 0) return [{ checkout: worktree, prefix: "", repo: "" }];
+    return subs.filter((dir) => existsSync(join(worktree, dir))).map((dir) => ({ checkout: join(worktree, dir), prefix: `${dir}/`, repo: dir }));
+};
+
+// Commits on the task branch that are not on the base branch, newest first, plus whether anything is uncommitted.
+export const branchCommits = async (env: RepoLayout, worktree: string, vars: Vars = {}): Promise<{ commits: BranchCommit[]; uncommitted: boolean }> => {
+    const commits: BranchCommit[] = [];
+    let uncommitted = false;
+    for (const { checkout, repo } of checkoutsOf(env, worktree)) {
+        const raw = await git(checkout, ["log", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI", `origin/${env.base_branch}..HEAD`], vars).catch(() => "");
+        for (const line of raw.split("\n").filter(Boolean)) {
+            const [sha = "", short = "", subject = "", author = "", at = ""] = line.split("\x1f");
+            commits.push({ sha, short, subject, author, at, repo });
+        }
+        if (!uncommitted) {
+            const status = await git(checkout, ["status", "--porcelain"], vars).catch(() => "");
+            uncommitted = status.trim() !== "";
+        }
+    }
+    return { commits: commits.sort((a, b) => b.at.localeCompare(a.at)), uncommitted };
+};
+
+export interface DiffGroup {
+    // "3 commits abc123..def456", "uncommitted changes", or the whole branch.
+    label: string;
+    shas: string[];
+    files: DiffFile[];
+}
+
+// What the working tree changed since the last commit (tracked and untracked), per checkout.
+const uncommittedDiff = async (env: RepoLayout, worktree: string, vars: Vars): Promise<DiffFile[]> => {
+    const all: DiffFile[] = [];
+    for (const { checkout, prefix } of checkoutsOf(env, worktree)) {
+        const tracked = await git(checkout, ["diff", "--no-color", "--no-ext-diff", "--unified=3", "--find-renames", "HEAD", "--"], vars).catch(() => "");
+        all.push(...parseUnifiedDiff(tracked, prefix));
+        const untracked = await git(checkout, ["ls-files", "--others", "--exclude-standard"], vars).catch(() => "");
+        for (const rel of untracked.split("\n").filter(Boolean).slice(0, 50)) {
+            const raw = await execFileAsync("git", ["-C", checkout, "diff", "--no-color", "--no-index", "--", "/dev/null", rel], { maxBuffer: 8 * 1024 * 1024, env: { ...process.env, ...vars } })
+                .then((r) => r.stdout)
+                .catch((e: { stdout?: string }) => e.stdout ?? "");
+            for (const f of parseUnifiedDiff(raw, prefix)) all.push({ ...f, path: prefix + rel, status: "added" });
+        }
+    }
+    return all;
+};
+
+// The diff of a chosen set of commits. Consecutive commits (in branch order) become one range diff (first^..last); a
+// gap starts a new group, so a non-contiguous pick is shown as several diffs rather than one misleading merge.
+export const commitsDiff = async (env: RepoLayout, worktree: string, shas: string[], vars: Vars = {}): Promise<DiffGroup[]> => {
+    const wanted = new Set(shas);
+    const groups: DiffGroup[] = [];
+    for (const { checkout, prefix } of checkoutsOf(env, worktree)) {
+        // Oldest first, so runs are in history order.
+        const ordered = (await git(checkout, ["log", "--reverse", "--format=%H", `origin/${env.base_branch}..HEAD`], vars).catch(() => "")).split("\n").filter(Boolean);
+        let run: string[] = [];
+        const flush = async (): Promise<void> => {
+            if (run.length === 0) return;
+            const first = run[0]!;
+            const last = run[run.length - 1]!;
+            const raw = await git(checkout, ["diff", "--no-color", "--no-ext-diff", "--unified=3", "--find-renames", `${first}^`, last, "--"], vars).catch(() => "");
+            groups.push({ label: run.length === 1 ? first.slice(0, 7) : `${run.length} commits ${first.slice(0, 7)}..${last.slice(0, 7)}`, shas: [...run], files: parseUnifiedDiff(raw, prefix) });
+            run = [];
+        };
+        for (const sha of ordered) {
+            if (wanted.has(sha)) run.push(sha);
+            else await flush();
+        }
+        await flush();
+    }
+    return groups;
+};
+
+export const uncommittedGroup = async (env: RepoLayout, worktree: string, vars: Vars = {}): Promise<DiffGroup> => ({ label: "uncommitted changes", shas: [], files: await uncommittedDiff(env, worktree, vars) });
+
 // Per-checkout helpers; for a multi-repo worktree pass the sub-repo checkout (<worktree>/<dir>).
 export const diffStat = (checkout: string, baseBranch: string): Promise<string> =>
     git(checkout, ["diff", "--stat", `origin/${baseBranch}...HEAD`]);

@@ -156,6 +156,9 @@ export interface Impl {
 export interface DiffLine { type: "context" | "add" | "del"; oldNo: number | null; newNo: number | null; text: string }
 export interface DiffHunk { header: string; lines: DiffLine[] }
 export interface DiffFile { path: string; status: "added" | "modified" | "deleted" | "renamed"; additions: number; deletions: number; hunks: DiffHunk[]; binary: boolean }
+export interface DiffGroup { label: string; shas: string[]; files: DiffFile[] }
+export interface DiffResponse { base: string; filtered: boolean; groups: DiffGroup[]; files: DiffFile[] }
+export interface BranchCommit { sha: string; short: string; subject: string; author: string; at: string; repo: string }
 export interface LineComment { path: string; line: number; side: "new" | "old"; snippet: string; text: string }
 export interface MyTicket { id: string; title: string; priority: number | null; priorityLabel: string; status: string; url: string | null; group: string }
 export interface Review { id: string; stage: Stage; verdict: string; route_to: string | null; notes: string | null; comments: string | null; created_at: string }
@@ -246,7 +249,10 @@ export const api = {
     testNotification: () => post<{ macos: boolean; ntfy: boolean | null; error?: string }>("/api/notifications/test"),
     review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>
         post<Task>(`/api/tasks/${id}/review`, body),
-    diff: (id: string) => fetch(`/api/tasks/${id}/diff`).then((r) => j<{ base: string; files: DiffFile[] }>(r)),
+    // filter: a set of commit shas (contiguous runs become one group each) or "uncommitted"; none = everything vs the base.
+    diff: (id: string, filter?: { shas: string[] } | { uncommitted: true }) =>
+        fetch(`/api/tasks/${id}/diff${filter ? ("uncommitted" in filter ? "?scope=uncommitted" : `?commits=${filter.shas.join(",")}`) : ""}`).then((r) => j<DiffResponse>(r)),
+    commits: (id: string) => fetch(`/api/tasks/${id}/commits`).then((r) => j<{ commits: BranchCommit[]; uncommitted: boolean }>(r)),
     prComments: (id: string) => fetch(`/api/tasks/${id}/pr-comments`).then((r) => j<PrComments | null>(r)),
     resolvePrComment: (id: string, commentId: number, resolved: boolean) => post<PrComments | null>(`/api/tasks/${id}/pr-comments/${commentId}/resolve`, { resolved }),
     myTickets: (envId: string) => fetch(`/api/envs/${envId}/my-tickets`).then((r) => j<{ source: "clickup" | "linear"; tickets: MyTicket[]; error?: string }>(r)),

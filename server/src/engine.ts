@@ -9,7 +9,7 @@ import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/a
 import { closeChromeTabs, listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
 import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stampTaskOnUsage } from "./usage.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
-import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
+import { branchCommits, commitsDiff, createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -626,6 +626,22 @@ export class Engine extends EventEmitter {
         if (!task?.worktree_path) return [];
         const env = this.env(task.env_id);
         return worktreeDiff(env, task.worktree_path, parseEnvVars(env.env_vars));
+    }
+
+    // The same changes narrowed to a set of commits, or to what is not committed yet.
+    async diffFiltered(taskId: string, filter: { shas: string[] } | { uncommitted: true }): Promise<DiffGroup[]> {
+        const task = this.getTask(taskId);
+        if (!task?.worktree_path) return [];
+        const env = this.env(task.env_id);
+        const vars = parseEnvVars(env.env_vars);
+        return "uncommitted" in filter ? [await uncommittedGroup(env, task.worktree_path, vars)] : commitsDiff(env, task.worktree_path, filter.shas, vars);
+    }
+
+    async commits(taskId: string): Promise<{ commits: BranchCommit[]; uncommitted: boolean }> {
+        const task = this.getTask(taskId);
+        if (!task?.worktree_path) return { commits: [], uncommitted: false };
+        const env = this.env(task.env_id);
+        return branchCommits(env, task.worktree_path, parseEnvVars(env.env_vars));
     }
 
     setAccount(taskId: string, accountId: string): void {

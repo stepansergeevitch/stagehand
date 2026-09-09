@@ -890,11 +890,24 @@ app.post("/api/tasks/:id/pr-comments/:commentId/resolve", async (c) => {
     }
 });
 
+// ?commits=<sha>,<sha>… narrows the diff to those commits (contiguous runs become one group each); ?scope=uncommitted
+// shows only what is not committed yet. Without either: everything versus the base branch, as one group.
 app.get("/api/tasks/:id/diff", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
     const env = db.prepare(`SELECT base_branch FROM envs WHERE id = ?`).get(task.env_id) as { base_branch: string };
-    return c.json({ base: env.base_branch, files: await engine.diff(task.id) });
+    const shas = (c.req.query("commits") ?? "").split(",").map((s) => s.trim()).filter((s) => /^[0-9a-f]{7,40}$/i.test(s));
+    const scope = c.req.query("scope");
+    const groups = scope === "uncommitted" ? await engine.diffFiltered(task.id, { uncommitted: true }) : shas.length ? await engine.diffFiltered(task.id, { shas }) : null;
+    if (groups) return c.json({ base: env.base_branch, filtered: true, groups, files: groups.flatMap((g) => g.files) });
+    const files = await engine.diff(task.id);
+    return c.json({ base: env.base_branch, filtered: false, groups: [{ label: `all changes vs origin/${env.base_branch}`, shas: [], files }], files });
+});
+
+app.get("/api/tasks/:id/commits", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    return c.json(await engine.commits(task.id));
 });
 
 app.post("/api/tasks/:id/stop", (c) => {
