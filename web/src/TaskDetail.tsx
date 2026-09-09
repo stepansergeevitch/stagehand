@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api, isApprovalGateCheck, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type QaPass, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { LazyTerminal } from "./LazyTerminal";
 import { Chat } from "./Chat";
@@ -8,41 +8,64 @@ import { TaskCost } from "./TaskCost";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
 import type { Env, LineComment, PrComment, PrComments, Review } from "./api";
 
+const isResolved = (c: PrComment): boolean => c.kind === "line" && c.resolved;
+
 // GitHub PR comments of one kind (human or automation): review verdicts, line comments (path:line), general comments.
-const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, onRefresh, selected, onToggle }: { title: string; items: PrComment[] | null; loading: boolean; error: string | null; hasPr: boolean; url: string | null; fetchedAt: string | null; onRefresh: () => void; selected: Set<number>; onToggle: (id: number) => void }) => (
-    <Card title={title} badge={items ? <span className="chip">{items.length}</span> : undefined}>
-        {!hasPr && <div className="empty">No pull request yet — comments appear here once it exists.</div>}
-        {hasPr && (
-            <div className="actions" style={{ marginTop: 0 }}>
-                <button onClick={onRefresh} disabled={loading}>{loading ? "Loading…" : "Refresh"}</button>
-                {url && <a href={url} target="_blank" rel="noreferrer">open PR ↗</a>}
-                {fetchedAt && <span className="field-hint">fetched {new Date(fetchedAt).toLocaleTimeString()}</span>}
-            </div>
-        )}
-        {error && <div className="blocked-box">{error}</div>}
-        {items && items.length === 0 && <div className="empty">nothing here</div>}
-        {items && items.length > 0 && (
-            <div className="gh-comments">
-                {[...items].sort((a, b) => a.at.localeCompare(b.at)).map((c) => (
-                    <div key={`${c.kind}-${c.id}`} className={`gh-comment ${c.kind} ${selected.has(c.id) ? "picked" : ""}`}>
-                        <div className="gh-head">
-                            <label className="inline" title="Pick this comment to send to the agent">
-                                <input type="checkbox" checked={selected.has(c.id)} onChange={() => onToggle(c.id)} />
-                            </label>
-                            <b>{c.author}</b>
-                            {c.kind === "review" && <span className={`chip ${c.state === "APPROVED" ? "ok" : c.state === "CHANGES_REQUESTED" ? "bad" : ""}`}>{c.state.toLowerCase().replace("_", " ")}</span>}
-                            {c.kind === "line" && <code>{c.path}{c.line !== null ? `:${c.line}` : ""}{c.outdated ? " (outdated)" : ""}</code>}
-                            {c.kind === "general" && <span className="chip">comment</span>}
-                            <span className="field-hint">{new Date(c.at).toLocaleString()}</span>
-                            <a href={c.url} target="_blank" rel="noreferrer">↗</a>
-                        </div>
-                        {c.body && <Markdown source={c.body} />}
-                    </div>
-                ))}
-            </div>
-        )}
-    </Card>
-);
+// Open ones first (oldest first), resolved threads sink to the bottom; a line comment's thread can be resolved/reopened here.
+const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, onRefresh, selected, onToggle, onResolve }: { title: string; items: PrComment[] | null; loading: boolean; error: string | null; hasPr: boolean; url: string | null; fetchedAt: string | null; onRefresh: () => void; selected: Set<number>; onToggle: (id: number) => void; onResolve: (id: number, resolved: boolean) => Promise<void> }) => {
+    const [busy, setBusy] = useState<number | null>(null);
+    const sorted = items ? [...items].sort((a, b) => Number(isResolved(a)) - Number(isResolved(b)) || a.at.localeCompare(b.at)) : [];
+    const resolvedCount = items ? items.filter(isResolved).length : 0;
+    return (
+        <Card title={title} badge={items ? <span className="chip">{items.length - resolvedCount} open{resolvedCount ? ` · ${resolvedCount} resolved` : ""}</span> : undefined}>
+            {!hasPr && <div className="empty">No pull request yet — comments appear here once it exists.</div>}
+            {hasPr && (
+                <div className="actions" style={{ marginTop: 0 }}>
+                    <button onClick={onRefresh} disabled={loading}>{loading ? "Loading…" : "Refresh"}</button>
+                    {url && <a href={url} target="_blank" rel="noreferrer">open PR ↗</a>}
+                    {fetchedAt && <span className="field-hint">fetched {new Date(fetchedAt).toLocaleTimeString()}</span>}
+                </div>
+            )}
+            {error && <div className="blocked-box">{error}</div>}
+            {items && items.length === 0 && <div className="empty">nothing here</div>}
+            {items && items.length > 0 && (
+                <div className="gh-comments">
+                    {sorted.map((c, i) => (
+                        <Fragment key={`${c.kind}-${c.id}`}>
+                            {i > 0 && isResolved(c) && !isResolved(sorted[i - 1]!) && <div className="gh-sep">resolved</div>}
+                            <div className={`gh-comment ${c.kind} ${selected.has(c.id) ? "picked" : ""} ${isResolved(c) ? "resolved" : ""}`}>
+                                <div className="gh-head">
+                                    <label className="inline" title="Pick this comment to send to the agent">
+                                        <input type="checkbox" checked={selected.has(c.id)} onChange={() => onToggle(c.id)} />
+                                    </label>
+                                    <b>{c.author}</b>
+                                    {c.kind === "review" && <span className={`chip ${c.state === "APPROVED" ? "ok" : c.state === "CHANGES_REQUESTED" ? "bad" : ""}`}>{c.state.toLowerCase().replace("_", " ")}</span>}
+                                    {c.kind === "line" && <code>{c.path}{c.line !== null ? `:${c.line}` : ""}{c.outdated ? " (outdated)" : ""}</code>}
+                                    {c.kind === "line" && c.replyTo !== null && <span className="chip">reply</span>}
+                                    {c.kind === "line" && (c.resolved ? <span className="chip ok">resolved</span> : <span className="chip wait">open</span>)}
+                                    {c.kind === "general" && <span className="chip">comment</span>}
+                                    <span className="field-hint">{new Date(c.at).toLocaleString()}</span>
+                                    <a href={c.url} target="_blank" rel="noreferrer">↗</a>
+                                    {c.kind === "line" && c.threadId && c.replyTo === null && (
+                                        <button
+                                            className="tiny"
+                                            disabled={busy === c.id}
+                                            title={c.resolved ? "Reopen this review thread on GitHub" : "Mark this review thread resolved on GitHub (as you)"}
+                                            onClick={() => { setBusy(c.id); void onResolve(c.id, !c.resolved).finally(() => setBusy(null)); }}
+                                        >
+                                            {busy === c.id ? "…" : c.resolved ? "Reopen" : "Resolve"}
+                                        </button>
+                                    )}
+                                </div>
+                                {c.body && <Markdown source={c.body} />}
+                            </div>
+                        </Fragment>
+                    ))}
+                </div>
+            )}
+        </Card>
+    );
+};
 
 const parseComments = (r: Review): LineComment[] => {
     try {
@@ -391,7 +414,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             .flatMap((r, i) => parseComments(r).map((c) => ({ ...c, round: i + 1 }))),
         ...(gh ? [...gh.human, ...gh.automation] : [])
             .filter((c): c is Extract<PrComment, { kind: "line" }> => c.kind === "line" && c.line !== null)
-            .map((c) => ({ path: c.path, line: c.line ?? 0, side: c.side, snippet: c.snippet, text: c.body, round: 0, by: c.author })),
+            .map((c) => ({ path: c.path, line: c.line ?? 0, side: c.side, snippet: c.snippet, text: c.body, round: 0, by: c.author, resolved: c.resolved })),
     ];
 
     const proposedMd = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^proposed changes/i.test(s.title))?.body.trim() ?? null : null), [designMd]);
@@ -499,7 +522,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             case "research":
                 return research ? (
                     <Card title="Research" badge={<span className={`chip ${research.classification === "bug" ? "bad" : "accent"}`}>{research.classification}</span>}>
-                        <div className="kv"><b>Summary</b><span>{research.summary}</span><b>Branch</b><code>{research.branchName}</code><b>Areas</b><span>{research.affectedAreas.join(", ")}</span></div>
+                        <div className="kv"><b>Summary</b><span>{research.summary}</span><b>Branch</b><code>{research.branchName}</code><b>Areas</b><span>{(research.affectedAreas ?? []).join(", ") || "—"}</span></div>
                         {researchMd && <Sub title="research.md" open={false}><Markdown source={researchMd} /></Sub>}
                     </Card>
                 ) : <div className="empty">no research yet</div>;
@@ -826,6 +849,14 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                 onRefresh={() => void loadGh()}
                                 selected={selectedComments}
                                 onToggle={toggleComment}
+                                onResolve={async (id, resolved) => {
+                                    try {
+                                        const next = await api.resolvePrComment(task.id, id, resolved);
+                                        if (next) setGh(next);
+                                    } catch (e) {
+                                        onError(String((e as Error).message ?? e));
+                                    }
+                                }}
                             />
                         </>
                     )}

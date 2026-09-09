@@ -1,8 +1,10 @@
 import { z } from "zod";
 
+// The wrong-repo short form (research.md step 1) only carries repositoryPath, branchName and summary; the rest defaults
+// so that file passes the contract and afterStage can block the task with the right message instead of "contract failed".
 export const ResearchResult = z.object({
-    classification: z.enum(["bug", "feature"]),
-    title: z.string(),
+    classification: z.enum(["bug", "feature"]).default("feature"),
+    title: z.string().default(""),
     branchName: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/),
     summary: z.string(),
     affectedAreas: z.array(z.string()).default([]),

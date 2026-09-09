@@ -880,6 +880,16 @@ app.get("/api/tasks/:id/pr-comments", async (c) => {
     }
 });
 
+// Resolve / reopen the review thread a line comment belongs to (the human's own click; agents never do this).
+app.post("/api/tasks/:id/pr-comments/:commentId/resolve", async (c) => {
+    const body = json(z.object({ resolved: z.boolean().optional() }), await c.req.json().catch(() => ({})));
+    try {
+        return c.json(await engine.resolvePrComment(c.req.param("id"), Number(c.req.param("commentId")), body.resolved ?? true));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.get("/api/tasks/:id/diff", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);

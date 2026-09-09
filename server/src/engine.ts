@@ -32,7 +32,8 @@ export interface LineComment {
 
 export type PrComment =
     | { kind: "review"; id: number; author: string; state: string; body: string; at: string; url: string }
-    | { kind: "line"; id: number; author: string; path: string; line: number | null; side: "old" | "new"; outdated: boolean; body: string; at: string; url: string; replyTo: number | null; snippet: string }
+    // `threadId` is the GraphQL review-thread node id (what resolve/unresolve take); `resolved` is the thread's state.
+    | { kind: "line"; id: number; author: string; path: string; line: number | null; side: "old" | "new"; outdated: boolean; body: string; at: string; url: string; replyTo: number | null; snippet: string; threadId: string | null; resolved: boolean }
     | { kind: "general"; id: number; author: string; body: string; at: string; url: string };
 export interface PrComments {
     number: number;
@@ -849,10 +850,14 @@ export class Engine extends EventEmitter {
         const cwd = this.prCheckouts(task, env)[0]!;
         const repo = (JSON.parse(await this.gh(cwd, ["repo", "view", "--json", "nameWithOwner"], env)) as { nameWithOwner: string }).nameWithOwner;
         const n = state.number;
-        const [reviewsRaw, lineRaw, generalRaw] = await Promise.all([
+        const [reviewsRaw, lineRaw, generalRaw, threads] = await Promise.all([
             this.gh(cwd, ["api", `repos/${repo}/pulls/${n}/reviews`, "--paginate"], env),
             this.gh(cwd, ["api", `repos/${repo}/pulls/${n}/comments`, "--paginate"], env),
             this.gh(cwd, ["api", `repos/${repo}/issues/${n}/comments`, "--paginate"], env),
+            this.reviewThreads(cwd, repo, n, env).catch((e: unknown) => {
+                console.warn(`[stagehand] review threads for #${n}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                return new Map<number, { threadId: string; resolved: boolean }>();
+            }),
         ]);
         const parse = <T,>(raw: string): T[] => {
             // --paginate concatenates JSON arrays; make it one array.
@@ -879,6 +884,8 @@ export class Engine extends EventEmitter {
             url: c.html_url,
             replyTo: c.in_reply_to_id ?? null,
             snippet: (c.diff_hunk ?? "").split("\n").pop()?.replace(/^[+\- ]/, "") ?? "",
+            threadId: threads.get(c.id)?.threadId ?? null,
+            resolved: threads.get(c.id)?.resolved ?? false,
         }));
         const general = parse<{ id: number; user: GhUser; body: string; created_at: string; html_url: string }>(generalRaw).map((c) => ({
             kind: "general" as const,
@@ -902,6 +909,47 @@ export class Engine extends EventEmitter {
         return data;
     }
     private prCommentsCache = new Map<string, { at: number; data: PrComments }>();
+
+    // Resolution lives on review threads, which only GraphQL exposes: one map from each line comment's REST id to
+    // its thread (node id + resolved flag), across every page of threads.
+    private async reviewThreads(cwd: string, repo: string, n: number, env: EnvRow): Promise<Map<number, { threadId: string; resolved: boolean }>> {
+        const [owner, name] = repo.split("/") as [string, string];
+        const out = new Map<number, { threadId: string; resolved: boolean }>();
+        let after: string | null = null;
+        for (let page = 0; page < 10; page++) {
+            const query = `query($owner:String!,$name:String!,$n:Int!,$after:String){ repository(owner:$owner,name:$name){ pullRequest(number:$n){ reviewThreads(first:100, after:$after){ pageInfo{ hasNextPage endCursor } nodes{ id isResolved comments(first:100){ nodes{ databaseId } } } } } } }`;
+            const args = ["api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `n=${n}`, ...(after ? ["-F", `after=${after}`] : [])];
+            const raw = JSON.parse(await this.gh(cwd, args, env)) as {
+                data?: { repository?: { pullRequest?: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: Array<{ id: string; isResolved: boolean; comments: { nodes: Array<{ databaseId: number | null }> } }> } } } };
+            };
+            const threads = raw.data?.repository?.pullRequest?.reviewThreads;
+            if (!threads) break;
+            for (const t of threads.nodes) for (const c of t.comments.nodes) if (c.databaseId != null) out.set(c.databaseId, { threadId: t.id, resolved: t.isResolved });
+            if (!threads.pageInfo.hasNextPage || !threads.pageInfo.endCursor) break;
+            after = threads.pageInfo.endCursor;
+        }
+        return out;
+    }
+
+    // Marks a review thread resolved (or reopens it) on GitHub, as the human — a button they click, not an agent action.
+    async resolvePrComment(taskId: string, commentId: number, resolved: boolean): Promise<PrComments | null> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        const comments = await this.prComments(taskId);
+        const target = comments?.human.concat(comments.automation).find((c) => c.id === commentId);
+        if (!target || target.kind !== "line") throw new Error("comment not found — refresh and try again");
+        if (!target.threadId) throw new Error("this comment has no review thread to resolve");
+        const env = this.env(task.env_id);
+        const cwd = this.prCheckouts(task, env)[0]!;
+        const mutation = resolved ? "resolveReviewThread" : "unresolveReviewThread";
+        const raw = JSON.parse(await this.gh(cwd, ["api", "graphql", "-f", `query=mutation($id:ID!){ ${mutation}(input:{threadId:$id}){ thread{ id isResolved } } }`, "-F", `id=${target.threadId}`], env)) as {
+            data?: Record<string, { thread?: { isResolved: boolean } } | null>;
+            errors?: Array<{ message: string }>;
+        };
+        if (raw.errors?.length) throw new Error(raw.errors.map((e) => e.message).join("; "));
+        this.prCommentsCache.delete(taskId);
+        return this.prComments(taskId);
+    }
 
     // Every few ticks: look the PR up (by stored number or by head branch) and move the task through pr_waiting → pr_green → pr_approved → done.
     private pollCounter = 0;

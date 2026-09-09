@@ -65,7 +65,7 @@ export interface Rules {
 }
 export type PrComment =
     | { kind: "review"; id: number; author: string; state: string; body: string; at: string; url: string }
-    | { kind: "line"; id: number; author: string; path: string; line: number | null; side: "old" | "new"; outdated: boolean; body: string; at: string; url: string; replyTo: number | null; snippet: string }
+    | { kind: "line"; id: number; author: string; path: string; line: number | null; side: "old" | "new"; outdated: boolean; body: string; at: string; url: string; replyTo: number | null; snippet: string; threadId: string | null; resolved: boolean }
     | { kind: "general"; id: number; author: string; body: string; at: string; url: string };
 export interface PrComments { number: number; repo: string; human: PrComment[]; automation: PrComment[]; fetchedAt: string }
 export interface TaskManager { source: "clickup" | "linear"; label: string; configured: boolean; token: string | null; teamId: string | null; envs: string[] }
@@ -161,7 +161,8 @@ export interface MyTicket { id: string; title: string; priority: number | null; 
 export interface Review { id: string; stage: Stage; verdict: string; route_to: string | null; notes: string | null; comments: string | null; created_at: string }
 export interface TaskDetail {
     task: Task; runs: Run[]; artifacts: Array<{ path: string; size: number }>;
-    research: { classification: string; title: string; branchName: string; summary: string; affectedAreas: string[] } | null;
+    // Raw research.json as written by the agent — optional fields may be missing when the file predates them or the agent skipped them.
+    research: { classification: string; title: string; branchName: string; summary: string; affectedAreas?: string[] } | null;
     design: Design | null; impl: Impl | null; qaBefore: QaPass | null; qaAfter: QaPass | null;
     // Earlier Manual QA attempts (oldest first) that failed and were auto-returned to Implementation before qaAfter.
     qaHistory?: Array<{ attempt: number; data: QaPass | null }>;
@@ -247,6 +248,7 @@ export const api = {
         post<Task>(`/api/tasks/${id}/review`, body),
     diff: (id: string) => fetch(`/api/tasks/${id}/diff`).then((r) => j<{ base: string; files: DiffFile[] }>(r)),
     prComments: (id: string) => fetch(`/api/tasks/${id}/pr-comments`).then((r) => j<PrComments | null>(r)),
+    resolvePrComment: (id: string, commentId: number, resolved: boolean) => post<PrComments | null>(`/api/tasks/${id}/pr-comments/${commentId}/resolve`, { resolved }),
     myTickets: (envId: string) => fetch(`/api/envs/${envId}/my-tickets`).then((r) => j<{ source: "clickup" | "linear"; tickets: MyTicket[]; error?: string }>(r)),
     stop: (id: string) => post<Task>(`/api/tasks/${id}/stop`),
     retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),

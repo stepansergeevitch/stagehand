@@ -26,8 +26,10 @@ const CommentEditor = ({ initial, onSave, onCancel, onDelete }: { initial: strin
 export interface PriorComment extends LineComment {
     round: number;
     by?: string;
+    // GitHub review threads only: the thread was marked resolved.
+    resolved?: boolean;
 }
-const roundLabel = (p: PriorComment): string => (p.round > 0 ? `R${p.round}` : `PR${p.by ? ` · ${p.by}` : ""}`);
+const roundLabel = (p: PriorComment): string => (p.round > 0 ? `R${p.round}` : `PR${p.by ? ` · ${p.by}` : ""}${p.resolved ? " · resolved" : ""}`);
 
 // Where an earlier round's comment sits in the current diff. Lines move between rounds, so match by the quoted line
 // text (nearest to the original line number) rather than by number alone; unmatched ones are "outdated", like GitHub.
@@ -106,7 +108,7 @@ const FileDiff = ({
                                     <span className="txt">{l.text || " "}</span>
                                 </div>
                                 {placed.byKey[key]?.map((p, pi) => (
-                                    <div key={pi} className="line-comment prior" title={p.round > 0 ? `review round ${p.round}` : `GitHub PR comment by ${p.by ?? "?"}`}>
+                                    <div key={pi} className={`line-comment prior ${p.resolved ? "resolved" : ""}`} title={p.round > 0 ? `review round ${p.round}` : `GitHub PR comment by ${p.by ?? "?"}${p.resolved ? " (resolved)" : ""}`}>
                                         <b>{roundLabel(p)}</b> {p.text}
                                     </div>
                                 ))}
