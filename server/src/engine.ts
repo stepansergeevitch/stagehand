@@ -261,7 +261,7 @@ export class Engine extends EventEmitter {
         if (!task) throw new Error("task not found");
         const ticket = await fetchTicketRest({ source: task.source as "clickup" | "linear", id: task.ticket_id, url: task.ticket_url }, this.cfg, this.taskDir(taskId));
         this.db.prepare(`UPDATE tasks SET title = COALESCE(title, ?), ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(ticket.title, ticket.url, now(), taskId);
-        this.emit("task", this.getTask(taskId));
+        this.emitTask(taskId);
         return ticket;
     }
 
@@ -299,6 +299,13 @@ export class Engine extends EventEmitter {
 
     getTask(id: string): TaskRow | undefined {
         return this.db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as TaskRow | undefined;
+    }
+
+    // Trailing async events (e.g. a killed run's buffered stdout) can fire after the task row is gone —
+    // skip the emit rather than sending clients a "task" payload with no task.
+    private emitTask(id: string): void {
+        const task = this.getTask(id);
+        if (task) this.emit("task", task);
     }
 
     listTasks(envId?: string): TaskRow[] {
@@ -620,12 +627,12 @@ export class Engine extends EventEmitter {
 
     setAccount(taskId: string, accountId: string): void {
         this.db.prepare(`UPDATE tasks SET account_id = ?, updated_at = ? WHERE id = ?`).run(accountId, now(), taskId);
-        this.emit("task", this.getTask(taskId));
+        this.emitTask(taskId);
     }
 
     setNotes(taskId: string, notes: string | null): void {
         this.db.prepare(`UPDATE tasks SET notes = ?, updated_at = ? WHERE id = ?`).run(notes?.trim() || null, now(), taskId);
-        this.emit("task", this.getTask(taskId));
+        this.emitTask(taskId);
     }
 
     // "I approved by mistake" / "I want this redone": send the task back to an earlier stage with notes, from any
@@ -666,7 +673,7 @@ export class Engine extends EventEmitter {
         const result = await this.doCleanup(task, force, { removeWorktree: true });
         const line = `cleaned up · ${result.done.join(", ")}${result.skipped.length ? ` · ${result.skipped.join("; ")}` : ""}`;
         this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(line, now(), taskId);
-        this.emit("task", this.getTask(taskId));
+        this.emitTask(taskId);
         return result;
     }
 
@@ -1417,7 +1424,7 @@ export class Engine extends EventEmitter {
                 this.db.prepare(`UPDATE runs SET last_event = ? WHERE id = ?`).run(ev.summary, runId);
                 this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`${def.label} · ${ev.summary}`, now(), taskId);
                 this.emit("activity", { taskId, runId, event: ev });
-                this.emit("task", this.getTask(taskId));
+                this.emitTask(taskId);
             }
         });
         run.on("rate_limit", (info: RateLimitInfo) => this.recordRateLimit(account.id, info));
@@ -1483,7 +1490,7 @@ export class Engine extends EventEmitter {
             const fe = await this.services.start(task, env, "fe");
             if (!(await this.services.waitForPort(fe.port, 300_000))) return false;
         }
-        this.emit("task", this.getTask(task.id));
+        this.emitTask(task.id);
         return true;
     }
 
@@ -1510,7 +1517,7 @@ export class Engine extends EventEmitter {
         if (run) this.db.prepare(`UPDATE runs SET resume_at = ? WHERE id = ?`).run(resumeAt, run.id);
         const local = new Date(resumeAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
         this.setTaskStatus(task.id, "rate_limited", `${reason} · resumes at ${local}`);
-        this.emit("task", this.getTask(task.id));
+        this.emitTask(task.id);
     }
 
     // Next account in the env's priority list that is not exhausted; null when the list has nobody else to offer.

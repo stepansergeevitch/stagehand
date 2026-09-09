@@ -222,7 +222,8 @@ export const App = () => {
         ws.onmessage = (e) => {
             const msg = JSON.parse(e.data as string) as { kind: string; payload: unknown };
             if (msg.kind === "task") {
-                const t = msg.payload as Task;
+                const t = msg.payload as Task | null;
+                if (!t) return;
                 setTasks((prev) => (prev.some((p) => p.id === t.id) ? prev.map((p) => (p.id === t.id ? t : p)) : [t, ...prev]));
                 if (t.id === selected) void loadDetail(t.id);
             }
