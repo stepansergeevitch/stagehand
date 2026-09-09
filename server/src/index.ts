@@ -840,6 +840,7 @@ app.get("/api/tasks/:id", (c) => {
         ticket: engine.readArtifactJson(task.id, "ticket.json"),
         tickets: engine.tickets(task),
         messages: engine.listMessages(task.id),
+        questions: engine.listQuestions(task.id),
         reviews: db.prepare(`SELECT * FROM reviews WHERE task_id = ? ORDER BY created_at`).all(task.id),
         prState: db.prepare(`SELECT * FROM pr_state WHERE task_id = ?`).get(task.id) ?? null,
     });
@@ -1011,6 +1012,17 @@ app.post("/api/tasks/:id/rerun", async (c) => {
     const body = json(z.object({ stage: z.enum(STAGES as [Stage, ...Stage[]]) }), await c.req.json());
     engine.rerun(c.req.param("id"), body.stage);
     return c.json(engine.getTask(c.req.param("id")));
+});
+
+// The human answers the agent's questions (by question id); the stage that asked resumes with them.
+app.post("/api/tasks/:id/questions/:qid/answer", async (c) => {
+    const body = json(z.object({ answers: z.record(z.string()) }), await c.req.json());
+    try {
+        engine.answerQuestions(c.req.param("id"), c.req.param("qid"), body.answers);
+        return c.json(engine.getTask(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
 });
 
 app.get("/api/tasks/:id/messages", (c) => {

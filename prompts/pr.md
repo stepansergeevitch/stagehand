@@ -2,6 +2,8 @@ This is the PR DRAFT step for ticket {{ticketId}} in worktree {{worktree}} on br
 
 {{taskNotes}}
 
+{{askHuman}}
+
 {{repoLayout}} If the workspace has several repositories, run the git commands below in each repository that has commits ahead of `{{baseBranch}}` and draft one PR per such repository (put the extra drafts in `body` under a `## Companion PRs` heading, one per repository).
 
 1. PR template: {{prTemplate}}. Read it when there is one, plus `{{taskDir}}/impl.json` and `{{taskDir}}/design.json`.

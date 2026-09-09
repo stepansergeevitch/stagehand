@@ -6,6 +6,8 @@ You are starting work on ticket {{ticketId}} in the project at {{envPath}} (base
 
 {{taskNotes}}
 
+{{askHuman}}
+
 ## Steps
 
 1. Read the ticket above carefully. Do NOT re-fetch it unless the block above says Stagehand could not fetch it.

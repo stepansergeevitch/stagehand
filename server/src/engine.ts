@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
+import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageRow, type QuestionRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { closeChromeTabs, listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
@@ -19,7 +19,7 @@ import type { Services } from "./services.js";
 import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
 import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
-import { DesignResult, ImplResult, PrFixResult, QaPassResult, ResearchResult, type QaScenario } from "./stages/contracts.js";
+import { DesignResult, ImplResult, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
 
 // A comment anchored to one line of the review diff. `line` is the new-file line for add/context lines, the old-file line for deletions.
 export interface LineComment {
@@ -98,6 +98,26 @@ const renderReviewNotes = (round: number, notes: string | undefined, comments: L
     }
     parts.push("When done, list in impl.json `notes` each reviewer point and how you resolved it (or why not).");
     return parts.join("\n\n");
+};
+
+// The block every stage prompt carries: how to hand a decision to the human without guessing or stopping silently.
+const askHumanBlock = (taskDir: string): string =>
+    [
+        "## Asking the human (any stage)",
+        "",
+        "When only the human can decide something — an ambiguous requirement, two valid approaches with different scope or cost, a conflict between the ticket and the code, credentials or data you genuinely cannot create — do not guess and do not stop silently. Write `" + `${taskDir}/questions.json` + "`:",
+        "",
+        "```json",
+        '{ "questions": [ { "id": "q1", "text": "<one clear question>", "context": "<why it matters, ≤ 40 words>", "options": ["<option A>", "<option B>"] } ] }',
+        "```",
+        "",
+        "`options` and `context` are optional; put every open question in the one file (ask everything at once, 1–10 questions). Then reply with exactly one line: `NEED_INPUT` — and stop; do not write this stage's output file in that run. The answers come back at the top of your next instructions under \"Answers from the human\" — continue from where you stopped. Ask only when the answer changes what you build; otherwise take the sensible default and record it in your notes.",
+    ].join("\n");
+
+// Answers rendered as reviewer notes for the resumed run.
+const renderAnswers = (questions: AgentQuestion[], answers: Record<string, string>): string => {
+    const lines = questions.map((q) => `- **${q.id}** ${q.text}\n  → ${answers[q.id]?.trim() || "(no answer — decide yourself and note the decision)"}`);
+    return `## Answers from the human to your questions (continue from where you stopped)\n\n${lines.join("\n")}`;
 };
 
 interface DispatchOpts {
@@ -770,6 +790,7 @@ export class Engine extends EventEmitter {
     review(taskId: string, input: ReviewInput): void {
         const task = this.getTask(taskId);
         if (!task || task.status !== "waiting_user") throw new Error("task is not waiting for review");
+        if (this.pendingQuestions(taskId)) throw new Error("the agent is waiting for answers to its questions — answer (or dismiss) them first");
         const comments = input.comments ?? [];
         const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE task_id = ? AND stage = ? AND verdict = 'changes'`).get(taskId, task.stage) as { n: number };
         this.db
@@ -1225,12 +1246,13 @@ export class Engine extends EventEmitter {
         this.notified.set(key, Date.now());
         const label = STAGE_DEFS[task.stage]?.label ?? task.stage;
         const priority: Notice["priority"] = task.status === "blocked" || task.status === "failed" ? "high" : task.status === "rate_limited" ? "low" : "default";
-        const verb = task.status === "waiting_user" ? "needs your review" : task.status === "blocked" ? "is blocked" : task.status === "failed" ? "failed" : "is rate-limited";
+        const asking = task.status === "waiting_user" && !!this.pendingQuestions(task.id);
+        const verb = asking ? "has questions for you" : task.status === "waiting_user" ? "needs your review" : task.status === "blocked" ? "is blocked" : task.status === "failed" ? "failed" : "is rate-limited";
         void notify(this.cfg, {
             title: `${task.ticket_id} ${verb} · ${label}`,
             message: task.status_line ?? label,
             priority,
-            tags: [task.status === "waiting_user" ? "eyes" : task.status === "failed" ? "x" : task.status === "blocked" ? "no_entry" : "hourglass"],
+            tags: [asking ? "question" : task.status === "waiting_user" ? "eyes" : task.status === "failed" ? "x" : task.status === "blocked" ? "no_entry" : "hourglass"],
             ...(taskLink(this.cfg, task.id) ? { url: taskLink(this.cfg, task.id)! } : {}),
             localUrl: localTaskLink(this.cfg, task.id),
             group: `stagehand-${task.id}`,
@@ -1402,6 +1424,7 @@ export class Engine extends EventEmitter {
             branch: task.branch ?? "",
             taskDir,
             reviewerNotes: opts.notes ?? "",
+            askHuman: askHumanBlock(taskDir),
             attempt: String(opts.attempt ?? 1),
             maxTurns: String(def.maxTurns ?? 100),
             seedHints: env.qa_seed_hints?.trim() ? env.qa_seed_hints.trim() : "(none configured for this environment — inspect the repo's configs/ and models to find the local database and API)",
@@ -1541,6 +1564,7 @@ export class Engine extends EventEmitter {
         const runId = randomUUID();
         const attempt = opts.attempt ?? 1;
         const fresh = def.freshSession === true;
+        this.dismissPendingQuestions(taskId);
         const priorRuns = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND kind = 'task-session'`).get(taskId) as { n: number };
         const vars = this.promptVars(task, def, opts);
         const prompt = renderPrompt(def.prompt, vars);
@@ -1708,6 +1732,14 @@ export class Engine extends EventEmitter {
             this.queueRateLimited(task, account, outcome.lastRateLimit.resetsAt, `rate limited on ${account.name}`);
             return;
         }
+        // The agent handed a decision to the human (questions.json written by this run, no valid output): park the task
+        // until the answers arrive; the same session is then resumed with them.
+        const asked = this.questionsAskedDuringRun(taskId, runId);
+        if (asked && !(def.contract && def.outputFile && this.outputWrittenDuringRun(taskId, def.outputFile, runId) && this.validateOutput(taskId, def).ok)) {
+            finish("blocked", `asked the human ${asked.questions.length} question(s)`);
+            this.parkOnQuestions(taskId, runId, def, asked, opts);
+            return;
+        }
         if (!outcome.result || outcome.result.is_error || (outcome.exitCode ?? 1) !== 0) {
             // A run that wrote its output file and then died (typically max turns before the final "DONE") still did the work.
             if (def.contract && def.outputFile && this.outputWrittenDuringRun(taskId, def.outputFile, runId)) {
@@ -1756,6 +1788,79 @@ export class Engine extends EventEmitter {
         finish("done");
         const next = def.next;
         if (next) this.advance(taskId, next);
+    }
+
+    // ---------- questions: the agent asks, the human answers, the stage resumes ----------
+
+    // questions.json written (or rewritten) by this run and valid; a stale file from an earlier run does not count.
+    private questionsAskedDuringRun(taskId: string, runId: string): QuestionsFile | null {
+        if (!this.outputWrittenDuringRun(taskId, "questions.json", runId)) return null;
+        const raw = this.readArtifactJson<unknown>(taskId, "questions.json");
+        const parsed = QuestionsFile.safeParse(raw);
+        return parsed.success ? parsed.data : null;
+    }
+
+    private parkOnQuestions(taskId: string, runId: string, def: StageDef, asked: QuestionsFile, opts: DispatchOpts): void {
+        const id = randomUUID();
+        // Keep what the run was started with (reviewer notes, PR-fix failure text, attempt) so the resumed run gets the same brief.
+        const resume = { notes: opts.notes ?? null, attempt: opts.attempt ?? 1, extraVars: opts.extraVars ?? {} };
+        this.db
+            .prepare(`INSERT INTO questions (id, task_id, run_id, stage, questions, answers, created_at, answered_at) VALUES (?, ?, ?, ?, ?, NULL, ?, NULL)`)
+            .run(id, taskId, runId, def.stage, JSON.stringify({ ...asked, resume }), now());
+        // The file has served its purpose; a leftover would otherwise look like a fresh question to a later run's check (mtime guards, but keep the dir clean).
+        const p = join(this.taskDir(taskId), "questions.json");
+        if (existsSync(p)) renameSync(p, join(this.taskDir(taskId), `questions-${Date.now()}.json`));
+        this.addMessage(taskId, "agent", `**${def.label} — I need your input before continuing:**\n\n${asked.questions.map((q) => `- **${q.id}** ${q.text}${q.context ? `\n  _${q.context}_` : ""}${q.options.length ? `\n  options: ${q.options.join(" · ")}` : ""}`).join("\n")}`);
+        this.setTaskStatus(taskId, "waiting_user", `${def.label} · ${asked.questions.length} question(s) for you`);
+    }
+
+    listQuestions(taskId: string): Array<{ id: string; run_id: string | null; stage: Stage; questions: AgentQuestion[]; answers: Record<string, string> | null; created_at: string; answered_at: string | null }> {
+        const rows = this.db.prepare(`SELECT * FROM questions WHERE task_id = ? ORDER BY created_at`).all(taskId) as QuestionRow[];
+        return rows.map((r) => {
+            let questions: AgentQuestion[] = [];
+            let answers: Record<string, string> | null = null;
+            try {
+                questions = (JSON.parse(r.questions) as QuestionsFile).questions;
+            } catch {
+                /* unreadable row */
+            }
+            try {
+                answers = r.answers ? (JSON.parse(r.answers) as Record<string, string>) : null;
+            } catch {
+                /* unreadable row */
+            }
+            return { id: r.id, run_id: r.run_id, stage: r.stage, questions, answers, created_at: r.created_at, answered_at: r.answered_at };
+        });
+    }
+
+    pendingQuestions(taskId: string): QuestionRow | undefined {
+        return this.db.prepare(`SELECT * FROM questions WHERE task_id = ? AND answers IS NULL ORDER BY created_at DESC LIMIT 1`).get(taskId) as QuestionRow | undefined;
+    }
+
+    // A rerun / return / retry started something else: the open questions are moot, mark them so instead of leaving them pending forever.
+    private dismissPendingQuestions(taskId: string): void {
+        this.db.prepare(`UPDATE questions SET answers = '{"__dismissed__":"true"}', answered_at = ? WHERE task_id = ? AND answers IS NULL`).run(now(), taskId);
+    }
+
+    // Stores the answers and resumes the stage that asked, in the same session, with the answers as notes.
+    answerQuestions(taskId: string, questionRowId: string, answers: Record<string, string>): void {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress");
+        const row = this.db.prepare(`SELECT * FROM questions WHERE id = ? AND task_id = ?`).get(questionRowId, taskId) as QuestionRow | undefined;
+        if (!row) throw new Error("questions not found");
+        if (row.answers) throw new Error("these questions were already answered");
+        const stored = JSON.parse(row.questions) as QuestionsFile & { resume?: { notes: string | null; attempt: number; extraVars: Record<string, string> } };
+        this.db.prepare(`UPDATE questions SET answers = ?, answered_at = ? WHERE id = ?`).run(JSON.stringify(answers), now(), row.id);
+        this.addMessage(taskId, "user", stored.questions.map((q) => `**${q.id}** ${q.text}\n→ ${answers[q.id]?.trim() || "(no answer — decide yourself)"}`).join("\n\n"));
+        const answerNotes = renderAnswers(stored.questions, answers);
+        const prior = stored.resume?.notes?.trim();
+        this.setStage(taskId, row.stage);
+        this.dispatch(taskId, row.stage, {
+            notes: prior ? `${answerNotes}\n\n---\n\n${prior}` : answerNotes,
+            attempt: stored.resume?.attempt ?? 1,
+            ...(stored.resume?.extraVars && Object.keys(stored.resume.extraVars).length ? { extraVars: stored.resume.extraVars } : {}),
+        });
     }
 
     // True when the stage's output file was (re)written after this run started — a stale file from an earlier pass doesn't count.

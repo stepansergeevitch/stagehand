@@ -6,6 +6,8 @@ This is the DESIGN PROPOSAL stage for ticket {{ticketId}}. You are now in the ta
 
 {{reviewerNotes}}
 
+{{askHuman}}
+
 ## Who reads this and why
 
 A senior engineer reviews `design.md` to approve or push back, and uses it to learn how this part of the system works. They will read the code themselves if a claim looks off. Write for that reader: facts with locations, no persuasion, no narration of how you found things.

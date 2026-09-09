@@ -6,6 +6,8 @@ This is the IMPLEMENTATION stage for ticket {{ticketId}} in the worktree {{workt
 
 {{reviewerNotes}}
 
+{{askHuman}}
+
 ## Rules
 
 - Unit TDD: for each entry in `testPlan`, write the tests first (red), then the implementation (green). Add tests if you find gaps; never drop a planned case.

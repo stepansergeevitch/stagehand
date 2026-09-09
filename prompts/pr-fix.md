@@ -8,6 +8,8 @@ Something on the open PR for ticket {{ticketId}} (worktree {{worktree}}, branch 
 
 {{reviewerNotes}}
 
+{{askHuman}}
+
 ## Rules
 
 - If this is a failing CI check, diagnose from the logs above; use `mcp__circleci-mcp-server__get_build_failure_logs` / `get_job_test_results` if you need more. If it's PR comments, address each one directly — don't invent a CI failure to explain, and don't touch anything the comments didn't ask about.

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { api, checkOutcome, isApprovalGateCheck, parseChecks, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type QaPass, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
+import { api, checkOutcome, isApprovalGateCheck, parseChecks, pendingQuestions, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
 import { Chat } from "./Chat";
@@ -307,6 +307,39 @@ const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"
     );
 };
 
+// The agent stopped mid-stage to ask: one answer per question (an option click fills it, free text overrides), then the
+// stage resumes in the same session with the answers. Sending with blanks lets the agent decide those itself.
+const QuestionsBox = ({ round, onSend }: { round: QuestionRound; onSend: (answers: Record<string, string>) => Promise<void> }) => {
+    const [answers, setAnswers] = useState<Record<string, string>>({});
+    const [sending, setSending] = useState(false);
+    useEffect(() => setAnswers({}), [round.id]);
+    const set = (id: string, text: string) => setAnswers((a) => ({ ...a, [id]: text }));
+    const answered = round.questions.filter((q) => answers[q.id]?.trim()).length;
+    const send = () => { setSending(true); void onSend(answers).finally(() => setSending(false)); };
+    return (
+        <div className="review-box questions-box">
+            <b>{STAGE_LABEL[round.stage]} — the agent has {round.questions.length === 1 ? "a question" : `${round.questions.length} questions`} for you.</b>
+            <span className="field-hint">It stopped at this point; your answers go back into the same session and the stage continues. Blank answers mean "you decide".</span>
+            {round.questions.map((q, i) => (
+                <div key={q.id} className="question">
+                    <div className="question-text"><span className="chip accent">{i + 1}</span> {q.text}</div>
+                    {q.context && <div className="question-context">{q.context}</div>}
+                    {q.options.length > 0 && (
+                        <div className="question-options">
+                            {q.options.map((o) => <button key={o} className={answers[q.id] === o ? "on" : ""} onClick={() => set(q.id, answers[q.id] === o ? "" : o)}>{o}</button>)}
+                        </div>
+                    )}
+                    <textarea value={answers[q.id] ?? ""} onChange={(e) => set(q.id, e.target.value)} placeholder={q.options.length ? "Pick an option above or write your own answer" : "Your answer"} style={{ minHeight: 48 }} />
+                </div>
+            ))}
+            <div className="actions" style={{ marginBottom: 0 }}>
+                <button className="primary" disabled={sending || answered === 0} onClick={send}>{sending ? "Sending…" : `Send answers${answered < round.questions.length ? ` (${answered}/${round.questions.length})` : ""}`}</button>
+                <button disabled={sending} onClick={() => { if (confirm("Let the agent decide every unanswered question itself and continue?")) send(); }}>Let the agent decide</button>
+            </div>
+        </div>
+    );
+};
+
 // Status lines that ask for a login carry the app URL; make it clickable so a closed automation window is not a dead end.
 const Linkified = ({ text }: { text: string }) => {
     const parts = text.split(/(https?:\/\/[^\s)]+)/g);
@@ -459,7 +492,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const canComment = task.status === "waiting_user" && task.stage === "user_review";
     const currentIdx = STAGE_ORDER.indexOf(task.stage);
     const skipped = new Set<Stage>(design && design.qa.length === 0 ? ["qa_baseline", "manual_qa"] : []);
-    const waiting = task.status === "waiting_user";
+    // Waiting on answers to the agent's questions is not a review: the review box stays hidden until they are sent.
+    const asking = pendingQuestions(detail);
+    const waiting = task.status === "waiting_user" && !asking;
     const [step, setStep] = useState<Stage>(task.stage);
     useEffect(() => {
         setStep(task.stage);
@@ -774,6 +809,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 })}
             </div>
 
+            {asking && task.status === "waiting_user" && (
+                <QuestionsBox round={asking} onSend={(answers) => onAction(() => api.answerQuestions(task.id, asking.id, answers))} />
+            )}
             {task.status === "blocked" && (
                 <div className="blocked-box">
                     <b>Blocked.</b> <Linkified text={task.status_line ?? ""} />

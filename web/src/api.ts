@@ -120,6 +120,9 @@ export interface Ticket {
 export interface TicketAttachment { name: string; url: string; mime: string | null; file: string | null; size: number | null; error: string | null; origin: "attachment" | "description" | "comment" }
 export interface Service { id: string; task_id: string; kind: "be" | "fe"; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string; running: boolean }
 export interface Message { id: string; task_id: string; role: "user" | "agent"; text: string; created_at: string }
+export interface AgentQuestion { id: string; text: string; context: string; options: string[] }
+export interface QuestionRound { id: string; run_id: string | null; stage: Stage; questions: AgentQuestion[]; answers: Record<string, string> | null; created_at: string; answered_at: string | null }
+export const pendingQuestions = (d: Pick<TaskDetail, "questions">): QuestionRound | undefined => d.questions?.find((q) => q.answers === null);
 export interface Task {
     id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
     branch: string | null; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
@@ -179,6 +182,8 @@ export interface TaskDetail {
     // type error to leave unguarded rather than a runtime crash).
     tickets?: Ticket[];
     messages?: Message[];
+    // Rounds of questions the agent asked mid-stage; a round with answers === null is what the task is waiting on.
+    questions?: QuestionRound[];
     reviews: Review[];
     prState: { number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null; updated_at: string; pushed_at?: string | null } | null;
 }
@@ -293,6 +298,7 @@ export const api = {
     serviceLog: (id: string, kind: "be" | "fe", lines = 120) => fetch(`/api/tasks/${id}/services/${kind}/log?lines=${lines}`).then((r) => r.text()),
     artifactUrl: (id: string, rel: string) => `/api/tasks/${id}/artifacts/${rel}`,
     messages: (id: string) => fetch(`/api/tasks/${id}/messages`).then((r) => j<Message[]>(r)),
+    answerQuestions: (id: string, roundId: string, answers: Record<string, string>) => post<Task>(`/api/tasks/${id}/questions/${roundId}/answer`, { answers }),
     sendMessage: (id: string, text: string) => post<Message>(`/api/tasks/${id}/messages`, { text }),
 };
 

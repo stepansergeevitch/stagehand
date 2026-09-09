@@ -79,3 +79,21 @@ export const PrFixResult = z.object({
     summary: z.string(),
 });
 export type PrFixResult = z.infer<typeof PrFixResult>;
+
+// <taskDir>/questions.json — what an agent writes (any stage) when only the human can decide something; the run then
+// ends with NEED_INPUT and the task waits for answers, which come back as notes in the resumed session.
+export const QuestionsFile = z.object({
+    questions: z
+        .array(
+            z.object({
+                id: z.string().min(1),
+                text: z.string().min(1),
+                context: z.string().default(""),
+                options: z.array(z.string()).default([]),
+            }),
+        )
+        .min(1)
+        .max(10),
+});
+export type QuestionsFile = z.infer<typeof QuestionsFile>;
+export type AgentQuestion = QuestionsFile["questions"][number];
