@@ -192,7 +192,7 @@ const TicketView = ({ detail, onFetch }: { detail: TaskDetail; onFetch: () => Pr
             </section>
         );
     }
-    const all = detail.tickets.length ? detail.tickets : [ticket];
+    const all = detail.tickets?.length ? detail.tickets : [ticket];
     return (
         <>
             {all.length > 1 && <p className="field-hint">Batch task: {all.length} tickets on one branch, one PR per repository.</p>}
@@ -618,7 +618,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     ["design", "Design proposal"],
                     ["code", `Code changes${pending.length ? ` (${pending.length} 💬)` : ""}`],
                     ["comments", `PR comments${prior.length || pending.length ? ` (${prior.length + pending.length})` : ""}`],
-                    ["ticket", `Ticket${detail.tickets.length > 1 ? `s (${detail.tickets.length})` : ""}${task.notes ? " · notes" : ""}`],
+                    ["ticket", `Ticket${(detail.tickets?.length ?? 0) > 1 ? `s (${detail.tickets.length})` : ""}${task.notes ? " · notes" : ""}`],
                     ["cost", "Cost"],
                 ] as Array<[Tab, string]>).map(([t, label]) => (
                     <button key={t} role="tab" className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{label}</button>
