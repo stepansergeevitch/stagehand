@@ -158,13 +158,17 @@ export interface TaskDetail {
     research: { classification: string; title: string; branchName: string; summary: string; affectedAreas: string[] } | null;
     design: Design | null; impl: Impl | null; qaBefore: QaPass | null; qaAfter: QaPass | null;
     // Earlier Manual QA attempts (oldest first) that failed and were auto-returned to Implementation before qaAfter.
-    qaHistory: Array<{ attempt: number; data: QaPass | null }>;
+    qaHistory?: Array<{ attempt: number; data: QaPass | null }>;
     pr: { title: string; body: string; base: string } | null;
     prFix: { summary: string } | null;
     ticket: Ticket | null;
     // Every stored ticket of the task (one, or several for a batch task), in order.
-    tickets: Ticket[];
-    messages: Message[];
+    // Optional (not `?:`ed as "may be absent forever" but as "may be briefly absent right after a server upgrade" —
+    // the dev server hot-reloads new frontend code instantly while the backend only picks up new fields on restart;
+    // marking recently-added fields optional here makes every access site use `?.`, so that transient skew is a
+    // type error to leave unguarded rather than a runtime crash).
+    tickets?: Ticket[];
+    messages?: Message[];
     reviews: Review[];
     prState: { number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null; updated_at: string } | null;
 }

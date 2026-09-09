@@ -289,6 +289,8 @@ const PrWidget = ({ detail }: { detail: TaskDetail }) => {
 
 export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal, onAction, tab, setTab, onOpenTerminal, onCloseTerminal }: Props) => {
     const { task, runs, design, impl, qaBefore, qaAfter, pr, prFix, research } = detail;
+    const tickets = detail.tickets ?? [];
+    const qaHistory = detail.qaHistory ?? [];
     const has = (p: string) => detail.artifacts.some((a) => a.path === p);
     const researchMd = useArtifactText(task.id, "research.md", has("research.md"));
     const designMd = useArtifactText(task.id, "design.md", has("design.md"));
@@ -416,10 +418,10 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     {currentIdx >= STAGE_ORDER.indexOf("manual_qa") && <button onClick={() => onAction(() => api.rerun(task.id, "manual_qa"))}>Re-run Manual QA</button>}
                 </div>
             )}
-            {(detail.qaHistory?.length ?? 0) > 0 && (
-                <Sub title={`Earlier automatic fix attempts (${detail.qaHistory.length})`} open={false}>
+            {qaHistory.length > 0 && (
+                <Sub title={`Earlier automatic fix attempts (${qaHistory.length})`} open={false}>
                     <p className="field-hint">Manual QA failed and was sent straight back to Implementation these times before the current result; the agent saw this same trail so it didn't need to re-run QA to rediscover it.</p>
-                    {detail.qaHistory.map(({ attempt, data }) => (
+                    {qaHistory.map(({ attempt, data }) => (
                         <div key={attempt} className="kv" style={{ marginBottom: 8 }}>
                             <b>Attempt {attempt}</b>
                             <span>
@@ -638,7 +640,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     ["code", `Code changes${pending.length ? ` (${pending.length} 💬)` : ""}`],
                     ["comments", `PR comments${prior.length || pending.length ? ` (${prior.length + pending.length})` : ""}`],
                     ["chat", `Chat${detail.messages?.length ? ` (${detail.messages.length})` : ""}`],
-                    ["ticket", `Ticket${(detail.tickets?.length ?? 0) > 1 ? `s (${detail.tickets.length})` : ""}${task.notes ? " · notes" : ""}`],
+                    ["ticket", `Ticket${tickets.length > 1 ? `s (${tickets.length})` : ""}${task.notes ? " · notes" : ""}`],
                     ["cost", "Cost"],
                 ] as Array<[Tab, string]>).map(([t, label]) => (
                     <button key={t} role="tab" className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{label}</button>
