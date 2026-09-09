@@ -113,6 +113,20 @@ export const setChromeTabUrl = (tabRef: Pick<ChromeTab, "window" | "tab">, url: 
     return osascript(`tell application "${app}" to set URL of tab ${tabRef.tab} of window ${tabRef.window} to "${url.replace(/"/g, '\\"')}"`).then(() => undefined);
 };
 
+// Closes every open tab whose URL starts with one of the given prefixes (e.g. a task's now-dead BE/FE localhost URLs),
+// across every window. Iterates tab indices backwards within each window so closing one doesn't shift the rest out
+// from under the loop. A no-op (returns 0) when the browser isn't running or nothing matches — never throws.
+export const closeChromeTabs = async (urlPrefixes: string[], browser = "Google"): Promise<number> => {
+    if (urlPrefixes.length === 0) return 0;
+    const app = APP_NAMES[browser] ?? "Google Chrome";
+    const condition = urlPrefixes.map((u) => `URL of t starts with "${u.replace(/"/g, '\\"')}"`).join(" or ");
+    const script =
+        `if application "${app}" is not running then return "0"\n` +
+        `tell application "${app}"\n set n to 0\n repeat with w in windows\n  repeat with i from (count of tabs of w) to 1 by -1\n   set t to tab i of w\n   if ${condition} then\n    close t\n    set n to n + 1\n   end if\n  end repeat\n end repeat\n return n\nend tell`;
+    const out = await osascript(script).catch(() => "0");
+    return Number(out.trim()) || 0;
+};
+
 // Quits and relaunches the browser entirely — closes every window/tab, not just the automation profile. A brand-new
 // CLAUDE_CONFIG_DIR's first Chrome bridge connection often fails until the browser is restarted once (confirmed
 // 2026-09-08: the extension's own error names this — "If this is your first time connecting to Chrome, you may need

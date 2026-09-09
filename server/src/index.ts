@@ -1010,13 +1010,17 @@ app.get("/api/tasks/:id/services/:kind/log", (c) => {
     return new Response(lines.slice(-tail).join("\n"), { headers: { "content-type": "text/plain; charset=utf-8" } });
 });
 
+// ?worktree=keep skips worktree/branch removal (and the env's cleanup command, which assumes the worktree is gone).
+// ?force=1 discards unpushed commits / uncommitted changes instead of refusing — same as the Clean up button.
 app.delete("/api/tasks/:id", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
-    await services.stopAll(task.id);
-    await killSession(taskSessionName(task.ticket_id));
-    await engine.deleteTask(task.id, c.req.query("worktree") !== "keep");
-    return c.json({ deleted: task.id });
+    try {
+        await engine.deleteTask(task.id, c.req.query("worktree") !== "keep", c.req.query("force") === "1");
+        return c.json({ deleted: task.id });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
 });
 
 app.post("/api/tasks/:id/pin", (c) => {

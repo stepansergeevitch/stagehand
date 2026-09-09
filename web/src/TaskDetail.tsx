@@ -558,7 +558,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {task.status !== "running" && currentIdx > 0 && <button onClick={() => setReturning((v) => !v)} title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)">{returning ? "Cancel return" : "Return to a stage…"}</button>}
                 {task.status !== "running" && task.worktree_path && (
                     <button
-                        title="Stop BE/FE, run the env's cleanup command, remove the worktree and local branch; the task and its history stay"
+                        title="Stop BE/FE, close their Chrome tabs, run the env's cleanup command, remove the worktree and local branch; the task and its history stay"
                         onClick={() => {
                             if (!confirm(`Clean up ${task.ticket_id}? BE/FE stop, the worktree and local branch ${task.branch ?? ""} are removed. Pushed commits and the PR are untouched.`)) return;
                             void onAction(async () => {
@@ -576,7 +576,24 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     </button>
                 )}
                 {task.status !== "running" && (
-                    <button className="danger" title="Forget this task: artifacts, runs, worktree and local branch" onClick={() => { if (confirm(`Delete task ${task.ticket_id} with its artifacts, worktree and local branch? The PR (if any) stays on GitHub.`)) void onAction(() => api.deleteTask(task.id)); }}>Delete</button>
+                    <button
+                        className="danger"
+                        title="Stop BE/FE, close their Chrome tabs, run the env's cleanup command, remove the worktree/branch, then forget this task"
+                        onClick={() => {
+                            if (!confirm(`Delete task ${task.ticket_id}? This cleans up (BE/FE, Chrome tabs, worktree, local branch) the same way "Clean up" does, then removes the task itself. The PR (if any) stays on GitHub.`)) return;
+                            void onAction(async () => {
+                                try {
+                                    await api.deleteTask(task.id);
+                                } catch (e) {
+                                    const msg = String((e as Error).message ?? e);
+                                    if (/nowhere else/.test(msg) && confirm(`${msg}\n\nDiscard them and delete anyway?`)) await api.deleteTask(task.id, false, true);
+                                    else throw e;
+                                }
+                            });
+                        }}
+                    >
+                        Delete
+                    </button>
                 )}
             </div>
             {returning && (

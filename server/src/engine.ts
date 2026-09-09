@@ -6,7 +6,7 @@ import type { Config } from "./config.js";
 import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
-import { listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
+import { closeChromeTabs, listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
 import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage } from "./usage.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
 import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
@@ -590,18 +590,21 @@ export class Engine extends EventEmitter {
         this.dispatch(taskId, stage, { notes: "This stage is being re-run on request. Do the work again from scratch for this stage; earlier stages' outputs in the task directory are still valid." });
     }
 
-    async deleteTask(taskId: string, removeWorktree: boolean): Promise<void> {
+    // Reuses the same cleanup as the "Clean up" button (stop BE/FE, close their Chrome tabs, kill the terminal, run the
+    // env's cleanup command, remove the worktree/branch — throwing the same unpushed-work error unless force) before
+    // dropping the task's own records. Every table with a foreign key to tasks(id) must be cleared first — `runs`,
+    // `pr_state`, `services`, `messages`, `reviews` — or the final DELETE FROM tasks fails (foreign_keys = ON).
+    async deleteTask(taskId: string, removeWorktree: boolean, force = false): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) return;
         const run = this.latestRun(taskId);
         if (run) this.active.get(run.id)?.kill();
-        if (removeWorktree && task.worktree_path && task.branch) {
-            const env = this.env(task.env_id);
-            await removeWorktreeAndBranch(env, task.worktree_path, task.branch, parseEnvVars(env.env_vars)).catch(() => undefined);
-        }
+        await this.doCleanup(task, force, { removeWorktree });
         rmSync(this.taskDir(taskId), { recursive: true, force: true });
+        this.db.prepare(`DELETE FROM messages WHERE task_id = ?`).run(taskId);
         this.db.prepare(`DELETE FROM reviews WHERE task_id = ?`).run(taskId);
         this.db.prepare(`DELETE FROM pr_state WHERE task_id = ?`).run(taskId);
+        this.db.prepare(`DELETE FROM services WHERE task_id = ?`).run(taskId);
         this.db.prepare(`DELETE FROM runs WHERE task_id = ?`).run(taskId);
         this.db.prepare(`DELETE FROM tasks WHERE id = ?`).run(taskId);
         this.emit("task", { ...task, status: "deleted" });
@@ -660,11 +663,23 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        const result = await this.doCleanup(task, force, { removeWorktree: true });
+        const line = `cleaned up · ${result.done.join(", ")}${result.skipped.length ? ` · ${result.skipped.join("; ")}` : ""}`;
+        this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(line, now(), taskId);
+        this.emit("task", this.getTask(taskId));
+        return result;
+    }
+
+    // Shared by the "Clean up" button and Delete: stop BE/FE, close any Chrome tabs still open on them, kill the
+    // terminal session, run the env's cleanup command, remove the worktree and local branch. Does NOT check task
+    // status — callers that need "not while running" (cleanup()) check it themselves; Delete kills the run first
+    // instead of refusing, since deleting is meant to work regardless.
+    private async doCleanup(task: TaskRow, force: boolean, opts: { removeWorktree: boolean }): Promise<{ done: string[]; skipped: string[] }> {
         const env = this.env(task.env_id);
         const vars = parseEnvVars(env.env_vars);
         const done: string[] = [];
         const skipped: string[] = [];
-        if (task.worktree_path && task.branch) {
+        if (opts.removeWorktree && task.worktree_path && task.branch) {
             const checkouts = this.prCheckouts(task, env).filter((p) => existsSync(p));
             if (!force) {
                 for (const cwd of checkouts) {
@@ -678,12 +693,20 @@ export class Engine extends EventEmitter {
                 }
             }
         }
-        await this.services.stopAll(taskId);
+        // Capture the URLs before stopAll marks the service rows stopped (services.get only returns still-running rows).
+        const be = this.services.get(task.id, "be");
+        const fe = this.services.get(task.id, "fe");
+        const tabUrls = [be?.url, fe?.url].filter((u): u is string => !!u);
+        await this.services.stopAll(task.id);
         done.push("BE/FE stopped");
+        if (tabUrls.length) {
+            const closed = await closeChromeTabs(tabUrls).catch(() => 0);
+            if (closed) done.push(`${closed} Chrome tab(s) closed`);
+        }
         await killSession(taskSessionName(task.ticket_id));
-        if (task.worktree_path && existsSync(task.worktree_path)) {
+        if (opts.removeWorktree && task.worktree_path && existsSync(task.worktree_path)) {
             if (env.cleanup_command) {
-                this.setTaskStatus(taskId, task.status, "cleanup · running the environment's cleanup command");
+                this.setTaskStatus(task.id, task.status, "cleanup · running the environment's cleanup command");
                 try {
                     await runWorktreeSetup(task.worktree_path, env.path, env.cleanup_command, vars);
                     done.push("cleanup command ran");
@@ -695,12 +718,11 @@ export class Engine extends EventEmitter {
                 await removeWorktreeAndBranch(env, task.worktree_path, task.branch, vars).catch((e: unknown) => skipped.push(`worktree: ${String((e as Error).message ?? e).slice(0, 160)}`));
                 if (!existsSync(task.worktree_path)) done.push("worktree and local branch removed");
             }
-        } else if (task.worktree_path) done.push("worktree already gone");
-        if (task.worktree_path && !existsSync(task.worktree_path)) this.db.prepare(`UPDATE tasks SET worktree_path = NULL, updated_at = ? WHERE id = ?`).run(now(), taskId);
-        rmSync(join(this.taskDir(taskId), "logs"), { recursive: true, force: true });
-        const line = `cleaned up · ${done.join(", ")}${skipped.length ? ` · ${skipped.join("; ")}` : ""}`;
-        this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(line, now(), taskId);
-        this.emit("task", this.getTask(taskId));
+        } else if (opts.removeWorktree && task.worktree_path) done.push("worktree already gone");
+        if (opts.removeWorktree && task.worktree_path && !existsSync(task.worktree_path)) {
+            this.db.prepare(`UPDATE tasks SET worktree_path = NULL, updated_at = ? WHERE id = ?`).run(now(), task.id);
+        }
+        rmSync(join(this.taskDir(task.id), "logs"), { recursive: true, force: true });
         return { done, skipped };
     }
 
