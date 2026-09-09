@@ -541,6 +541,9 @@ export const openDb = (dataDir: string): DB => {
     // existing row that still has the old value, not adding a column. Safe to run every startup: a no-op once done.
     db.exec(`UPDATE tasks SET stage = 'pr_fix' WHERE stage = 'pr_red'`);
     db.exec(`UPDATE runs SET stage = 'pr_fix' WHERE stage = 'pr_red'`);
+    // Cosmetic half of the same rename: status_line is a stored string, not recomputed from the stage, so any line
+    // already written with the old label sits stale until something else updates it. Fix it once, here, alongside.
+    db.exec(`UPDATE tasks SET status_line = REPLACE(status_line, 'PR Red', 'PR Fix') WHERE status_line LIKE 'PR Red%'`);
     return db;
 };
 
