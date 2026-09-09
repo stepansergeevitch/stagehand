@@ -649,6 +649,21 @@ export class Engine extends EventEmitter {
         this.emitTask(taskId);
     }
 
+    // The human edits the drafted PR title/body before approving; Approve & create PR then uses the edited file.
+    setPrDraft(taskId: string, patch: { title?: string | undefined; body?: string | undefined; base?: string | undefined }): { title: string; body: string; base: string } {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
+        const current = this.readArtifactJson<{ title: string; body: string; base: string }>(taskId, "pr.json");
+        const env = this.env(task.env_id);
+        const next = { title: (patch.title ?? current?.title ?? "").trim(), body: patch.body ?? current?.body ?? "", base: (patch.base ?? current?.base ?? env.base_branch).trim() || env.base_branch };
+        if (!next.title) throw new Error("the PR title cannot be empty");
+        writeFileSync(join(this.taskDir(taskId), "pr.json"), JSON.stringify(next, null, 2));
+        this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+        this.emitTask(taskId);
+        return next;
+    }
+
     setNotes(taskId: string, notes: string | null): void {
         this.db.prepare(`UPDATE tasks SET notes = ?, updated_at = ? WHERE id = ?`).run(notes?.trim() || null, now(), taskId);
         this.emitTask(taskId);

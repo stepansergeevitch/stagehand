@@ -254,6 +254,8 @@ export const api = {
     patchTask: (id: string, body: { notes?: string | null }) =>
         fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Task>(r)),
     returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[] }) => post<Task>(`/api/tasks/${id}/return`, body),
+    patchPrDraft: (id: string, body: { title?: string; body?: string; base?: string }) =>
+        fetch(`/api/tasks/${id}/pr-draft`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ title: string; body: string; base: string }>(r)),
     cleanup: (id: string, force = false) => post<{ done: string[]; skipped: string[] }>(`/api/tasks/${id}/cleanup${force ? "?force=1" : ""}`),
     deleteTask: (id: string, keepWorktree = false, force = false) =>
         fetch(`/api/tasks/${id}?${new URLSearchParams({ ...(keepWorktree ? { worktree: "keep" } : {}), ...(force ? { force: "1" } : {}) })}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),

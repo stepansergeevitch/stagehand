@@ -719,6 +719,16 @@ app.patch("/api/tasks/:id", async (c) => {
     return c.json(engine.getTask(task.id));
 });
 
+// Edit the drafted PR (title / markdown body / base) before it is created.
+app.patch("/api/tasks/:id/pr-draft", async (c) => {
+    const body = json(z.object({ title: z.string().optional(), body: z.string().optional(), base: z.string().optional() }), await c.req.json());
+    try {
+        return c.json(engine.setPrDraft(c.req.param("id"), body));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 // Send a task back to an earlier stage (e.g. after an accidental Approve) with notes; allowed from any non-running state.
 app.post("/api/tasks/:id/return", async (c) => {
     const body = json(

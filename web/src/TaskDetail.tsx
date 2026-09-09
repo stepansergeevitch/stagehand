@@ -647,12 +647,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 return (
                     <>
                         {task.stage === "pr_creation_review" && reviewBox}
-                        {pr ? (
-                            <Card title="PR draft">
-                                <div className="kv"><b>Title</b><span>{pr.title}</span><b>Base</b><code>{pr.base}</code></div>
-                                <Markdown source={pr.body} />
-                            </Card>
-                        ) : <div className="empty">no draft yet</div>}
+                        {pr ? <PrDraftCard pr={pr} editable={task.status !== "running" && !detail.prState?.url} onSave={(patch) => onAction(() => api.patchPrDraft(task.id, patch))} /> : <div className="empty">no draft yet</div>}
                     </>
                 );
             case "pr_waiting":
@@ -955,6 +950,55 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             )}
             {tab === "cost" && <TaskCost taskId={task.id} refreshKey={task.updated_at} />}
         </>
+    );
+};
+
+// The drafted PR: read view, or an editor with the markdown source on one side and the rendered preview on the other.
+// Saving rewrites pr.json, which Approve & create PR then uses.
+const PrDraftCard = ({ pr, editable, onSave }: { pr: { title: string; body: string; base: string }; editable: boolean; onSave: (patch: { title: string; body: string; base: string }) => Promise<void> }) => {
+    const [editing, setEditing] = useState(false);
+    const [title, setTitle] = useState(pr.title);
+    const [body, setBody] = useState(pr.body);
+    const [base, setBase] = useState(pr.base);
+    const [saving, setSaving] = useState(false);
+    useEffect(() => {
+        if (!editing) {
+            setTitle(pr.title);
+            setBody(pr.body);
+            setBase(pr.base);
+        }
+    }, [pr.title, pr.body, pr.base, editing]);
+    const dirty = title !== pr.title || body !== pr.body || base !== pr.base;
+    return (
+        <Card title="PR draft" badge={editable && !editing ? <button className="tiny" onClick={() => setEditing(true)}>Edit</button> : undefined}>
+            {!editing && (
+                <>
+                    <div className="kv"><b>Title</b><span>{pr.title}</span><b>Base</b><code>{pr.base}</code></div>
+                    <Markdown source={pr.body} />
+                </>
+            )}
+            {editing && (
+                <div className="pr-editor">
+                    <label>Title <input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
+                    <label>Base branch <input value={base} onChange={(e) => setBase(e.target.value)} style={{ maxWidth: 220 }} /></label>
+                    <div className="pr-editor-panes">
+                        <div className="pr-editor-pane">
+                            <div className="pr-editor-head">Markdown</div>
+                            <textarea value={body} onChange={(e) => setBody(e.target.value)} spellCheck={false} />
+                        </div>
+                        <div className="pr-editor-pane preview">
+                            <div className="pr-editor-head">Preview</div>
+                            <div className="pr-editor-preview"><Markdown source={body || "*(empty)*"} /></div>
+                        </div>
+                    </div>
+                    <div className="actions" style={{ marginBottom: 0 }}>
+                        <button className="primary" disabled={saving || !title.trim() || !dirty} onClick={() => { setSaving(true); void onSave({ title: title.trim(), body, base }).then(() => setEditing(false)).finally(() => setSaving(false)); }}>{saving ? "Saving…" : "Save draft"}</button>
+                        <button disabled={saving} onClick={() => setEditing(false)}>Cancel</button>
+                        {dirty && <span className="field-hint">unsaved edits</span>}
+                    </div>
+                </div>
+            )}
+        </Card>
     );
 };
 

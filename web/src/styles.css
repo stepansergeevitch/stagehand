@@ -422,6 +422,18 @@ label.inline { display: inline-flex; align-items: center; gap: 4px; }
 .qa-obs-text li { margin: 1px 0; }
 .qa-blockers { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: start; margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn, #d9a400); }
 
+/* PR draft editor: markdown source beside the rendered preview */
+.pr-editor { display: grid; gap: 8px; }
+.pr-editor > label { display: block; font-size: 13px; color: var(--ink-2); }
+.pr-editor > label input { display: block; width: 100%; margin-top: 3px; }
+.pr-editor-panes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 360px; }
+.pr-editor-pane { display: flex; flex-direction: column; min-width: 0; }
+.pr-editor-head { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 4px; }
+.pr-editor-pane textarea { flex: 1; min-height: 340px; resize: vertical; }
+.pr-editor-preview { flex: 1; border: 1px solid var(--line); border-radius: 4px; padding: 8px 12px; overflow: auto; background: var(--bg); min-height: 340px; }
+.pr-editor-preview .markdown { max-width: none; }
+@media (max-width: 760px) { .pr-editor-panes { grid-template-columns: 1fr; } }
+
 /* ticket attachments: images and videos inline, other files as tiles */
 .attachments { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
 .attachment { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 6px; min-width: 0; }
