@@ -246,6 +246,7 @@ export const api = {
     rerun: (id: string, stage: Stage) => post<Task>(`/api/tasks/${id}/rerun`, { stage }),
     qaLogin: (id: string) => post<{ started: true }>(`/api/tasks/${id}/qa-login`),
     fixCi: (id: string) => post<{ started: true }>(`/api/tasks/${id}/fix-ci`),
+    fixComments: (id: string, commentIds: number[]) => post<{ started: true }>(`/api/tasks/${id}/fix-comments`, { commentIds }),
     fetchTicket: (id: string) => post<Ticket>(`/api/tasks/${id}/fetch-ticket`),
     openApp: (id: string) => post<{ opened: string; profile: string }>(`/api/tasks/${id}/open-app`),
     pin: (id: string) => post<Task>(`/api/tasks/${id}/pin`),

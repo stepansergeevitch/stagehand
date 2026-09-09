@@ -269,7 +269,9 @@ details.scenario > ol, details.scenario > div { margin-top: 6px; }
 .gh-comment { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
 .gh-comment.line { border-left: 3px solid var(--wait); }
 .gh-comment.review { border-left: 3px solid var(--accent); }
+.gh-comment.picked { background: var(--accent-soft); border-color: var(--accent); }
 .gh-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12.5px; margin-bottom: 4px; }
+.gh-head input[type="checkbox"] { margin: 0; }
 .gh-head code { overflow-wrap: anywhere; }
 .gh-comment .markdown { font-size: 13px; }
 .pending-comments code { margin-right: 6px; }

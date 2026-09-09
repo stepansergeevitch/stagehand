@@ -960,6 +960,32 @@ export class Engine extends EventEmitter {
         });
     }
 
+    // Human-triggered only (checkbox picks on the PR comments tab). Same commit-locally-then-review-the-diff cycle as
+    // startPrFix, just sourced from PR comments instead of failing checks — the two commonly won't co-occur, but
+    // nothing stops using this while checks are also red; the agent is told which situation it's actually in.
+    async startPrCommentFix(taskId: string, commentIds: number[]): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        const state = this.db.prepare(`SELECT number FROM pr_state WHERE task_id = ?`).get(taskId) as { number: number | null } | undefined;
+        if (!state?.number) throw new Error("no PR recorded for this task yet");
+        const comments = await this.prComments(taskId);
+        if (!comments) throw new Error("could not fetch PR comments — re-poll and try again");
+        const wanted = new Set(commentIds);
+        const picked = [...comments.human, ...comments.automation].filter((c) => wanted.has(c.id));
+        if (!picked.length) throw new Error("none of the selected comments were found — they may be stale, refresh and re-select");
+        const describe = (c: PrComment): string =>
+            c.kind === "line"
+                ? `- \`${c.path}:${c.line ?? "?"}\`${c.outdated ? " (outdated diff position)" : ""} — ${c.author}: ${c.body.trim()}`
+                : c.kind === "review"
+                  ? `- Review by ${c.author}${c.state !== "COMMENTED" ? ` (${c.state.toLowerCase().replace("_", " ")})` : ""}: ${c.body.trim() || "(no body text)"}`
+                  : `- ${c.author}: ${c.body.trim()}`;
+        const failureOutput = `${picked.length} PR comment(s) picked by the human to address (this is not necessarily a CI failure):\n${picked.map(describe).join("\n")}`;
+        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_red'`).get(taskId) as { n: number };
+        this.setStage(taskId, "pr_red");
+        this.dispatch(taskId, "pr_red", { attempt: rounds.n + 1, extraVars: { failureOutput } });
+    }
+
     // After the human approves a PR-Red fix (already committed locally, never pushed): push it and resume PR polling.
     private async pushPrFix(taskId: string): Promise<void> {
         const task = this.getTask(taskId);

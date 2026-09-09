@@ -940,6 +940,17 @@ app.post("/api/tasks/:id/fix-ci", async (c) => {
     }
 });
 
+// Human picks specific PR comments (checkboxes) and asks the agent to address just those, without the full pipeline.
+app.post("/api/tasks/:id/fix-comments", async (c) => {
+    const body = json(z.object({ commentIds: z.array(z.number()).min(1) }), await c.req.json());
+    try {
+        await engine.startPrCommentFix(c.req.param("id"), body.commentIds);
+        return c.json({ started: true });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/rerun", async (c) => {
     const body = json(z.object({ stage: z.enum(STAGES as [Stage, ...Stage[]]) }), await c.req.json());
     engine.rerun(c.req.param("id"), body.stage);

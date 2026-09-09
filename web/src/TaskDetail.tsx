@@ -9,7 +9,7 @@ import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
 import type { Env, LineComment, PrComment, PrComments, Review } from "./api";
 
 // GitHub PR comments of one kind (human or automation): review verdicts, line comments (path:line), general comments.
-const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, onRefresh }: { title: string; items: PrComment[] | null; loading: boolean; error: string | null; hasPr: boolean; url: string | null; fetchedAt: string | null; onRefresh: () => void }) => (
+const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, onRefresh, selected, onToggle }: { title: string; items: PrComment[] | null; loading: boolean; error: string | null; hasPr: boolean; url: string | null; fetchedAt: string | null; onRefresh: () => void; selected: Set<number>; onToggle: (id: number) => void }) => (
     <Card title={title} badge={items ? <span className="chip">{items.length}</span> : undefined}>
         {!hasPr && <div className="empty">No pull request yet — comments appear here once it exists.</div>}
         {hasPr && (
@@ -24,8 +24,11 @@ const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, on
         {items && items.length > 0 && (
             <div className="gh-comments">
                 {[...items].sort((a, b) => a.at.localeCompare(b.at)).map((c) => (
-                    <div key={`${c.kind}-${c.id}`} className={`gh-comment ${c.kind}`}>
+                    <div key={`${c.kind}-${c.id}`} className={`gh-comment ${c.kind} ${selected.has(c.id) ? "picked" : ""}`}>
                         <div className="gh-head">
+                            <label className="inline" title="Pick this comment to send to the agent">
+                                <input type="checkbox" checked={selected.has(c.id)} onChange={() => onToggle(c.id)} />
+                            </label>
                             <b>{c.author}</b>
                             {c.kind === "review" && <span className={`chip ${c.state === "APPROVED" ? "ok" : c.state === "CHANGES_REQUESTED" ? "bad" : ""}`}>{c.state.toLowerCase().replace("_", " ")}</span>}
                             {c.kind === "line" && <code>{c.path}{c.line !== null ? `:${c.line}` : ""}{c.outdated ? " (outdated)" : ""}</code>}
@@ -310,6 +313,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     useEffect(() => setStep(task.stage), [task.stage]);
     // GitHub PR comments (humans + automation), loaded when a tab needs them; line comments are also shown inline in the diff.
     const [commentsTab, setCommentsTab] = useState<"user" | "pr" | "automation">("user");
+    const [selectedComments, setSelectedComments] = useState<Set<number>>(new Set());
+    const toggleComment = (id: number) => setSelectedComments((s) => { const next = new Set(s); next.has(id) ? next.delete(id) : next.add(id); return next; });
+    useEffect(() => setSelectedComments(new Set()), [task.id]);
     const [gh, setGh] = useState<PrComments | null>(null);
     const [ghLoading, setGhLoading] = useState(false);
     const [ghError, setGhError] = useState<string | null>(null);
@@ -727,16 +733,35 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         )
                     )}
                     {commentsTab !== "user" && (
-                        <PrCommentList
-                            title={commentsTab === "pr" ? "Comments on the pull request" : "Automation comments on the pull request"}
-                            items={gh ? (commentsTab === "pr" ? gh.human : gh.automation) : null}
-                            loading={ghLoading}
-                            error={ghError}
-                            hasPr={!!detail.prState?.url}
-                            url={detail.prState?.url ?? null}
-                            fetchedAt={gh?.fetchedAt ?? null}
-                            onRefresh={() => void loadGh()}
-                        />
+                        <>
+                            {selectedComments.size > 0 && (
+                                <div className="review-box" style={{ marginBottom: 10 }}>
+                                    <b>{selectedComments.size} comment(s) picked.</b> The agent addresses just these, commits locally, and you review the diff before it's pushed — no re-run of QA or User Review.
+                                    <div className="actions" style={{ marginBottom: 0 }}>
+                                        <button
+                                            className="primary"
+                                            disabled={task.status === "running"}
+                                            onClick={() => void onAction(async () => { await api.fixComments(task.id, [...selectedComments]); setSelectedComments(new Set()); })}
+                                        >
+                                            Ask agent to address {selectedComments.size} comment(s)
+                                        </button>
+                                        <button onClick={() => setSelectedComments(new Set())}>Clear selection</button>
+                                    </div>
+                                </div>
+                            )}
+                            <PrCommentList
+                                title={commentsTab === "pr" ? "Comments on the pull request" : "Automation comments on the pull request"}
+                                items={gh ? (commentsTab === "pr" ? gh.human : gh.automation) : null}
+                                loading={ghLoading}
+                                error={ghError}
+                                hasPr={!!detail.prState?.url}
+                                url={detail.prState?.url ?? null}
+                                fetchedAt={gh?.fetchedAt ?? null}
+                                onRefresh={() => void loadGh()}
+                                selected={selectedComments}
+                                onToggle={toggleComment}
+                            />
+                        </>
                     )}
                 </>
             )}
