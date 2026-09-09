@@ -416,7 +416,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     {currentIdx >= STAGE_ORDER.indexOf("manual_qa") && <button onClick={() => onAction(() => api.rerun(task.id, "manual_qa"))}>Re-run Manual QA</button>}
                 </div>
             )}
-            {detail.qaHistory.length > 0 && (
+            {(detail.qaHistory?.length ?? 0) > 0 && (
                 <Sub title={`Earlier automatic fix attempts (${detail.qaHistory.length})`} open={false}>
                     <p className="field-hint">Manual QA failed and was sent straight back to Implementation these times before the current result; the agent saw this same trail so it didn't need to re-run QA to rediscover it.</p>
                     {detail.qaHistory.map(({ attempt, data }) => (
