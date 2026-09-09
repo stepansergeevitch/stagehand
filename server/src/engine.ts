@@ -72,6 +72,13 @@ interface DispatchOpts {
     chromeVerified?: boolean;
 }
 
+// CircleCI jobs gated behind a manual "Approve" click in the CircleCI UI (deploy/db-reset gates) sit forever in a
+// pending/no-conclusion state until a human clicks through, independent of whether the actual test/build jobs passed.
+// A PR is not less green for these — they are not CI verifying the change, they are a deploy gate — so they are
+// excluded from both the "pending" and "failed" checks that gate PR Green/PR Red. Convention: job names end in
+// `_hold` (e.g. `deploy_hold`) or match `reset_*_db` (e.g. `reset_staging_db`).
+const isApprovalGateCheck = (c: { name?: string; context?: string }): boolean => /_hold$|reset_.*_db$/i.test(c.name ?? c.context ?? "");
+
 const FIVE_HOUR = "five_hour";
 // Task states in which nothing happens until a human acts (or, for rate limits, until the window resets).
 const NEEDS_HUMAN: ReadonlySet<TaskStatus> = new Set(["waiting_user", "blocked", "failed", "rate_limited"]);
@@ -852,8 +859,9 @@ export class Engine extends EventEmitter {
             statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string; status?: string }>;
         };
         const checks = pr.statusCheckRollup ?? [];
-        const failed = checks.filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
-        const pending = checks.filter((c) => !c.conclusion && !/SUCCESS|FAILURE|ERROR/i.test(c.state ?? "") && (c.status ?? "") !== "COMPLETED");
+        const gated = checks.filter((c) => !isApprovalGateCheck(c));
+        const failed = gated.filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
+        const pending = gated.filter((c) => !c.conclusion && !/SUCCESS|FAILURE|ERROR/i.test(c.state ?? "") && (c.status ?? "") !== "COMPLETED");
         this.db
             .prepare(`UPDATE pr_state SET url = ?, checks_json = ?, review_decision = ?, merged_at = ?, updated_at = ? WHERE task_id = ?`)
             .run(pr.url, JSON.stringify(checks), pr.reviewDecision ?? null, pr.mergedAt ?? null, now(), task.id);
@@ -898,7 +906,7 @@ export class Engine extends EventEmitter {
         const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(state.number), "--json", "statusCheckRollup"], env)) as {
             statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
         };
-        const failed = (pr.statusCheckRollup ?? []).filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
+        const failed = (pr.statusCheckRollup ?? []).filter((c) => !isApprovalGateCheck(c) && /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
         if (!failed.length) throw new Error("no failing checks right now — re-poll first");
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_red'`).get(taskId) as { n: number };
         const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");

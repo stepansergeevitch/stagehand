@@ -250,6 +250,11 @@ export const api = {
     artifactUrl: (id: string, rel: string) => `/api/tasks/${id}/artifacts/${rel}`,
 };
 
+// A CircleCI job gated behind a manual "Approve" click (deploy/db-reset gates) sits pending forever until a human
+// clicks through — it is not CI verifying the change, so it must not count against "checks passed" or block PR Green.
+// Mirrors server/src/engine.ts's isApprovalGateCheck.
+export const isApprovalGateCheck = (c: { name?: string; context?: string }): boolean => /_hold$|reset_.*_db$/i.test(c.name ?? c.context ?? "");
+
 export const STAGE_LABEL: Record<Stage, string> = {
     research: "Research", design_proposal: "Design Proposal", qa_baseline: "QA baseline", implementation: "Implementation",
     manual_qa: "Manual QA", user_review: "User Review", pr_creation_review: "PR Creation Review", pr_waiting: "PR Waiting",

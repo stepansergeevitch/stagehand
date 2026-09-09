@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type QaPass, type Stage, type TaskDetail, type Ticket } from "./api";
+import { api, isApprovalGateCheck, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type QaPass, type Stage, type TaskDetail, type Ticket } from "./api";
 import { LazyTerminal } from "./LazyTerminal";
 import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
@@ -257,14 +257,15 @@ const PrWidget = ({ detail }: { detail: TaskDetail }) => {
             return [];
         }
     })();
-    const failed = checks.filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
-    const passed = checks.filter((c) => /SUCCESS|NEUTRAL|SKIPPED/i.test(c.conclusion ?? c.state ?? ""));
-    const pending = checks.length - failed.length - passed.length;
+    const gated = checks.filter((c) => !isApprovalGateCheck(c));
+    const failed = gated.filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
+    const passed = gated.filter((c) => /SUCCESS|NEUTRAL|SKIPPED/i.test(c.conclusion ?? c.state ?? ""));
+    const pending = gated.length - failed.length - passed.length;
     let status: React.ReactNode;
     if (prState?.merged_at) status = <span className="chip ok">merged</span>;
     else if (prState?.url) {
         const cls = failed.length ? "bad" : pending > 0 ? "warn" : prState.review_decision === "APPROVED" ? "ok" : "accent";
-        const text = failed.length ? `${failed.length} check(s) failing` : pending > 0 ? `${pending} check(s) running` : prState.review_decision === "APPROVED" ? "approved" : checks.length ? "checks green" : STAGE_LABEL[task.stage];
+        const text = failed.length ? `${failed.length} check(s) failing` : pending > 0 ? `${pending} check(s) running` : prState.review_decision === "APPROVED" ? "approved" : gated.length ? "checks green" : STAGE_LABEL[task.stage];
         status = <span className={`chip ${cls}`}>{text}</span>;
     } else if (task.stage === "pr_creation_review") status = <span className="chip wait">{task.status === "waiting_user" ? "draft ready — approve to create" : "drafting"}</span>;
     else if (PR_STAGES.has(task.stage)) status = <span className="chip warn">not created yet</span>;
@@ -277,7 +278,7 @@ const PrWidget = ({ detail }: { detail: TaskDetail }) => {
                 {status}
                 {prState?.url && <a href={prState.url} target="_blank" rel="noreferrer">#{prState.number} ↗</a>}
                 {prState?.review_decision && <span className="chip">{prState.review_decision.toLowerCase().replace("_", " ")}</span>}
-                {checks.length > 0 && <span className="mono small">{passed.length}/{checks.length} checks passed{failed.length ? ` · failing: ${failed.map((c) => c.name ?? c.context).join(", ")}` : ""}</span>}
+                {gated.length > 0 && <span className="mono small">{passed.length}/{gated.length} checks passed{checks.length > gated.length ? ` (+${checks.length - gated.length} awaiting approval)` : ""}{failed.length ? ` · failing: ${failed.map((c) => c.name ?? c.context).join(", ")}` : ""}</span>}
                 {!prState?.url && PR_STAGES.has(task.stage) && task.status_line && <span className="small">{task.status_line}</span>}
                 {task.branch && <code className="small">⎇ {task.branch}</code>}
             </div>
