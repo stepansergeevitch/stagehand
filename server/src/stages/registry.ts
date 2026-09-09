@@ -89,8 +89,8 @@ export const STAGE_DEFS: Record<Stage, StageDef> = {
         next: "pr_waiting",
     },
     pr_waiting: { stage: "pr_waiting", kind: "poll", label: "PR Waiting", next: "pr_green" },
-    pr_red: {
-        stage: "pr_red",
+    pr_fix: {
+        stage: "pr_fix",
         kind: "wait",
         label: "PR Fix",
         prompt: "pr-fix.md",

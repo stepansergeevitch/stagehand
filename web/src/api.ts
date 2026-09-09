@@ -1,6 +1,6 @@
 export type Stage =
     | "research" | "design_proposal" | "qa_baseline" | "implementation" | "manual_qa" | "user_review"
-    | "pr_creation_review" | "pr_waiting" | "pr_red" | "pr_green" | "pr_approved" | "done";
+    | "pr_creation_review" | "pr_waiting" | "pr_fix" | "pr_green" | "pr_approved" | "done";
 
 export type TaskStatus = "idle" | "queued" | "running" | "waiting_user" | "blocked" | "rate_limited" | "failed" | "done" | "stopped";
 
@@ -272,9 +272,9 @@ export const isApprovalGateCheck = (c: { name?: string; context?: string }): boo
 export const STAGE_LABEL: Record<Stage, string> = {
     research: "Research", design_proposal: "Design Proposal", qa_baseline: "QA baseline", implementation: "Implementation",
     manual_qa: "Manual QA", user_review: "User Review", pr_creation_review: "PR Creation Review", pr_waiting: "PR Waiting",
-    pr_red: "PR Fix", pr_green: "PR Green", pr_approved: "PR Approved", done: "Done",
+    pr_fix: "PR Fix", pr_green: "PR Green", pr_approved: "PR Approved", done: "Done",
 };
 export const STAGE_ORDER: Stage[] = [
     "research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "user_review",
-    "pr_creation_review", "pr_waiting", "pr_red", "pr_green", "pr_approved", "done",
+    "pr_creation_review", "pr_waiting", "pr_fix", "pr_green", "pr_approved", "done",
 ];

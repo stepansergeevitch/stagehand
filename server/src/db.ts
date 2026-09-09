@@ -11,7 +11,7 @@ export type Stage =
     | "user_review"
     | "pr_creation_review"
     | "pr_waiting"
-    | "pr_red"
+    | "pr_fix"
     | "pr_green"
     | "pr_approved"
     | "done";
@@ -25,7 +25,7 @@ export const STAGES: readonly Stage[] = [
     "user_review",
     "pr_creation_review",
     "pr_waiting",
-    "pr_red",
+    "pr_fix",
     "pr_green",
     "pr_approved",
     "done",
@@ -536,6 +536,11 @@ export const openDb = (dataDir: string): DB => {
         const [table, column] = key.split(".") as [string, string];
         if (!hasColumn(db, table, column)) db.exec(sql);
     }
+    // Stage identifiers are just data, not schema — renaming one (pr_red -> pr_fix, 2026-09-09: the same stage now also
+    // triggers from picked PR comments, not just failing CI, so "red" stopped being accurate) means rewriting any
+    // existing row that still has the old value, not adding a column. Safe to run every startup: a no-op once done.
+    db.exec(`UPDATE tasks SET stage = 'pr_fix' WHERE stage = 'pr_red'`);
+    db.exec(`UPDATE runs SET stage = 'pr_fix' WHERE stage = 'pr_red'`);
     return db;
 };
 

@@ -714,7 +714,7 @@ export class Engine extends EventEmitter {
             .run(randomUUID(), taskId, task.stage, input.verdict, input.routeTo ?? null, input.notes ?? null, comments.length ? JSON.stringify(comments) : null, now());
 
         if (input.verdict === "changes") {
-            const target: Stage = task.stage === "design_proposal" || task.stage === "pr_red" ? task.stage : (input.routeTo ?? "implementation");
+            const target: Stage = task.stage === "design_proposal" || task.stage === "pr_fix" ? task.stage : (input.routeTo ?? "implementation");
             this.setStage(taskId, target);
             const hasContent = !!input.notes?.trim() || comments.length > 0;
             this.dispatch(taskId, target, {
@@ -728,7 +728,7 @@ export class Engine extends EventEmitter {
             void this.createPr(taskId);
             return;
         }
-        if (task.stage === "pr_red") {
+        if (task.stage === "pr_fix") {
             void this.pushPrFix(taskId);
             return;
         }
@@ -951,10 +951,10 @@ export class Engine extends EventEmitter {
         };
         const failed = (pr.statusCheckRollup ?? []).filter((c) => !isApprovalGateCheck(c) && /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
         if (!failed.length) throw new Error("no failing checks right now — re-poll first");
-        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_red'`).get(taskId) as { n: number };
+        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");
-        this.setStage(taskId, "pr_red");
-        this.dispatch(taskId, "pr_red", {
+        this.setStage(taskId, "pr_fix");
+        this.dispatch(taskId, "pr_fix", {
             attempt: rounds.n + 1,
             extraVars: { failureOutput: `Failing checks: ${names}. Read their logs with \`gh pr checks ${state.number}\` and \`gh run view --log-failed <run-id>\` before changing anything.` },
         });
@@ -981,9 +981,9 @@ export class Engine extends EventEmitter {
                   ? `- Review by ${c.author}${c.state !== "COMMENTED" ? ` (${c.state.toLowerCase().replace("_", " ")})` : ""}: ${c.body.trim() || "(no body text)"}`
                   : `- ${c.author}: ${c.body.trim()}`;
         const failureOutput = `${picked.length} PR comment(s) picked by the human to address (this is not necessarily a CI failure):\n${picked.map(describe).join("\n")}`;
-        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_red'`).get(taskId) as { n: number };
-        this.setStage(taskId, "pr_red");
-        this.dispatch(taskId, "pr_red", { attempt: rounds.n + 1, extraVars: { failureOutput } });
+        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
+        this.setStage(taskId, "pr_fix");
+        this.dispatch(taskId, "pr_fix", { attempt: rounds.n + 1, extraVars: { failureOutput } });
     }
 
     // After the human approves a PR-Red fix (already committed locally, never pushed): push it and resume PR polling.
@@ -1604,7 +1604,7 @@ export class Engine extends EventEmitter {
     private afterStage(taskId: string, def: StageDef, data: unknown): void {
         const task = this.getTask(taskId)!;
         if (def.stage === "implementation") this.addAgentNote(taskId, (data as ImplResult).notes);
-        if (def.stage === "pr_red") this.addAgentNote(taskId, `CI fix: ${(data as PrFixResult).summary}`);
+        if (def.stage === "pr_fix") this.addAgentNote(taskId, `CI fix: ${(data as PrFixResult).summary}`);
         if (def.stage === "research") {
             const r = ResearchResult.parse(data);
             const env = this.env(task.env_id);

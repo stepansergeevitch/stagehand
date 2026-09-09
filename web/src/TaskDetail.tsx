@@ -258,8 +258,8 @@ const Linkified = ({ text }: { text: string }) => {
     return <>{parts.map((p, i) => (/^https?:\/\//.test(p) ? <a key={i} href={p} target="_blank" rel="noreferrer">{p}</a> : <span key={i}>{p}</span>))}</>;
 };
 
-const RERUNNABLE: ReadonlySet<Stage> = new Set(["research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "pr_creation_review", "pr_red"]);
-const PR_STAGES: ReadonlySet<Stage> = new Set(["pr_waiting", "pr_red", "pr_green", "pr_approved", "done"]);
+const RERUNNABLE: ReadonlySet<Stage> = new Set(["research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "pr_creation_review", "pr_fix"]);
+const PR_STAGES: ReadonlySet<Stage> = new Set(["pr_waiting", "pr_fix", "pr_green", "pr_approved", "done"]);
 
 const statusChip = (s: string) => {
     const cls = s === "waiting_user" || s === "blocked" ? "wait" : s === "running" ? "accent" : s === "failed" ? "bad" : s === "done" ? "ok" : s === "rate_limited" ? "warn" : "";
@@ -410,7 +410,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     className="primary"
                     onClick={() => onAction(async () => { await api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}) }); clearComments(); setNotes(""); })}
                 >
-                    {task.stage === "pr_creation_review" ? "Approve & create PR" : task.stage === "pr_red" ? "Approve & push" : "Approve"}
+                    {task.stage === "pr_creation_review" ? "Approve & create PR" : task.stage === "pr_fix" ? "Approve & push" : "Approve"}
                 </button>
                 <button
                     disabled={!notes.trim() && !(canComment && pending.length > 0)}
@@ -522,8 +522,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             case "pr_waiting":
                 return (
                     <>
-                        {task.stage === "pr_red" && reviewBox}
-                        {task.stage === "pr_red" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
+                        {task.stage === "pr_fix" && reviewBox}
+                        {task.stage === "pr_fix" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
                         <PrPanel detail={detail} />
                     </>
                 );

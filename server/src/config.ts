@@ -39,7 +39,7 @@ const ConfigSchema = z.object({
             implementation: z.string().nullable().default(null),
             manual_qa: z.string().nullable().default("sonnet"),
             pr_creation_review: z.string().nullable().default("sonnet"),
-            pr_red: z.string().nullable().default(null),
+            pr_fix: z.string().nullable().default(null),
             helper: z.string().nullable().default("sonnet"),
         })
         .default({}),
@@ -81,7 +81,7 @@ const defaults = (): Config => ({
     linearApiKey: null,
     defaultModel: null,
     notifications: { macos: true, ntfyServer: "https://ntfy.sh", ntfyTopic: null, ntfyToken: null, baseUrl: null, localBaseUrl: "http://localhost:5173" },
-    stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_red: null, helper: "sonnet" },
+    stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_fix: null, helper: "sonnet" },
     publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },
 });
 
