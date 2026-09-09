@@ -1,9 +1,9 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
+import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageRow, type RunRow, type Stage, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
@@ -19,7 +19,7 @@ import type { Services } from "./services.js";
 import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
 import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
-import { DesignResult, QaPassResult, ResearchResult, type QaScenario } from "./stages/contracts.js";
+import { DesignResult, ImplResult, PrFixResult, QaPassResult, ResearchResult, type QaScenario } from "./stages/contracts.js";
 
 // A comment anchored to one line of the review diff. `line` is the new-file line for add/context lines, the old-file line for deletions.
 export interface LineComment {
@@ -48,6 +48,44 @@ export interface ReviewInput {
     notes?: string | undefined;
     comments?: LineComment[] | undefined;
 }
+
+// Every archived Manual QA attempt so far (oldest first): { N, path } for qa/after-attempt-N.json. The CURRENT
+// qa/after.json is not included — archive it first (see afterStage) if it should count as one of these.
+const qaAttemptFiles = (taskDir: string): Array<{ n: number; path: string }> => {
+    const dir = join(taskDir, "qa");
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir)
+        .map((f) => /^after-attempt-(\d+)\.json$/.exec(f))
+        .filter((m): m is RegExpExecArray => !!m)
+        .map((m) => ({ n: Number(m[1]), path: join(dir, m[0]) }))
+        .sort((a, b) => a.n - b.n);
+};
+
+// What the implementer sees after Manual QA fails and gets auto-returned: this attempt's failures in full, plus a
+// one-line-per-attempt trail of every earlier automatic fix cycle — so it never has to re-run QA itself just to
+// rediscover what was already tried and what broke each time.
+const renderQaFailureNotes = (taskDir: string, qa: QaPassResult, design: DesignResult | null, attemptNum: number): string => {
+    const titleOf = (id: string): string => design?.qa.find((s) => s.id === id)?.title ?? id;
+    const parts = [`## Manual QA failed — automatic fix attempt ${attemptNum} of ${MAX_AUTO_QA_RETURNS} (after this, it goes to the human's review regardless)`];
+    const fails = qa.scenarios.filter((s) => s.outcome === "fail");
+    if (fails.length) parts.push(fails.map((f) => `- \`${f.id}\` ${titleOf(f.id)} — ${f.observation}`).join("\n"));
+    if (qa.blockers.length) parts.push(`Blockers: ${qa.blockers.join("; ")}`);
+    const earlier = qaAttemptFiles(taskDir).filter((a) => a.n < attemptNum);
+    if (earlier.length) {
+        const lines = earlier.map((a) => {
+            try {
+                const data = JSON.parse(readFileSync(a.path, "utf8")) as QaPassResult;
+                const failedIds = data.scenarios.filter((s) => s.outcome === "fail").map((s) => s.id);
+                return `- Attempt ${a.n}: ${failedIds.length ? `failed ${failedIds.join(", ")}` : "no failures (blocked on something else)"}`;
+            } catch {
+                return `- Attempt ${a.n}: (could not read)`;
+            }
+        });
+        parts.push(`### Earlier automatic attempts — for context, do not re-run Manual QA yourself to rediscover this\n${lines.join("\n")}`);
+    }
+    parts.push("Fix the code so these pass. Do not weaken or remove the failing assertions or the scenarios themselves.");
+    return parts.join("\n\n");
+};
 
 // What the implementer sees: the general notes, then every line comment with its anchor and the quoted line.
 const renderReviewNotes = (round: number, notes: string | undefined, comments: LineComment[]): string => {
@@ -88,6 +126,11 @@ export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem
 export const DESIGN_MAX_WORDS = 900;
 const PROPOSED_MAX_WORDS = 120;
 const LOGIN_POLL_MS = 3_000;
+// A Manual QA run that still has failing scenarios goes straight back to Implementation with the failure detail as
+// reviewer notes, instead of waiting for the human to notice at User Review. Capped so a genuinely stuck fix doesn't
+// loop forever — after this many automatic returns, it falls through to User Review like a passing (or blocked/
+// needs_human) run always has.
+const MAX_AUTO_QA_RETURNS = 2;
 const LOGIN_WAIT_MS = 15 * 60_000;
 type ChromeTabLike = { url: string; title: string };
 const tabKey = (t: { window: number; tab: number; url: string }): string => `${t.window}:${t.tab}:${t.url}`;
@@ -1032,6 +1075,70 @@ export class Engine extends EventEmitter {
         return row.n;
     }
 
+    // ---------- chat: the human's own Q&A / notes channel with the task's agent ----------
+
+    listMessages(taskId: string): MessageRow[] {
+        return this.db.prepare(`SELECT * FROM messages WHERE task_id = ? ORDER BY created_at`).all(taskId) as MessageRow[];
+    }
+
+    private addMessage(taskId: string, role: "user" | "agent", text: string): MessageRow {
+        const id = randomUUID();
+        this.db.prepare(`INSERT INTO messages (id, task_id, role, text, created_at) VALUES (?, ?, ?, ?, ?)`).run(id, taskId, role, text, now());
+        const row = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id) as MessageRow;
+        this.emit("message", row);
+        return row;
+    }
+
+    // A note the agent leaves for the human on its own, outside the chat exchange (e.g. implementation notes, a CI
+    // fix summary) — same table, same tab, so the human sees explanations and answers to their own questions together.
+    private addAgentNote(taskId: string, text: string): void {
+        const trimmed = text.trim();
+        if (trimmed) this.addMessage(taskId, "agent", trimmed);
+    }
+
+    // Asks the task's agent a question in its own session (full context: everything it has done on this task so far).
+    // Same constraint as the terminal: a headless stage run and an ad-hoc chat turn cannot share the session at once.
+    async askAgent(taskId: string, text: string): Promise<MessageRow> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a headless run owns this session right now — ask again once it's idle");
+        this.addMessage(taskId, "user", text);
+        const env = this.env(task.env_id);
+        const cd = this.configDirOf(env);
+        const usable = this.usableAccounts(cd.path);
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
+        const prompt =
+            `The human sent this in the task's chat — a question or comment, not necessarily an instruction: "${text.replace(/"/g, '\\"')}"\n\n` +
+            `Answer directly and briefly, drawing on this task's own history (research, design, code, QA) as needed. ` +
+            `If they are actually asking for a change, say what you would do and that it happens through the normal stage flow (Return to a stage, or a new review round) — do not make code changes from this chat.`;
+        const run = startClaude({
+            prompt,
+            cwd: task.worktree_path ?? env.path,
+            configDir: cd.path,
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
+            resume: task.session_id,
+            maxTurns: 15,
+            ...(task.model ? { model: task.model } : {}),
+        });
+        const outcome = await run.done;
+        if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "chat", stage: null }, outcome.result);
+        const reply = outcome.result?.result?.trim() || (outcome.exitCode !== 0 ? `(could not answer: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
+        return this.addMessage(taskId, "agent", reply);
+    }
+
+    // Every archived Manual QA attempt for this task (oldest first) — the run(s) that failed and got auto-returned to
+    // Implementation before the current/latest qa/after.json. Empty when Manual QA has not failed and auto-looped yet.
+    qaHistory(taskId: string): Array<{ attempt: number; data: QaPassResult | null }> {
+        return qaAttemptFiles(this.taskDir(taskId)).map(({ n, path }) => {
+            try {
+                return { attempt: n, data: QaPassResult.parse(JSON.parse(readFileSync(path, "utf8"))) };
+            } catch {
+                return { attempt: n, data: null };
+            }
+        });
+    }
+
     // The stored tickets of a task: ticket.json plus tickets/<id>.json for a batch; missing or invalid files are skipped.
     tickets(task: TaskRow): Ticket[] {
         const files = ["ticket.json", ...extraTicketsOf(task).map((x) => extraTicketFile(x.id))];
@@ -1470,6 +1577,8 @@ export class Engine extends EventEmitter {
 
     private afterStage(taskId: string, def: StageDef, data: unknown): void {
         const task = this.getTask(taskId)!;
+        if (def.stage === "implementation") this.addAgentNote(taskId, (data as ImplResult).notes);
+        if (def.stage === "pr_red") this.addAgentNote(taskId, `CI fix: ${(data as PrFixResult).summary}`);
         if (def.stage === "research") {
             const r = ResearchResult.parse(data);
             const env = this.env(task.env_id);
@@ -1551,6 +1660,23 @@ export class Engine extends EventEmitter {
             if (def.stage === "manual_qa" && (failed > 0 || needsHuman > 0 || blocked.length > 0)) {
                 const parts = [failed > 0 ? `${failed} scenario(s) failed` : null, needsHuman > 0 ? `${needsHuman} need your own check` : null, blocked.length > 0 ? `${blocked.length} blocked` : null].filter(Boolean);
                 this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`Manual QA · ${parts.join(" · ")}`, now(), taskId);
+                if (failed > 0) {
+                    const taskDir = this.taskDir(taskId);
+                    const priorAttempts = qaAttemptFiles(taskDir).length;
+                    if (priorAttempts < MAX_AUTO_QA_RETURNS) {
+                        const attemptNum = priorAttempts + 1;
+                        const afterPath = join(taskDir, "qa", "after.json");
+                        if (existsSync(afterPath)) copyFileSync(afterPath, join(taskDir, "qa", `after-attempt-${attemptNum}.json`));
+                        const notes = renderQaFailureNotes(taskDir, qa, this.readArtifactJson<DesignResult>(taskId, "design.json"), attemptNum);
+                        this.setStage(taskId, "implementation");
+                        this.setTaskStatus(taskId, "running", `Manual QA · ${failed} scenario(s) failed — sending back to Implementation automatically (fix ${attemptNum}/${MAX_AUTO_QA_RETURNS})`);
+                        this.dispatch(taskId, "implementation", { notes });
+                        return;
+                    }
+                    this.db
+                        .prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`)
+                        .run(`Manual QA · ${failed} scenario(s) still failing after ${MAX_AUTO_QA_RETURNS} automatic fix attempts — needs your review`, now(), taskId);
+                }
             }
         }
         if (def.next) this.advance(taskId, def.next);

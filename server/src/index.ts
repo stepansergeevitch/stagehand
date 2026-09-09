@@ -823,10 +823,12 @@ app.get("/api/tasks/:id", (c) => {
         impl: engine.readArtifactJson(task.id, "impl.json"),
         qaBefore: engine.readArtifactJson(task.id, "qa/before.json"),
         qaAfter: engine.readArtifactJson(task.id, "qa/after.json"),
+        qaHistory: engine.qaHistory(task.id),
         pr: engine.readArtifactJson(task.id, "pr.json"),
         prFix: engine.readArtifactJson(task.id, "pr_fix.json"),
         ticket: engine.readArtifactJson(task.id, "ticket.json"),
         tickets: engine.tickets(task),
+        messages: engine.listMessages(task.id),
         reviews: db.prepare(`SELECT * FROM reviews WHERE task_id = ? ORDER BY created_at`).all(task.id),
         prState: db.prepare(`SELECT * FROM pr_state WHERE task_id = ?`).get(task.id) ?? null,
     });
@@ -944,6 +946,21 @@ app.post("/api/tasks/:id/rerun", async (c) => {
     return c.json(engine.getTask(c.req.param("id")));
 });
 
+app.get("/api/tasks/:id/messages", (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    return c.json(engine.listMessages(task.id));
+});
+
+app.post("/api/tasks/:id/messages", async (c) => {
+    const body = json(z.object({ text: z.string().min(1) }), await c.req.json());
+    try {
+        return c.json(await engine.askAgent(c.req.param("id"), body.text));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/account", async (c) => {
     const body = json(z.object({ accountId: z.string() }), await c.req.json());
     engine.setAccount(c.req.param("id"), body.accountId);
@@ -1025,7 +1042,7 @@ app.get(
         const listeners: Array<[string, (...args: unknown[]) => void]> = [];
         return {
             onOpen(_evt, ws) {
-                for (const kind of ["task", "activity", "rate_limit", "account"]) {
+                for (const kind of ["task", "activity", "rate_limit", "account", "message"]) {
                     const fn = (payload: unknown): void => ws.send(JSON.stringify({ kind, payload }));
                     engine.on(kind, fn);
                     listeners.push([kind, fn]);

@@ -245,6 +245,14 @@ export interface UsageRow {
     turns: number | null;
 }
 
+export interface MessageRow {
+    id: string;
+    task_id: string;
+    role: "user" | "agent";
+    text: string;
+    created_at: string;
+}
+
 export interface RateLimitRow {
     account_id: string;
     window: string;
@@ -401,6 +409,14 @@ CREATE TABLE IF NOT EXISTS window_calibration (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (account_id, window)
 );
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    role TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS messages_task ON messages(task_id, created_at);
 CREATE TABLE IF NOT EXISTS reviews (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id),

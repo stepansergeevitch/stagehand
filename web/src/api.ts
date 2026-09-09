@@ -113,6 +113,7 @@ export interface Ticket {
     acceptanceCriteria: string[]; parent: { id: string; title: string; description: string } | null; fetchedVia: "rest" | "mcp";
 }
 export interface Service { id: string; task_id: string; kind: "be" | "fe"; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string; running: boolean }
+export interface Message { id: string; task_id: string; role: "user" | "agent"; text: string; created_at: string }
 export interface Task {
     id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
     branch: string | null; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
@@ -156,11 +157,14 @@ export interface TaskDetail {
     task: Task; runs: Run[]; artifacts: Array<{ path: string; size: number }>;
     research: { classification: string; title: string; branchName: string; summary: string; affectedAreas: string[] } | null;
     design: Design | null; impl: Impl | null; qaBefore: QaPass | null; qaAfter: QaPass | null;
+    // Earlier Manual QA attempts (oldest first) that failed and were auto-returned to Implementation before qaAfter.
+    qaHistory: Array<{ attempt: number; data: QaPass | null }>;
     pr: { title: string; body: string; base: string } | null;
     prFix: { summary: string } | null;
     ticket: Ticket | null;
     // Every stored ticket of the task (one, or several for a batch task), in order.
     tickets: Ticket[];
+    messages: Message[];
     reviews: Review[];
     prState: { number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null; updated_at: string } | null;
 }
@@ -248,6 +252,8 @@ export const api = {
     stopService: (id: string, kind: "be" | "fe") => post<Service[]>(`/api/tasks/${id}/services/${kind}/stop`),
     serviceLog: (id: string, kind: "be" | "fe", lines = 120) => fetch(`/api/tasks/${id}/services/${kind}/log?lines=${lines}`).then((r) => r.text()),
     artifactUrl: (id: string, rel: string) => `/api/tasks/${id}/artifacts/${rel}`,
+    messages: (id: string) => fetch(`/api/tasks/${id}/messages`).then((r) => j<Message[]>(r)),
+    sendMessage: (id: string, text: string) => post<Message>(`/api/tasks/${id}/messages`, { text }),
 };
 
 // A CircleCI job gated behind a manual "Approve" click (deploy/db-reset gates) sits pending forever until a human

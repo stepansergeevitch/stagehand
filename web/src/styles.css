@@ -390,3 +390,14 @@ label.inline { display: inline-flex; align-items: center; gap: 4px; }
 .qa-obs-text { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.45; color: var(--ink); }
 .qa-obs-text li { margin: 1px 0; }
 .qa-blockers { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: start; margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn, #d9a400); }
+
+/* chat: agent notes + Q&A timeline */
+.chat-log { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; margin: 10px 0; padding-right: 4px; }
+.chat-msg { border-radius: 6px; padding: 8px 12px; max-width: 85%; }
+.chat-msg.agent { background: var(--code); align-self: flex-start; }
+.chat-msg.user { background: var(--accent-soft); align-self: flex-end; }
+.chat-msg-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 2px; }
+.chat-msg .markdown { max-width: none; font-size: 13px; }
+.chat-input { display: flex; gap: 8px; align-items: flex-end; }
+.chat-input textarea { flex: 1; min-height: 44px; }
+@media (max-width: 760px) { .chat-msg { max-width: 100%; } }

@@ -230,6 +230,10 @@ export const App = () => {
                 const a = msg.payload as { taskId: string; event: { kind: string; summary: string } };
                 setFeed((f) => ({ ...f, [a.taskId]: [...(f[a.taskId] ?? []).slice(-199), `${a.event.kind}: ${a.event.summary}`] }));
             }
+            if (msg.kind === "message") {
+                const m = msg.payload as { task_id: string };
+                if (m.task_id === selected) void loadDetail(m.task_id);
+            }
             if (msg.kind === "rate_limit" || msg.kind === "account") void Promise.all([api.accounts(), api.configDirs()]).then(([a, d]) => { setAccounts(a); setConfigDirs(d); });
         };
         return () => ws.close();

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, isApprovalGateCheck, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type QaPass, type Stage, type TaskDetail, type Ticket } from "./api";
 import { LazyTerminal } from "./LazyTerminal";
+import { Chat } from "./Chat";
 import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
@@ -244,8 +245,8 @@ const statusChip = (s: string) => {
     return <span className={`chip ${cls}`}>{s.replace("_", " ")}</span>;
 };
 
-export type Tab = "work" | "runs" | "design" | "code" | "comments" | "ticket" | "cost";
-export const TASK_TABS: readonly Tab[] = ["work", "runs", "design", "code", "comments", "ticket", "cost"];
+export type Tab = "work" | "runs" | "design" | "code" | "comments" | "chat" | "ticket" | "cost";
+export const TASK_TABS: readonly Tab[] = ["work", "runs", "design", "code", "comments", "chat", "ticket", "cost"];
 
 // PR status for the header widget, derived from the stage, the stored PR state and the status line.
 const PrWidget = ({ detail }: { detail: TaskDetail }) => {
@@ -414,6 +415,23 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     <button onClick={() => onAction(() => api.rerun(task.id, "qa_baseline"))}>Re-run QA baseline</button>
                     {currentIdx >= STAGE_ORDER.indexOf("manual_qa") && <button onClick={() => onAction(() => api.rerun(task.id, "manual_qa"))}>Re-run Manual QA</button>}
                 </div>
+            )}
+            {detail.qaHistory.length > 0 && (
+                <Sub title={`Earlier automatic fix attempts (${detail.qaHistory.length})`} open={false}>
+                    <p className="field-hint">Manual QA failed and was sent straight back to Implementation these times before the current result; the agent saw this same trail so it didn't need to re-run QA to rediscover it.</p>
+                    {detail.qaHistory.map(({ attempt, data }) => (
+                        <div key={attempt} className="kv" style={{ marginBottom: 8 }}>
+                            <b>Attempt {attempt}</b>
+                            <span>
+                                {!data
+                                    ? "(could not read)"
+                                    : data.scenarios.filter((s) => s.outcome === "fail").length
+                                      ? data.scenarios.filter((s) => s.outcome === "fail").map((s) => `${s.id} — ${s.observation}`).join("; ")
+                                      : "no scenario failures recorded"}
+                            </span>
+                        </div>
+                    ))}
+                </Sub>
             )}
             <QaGallery taskId={task.id} design={design} before={qaBefore} after={qaAfter} />
         </Card>
@@ -619,6 +637,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     ["design", "Design proposal"],
                     ["code", `Code changes${pending.length ? ` (${pending.length} 💬)` : ""}`],
                     ["comments", `PR comments${prior.length || pending.length ? ` (${prior.length + pending.length})` : ""}`],
+                    ["chat", `Chat${detail.messages?.length ? ` (${detail.messages.length})` : ""}`],
                     ["ticket", `Ticket${(detail.tickets?.length ?? 0) > 1 ? `s (${detail.tickets.length})` : ""}${task.notes ? " · notes" : ""}`],
                     ["cost", "Cost"],
                 ] as Array<[Tab, string]>).map(([t, label]) => (
@@ -719,6 +738,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     )}
                 </>
             )}
+
+            {tab === "chat" && <Chat taskId={task.id} messages={detail.messages ?? []} status={task.status} onSent={async () => onAction(async () => undefined)} />}
 
             {tab === "ticket" && (
                 <>
