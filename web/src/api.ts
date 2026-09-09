@@ -272,7 +272,7 @@ export const isApprovalGateCheck = (c: { name?: string; context?: string }): boo
 export const STAGE_LABEL: Record<Stage, string> = {
     research: "Research", design_proposal: "Design Proposal", qa_baseline: "QA baseline", implementation: "Implementation",
     manual_qa: "Manual QA", user_review: "User Review", pr_creation_review: "PR Creation Review", pr_waiting: "PR Waiting",
-    pr_red: "PR Red", pr_green: "PR Green", pr_approved: "PR Approved", done: "Done",
+    pr_red: "PR Fix", pr_green: "PR Green", pr_approved: "PR Approved", done: "Done",
 };
 export const STAGE_ORDER: Stage[] = [
     "research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "user_review",

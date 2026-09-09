@@ -113,7 +113,7 @@ interface DispatchOpts {
 // CircleCI jobs gated behind a manual "Approve" click in the CircleCI UI (deploy/db-reset gates) sit forever in a
 // pending/no-conclusion state until a human clicks through, independent of whether the actual test/build jobs passed.
 // A PR is not less green for these — they are not CI verifying the change, they are a deploy gate — so they are
-// excluded from both the "pending" and "failed" checks that gate PR Green/PR Red. Convention: job names end in
+// excluded from both the "pending" and "failed" checks that gate PR Green/PR Fix. Convention: job names end in
 // `_hold` (e.g. `deploy_hold`) or match `reset_*_db` (e.g. `reset_staging_db`).
 const isApprovalGateCheck = (c: { name?: string; context?: string }): boolean => /_hold$|reset_.*_db$/i.test(c.name ?? c.context ?? "");
 
@@ -936,7 +936,7 @@ export class Engine extends EventEmitter {
     }
 
     // Human-triggered only (button in the UI) — never automatic. Re-reads the checks fresh (the cached row can be
-    // up to ~2 minutes stale) and dispatches PR Red, which commits a fix locally but does not push; the human reviews
+    // up to ~2 minutes stale) and dispatches PR Fix, which commits a fix locally but does not push; the human reviews
     // the diff and approves or requests changes before pushPrFix() ever runs.
     async startPrFix(taskId: string): Promise<void> {
         const task = this.getTask(taskId);
@@ -997,7 +997,7 @@ export class Engine extends EventEmitter {
             this.setTaskStatus(taskId, "idle", `PR Waiting · this env forbids agent pushes — push \`${task.branch}\` yourself; Stagehand resumes polling once you do`);
             return;
         }
-        this.setTaskStatus(taskId, "running", "PR Red · pushing the approved fix");
+        this.setTaskStatus(taskId, "running", "PR Fix · pushing the approved fix");
         try {
             for (const cwd of this.prCheckouts(task, env)) {
                 const ahead = await this.git(cwd, ["log", "--oneline", `origin/${env.base_branch}..HEAD`], env).catch(() => "");

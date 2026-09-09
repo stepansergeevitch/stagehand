@@ -92,7 +92,7 @@ export const STAGE_DEFS: Record<Stage, StageDef> = {
     pr_red: {
         stage: "pr_red",
         kind: "wait",
-        label: "PR Red",
+        label: "PR Fix",
         prompt: "pr-fix.md",
         contract: PrFixResult,
         outputFile: "pr_fix.json",
