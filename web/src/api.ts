@@ -110,7 +110,10 @@ export interface Settings {
 }
 export interface Ticket {
     source: "clickup" | "linear"; id: string; url: string | null; title: string; status: string | null; description: string;
-    acceptanceCriteria: string[]; parent: { id: string; title: string; description: string } | null; fetchedVia: "rest" | "mcp";
+    acceptanceCriteria: string[]; parent: { id: string; title: string; description: string } | null;
+    // Optional: tickets fetched before this field existed have no comments key in their stored ticket.json — re-fetch to get them.
+    comments?: Array<{ author: string; body: string; at: string }>;
+    fetchedVia: "rest" | "mcp";
 }
 export interface Service { id: string; task_id: string; kind: "be" | "fe"; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string; running: boolean }
 export interface Message { id: string; task_id: string; role: "user" | "agent"; text: string; created_at: string }

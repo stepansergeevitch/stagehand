@@ -22,6 +22,8 @@ export const Ticket = z.object({
     description: z.string().default(""),
     acceptanceCriteria: z.array(z.string()).default([]),
     parent: z.object({ id: z.string(), title: z.string(), description: z.string().default("") }).nullable().default(null),
+    // Chronological (oldest first) — often carries scope clarifications and decisions the description never got updated with.
+    comments: z.array(z.object({ author: z.string(), body: z.string(), at: z.string() })).default([]),
     fetchedVia: z.enum(["rest", "mcp"]),
 });
 export type Ticket = z.infer<typeof Ticket>;
@@ -56,6 +58,21 @@ const extractAcceptanceCriteria = (markdown: string): string[] => {
     return out;
 };
 
+const fetchClickUpComments = async (taskId: string, headers: Record<string, string>, teamQ: string): Promise<Ticket["comments"]> => {
+    try {
+        const res = await fetch(`https://api.clickup.com/api/v2/task/${encodeURIComponent(taskId)}/comment${teamQ}`, { headers });
+        if (!res.ok) return [];
+        const body = (await res.json()) as { comments?: Array<{ comment_text?: string; user?: { username?: string }; date?: string }> };
+        // ClickUp returns newest first; the prompt wants a natural reading order.
+        return (body.comments ?? [])
+            .filter((c) => c.comment_text?.trim())
+            .map((c) => ({ author: c.user?.username ?? "unknown", body: c.comment_text!.trim(), at: c.date ? new Date(Number(c.date)).toISOString() : "" }))
+            .reverse();
+    } catch {
+        return [];
+    }
+};
+
 const fetchClickUpRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> => {
     if (!cfg.clickupToken) throw new Error("no ClickUp token configured");
     const headers = { Authorization: cfg.clickupToken };
@@ -72,6 +89,7 @@ const fetchClickUpRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> =>
             parent = { id: p.custom_id ?? p.id, title: p.name, description: p.markdown_description ?? p.description ?? "" };
         }
     }
+    const comments = await fetchClickUpComments(t.id, headers, teamQ);
     return Ticket.parse({
         source: "clickup",
         id: t.custom_id ?? t.id,
@@ -81,20 +99,30 @@ const fetchClickUpRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> =>
         description,
         acceptanceCriteria: extractAcceptanceCriteria(description),
         parent,
+        comments,
         fetchedVia: "rest",
     });
 };
 
 const fetchLinearRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> => {
     if (!cfg.linearApiKey) throw new Error("no Linear API key configured");
-    const query = `query($id: String!) { issue(id: $id) { identifier title description url state { name } parent { identifier title description } } }`;
+    const query = `query($id: String!) { issue(id: $id) { identifier title description url state { name } parent { identifier title description } comments(first: 100) { nodes { body createdAt user { name } } } } }`;
     const res = await fetch("https://api.linear.app/graphql", {
         method: "POST",
         headers: { "content-type": "application/json", Authorization: cfg.linearApiKey },
         body: JSON.stringify({ query, variables: { id: ref.id } }),
     });
     if (!res.ok) throw new Error(`Linear ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const body = (await res.json()) as { data?: { issue?: { identifier: string; title: string; description?: string; url: string; state?: { name: string }; parent?: { identifier: string; title: string; description?: string } | null } }; errors?: Array<{ message: string }> };
+    const body = (await res.json()) as {
+        data?: {
+            issue?: {
+                identifier: string; title: string; description?: string; url: string; state?: { name: string };
+                parent?: { identifier: string; title: string; description?: string } | null;
+                comments?: { nodes: Array<{ body: string; createdAt: string; user?: { name?: string } | null }> };
+            };
+        };
+        errors?: Array<{ message: string }>;
+    };
     const issue = body.data?.issue;
     if (!issue) throw new Error(`Linear: ${body.errors?.[0]?.message ?? "issue not found"}`);
     return Ticket.parse({
@@ -106,6 +134,7 @@ const fetchLinearRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> => 
         description: issue.description ?? "",
         acceptanceCriteria: extractAcceptanceCriteria(issue.description ?? ""),
         parent: issue.parent ? { id: issue.parent.identifier, title: issue.parent.title, description: issue.parent.description ?? "" } : null,
+        comments: (issue.comments?.nodes ?? []).filter((c) => c.body?.trim()).map((c) => ({ author: c.user?.name ?? "unknown", body: c.body.trim(), at: c.createdAt })),
         fetchedVia: "rest",
     });
 };
@@ -114,13 +143,17 @@ const fetchLinearRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> => 
 
 const fetchViaClaude = (ref: TicketRef, configDir: string, cwd: string, outPath: string, extraEnv: Record<string, string>, onResult?: (result: unknown) => void): Promise<Ticket> =>
     new Promise((resolve, reject) => {
-        const tool = ref.source === "clickup" ? "mcp__clickup__clickup_get_task (task_id, include: [\"description\"]); if the task has a parent, fetch it too" : "the Linear MCP issue tool (e.g. mcp__linear__get_issue)";
+        const tool =
+            ref.source === "clickup"
+                ? "mcp__clickup__clickup_get_task (task_id, include: [\"description\"]) plus mcp__clickup__clickup_get_task_comments (task_id) for its comments; if the task has a parent, fetch it too"
+                : "the Linear MCP issue tool (e.g. mcp__linear__get_issue) plus its comments (e.g. mcp__linear__list_comments or the issue's own comments field)";
         const prompt =
             `Fetch ${ref.source} ticket ${ref.id} using ${tool}. Do nothing else. ` +
             `MCP servers connect asynchronously: if ToolSearch does not list the tool yet, run \`sleep 10\` with Bash and search again — up to 4 times — before concluding it is unavailable. ` +
             `Then write ${outPath} as JSON with exactly this shape and reply DONE:\n` +
             `{"source":"${ref.source}","id":"${ref.id}","url":<url or null>,"title":<string>,"status":<string or null>,"description":<full markdown description>,` +
-            `"acceptanceCriteria":[<each acceptance-criteria bullet verbatim, [] if none>],"parent":<{"id","title","description"} or null>,"fetchedVia":"mcp"}\n` +
+            `"acceptanceCriteria":[<each acceptance-criteria bullet verbatim, [] if none>],"parent":<{"id","title","description"} or null>,` +
+            `"comments":[<each comment as {"author":<string>,"body":<verbatim text>,"at":<ISO timestamp>}, oldest first, [] if none>],"fetchedVia":"mcp"}\n` +
             `If the tool is unavailable or the ticket cannot be fetched, write {"error":"<reason>"} to the same path and reply DONE.`;
         const child = spawn(
             "claude",
@@ -194,5 +227,7 @@ export const renderTicketsForPrompt = (tickets: Ticket[]): string => {
 export const renderTicketForPrompt = (t: Ticket): string => {
     const ac = t.acceptanceCriteria.length ? t.acceptanceCriteria.map((a) => `- [ ] ${a}`).join("\n") : "(none listed — derive them from the description)";
     const parent = t.parent ? `\n\n### Parent: ${t.parent.id} — ${t.parent.title}\n\n${t.parent.description.slice(0, 4000)}` : "";
-    return `## Ticket ${t.id} — ${t.title}\nSource: ${t.source}${t.url ? ` · ${t.url}` : ""}${t.status ? ` · status: ${t.status}` : ""}\n\n### Description (verbatim)\n\n${t.description}\n\n### Acceptance criteria (verbatim)\n\n${ac}${parent}`;
+    // Comments often carry scope clarifications, decisions, or "actually do X instead" that the description was never updated to reflect.
+    const comments = t.comments.length ? `\n\n### Comments (verbatim, oldest first)\n\n${t.comments.map((c) => `**${c.author}**${c.at ? ` (${c.at})` : ""}:\n${c.body}`).join("\n\n")}` : "";
+    return `## Ticket ${t.id} — ${t.title}\nSource: ${t.source}${t.url ? ` · ${t.url}` : ""}${t.status ? ` · status: ${t.status}` : ""}\n\n### Description (verbatim)\n\n${t.description}\n\n### Acceptance criteria (verbatim)\n\n${ac}${comments}${parent}`;
 };

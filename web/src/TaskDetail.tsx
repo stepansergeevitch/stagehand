@@ -117,29 +117,47 @@ const Sub = ({ title, open = true, children }: { title: React.ReactNode; open?: 
 
 // The ticket as it was fetched from ClickUp/Linear: everything Claude was given, unabridged. Without a stored copy the tab
 // tries one server-side fetch (REST token only, never an agent run) and otherwise shows a plain message with the link.
-const TicketCard = ({ ticket, source }: { ticket: Ticket; source: string }) => (
-    <section className="card ticket-view">
-        <h2>{ticket.id} {ticket.title}</h2>
-        <div className="sub">
-            {ticket.status && <span className="chip">{ticket.status}</span>}
-            <span className="chip">{ticket.source} · {ticket.fetchedVia}</span>
-            {ticket.url && <a href={ticket.url} target="_blank" rel="noreferrer">open in {source} ↗</a>}
-        </div>
-        {ticket.acceptanceCriteria.length > 0 && (
-            <Sub title="Acceptance criteria">
-                <ul className="plain">{ticket.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul>
+const TicketCard = ({ ticket, source }: { ticket: Ticket; source: string }) => {
+    const comments = ticket.comments ?? [];
+    return (
+        <section className="card ticket-view">
+            <h2>{ticket.id} {ticket.title}</h2>
+            <div className="sub">
+                {ticket.status && <span className="chip">{ticket.status}</span>}
+                <span className="chip">{ticket.source} · {ticket.fetchedVia}</span>
+                {ticket.url && <a href={ticket.url} target="_blank" rel="noreferrer">open in {source} ↗</a>}
+            </div>
+            {ticket.acceptanceCriteria.length > 0 && (
+                <Sub title="Acceptance criteria">
+                    <ul className="plain">{ticket.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul>
+                </Sub>
+            )}
+            <Sub title="Description">
+                {ticket.description.trim() ? <Markdown source={ticket.description} /> : <div className="empty">no description</div>}
             </Sub>
-        )}
-        <Sub title="Description">
-            {ticket.description.trim() ? <Markdown source={ticket.description} /> : <div className="empty">no description</div>}
-        </Sub>
-        {ticket.parent && (
-            <Sub title={<>Parent · {ticket.parent.id} {ticket.parent.title}</>} open={false}>
-                {ticket.parent.description.trim() ? <Markdown source={ticket.parent.description} /> : <div className="empty">no description</div>}
-            </Sub>
-        )}
-    </section>
-);
+            {comments.length > 0 && (
+                <Sub title={`Comments (${comments.length})`} open={false}>
+                    <div className="gh-comments">
+                        {comments.map((c, i) => (
+                            <div key={i} className="gh-comment general">
+                                <div className="gh-head">
+                                    <b>{c.author}</b>
+                                    {c.at && <span className="field-hint">{new Date(c.at).toLocaleString()}</span>}
+                                </div>
+                                <Markdown source={c.body} />
+                            </div>
+                        ))}
+                    </div>
+                </Sub>
+            )}
+            {ticket.parent && (
+                <Sub title={<>Parent · {ticket.parent.id} {ticket.parent.title}</>} open={false}>
+                    {ticket.parent.description.trim() ? <Markdown source={ticket.parent.description} /> : <div className="empty">no description</div>}
+                </Sub>
+            )}
+        </section>
+    );
+};
 
 // The human's own instructions for the task, editable at any time (the next stage run picks the new text up).
 const NotesCard = ({ detail, onSave }: { detail: TaskDetail; onSave: (notes: string) => Promise<void> }) => {
