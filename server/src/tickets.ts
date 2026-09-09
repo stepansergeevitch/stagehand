@@ -1,9 +1,23 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { extname, join } from "node:path";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import { claudeEnv } from "./claude/env.js";
+
+// A file attached to the ticket (explicitly, or embedded as an image/link in its description or comments). `file` is
+// the path relative to the task dir once downloaded; null with `error` set when the download failed — the URL stays.
+export const TicketAttachment = z.object({
+    name: z.string(),
+    url: z.string(),
+    mime: z.string().nullable().default(null),
+    file: z.string().nullable().default(null),
+    size: z.number().nullable().default(null),
+    error: z.string().nullable().default(null),
+    // Where it came from: the ticket's own attachment list, or a link inside the description / a comment.
+    origin: z.enum(["attachment", "description", "comment"]).default("attachment"),
+});
+export type TicketAttachment = z.infer<typeof TicketAttachment>;
 
 export type TicketSource = "clickup" | "linear";
 
@@ -24,9 +38,122 @@ export const Ticket = z.object({
     parent: z.object({ id: z.string(), title: z.string(), description: z.string().default("") }).nullable().default(null),
     // Chronological (oldest first) — often carries scope clarifications and decisions the description never got updated with.
     comments: z.array(z.object({ author: z.string(), body: z.string(), at: z.string() })).default([]),
+    attachments: z.array(TicketAttachment).default([]),
     fetchedVia: z.enum(["rest", "mcp"]),
 });
 export type Ticket = z.infer<typeof Ticket>;
+
+// ---------- attachments ----------
+
+const MAX_ATTACHMENT_BYTES = 200 * 1024 * 1024;
+const FILE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|heic|mp4|mov|webm|m4v|avi|mkv|gif|pdf|csv|xlsx?|docx?|pptx?|txt|md|json|zip|har|log)(?=$|[?#])/i;
+// Hosts that serve the task managers' uploads; anything else embedded in a description is a plain link, not a file.
+const FILE_HOST = /(^|\.)(clickup-attachments\.com|attachments\.clickup\.com|uploads\.linear\.app|files\.linear\.app)$/i;
+
+const isFileUrl = (url: string): boolean => {
+    try {
+        const u = new URL(url);
+        return FILE_HOST.test(u.hostname) || FILE_EXT.test(u.pathname);
+    } catch {
+        return false;
+    }
+};
+
+const nameFromUrl = (url: string): string => {
+    try {
+        const last = decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).pop() ?? "");
+        return last || "attachment";
+    } catch {
+        return "attachment";
+    }
+};
+
+// Images and file links embedded in markdown: `![alt](url)`, `[text](url)`, `<img src="url">`, bare upload URLs.
+const embeddedFiles = (markdown: string, origin: TicketAttachment["origin"]): TicketAttachment[] => {
+    const out: TicketAttachment[] = [];
+    const seen = new Set<string>();
+    const push = (url: string, name: string | null) => {
+        if (!url || seen.has(url) || !isFileUrl(url)) return;
+        seen.add(url);
+        out.push({ name: name?.trim() || nameFromUrl(url), url, mime: null, file: null, size: null, error: null, origin });
+    };
+    for (const m of markdown.matchAll(/!?\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g)) push(m[2]!, m[1] ?? null);
+    for (const m of markdown.matchAll(/<img[^>]+src=["'](https?:\/\/[^"']+)["']/gi)) push(m[1]!, null);
+    for (const m of markdown.matchAll(/(?<![("'\]])https?:\/\/[^\s<>)"']+/g)) push(m[0], null);
+    return out;
+};
+
+const safeFileName = (name: string, url: string): string => {
+    const base = name.replace(/[\/\\:*?"<>|]/g, "_").replace(/\s+/g, " ").trim().slice(0, 120) || "attachment";
+    const urlExt = extname(nameFromUrl(url)).toLowerCase();
+    return !extname(base) && urlExt && urlExt.length <= 6 ? `${base}${urlExt}` : base;
+};
+
+const authHeadersFor = (url: string, cfg: Config): Record<string, string> => {
+    try {
+        const host = new URL(url).hostname;
+        if (/linear\.app$/i.test(host) && cfg.linearApiKey) return { Authorization: cfg.linearApiKey };
+        if (/clickup\.com$/i.test(host) && cfg.clickupToken) return { Authorization: cfg.clickupToken };
+    } catch {
+        /* not a URL */
+    }
+    return {};
+};
+
+// Downloads every attachment into <taskDir>/attachments and records the local path; a failure keeps the URL and the
+// reason. Already-downloaded files (same name, non-empty) are kept. Never throws — attachments are best effort.
+export const downloadAttachments = async (ticket: Ticket, cfg: Config, taskDir: string): Promise<Ticket> => {
+    if (ticket.attachments.length === 0) return ticket;
+    const dir = join(taskDir, "attachments");
+    mkdirSync(dir, { recursive: true });
+    const used = new Set<string>();
+    const attachments: TicketAttachment[] = [];
+    for (const a of ticket.attachments) {
+        let name = safeFileName(a.name, a.url);
+        if (used.has(name.toLowerCase())) {
+            const ext = extname(name);
+            const stem = ext ? name.slice(0, -ext.length) : name;
+            let i = 2;
+            while (used.has(`${stem}-${i}${ext}`.toLowerCase())) i++;
+            name = `${stem}-${i}${ext}`;
+        }
+        used.add(name.toLowerCase());
+        const rel = `attachments/${name}`;
+        const full = join(dir, name);
+        if (existsSync(full) && statSync(full).size > 0) {
+            attachments.push({ ...a, file: rel, size: statSync(full).size, error: null, mime: a.mime ?? mimeOf(name) });
+            continue;
+        }
+        try {
+            const res = await fetch(a.url, { headers: authHeadersFor(a.url, cfg), redirect: "follow", signal: AbortSignal.timeout(120_000) });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const len = Number(res.headers.get("content-length") ?? 0);
+            if (len > MAX_ATTACHMENT_BYTES) throw new Error(`too large (${Math.round(len / 1e6)} MB)`);
+            const buf = Buffer.from(await res.arrayBuffer());
+            if (buf.byteLength > MAX_ATTACHMENT_BYTES) throw new Error(`too large (${Math.round(buf.byteLength / 1e6)} MB)`);
+            const ctype = res.headers.get("content-type")?.split(";")[0]?.trim() ?? null;
+            // A "file" URL that answers with HTML is a login page or a web view, not the file.
+            if (ctype && /^text\/html/i.test(ctype) && !/\.html?$/i.test(name)) throw new Error("server returned an HTML page instead of the file");
+            writeFileSync(full, buf);
+            attachments.push({ ...a, file: rel, size: buf.byteLength, error: null, mime: ctype && ctype !== "application/octet-stream" ? ctype : mimeOf(name) });
+        } catch (e) {
+            attachments.push({ ...a, file: null, size: null, error: String((e as Error).message ?? e).slice(0, 160) });
+        }
+    }
+    return { ...ticket, attachments };
+};
+
+export const mimeOf = (name: string): string | null => {
+    const ext = extname(name).toLowerCase().slice(1);
+    const map: Record<string, string> = {
+        png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", heic: "image/heic",
+        mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm", m4v: "video/x-m4v", avi: "video/x-msvideo", mkv: "video/x-matroska",
+        pdf: "application/pdf", json: "application/json", csv: "text/csv", txt: "text/plain", md: "text/markdown", log: "text/plain", html: "text/html", htm: "text/html",
+        zip: "application/zip", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", xls: "application/vnd.ms-excel",
+        docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", doc: "application/msword",
+    };
+    return map[ext] ?? null;
+};
 
 const CLICKUP_URL = /^https?:\/\/app\.clickup\.com\/t\/(?:(\d+)\/)?([A-Za-z0-9-]+)\/?(?:[?#].*)?$/;
 const LINEAR_URL = /^https?:\/\/linear\.app\/[^/]+\/issue\/([A-Za-z0-9]+-\d+)(?:\/.*)?$/;
@@ -79,8 +206,14 @@ const fetchClickUpRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> =>
     const teamQ = cfg.clickupTeamId ? `?custom_task_ids=true&team_id=${cfg.clickupTeamId}` : "";
     const res = await fetch(`https://api.clickup.com/api/v2/task/${encodeURIComponent(ref.id)}${teamQ}`, { headers });
     if (!res.ok) throw new Error(`ClickUp ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const t = (await res.json()) as { custom_id?: string; id: string; name: string; status?: { status: string }; markdown_description?: string; description?: string; url?: string; parent?: string | null };
+    const t = (await res.json()) as {
+        custom_id?: string; id: string; name: string; status?: { status: string }; markdown_description?: string; description?: string; url?: string; parent?: string | null;
+        attachments?: Array<{ id?: string; title?: string; extension?: string; mimetype?: string; url?: string; url_w_query?: string; size?: number }>;
+    };
     const description = t.markdown_description ?? t.description ?? "";
+    const explicit: TicketAttachment[] = (t.attachments ?? [])
+        .filter((a) => a.url || a.url_w_query)
+        .map((a) => ({ name: a.title || nameFromUrl(a.url ?? a.url_w_query!), url: a.url_w_query ?? a.url!, mime: a.mimetype ?? null, file: null, size: a.size ?? null, error: null, origin: "attachment" as const }));
     let parent: Ticket["parent"] = null;
     if (t.parent) {
         const pr = await fetch(`https://api.clickup.com/api/v2/task/${t.parent}`, { headers });
@@ -100,13 +233,28 @@ const fetchClickUpRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> =>
         acceptanceCriteria: extractAcceptanceCriteria(description),
         parent,
         comments,
+        attachments: mergeAttachments(explicit, description, comments),
         fetchedVia: "rest",
     });
 };
 
+// Explicit attachments first, then files linked from the description and the comments, deduplicated by URL (an
+// explicit ClickUp attachment is usually also embedded as an image in the description).
+const mergeAttachments = (explicit: TicketAttachment[], description: string, comments: Ticket["comments"]): TicketAttachment[] => {
+    const out: TicketAttachment[] = [];
+    const seen = new Set<string>();
+    const key = (url: string) => url.split(/[?#]/)[0]!;
+    for (const a of [...explicit, ...embeddedFiles(description, "description"), ...comments.flatMap((c) => embeddedFiles(c.body, "comment"))]) {
+        if (seen.has(key(a.url))) continue;
+        seen.add(key(a.url));
+        out.push(a);
+    }
+    return out;
+};
+
 const fetchLinearRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> => {
     if (!cfg.linearApiKey) throw new Error("no Linear API key configured");
-    const query = `query($id: String!) { issue(id: $id) { identifier title description url state { name } parent { identifier title description } comments(first: 100) { nodes { body createdAt user { name } } } } }`;
+    const query = `query($id: String!) { issue(id: $id) { identifier title description url state { name } parent { identifier title description } comments(first: 100) { nodes { body createdAt user { name } } } attachments(first: 50) { nodes { title url } } } }`;
     const res = await fetch("https://api.linear.app/graphql", {
         method: "POST",
         headers: { "content-type": "application/json", Authorization: cfg.linearApiKey },
@@ -119,12 +267,18 @@ const fetchLinearRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> => 
                 identifier: string; title: string; description?: string; url: string; state?: { name: string };
                 parent?: { identifier: string; title: string; description?: string } | null;
                 comments?: { nodes: Array<{ body: string; createdAt: string; user?: { name?: string } | null }> };
+                attachments?: { nodes: Array<{ title?: string | null; url: string }> };
             };
         };
         errors?: Array<{ message: string }>;
     };
     const issue = body.data?.issue;
     if (!issue) throw new Error(`Linear: ${body.errors?.[0]?.message ?? "issue not found"}`);
+    const comments = (issue.comments?.nodes ?? []).filter((c) => c.body?.trim()).map((c) => ({ author: c.user?.name ?? "unknown", body: c.body.trim(), at: c.createdAt }));
+    // Linear "attachments" are mostly links (GitHub, Figma, Slack); only the ones that are files get downloaded.
+    const explicit: TicketAttachment[] = (issue.attachments?.nodes ?? [])
+        .filter((a) => a.url && isFileUrl(a.url))
+        .map((a) => ({ name: a.title || nameFromUrl(a.url), url: a.url, mime: null, file: null, size: null, error: null, origin: "attachment" as const }));
     return Ticket.parse({
         source: "linear",
         id: issue.identifier,
@@ -134,7 +288,8 @@ const fetchLinearRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> => 
         description: issue.description ?? "",
         acceptanceCriteria: extractAcceptanceCriteria(issue.description ?? ""),
         parent: issue.parent ? { id: issue.parent.identifier, title: issue.parent.title, description: issue.parent.description ?? "" } : null,
-        comments: (issue.comments?.nodes ?? []).filter((c) => c.body?.trim()).map((c) => ({ author: c.user?.name ?? "unknown", body: c.body.trim(), at: c.createdAt })),
+        comments,
+        attachments: mergeAttachments(explicit, issue.description ?? "", comments),
         fetchedVia: "rest",
     });
 };
@@ -153,7 +308,8 @@ const fetchViaClaude = (ref: TicketRef, configDir: string, cwd: string, outPath:
             `Then write ${outPath} as JSON with exactly this shape and reply DONE:\n` +
             `{"source":"${ref.source}","id":"${ref.id}","url":<url or null>,"title":<string>,"status":<string or null>,"description":<full markdown description>,` +
             `"acceptanceCriteria":[<each acceptance-criteria bullet verbatim, [] if none>],"parent":<{"id","title","description"} or null>,` +
-            `"comments":[<each comment as {"author":<string>,"body":<verbatim text>,"at":<ISO timestamp>}, oldest first, [] if none>],"fetchedVia":"mcp"}\n` +
+            `"comments":[<each comment as {"author":<string>,"body":<verbatim text>,"at":<ISO timestamp>}, oldest first, [] if none>],` +
+            `"attachments":[<each file attached to the ticket or embedded as an image/file link in the description or a comment, as {"name":<file name>,"url":<direct download URL>}, [] if none>],"fetchedVia":"mcp"}\n` +
             `If the tool is unavailable or the ticket cannot be fetched, write {"error":"<reason>"} to the same path and reply DONE.`;
         const child = spawn(
             "claude",
@@ -198,10 +354,13 @@ export const fetchTicket = async (
     let ticket: Ticket;
     if (restConfigured) {
         ticket = ref.source === "clickup" ? await fetchClickUpRest(ref, cfg) : await fetchLinearRest(ref, cfg);
-        writeFileSync(outPath, JSON.stringify(ticket, null, 2));
     } else {
-        ticket = await fetchViaClaude(ref, configDir, cwd, outPath, extraEnv, onResult);
+        // The agent lists the files (name + URL); the server downloads them, so tokens never reach the agent.
+        const raw = await fetchViaClaude(ref, configDir, cwd, outPath, extraEnv, onResult);
+        ticket = { ...raw, attachments: mergeAttachments(raw.attachments, raw.description, raw.comments) };
     }
+    ticket = await downloadAttachments(ticket, cfg, taskDir);
+    writeFileSync(outPath, JSON.stringify(ticket, null, 2));
     return ticket;
 };
 
@@ -209,25 +368,44 @@ export const fetchTicket = async (
 export const fetchTicketRest = async (ref: TicketRef, cfg: Config, taskDir: string, outFile = "ticket.json"): Promise<Ticket> => {
     const restConfigured = ref.source === "clickup" ? !!cfg.clickupToken : !!cfg.linearApiKey;
     if (!restConfigured) throw new Error(`no ${ref.source === "clickup" ? "ClickUp" : "Linear"} token configured — add one under Task managers, then fetch again`);
-    const ticket = ref.source === "clickup" ? await fetchClickUpRest(ref, cfg) : await fetchLinearRest(ref, cfg);
+    const fetched = ref.source === "clickup" ? await fetchClickUpRest(ref, cfg) : await fetchLinearRest(ref, cfg);
+    const ticket = await downloadAttachments(fetched, cfg, taskDir);
     writeFileSync(join(taskDir, outFile), JSON.stringify(ticket, null, 2));
     return ticket;
+};
+
+const fmtSize = (n: number | null): string => (n == null ? "" : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} kB` : `${n} B`);
+
+// How the agent learns about the files: absolute paths it can Read (images) or inspect (videos: ffmpeg frames), and
+// the URL for anything that could not be downloaded.
+const renderAttachments = (t: Ticket, taskDir: string | null): string => {
+    if (t.attachments.length === 0) return "";
+    const lines = t.attachments.map((a) => {
+        const where = a.origin === "attachment" ? "" : ` (from ${a.origin === "comment" ? "a comment" : "the description"})`;
+        if (a.file) {
+            const path = taskDir ? join(taskDir, a.file) : a.file;
+            const kind = a.mime?.startsWith("image/") ? "image — view it with the Read tool" : a.mime?.startsWith("video/") ? "video — Read cannot play it; extract frames with `ffmpeg -i <file> -vf fps=1 frame-%03d.jpg` if you need to see it" : a.mime ?? "file";
+            return `- ${a.name}${where}: \`${path}\` (${[kind, fmtSize(a.size)].filter(Boolean).join(", ")})`;
+        }
+        return `- ${a.name}${where}: ${a.url} (not downloaded${a.error ? `: ${a.error}` : ""})`;
+    });
+    return `\n\n### Attachments (${t.attachments.length})\n\n${lines.join("\n")}`;
 };
 
 // Where a batch task keeps the tickets beyond its first one.
 export const extraTicketFile = (id: string): string => `tickets/${id.replace(/[^A-Za-z0-9_-]/g, "_")}.json`;
 
 // Several tickets rendered as one brief: the agent treats them as a single change set on one branch.
-export const renderTicketsForPrompt = (tickets: Ticket[]): string => {
-    if (tickets.length <= 1) return tickets[0] ? renderTicketForPrompt(tickets[0]) : "";
+export const renderTicketsForPrompt = (tickets: Ticket[], taskDir: string | null = null): string => {
+    if (tickets.length <= 1) return tickets[0] ? renderTicketForPrompt(tickets[0], taskDir) : "";
     const ids = tickets.map((t) => t.id).join(", ");
-    return `## This task covers ${tickets.length} tickets: ${ids}\n\nImplement all of them together on this one branch as one change set (one PR per repository). The branch name, the design and the PR must cover every ticket; keep each ticket's acceptance criteria separately verifiable.\n\n${tickets.map((t) => renderTicketForPrompt(t)).join("\n\n---\n\n")}`;
+    return `## This task covers ${tickets.length} tickets: ${ids}\n\nImplement all of them together on this one branch as one change set (one PR per repository). The branch name, the design and the PR must cover every ticket; keep each ticket's acceptance criteria separately verifiable.\n\n${tickets.map((t) => renderTicketForPrompt(t, taskDir)).join("\n\n---\n\n")}`;
 };
 
-export const renderTicketForPrompt = (t: Ticket): string => {
+export const renderTicketForPrompt = (t: Ticket, taskDir: string | null = null): string => {
     const ac = t.acceptanceCriteria.length ? t.acceptanceCriteria.map((a) => `- [ ] ${a}`).join("\n") : "(none listed — derive them from the description)";
     const parent = t.parent ? `\n\n### Parent: ${t.parent.id} — ${t.parent.title}\n\n${t.parent.description.slice(0, 4000)}` : "";
     // Comments often carry scope clarifications, decisions, or "actually do X instead" that the description was never updated to reflect.
     const comments = t.comments.length ? `\n\n### Comments (verbatim, oldest first)\n\n${t.comments.map((c) => `**${c.author}**${c.at ? ` (${c.at})` : ""}:\n${c.body}`).join("\n\n")}` : "";
-    return `## Ticket ${t.id} — ${t.title}\nSource: ${t.source}${t.url ? ` · ${t.url}` : ""}${t.status ? ` · status: ${t.status}` : ""}\n\n### Description (verbatim)\n\n${t.description}\n\n### Acceptance criteria (verbatim)\n\n${ac}${comments}${parent}`;
+    return `## Ticket ${t.id} — ${t.title}\nSource: ${t.source}${t.url ? ` · ${t.url}` : ""}${t.status ? ` · status: ${t.status}` : ""}\n\n### Description (verbatim)\n\n${t.description}\n\n### Acceptance criteria (verbatim)\n\n${ac}${comments}${renderAttachments(t, taskDir)}${parent}`;
 };

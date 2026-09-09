@@ -7,7 +7,7 @@ import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLa
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { closeChromeTabs, listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
-import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage } from "./usage.js";
+import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stampTaskOnUsage } from "./usage.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
 import { createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, worktreeDiff, type DiffFile } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
@@ -608,6 +608,8 @@ export class Engine extends EventEmitter {
         if (run) this.active.get(run.id)?.kill();
         await this.doCleanup(task, force, { removeWorktree });
         rmSync(this.taskDir(taskId), { recursive: true, force: true });
+        stampTaskOnUsage(this.db, taskId);
+        this.db.prepare(`DELETE FROM questions WHERE task_id = ?`).run(taskId);
         this.db.prepare(`DELETE FROM messages WHERE task_id = ?`).run(taskId);
         this.db.prepare(`DELETE FROM reviews WHERE task_id = ?`).run(taskId);
         this.db.prepare(`DELETE FROM pr_state WHERE task_id = ?`).run(taskId);
@@ -1219,7 +1221,7 @@ export class Engine extends EventEmitter {
             ticketSource: task.source,
             ticketUrl: task.ticket_url ?? "",
             ticket: tickets.length
-                ? renderTicketsForPrompt(tickets) +
+                ? renderTicketsForPrompt(tickets, taskDir) +
                   (tickets.length < allIds.length ? `\n\n(Stagehand could not fetch ${allIds.filter((id) => !tickets.some((t) => t.id === id)).join(", ")} server-side — fetch them yourself with the ${task.source} MCP tool.)` : "")
                 : `(Stagehand could not fetch the ticket server-side. Fetch ${task.source} ticket ${allIds.join(", ")} yourself with the ${task.source} MCP tool — for ClickUp: mcp__clickup__clickup_get_task with detail_level "detailed", and its parent if any. If that fails too, write the output file with classification "feature", title "TICKET FETCH FAILED" and the error in summary.)`,
             taskNotes: task.notes?.trim() ? `## Instructions from the human for this task (apply them throughout)\n\n${task.notes.trim()}` : "",

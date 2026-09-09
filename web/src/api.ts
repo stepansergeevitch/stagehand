@@ -113,8 +113,11 @@ export interface Ticket {
     acceptanceCriteria: string[]; parent: { id: string; title: string; description: string } | null;
     // Optional: tickets fetched before this field existed have no comments key in their stored ticket.json — re-fetch to get them.
     comments?: Array<{ author: string; body: string; at: string }>;
+    // Files attached to the ticket or embedded in its text; `file` is the artifact path once downloaded (null + error otherwise).
+    attachments?: TicketAttachment[];
     fetchedVia: "rest" | "mcp";
 }
+export interface TicketAttachment { name: string; url: string; mime: string | null; file: string | null; size: number | null; error: string | null; origin: "attachment" | "description" | "comment" }
 export interface Service { id: string; task_id: string; kind: "be" | "fe"; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string; running: boolean }
 export interface Message { id: string; task_id: string; role: "user" | "agent"; text: string; created_at: string }
 export interface Task {

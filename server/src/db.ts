@@ -243,6 +243,8 @@ export interface UsageRow {
     cost_usd: number;
     duration_ms: number | null;
     turns: number | null;
+    ticket_id: string | null;
+    task_title: string | null;
 }
 
 export interface MessageRow {
@@ -426,7 +428,31 @@ CREATE TABLE IF NOT EXISTS reviews (
     notes TEXT,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS questions (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    run_id TEXT,
+    stage TEXT NOT NULL,
+    questions TEXT NOT NULL,
+    answers TEXT,
+    created_at TEXT NOT NULL,
+    answered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS questions_task ON questions(task_id, created_at);
 `;
+
+// A round of questions the agent asked the human mid-stage (see prompts: questions.json → NEED_INPUT). `questions`
+// and `answers` are JSON; an unanswered round has answers = NULL and keeps the task in waiting_user.
+export interface QuestionRow {
+    id: string;
+    task_id: string;
+    run_id: string | null;
+    stage: Stage;
+    questions: string;
+    answers: string | null;
+    created_at: string;
+    answered_at: string | null;
+}
 
 export type DB = Database.Database;
 
@@ -470,6 +496,9 @@ const MIGRATIONS: Array<[string, string]> = [
     ["window_calibration.anchor_u", `ALTER TABLE window_calibration ADD COLUMN anchor_u REAL`],
     ["window_calibration.anchor_resets", `ALTER TABLE window_calibration ADD COLUMN anchor_resets INTEGER`],
     ["window_calibration.anchor_cost", `ALTER TABLE window_calibration ADD COLUMN anchor_cost REAL NOT NULL DEFAULT 0`],
+    // The task's ticket id and title as of the last time the row was touched, so usage of a deleted task keeps its name.
+    ["usage.ticket_id", `ALTER TABLE usage ADD COLUMN ticket_id TEXT`],
+    ["usage.task_title", `ALTER TABLE usage ADD COLUMN task_title TEXT`],
 ];
 
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>
@@ -544,6 +573,8 @@ export const openDb = (dataDir: string): DB => {
     // Cosmetic half of the same rename: status_line is a stored string, not recomputed from the stage, so any line
     // already written with the old label sits stale until something else updates it. Fix it once, here, alongside.
     db.exec(`UPDATE tasks SET status_line = REPLACE(status_line, 'PR Red', 'PR Fix') WHERE status_line LIKE 'PR Red%'`);
+    // Usage rows written before the label columns existed: copy the name from the task while it still exists.
+    db.exec(`UPDATE usage SET ticket_id = (SELECT t.ticket_id FROM tasks t WHERE t.id = usage.task_id), task_title = (SELECT t.title FROM tasks t WHERE t.id = usage.task_id) WHERE task_id IS NOT NULL AND ticket_id IS NULL AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = usage.task_id)`);
     return db;
 };
 

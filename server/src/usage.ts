@@ -18,13 +18,20 @@ export interface UsageContext {
 export const recordUsage = (db: DB, ctx: UsageContext, result: ResultEvent): void => {
     const rows = tokensOf(result);
     if (rows.length === 0) return;
+    // The task's name travels with the row, so analytics still show it after the task is deleted.
+    const task = ctx.taskId ? (db.prepare(`SELECT ticket_id, title FROM tasks WHERE id = ?`).get(ctx.taskId) as { ticket_id: string; title: string | null } | undefined) : undefined;
     const insert = db.prepare(
-        `INSERT INTO usage (id, at, account_id, env_id, task_id, run_id, kind, stage, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, turns)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO usage (id, at, account_id, env_id, task_id, run_id, kind, stage, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, turns, ticket_id, task_title)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const r of rows) {
-        insert.run(randomUUID(), ctx.at ?? now(), ctx.accountId, ctx.envId, ctx.taskId, ctx.runId, ctx.kind, ctx.stage, r.model, r.input, r.output, r.cacheRead, r.cacheWrite, r.cost, result.duration_ms ?? null, result.num_turns ?? null);
+        insert.run(randomUUID(), ctx.at ?? now(), ctx.accountId, ctx.envId, ctx.taskId, ctx.runId, ctx.kind, ctx.stage, r.model, r.input, r.output, r.cacheRead, r.cacheWrite, r.cost, result.duration_ms ?? null, result.num_turns ?? null, task?.ticket_id ?? null, task?.title ?? null);
     }
+};
+
+// Before a task row goes away: stamp its final name onto every usage row that points at it.
+export const stampTaskOnUsage = (db: DB, taskId: string): void => {
+    db.prepare(`UPDATE usage SET ticket_id = (SELECT t.ticket_id FROM tasks t WHERE t.id = ?), task_title = (SELECT t.title FROM tasks t WHERE t.id = ?) WHERE task_id = ?`).run(taskId, taskId, taskId);
 };
 
 // Runs from before usage tracking existed still have their event logs; read the result event out of each once.
@@ -298,7 +305,11 @@ export const usageReport = (db: DB, since: Date | null): UsageReport => {
             (r) => r.task_id ?? "-",
             (r) => {
                 const t = r.task_id ? tasks.get(r.task_id) : undefined;
-                return t ? { label: t.ticket_id, sub: `${envs.get(t.env_id) ?? ""}${t.title ? ` · ${t.title}` : ""}` } : { label: r.task_id ? "deleted task" : "no task" };
+                if (t) return { label: t.ticket_id, sub: `${envs.get(t.env_id) ?? ""}${t.title ? ` · ${t.title}` : ""}` };
+                if (!r.task_id) return { label: "no task" };
+                // The task is gone; the name it had was stamped on its rows (any row of the bucket carries it).
+                const stamped = rows.find((x) => x.task_id === r.task_id && x.task_title) ?? rows.find((x) => x.task_id === r.task_id && x.ticket_id);
+                return stamped ? { label: stamped.ticket_id!, sub: `${r.env_id ? envs.get(r.env_id) ?? "" : ""}${stamped.task_title ? ` · ${stamped.task_title}` : ""} · deleted` } : { label: "deleted task" };
             },
         ),
         byStage: bucketRows(rows, (r) => r.stage ?? r.kind, (r) => ({ label: r.stage ?? r.kind })),

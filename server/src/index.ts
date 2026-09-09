@@ -12,6 +12,7 @@ import { z } from "zod";
 import { loadConfig, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
+import { mimeOf } from "./tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
 import { recordUsage, taskUsage, usageReport, windowShares } from "./usage.js";
@@ -842,8 +843,9 @@ app.get("/api/tasks/:id/artifacts/*", (c) => {
     const full = join(engine.taskDir(task.id), rel);
     if (!existsSync(full)) return c.json({ error: "not found" }, 404);
     const body = readFileSync(full);
-    const type = rel.endsWith(".jpg") ? "image/jpeg" : rel.endsWith(".png") ? "image/png" : rel.endsWith(".json") ? "application/json" : "text/plain; charset=utf-8";
-    return new Response(body, { headers: { "content-type": type } });
+    const mime = mimeOf(rel);
+    const type = mime ? (mime.startsWith("text/") || mime === "application/json" ? `${mime}; charset=utf-8` : mime) : rel.includes("/attachments/") ? "application/octet-stream" : "text/plain; charset=utf-8";
+    return new Response(body, { headers: { "content-type": type, "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(rel.split("/").pop() ?? "file")}` } });
 });
 
 app.get("/api/tasks/:id/runs/:runId/events", (c) => {

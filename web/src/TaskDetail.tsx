@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, isApprovalGateCheck, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type QaPass, type Stage, type TaskDetail, type Ticket } from "./api";
+import { api, isApprovalGateCheck, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type QaPass, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { LazyTerminal } from "./LazyTerminal";
 import { Chat } from "./Chat";
 import { Markdown } from "./Markdown";
@@ -117,16 +117,47 @@ const Sub = ({ title, open = true, children }: { title: React.ReactNode; open?: 
 
 // The ticket as it was fetched from ClickUp/Linear: everything Claude was given, unabridged. Without a stored copy the tab
 // tries one server-side fetch (REST token only, never an agent run) and otherwise shows a plain message with the link.
-const TicketCard = ({ ticket, source }: { ticket: Ticket; source: string }) => {
+const fmtBytes = (n: number | null): string => (n == null ? "" : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} kB` : `${n} B`);
+
+// Files from the ticket: images inline (tap to inspect), videos playable, anything else a link. The agent sees the
+// same files by path in its prompt.
+const AttachmentsCard = ({ taskId, items, onZoom }: { taskId: string; items: TicketAttachment[]; onZoom: (z: { src: string; caption: string }) => void }) => (
+    <Sub title={`Attachments (${items.length})`}>
+        <div className="attachments">
+            {items.map((a, i) => {
+                const src = a.file ? api.artifactUrl(taskId, a.file) : null;
+                const meta = [a.mime, fmtBytes(a.size), a.origin === "attachment" ? null : `from ${a.origin === "comment" ? "a comment" : "the description"}`].filter(Boolean).join(" · ");
+                return (
+                    <figure key={i} className={`attachment ${a.mime?.startsWith("image/") ? "image" : a.mime?.startsWith("video/") ? "video" : "file"}`}>
+                        {src && a.mime?.startsWith("image/") && <img src={src} alt={a.name} title="Click to inspect" onClick={() => onZoom({ src, caption: a.name })} />}
+                        {src && a.mime?.startsWith("video/") && <video src={src} controls preload="metadata" />}
+                        {src && !a.mime?.startsWith("image/") && !a.mime?.startsWith("video/") && <a className="file-tile" href={src} target="_blank" rel="noreferrer">📎 {a.name}</a>}
+                        {!src && <div className="file-tile missing">📎 {a.name}<span className="field-hint">not downloaded{a.error ? `: ${a.error}` : ""}</span></div>}
+                        <figcaption>
+                            <span className="name">{src ? <a href={src} target="_blank" rel="noreferrer">{a.name}</a> : a.name}</span>
+                            <span className="field-hint">{meta}{a.url && <> · <a href={a.url} target="_blank" rel="noreferrer">source ↗</a></>}</span>
+                        </figcaption>
+                    </figure>
+                );
+            })}
+        </div>
+    </Sub>
+);
+
+const TicketCard = ({ taskId, ticket, source }: { taskId: string; ticket: Ticket; source: string }) => {
     const comments = ticket.comments ?? [];
+    const attachments = ticket.attachments ?? [];
+    const [zoom, setZoom] = useState<{ src: string; caption: string } | null>(null);
     return (
         <section className="card ticket-view">
+            {zoom && <Lightbox src={zoom.src} caption={zoom.caption} onClose={() => setZoom(null)} />}
             <h2>{ticket.id} {ticket.title}</h2>
             <div className="sub">
                 {ticket.status && <span className="chip">{ticket.status}</span>}
                 <span className="chip">{ticket.source} · {ticket.fetchedVia}</span>
                 {ticket.url && <a href={ticket.url} target="_blank" rel="noreferrer">open in {source} ↗</a>}
             </div>
+            {attachments.length > 0 && <AttachmentsCard taskId={taskId} items={attachments} onZoom={setZoom} />}
             {ticket.acceptanceCriteria.length > 0 && (
                 <Sub title="Acceptance criteria">
                     <ul className="plain">{ticket.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul>
@@ -218,7 +249,7 @@ const TicketView = ({ detail, onFetch }: { detail: TaskDetail; onFetch: () => Pr
     return (
         <>
             {all.length > 1 && <p className="field-hint">Batch task: {all.length} tickets on one branch, one PR per repository.</p>}
-            {all.map((t) => <TicketCard key={t.id} ticket={{ ...t, url: t.url ?? (t.id === task.ticket_id ? task.ticket_url : null) }} source={task.source} />)}
+            {all.map((t) => <TicketCard key={t.id} taskId={task.id} ticket={{ ...t, url: t.url ?? (t.id === task.ticket_id ? task.ticket_url : null) }} source={task.source} />)}
         </>
     );
 };
