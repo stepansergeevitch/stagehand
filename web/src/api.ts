@@ -180,8 +180,24 @@ export interface TaskDetail {
     tickets?: Ticket[];
     messages?: Message[];
     reviews: Review[];
-    prState: { number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null; updated_at: string } | null;
+    prState: { number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null; updated_at: string; pushed_at?: string | null } | null;
 }
+export type MergeMethod = "squash" | "merge" | "rebase";
+// One entry of `gh pr view --json statusCheckRollup`: a CheckRun (name/status/conclusion/detailsUrl) or a StatusContext (context/state/targetUrl).
+export interface PrCheck { name?: string; context?: string; conclusion?: string | null; state?: string; status?: string; startedAt?: string; completedAt?: string; detailsUrl?: string; targetUrl?: string; workflowName?: string }
+export const parseChecks = (json: string | null | undefined): PrCheck[] => {
+    try {
+        return json ? (JSON.parse(json) as PrCheck[]) : [];
+    } catch {
+        return [];
+    }
+};
+export const checkOutcome = (c: PrCheck): "pass" | "fail" | "pending" => {
+    const st = c.conclusion ?? c.state ?? "";
+    if (/SUCCESS|NEUTRAL|SKIPPED/i.test(st)) return "pass";
+    if (/FAILURE|ERROR|CANCELLED|TIMED_OUT|ACTION_REQUIRED|STALE/i.test(st)) return "fail";
+    return "pending";
+};
 
 const j = async <T,>(res: Response): Promise<T> => {
     const body = (await res.json()) as T & { error?: string };
@@ -261,6 +277,8 @@ export const api = {
     rerun: (id: string, stage: Stage) => post<Task>(`/api/tasks/${id}/rerun`, { stage }),
     qaLogin: (id: string) => post<{ started: true }>(`/api/tasks/${id}/qa-login`),
     fixCi: (id: string) => post<{ started: true }>(`/api/tasks/${id}/fix-ci`),
+    refreshPr: (id: string) => post<{ task: Task; prState: TaskDetail["prState"] }>(`/api/tasks/${id}/pr/refresh`),
+    mergePr: (id: string, body: { method: MergeMethod; deleteBranch: boolean }) => post<{ ok: true; result: string; task: Task }>(`/api/tasks/${id}/pr/merge`, body),
     fixComments: (id: string, commentIds: number[]) => post<{ started: true }>(`/api/tasks/${id}/fix-comments`, { commentIds }),
     fetchTicket: (id: string) => post<Ticket>(`/api/tasks/${id}/fetch-ticket`),
     openApp: (id: string) => post<{ opened: string; profile: string }>(`/api/tasks/${id}/open-app`),

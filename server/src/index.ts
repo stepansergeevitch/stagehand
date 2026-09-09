@@ -956,6 +956,27 @@ app.post("/api/tasks/:id/qa-login", (c) => {
     return c.json({ started: true });
 });
 
+// Re-read the PR from GitHub now (checks, review decision, comments cache dropped).
+app.post("/api/tasks/:id/pr/refresh", async (c) => {
+    try {
+        await engine.refreshPr(c.req.param("id"));
+        return c.json({ task: engine.getTask(c.req.param("id")), prState: db.prepare(`SELECT * FROM pr_state WHERE task_id = ?`).get(c.req.param("id")) ?? null });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
+// Merge the PR as the human. Method per repo convention (squash by default); optionally delete the remote branch after.
+app.post("/api/tasks/:id/pr/merge", async (c) => {
+    const body = json(z.object({ method: z.enum(["squash", "merge", "rebase"]).optional(), deleteBranch: z.boolean().optional() }), await c.req.json().catch(() => ({})));
+    try {
+        const result = await engine.mergePr(c.req.param("id"), body.method ?? "squash", body.deleteBranch ?? false);
+        return c.json({ ok: true, result, task: engine.getTask(c.req.param("id")) });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/fix-ci", async (c) => {
     try {
         await engine.startPrFix(c.req.param("id"));

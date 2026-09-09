@@ -499,6 +499,8 @@ const MIGRATIONS: Array<[string, string]> = [
     // The task's ticket id and title as of the last time the row was touched, so usage of a deleted task keeps its name.
     ["usage.ticket_id", `ALTER TABLE usage ADD COLUMN ticket_id TEXT`],
     ["usage.task_title", `ALTER TABLE usage ADD COLUMN task_title TEXT`],
+    // When Stagehand last pushed the branch: right after a push GitHub reports no checks for a moment, which must not read as "green".
+    ["pr_state.pushed_at", `ALTER TABLE pr_state ADD COLUMN pushed_at TEXT`],
 ];
 
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>

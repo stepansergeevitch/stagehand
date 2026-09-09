@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { api, isApprovalGateCheck, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type QaPass, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
+import { api, checkOutcome, isApprovalGateCheck, parseChecks, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type QaPass, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
+import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
 import { Chat } from "./Chat";
 import { Markdown } from "./Markdown";
@@ -323,25 +324,94 @@ const statusChip = (s: string) => {
 export type Tab = "work" | "runs" | "design" | "code" | "comments" | "chat" | "ticket" | "cost";
 export const TASK_TABS: readonly Tab[] = ["work", "runs", "design", "code", "comments", "chat", "ticket", "cost"];
 
+const elapsed = (fromIso: string | undefined, toIso?: string | undefined): string => {
+    if (!fromIso) return "";
+    const ms = (toIso ? new Date(toIso).getTime() : Date.now()) - new Date(fromIso).getTime();
+    if (ms < 0) return "";
+    const m = Math.floor(ms / 60_000);
+    return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : m >= 1 ? `${m}m ${Math.floor((ms % 60_000) / 1000)}s` : `${Math.floor(ms / 1000)}s`;
+};
+
+// Every check GitHub reported for the PR head, with its outcome, a link to its log, and how long a running one has been going.
+const ChecksList = ({ checks, compact }: { checks: PrCheck[]; compact?: boolean }) => {
+    const [, tick] = useState(0);
+    const running = checks.some((c) => checkOutcome(c) === "pending" && c.startedAt);
+    useEffect(() => {
+        if (!running) return;
+        const t = setInterval(() => tick((n) => n + 1), 10_000);
+        return () => clearInterval(t);
+    }, [running]);
+    if (checks.length === 0) return <span className="quiet">none reported yet</span>;
+    const order = { fail: 0, pending: 1, pass: 2 };
+    const sorted = [...checks].sort((a, b) => order[checkOutcome(a)] - order[checkOutcome(b)] || (a.name ?? a.context ?? "").localeCompare(b.name ?? b.context ?? ""));
+    return (
+        <ul className={`plain checks ${compact ? "compact" : ""}`}>
+            {sorted.map((c, i) => {
+                const o = checkOutcome(c);
+                const gate = isApprovalGateCheck(c);
+                const url = c.detailsUrl ?? c.targetUrl;
+                const label = c.name ?? c.context ?? "check";
+                const st = (c.conclusion ?? c.state ?? c.status ?? "pending").toLowerCase().replace(/_/g, " ");
+                return (
+                    <li key={i} className={`check ${o} ${gate ? "gate" : ""}`}>
+                        <span className={`chip ${gate ? "" : o === "pass" ? "ok" : o === "fail" ? "bad" : "warn"}`}>{gate ? "manual gate" : o === "pending" ? (c.status === "IN_PROGRESS" || c.startedAt ? "running" : "queued") : st}</span>
+                        {url ? <a href={url} target="_blank" rel="noreferrer">{label}</a> : <span>{label}</span>}
+                        {o === "pending" && c.startedAt && <span className="field-hint">{elapsed(c.startedAt)}</span>}
+                        {o !== "pending" && c.startedAt && c.completedAt && <span className="field-hint">{elapsed(c.startedAt, c.completedAt)}</span>}
+                        {!compact && c.workflowName && c.workflowName !== label && <span className="field-hint">{c.workflowName}</span>}
+                    </li>
+                );
+            })}
+        </ul>
+    );
+};
+
+const MERGE_KEY = "stagehand.mergeMethod";
+const MergeControls = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
+    const { task, prState } = detail;
+    const [method, setMethod] = useState<MergeMethod>(() => (storage.get(MERGE_KEY) as MergeMethod | null) ?? "squash");
+    const [deleteBranch, setDeleteBranch] = useState(true);
+    const checks = parseChecks(prState?.checks_json).filter((c) => !isApprovalGateCheck(c));
+    const failing = checks.filter((c) => checkOutcome(c) === "fail").length;
+    const pending = checks.filter((c) => checkOutcome(c) === "pending").length;
+    const warn = failing ? `${failing} check(s) are failing` : pending ? `${pending} check(s) still running` : prState?.review_decision === "CHANGES_REQUESTED" ? "a reviewer requested changes" : prState?.review_decision !== "APPROVED" ? "not approved yet" : null;
+    return (
+        <span className="merge-controls">
+            <select value={method} onChange={(e) => { setMethod(e.target.value as MergeMethod); storage.set(MERGE_KEY, e.target.value); }} title="Merge method">
+                <option value="squash">squash</option>
+                <option value="merge">merge commit</option>
+                <option value="rebase">rebase</option>
+            </select>
+            <label className="inline" title="Delete the remote branch after merging"><input type="checkbox" checked={deleteBranch} onChange={(e) => setDeleteBranch(e.target.checked)} /> delete branch</label>
+            <button
+                className="primary"
+                disabled={task.status === "running"}
+                title={warn ? `Merge anyway — ${warn}` : "Merge the pull request as you"}
+                onClick={() => {
+                    if (!confirm(`Merge #${prState?.number} (${method})${deleteBranch ? " and delete the remote branch" : ""}?${warn ? `\n\nNote: ${warn}.` : ""}`)) return;
+                    void onAction(() => api.mergePr(task.id, { method, deleteBranch }));
+                }}
+            >
+                Merge{warn ? " ⚠" : ""}
+            </button>
+        </span>
+    );
+};
+
 // PR status for the header widget, derived from the stage, the stored PR state and the status line.
-const PrWidget = ({ detail }: { detail: TaskDetail }) => {
+const PrWidget = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
     const { task, prState, pr } = detail;
-    const checks = ((): Array<{ name?: string; context?: string; conclusion?: string; state?: string }> => {
-        try {
-            return prState?.checks_json ? (JSON.parse(prState.checks_json) as Array<{ name?: string; context?: string; conclusion?: string; state?: string }>) : [];
-        } catch {
-            return [];
-        }
-    })();
+    const checks = parseChecks(prState?.checks_json);
     const gated = checks.filter((c) => !isApprovalGateCheck(c));
-    const failed = gated.filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
-    const passed = gated.filter((c) => /SUCCESS|NEUTRAL|SKIPPED/i.test(c.conclusion ?? c.state ?? ""));
-    const pending = gated.length - failed.length - passed.length;
+    const failed = gated.filter((c) => checkOutcome(c) === "fail");
+    const passed = gated.filter((c) => checkOutcome(c) === "pass");
+    const pending = gated.filter((c) => checkOutcome(c) === "pending");
+    const [refreshing, setRefreshing] = useState(false);
     let status: React.ReactNode;
     if (prState?.merged_at) status = <span className="chip ok">merged</span>;
     else if (prState?.url) {
-        const cls = failed.length ? "bad" : pending > 0 ? "warn" : prState.review_decision === "APPROVED" ? "ok" : "accent";
-        const text = failed.length ? `${failed.length} check(s) failing` : pending > 0 ? `${pending} check(s) running` : prState.review_decision === "APPROVED" ? "approved" : gated.length ? "checks green" : STAGE_LABEL[task.stage];
+        const cls = failed.length ? "bad" : pending.length > 0 ? "warn" : prState.review_decision === "APPROVED" ? "ok" : "accent";
+        const text = failed.length ? `${failed.length} check(s) failing` : pending.length > 0 ? `${pending.length} check(s) running` : prState.review_decision === "APPROVED" ? "approved" : gated.length ? "checks green" : prState.pushed_at && Date.now() - new Date(prState.pushed_at).getTime() < 10 * 60_000 ? "waiting for checks to start" : STAGE_LABEL[task.stage];
         status = <span className={`chip ${cls}`}>{text}</span>;
     } else if (task.stage === "pr_creation_review") status = <span className="chip wait">{task.status === "waiting_user" ? "draft ready — approve to create" : "drafting"}</span>;
     else if (PR_STAGES.has(task.stage)) status = <span className="chip warn">not created yet</span>;
@@ -349,15 +419,27 @@ const PrWidget = ({ detail }: { detail: TaskDetail }) => {
     else status = <span className="chip">none yet</span>;
     return (
         <section className="card widget">
-            <h2>Pull request</h2>
+            <h2>
+                Pull request
+                {prState?.url && !prState.merged_at && (
+                    <button className="tiny" disabled={refreshing} title="Re-read checks, review decision and comments from GitHub now" onClick={() => { setRefreshing(true); void onAction(() => api.refreshPr(task.id)).finally(() => setRefreshing(false)); }}>
+                        {refreshing ? "…" : "↻ refresh"}
+                    </button>
+                )}
+            </h2>
             <div className="widget-body">
                 {status}
                 {prState?.url && <a href={prState.url} target="_blank" rel="noreferrer">#{prState.number} ↗</a>}
                 {prState?.review_decision && <span className="chip">{prState.review_decision.toLowerCase().replace("_", " ")}</span>}
-                {gated.length > 0 && <span className="mono small">{passed.length}/{gated.length} checks passed{checks.length > gated.length ? ` (+${checks.length - gated.length} awaiting approval)` : ""}{failed.length ? ` · failing: ${failed.map((c) => c.name ?? c.context).join(", ")}` : ""}</span>}
+                {gated.length > 0 && <span className="mono small">{passed.length}/{gated.length} checks passed{checks.length > gated.length ? ` (+${checks.length - gated.length} awaiting approval)` : ""}</span>}
                 {!prState?.url && PR_STAGES.has(task.stage) && task.status_line && <span className="small">{task.status_line}</span>}
                 {task.branch && <code className="small">⎇ {task.branch}</code>}
+                {prState?.url && !prState.merged_at && <MergeControls detail={detail} onAction={onAction} />}
             </div>
+            {prState?.url && !prState.merged_at && (failed.length > 0 || pending.length > 0) && (
+                <div className="widget-checks"><ChecksList checks={[...failed, ...pending]} compact /></div>
+            )}
+            {prState?.url && <div className="field-hint">last poll {new Date(prState.updated_at).toLocaleTimeString()}{prState.pushed_at ? ` · pushed ${new Date(prState.pushed_at).toLocaleTimeString()}` : ""} · polls every 2 min</div>}
         </section>
     );
 };
@@ -674,7 +756,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 ) : (
                     <section className="card widget"><h2>App</h2><div className="empty">no worktree yet</div></section>
                 )}
-                <PrWidget detail={detail} />
+                <PrWidget detail={detail} onAction={onAction} />
             </div>
 
             <div className="timeline">
@@ -879,13 +961,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 // Details for the PR stages: checks, review, merge — everything the poller stored.
 const PrPanel = ({ detail }: { detail: TaskDetail }) => {
     const { task, prState } = detail;
-    const checks = ((): Array<{ name?: string; context?: string; conclusion?: string; state?: string; detailsUrl?: string }> => {
-        try {
-            return prState?.checks_json ? (JSON.parse(prState.checks_json) as Array<{ name?: string; context?: string; conclusion?: string; state?: string; detailsUrl?: string }>) : [];
-        } catch {
-            return [];
-        }
-    })();
+    const checks = parseChecks(prState?.checks_json);
     return (
         <Card title="Pull request">
             {!prState?.url && <p>{task.status_line ?? "No pull request yet."}</p>}
@@ -895,18 +971,8 @@ const PrPanel = ({ detail }: { detail: TaskDetail }) => {
                     <b>Review</b><span>{prState.review_decision ? prState.review_decision.toLowerCase().replace("_", " ") : "no decision yet"}</span>
                     <b>Merged</b><span>{prState.merged_at ? new Date(prState.merged_at).toLocaleString() : "not yet"}</span>
                     <b>Checks</b>
-                    <span>
-                        {checks.length === 0 ? "none reported yet" : (
-                            <ul className="plain">
-                                {checks.map((c, i) => {
-                                    const st = c.conclusion ?? c.state ?? "pending";
-                                    const cls = /SUCCESS|NEUTRAL|SKIPPED/i.test(st) ? "ok" : /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(st) ? "bad" : "warn";
-                                    return <li key={i}><span className={`chip ${cls}`}>{st.toLowerCase()}</span> {c.name ?? c.context}</li>;
-                                })}
-                            </ul>
-                        )}
-                    </span>
-                    <b>Last poll</b><span>{new Date(prState.updated_at).toLocaleString()}</span>
+                    <span><ChecksList checks={checks} /></span>
+                    <b>Last poll</b><span>{new Date(prState.updated_at).toLocaleString()}{prState.pushed_at ? ` · last push ${new Date(prState.pushed_at).toLocaleString()}` : ""}</span>
                 </div>
             )}
         </Card>
