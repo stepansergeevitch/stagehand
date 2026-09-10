@@ -148,6 +148,8 @@ export interface EnvRow {
     cleanup_command: string | null;
     // JSON {"<repo dir or .>": "<template path relative to that repo>"} — per-repository PR template overrides; a repo not listed is auto-detected.
     pr_templates: string | null;
+    // Open every PR this env creates as a GitHub draft (0/1). The human marks it ready for review themselves.
+    pr_draft: number;
     created_at: string;
 }
 
@@ -546,6 +548,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["reviews.repo", `ALTER TABLE reviews ADD COLUMN repo TEXT`],
     ["pr_state.state", `ALTER TABLE pr_state ADD COLUMN state TEXT`],
     ["envs.pr_templates", `ALTER TABLE envs ADD COLUMN pr_templates TEXT`],
+    ["envs.pr_draft", `ALTER TABLE envs ADD COLUMN pr_draft INTEGER NOT NULL DEFAULT 0`],
     // Free-form labels the human puts on a task: JSON [{text, color}] (color = CSS hex), shown in the list and the header.
     ["tasks.labels", `ALTER TABLE tasks ADD COLUMN labels TEXT`],
 ];

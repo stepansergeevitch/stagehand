@@ -72,6 +72,9 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
         setter((prev) => ({ ...prev, [k]: e.target.type === "checkbox" ? (e.target as HTMLInputElement).checked : e.target.value }));
     const sg = set(setG);
     const ss = set(setS);
+    // ---- pull requests: draft mode
+    const [prDraft, setPrDraft] = useState(env.pr_draft === 1);
+    useEffect(() => setPrDraft(env.pr_draft === 1), [env.pr_draft]);
     // ---- PR templates, one per repository (what the PR-draft agent writes each description on)
     const [tpl, setTpl] = useState<Record<string, string>>({});
     useEffect(() => {
@@ -132,6 +135,10 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
                         <b>Rules in effect</b><span>commits {info.rules.allowCommit ? "allowed" : "off"} · push {info.rules.allowPush ? "allowed" : "off"} · PR creation {info.rules.allowPrCreate ? "allowed" : "off"} · branch <code>{info.rules.branchPattern}</code></span>
                     </div>
                 )}
+            </Section>
+
+            <Section title="Pull requests" hint="Applies once a repository's PR is approved and Stagehand opens it." saving={saving === "pr"} onSave={() => save("pr", { prDraft })}>
+                <label className="inline"><input type="checkbox" checked={prDraft} onChange={(e) => setPrDraft(e.target.checked)} /> Open every PR as a draft (mark it ready for review yourself)</label>
             </Section>
 
             {info && (

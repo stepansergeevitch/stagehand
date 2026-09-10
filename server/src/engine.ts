@@ -1059,7 +1059,7 @@ export class Engine extends EventEmitter {
             return `pushed \`${task.branch}\` — this env forbids agent PR creation: open the PR yourself (draft below); Stagehand picks it up by branch`;
         }
         try {
-            const url = await this.gh(cwd, ["pr", "create", "--base", draft?.base || env.base_branch, "--head", task.branch, "--title", entry.title, "--body", entry.body], env);
+            const url = await this.gh(cwd, ["pr", "create", "--base", draft?.base || env.base_branch, "--head", task.branch, "--title", entry.title, "--body", entry.body, ...(env.pr_draft ? ["--draft"] : [])], env);
             const number = Number(url.split("/").pop());
             this.upsertPrRow(taskId, repo, { number: Number.isFinite(number) ? number : null, url, pushed_at: now(), state: "OPEN" });
             return `PR #${Number.isFinite(number) ? number : "?"} created`;

@@ -58,6 +58,8 @@ export interface Env {
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
     rules: string | null; cleanup_command: string | null; pr_templates?: string | null;
+    // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
+    pr_draft?: number;
 }
 export interface Rules {
     commitPattern: string; commitForbid: string[]; commitHint: string; branchPattern: string; branchHint: string;
@@ -260,7 +262,7 @@ export const api = {
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: {
         name: string; path: string; baseBranch: string; defaultAccountId?: string; accountOrder?: string[]; configDirId?: string; appUrl?: string; qaScript?: string;
-        repos?: string[]; branchPrefix?: string; ticketSource: "clickup" | "linear"; envVars?: string;
+        repos?: string[]; branchPrefix?: string; ticketSource: "clickup" | "linear"; envVars?: string; prDraft?: boolean;
     }) => post<Env>("/api/envs", body),
     patchEnv: (
         id: string,
@@ -269,7 +271,7 @@ export const api = {
             chromeDeviceId?: string | null; chromeBrowserName?: string | null; qaSeedHints?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
-            cleanupCommand?: string | null; prTemplates?: Record<string, string | null>;
+            cleanupCommand?: string | null; prTemplates?: Record<string, string | null>; prDraft?: boolean;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
