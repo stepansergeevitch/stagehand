@@ -143,7 +143,7 @@ export interface Run {
 export interface QaStep { action: string; assert: string; shot: boolean }
 export interface QaScenario { id: string; title: string; url: string; persona: string; seed?: string[]; steps: QaStep[] }
 export interface Design {
-    classification: "bug" | "feature"; scope: { inScope: string[]; outOfScope: string[] };
+    classification: "bug" | "feature"; affectedRepos?: string[]; scope: { inScope: string[]; outOfScope: string[] };
     plan: Array<{ layer: string; changes: string[] }>; testPlan: Array<{ file: string; cases: string[] }>;
     qa: QaScenario[]; qaSkippedReason: string | null;
 }

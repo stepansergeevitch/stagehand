@@ -14,38 +14,43 @@ A senior engineer reviews `design.md` to approve or push back, and uses it to le
 
 ## design.md — strict template
 
-Exactly these eight `## ` sections, in this order, with these titles (numbering allowed: `## 1. Classification`). Hard cap: **900 words in total** (code blocks excluded). A proposal over the cap or missing a section is rejected and sent back to you.
+Exactly these nine `## ` sections, in this order, with these titles (numbering allowed: `## 1. Classification`). Hard cap: **1100 words in total** (code blocks excluded). A proposal over the cap or missing a section is rejected and sent back to you.
 
 ### 1. Classification
-One line: `bug` or `feature`, a dash, then the reason in at most 15 words.
+One line: `bug` or `feature`, a dash, then the reason in at most 15 words. In a multi-repository workspace add a second line `Repos: <dir>, <dir>` naming every repository the change touches, using the directory names from the layout above (a single-repository project has no such line).
 
 ### 2. How it works today
 The mechanism the ticket touches, as it is now — the part the reviewer should learn. 5–12 bullets, each ONE fact anchored to code: `` `path:line` `Symbol` — what it computes or does `` (≤ 20 words per bullet). Finish with one data-flow line using symbol names: `` `A.field` → `B.method` → `C.total` ``. Describe the system, not the history: no ticket ids, no "shipped by", no "as research found".
 
 ### 3. Problem
-Bug: the root cause in ≤ 3 bullets — what is wrong, where, and why it produces the reported symptom. Feature: the gap in ≤ 3 bullets — what is missing, where it has to hook in.
+Bug: what is wrong and where, in ≤ 3 bullets (the symptom and the code that produces it). Feature: the gap in ≤ 3 bullets — what is missing, where it has to hook in.
 
-### 4. Proposed changes
+### 4. Root cause (bug) / Approach (feature)
+The heading is `## 4. Root cause` for a bug and `## 4. Approach` for a feature. This is the section the reviewer reads most carefully — the explanation, not the list of edits. 80–250 words, 6–12 bullets or short paragraphs (≤ 3 lines each), every claim anchored to a `path:line` or symbol.
+- Bug — **Root cause**: the mechanism of the defect as a causal chain: the triggering input or state → the path through the code (symbol by symbol, with the value each step produces) → the wrong output the user sees. Then why the code does this (the assumption that no longer holds, the case that was never handled, the wrong operand/order/sign) and why the change in the next sections removes the cause rather than masking the symptom. If a second contributing cause exists, name it too.
+- Feature — **Approach**: how it should be built: where the new capability lives and why there (which layer owns the rule, which existing mechanism it extends or mirrors), the data flow after the change as one line of symbols (`A.field` → `B.method` → `C.total`), the 2–4 design decisions that shape it each with the alternative rejected in one clause, and what the reviewer must check to be confident (the invariant, the boundary, the compatibility concern).
+
+### 5. Proposed changes
 The change explained in plain words for someone who will not read the table: 2–6 short bullets, ≤ 120 words in total, no table, no code blocks (inline symbols in backticks are fine). Each bullet: what changes, where, and why it fixes the problem — information-dense, no filler, no restating the ticket. This is the section a reviewer reads first; the table below is its detail.
 
-### 5. Change
+### 6. Change
 First a `Summary:` line — the whole change in 1–3 imperative clauses, semicolon-separated, ≤ 60 words, naming the symbols: `Summary: Add BidAttachmentRepository; route the three get_attachment* reads through it; leave the GlobalVendorBid read raw.` Then a table, one row per changed symbol:
 
 | Layer | File | Symbol | Before | After |
 
 `Before` and `After` are expressions or one-clause behaviours, not prose (`revenue*(1-closing%)` → `revenue*(1-closing%) + coalesce(credit,0)`). A new symbol has `—` in Before. After the table, `Not changed:` with at most 4 bullets of the form `` `thing` — reason `` (≤ 12 words each), only for things a reviewer would expect to see changed.
 
-### 6. Risks and edge cases
+### 7. Risks and edge cases
 At most 5 bullets, each with an action: `case → behaviour after the change → action: <what the implementation or reviewer does about it, ≤ 15 words> → covered by <test name>` or `→ action: <…> → accepted, <reason ≤ 10 words>`. The action is concrete (add a guard, floor at 0, order the operands, add test X, ask product) — never "monitor" or "be careful". Include the sign/ordering/null traps that matter for this change.
 
-### 7. Tests
+### 8. Tests
 A table, one row per test:
 
 | File | Test | Asserts |
 
 `Asserts` ≤ 15 words with concrete values or relations (`net_revenue == 9500 - 300`). Then a line `Run:` followed by a fenced ```bash block with the exact commands, one per line. No list of test cases outside the table — the table is the list.
 
-### 8. QA
+### 9. QA
 One line per scenario: `` `S1` — <title> — `<start url>` ``, or `none — <reason>`. Nothing else: persona, seed and steps live in design.json, and the UI shows those (not this list) under the QA tab.
 
 ### Banned everywhere in design.md
@@ -54,6 +59,7 @@ Restating the ticket; provenance remarks (`research.md`, `mempalace`, "confirmed
 ## design.json — structured twin (same content, machine-readable)
 
 - `classification`: `bug` | `feature`.
+- `affectedRepos`: the workspace repository directories the change touches (same names as the `Repos:` line; `[]` for a single-repository project).
 - `scope.inScope` / `scope.outOfScope`: short phrases derived from the ticket's own description and acceptance criteria (not a parent epic's).
 - `plan`: one entry per layer touched (`ws`, `api`, `service`, `repo`, `ast`, `fe`), `changes` = the Change table rows for that layer as one-line strings `File Symbol: before → after`.
 - `testPlan`: per file, the test names from the Tests table (pytest for backend, Jest for frontend; behavioural coverage, corner cases: empty/null, boundaries, error paths, off-by-one, ordering; one assertion focus per test).
@@ -74,6 +80,7 @@ Write `{{taskDir}}/design.json` with exactly this shape:
 ```json
 {
   "classification": "bug" | "feature",
+  "affectedRepos": ["backend", "frontend"],
   "scope": { "inScope": ["..."], "outOfScope": ["..."] },
   "plan": [ { "layer": "service", "changes": ["...", "..."] } ],
   "testPlan": [ { "file": "backend/tests/...py", "cases": ["test_...", "..."] } ],

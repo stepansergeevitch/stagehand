@@ -34,6 +34,8 @@ export type QaScenario = z.infer<typeof QaScenario>;
 
 export const DesignResult = z.object({
     classification: z.enum(["bug", "feature"]),
+    // Multi-repo workspaces: the sub-repository directories the change touches ([] for a single repo).
+    affectedRepos: z.array(z.string()).default([]),
     scope: z.object({ inScope: z.array(z.string()), outOfScope: z.array(z.string()) }),
     plan: z.array(z.object({ layer: z.string(), changes: z.array(z.string()) })),
     testPlan: z.array(z.object({ file: z.string(), cases: z.array(z.string()) })),

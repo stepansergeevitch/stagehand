@@ -142,10 +142,13 @@ const FIVE_HOUR = "five_hour";
 // Task states in which nothing happens until a human acts (or, for rate limits, until the window resets).
 const NEEDS_HUMAN: ReadonlySet<TaskStatus> = new Set(["waiting_user", "blocked", "failed", "rate_limited"]);
 
-// Required `## ` sections of design.md, in order (numbering optional); mirrored in prompts/design.md.
-export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem", "Proposed changes", "Change", "Risks and edge cases", "Tests", "QA"] as const;
-export const DESIGN_MAX_WORDS = 900;
+// Required `## ` sections of design.md, in order (numbering optional); mirrored in prompts/design.md. "A|B" = either title.
+export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem", "Root cause|Approach", "Proposed changes", "Change", "Risks and edge cases", "Tests", "QA"] as const;
+export const DESIGN_MAX_WORDS = 1100;
 const PROPOSED_MAX_WORDS = 120;
+// The explanation section (Root cause / Approach) is the one the reviewer relies on; a few lines is not an explanation.
+const EXPLANATION_MIN_WORDS = 60;
+const EXPLANATION_MAX_WORDS = 280;
 const LOGIN_POLL_MS = 3_000;
 // A Manual QA run that still has failing scenarios goes straight back to Implementation with the failure detail as
 // reviewer notes, instead of waiting for the human to notice at User Review. Capped so a genuinely stuck fix doesn't
@@ -158,10 +161,15 @@ const tabKey = (t: { window: number; tab: number; url: string }): string => `${t
 
 // The proposal is for a human: a fixed section order and a hard word cap keep it dense. Violations go back to the agent
 // through the normal contract-retry path.
-export const designMdProblems = (md: string): string | null => {
+// `repos`: the workspace's sub-repository directories (multi-repo env) — Classification must then name the affected ones.
+export const designMdProblems = (md: string, opts: { repos?: string[] } = {}): string | null => {
     const problems: string[] = [];
     const headings = [...md.matchAll(/^##\s+(.+?)\s*$/gm)].map((m) => m[1]!.replace(/^\d+[.)]\s*/, "").toLowerCase());
-    for (const want of DESIGN_SECTIONS) if (!headings.some((h) => h.startsWith(want.toLowerCase()))) problems.push(`design.md is missing the section "## ${want}"`);
+    const has = (title: string): boolean => headings.some((h) => h.startsWith(title.toLowerCase()));
+    for (const want of DESIGN_SECTIONS) {
+        const alternatives = want.split("|");
+        if (!alternatives.some(has)) problems.push(`design.md is missing the section "## ${alternatives.join('" or "## ')}"`);
+    }
     const words = md.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
     if (words > DESIGN_MAX_WORDS) problems.push(`design.md is ${words} words; the cap is ${DESIGN_MAX_WORDS} — cut repetition, provenance remarks and prose around tables, keep every path:line`);
     if (/^\s*```json/m.test(md)) problems.push("design.md contains a JSON block — describe scenarios and plans in prose/tables; design.json carries the structure");
@@ -169,6 +177,31 @@ export const designMdProblems = (md: string): string | null => {
         const m = new RegExp(`^##\\s+(?:\\d+[.)]\\s*)?${name}[^\\n]*\\n([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "im").exec(md);
         return m ? m[1]! : null;
     };
+    const wordCount = (s: string): number => s.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
+    const classification = section("Classification");
+    const isBug = !!classification && /^\s*`?bug`?\b/im.test(classification);
+    const isFeature = !!classification && /^\s*`?feature`?\b/im.test(classification);
+    if (isBug && !has("Root cause")) problems.push("a bug needs the section `## 4. Root cause` (not Approach): the causal chain from trigger to wrong output, with path:line");
+    if (isFeature && !has("Approach")) problems.push("a feature needs the section `## 4. Approach` (not Root cause): how it should be built, where it lives and why, the data flow, the key decisions");
+    const explanation = section("Root cause") ?? section("Approach");
+    if (explanation !== null) {
+        const n = wordCount(explanation);
+        const title = has("Root cause") ? "Root cause" : "Approach";
+        if (n < EXPLANATION_MIN_WORDS) problems.push(`the ${title} section is ${n} words — it is the explanation the reviewer relies on: ${title === "Root cause" ? "walk the causal chain symbol by symbol (trigger → code path with values → wrong output) and say why the change removes the cause" : "say where the capability lives and why, the data flow after the change, each design decision with the alternative rejected"} (${EXPLANATION_MIN_WORDS}–${EXPLANATION_MAX_WORDS} words)`);
+        else if (n > EXPLANATION_MAX_WORDS) problems.push(`the ${title} section is ${n} words; keep it under ${EXPLANATION_MAX_WORDS} — one causal chain / one approach, no restating the Change table`);
+        if (!/`[^`\n]*[\w/.-]+\.(py|ts|tsx|js|jsx|rs|go|java|kt|rb|sql|scss|css)(:\d+)?`|`[A-Za-z_][\w.]*\(|`[A-Z][A-Za-z0-9_]+(\.[a-z_]\w*)+`/.test(explanation)) problems.push(`the ${title} section names no file or symbol in backticks — anchor every claim to a \`path:line\` or \`Symbol\``);
+    }
+    const repos = opts.repos ?? [];
+    if (repos.length && classification !== null) {
+        const m = /^\s*\**Repos?:?\**\s*(.+)$/im.exec(classification);
+        if (!m) problems.push(`this is a multi-repository workspace (${repos.join(", ")}) — Classification needs a second line \`Repos: <dir>, <dir>\` naming the repositories the change touches`);
+        else {
+            const named = m[1]!.split(/[,;]|\band\b/).map((s) => s.replace(/[`*\s/]+/g, "")).filter(Boolean);
+            const unknown = named.filter((n) => !repos.includes(n));
+            if (named.length === 0) problems.push("the `Repos:` line in Classification is empty — name the repositories the change touches");
+            if (unknown.length) problems.push(`the \`Repos:\` line names ${unknown.join(", ")}, which are not repositories of this workspace (${repos.join(", ")}) — use the directory names exactly`);
+        }
+    }
     const proposed = section("Proposed changes");
     if (proposed !== null) {
         const words = proposed.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
@@ -1892,7 +1925,9 @@ export class Engine extends EventEmitter {
     private designMdProblems(taskId: string): string | null {
         const p = join(this.taskDir(taskId), "design.md");
         if (!existsSync(p)) return "design.md was not written";
-        return designMdProblems(readFileSync(p, "utf8"));
+        const task = this.getTask(taskId);
+        const repos = task ? envRepos(this.env(task.env_id)) : [];
+        return designMdProblems(readFileSync(p, "utf8"), { repos });
     }
 
     private afterStage(taskId: string, def: StageDef, data: unknown): void {

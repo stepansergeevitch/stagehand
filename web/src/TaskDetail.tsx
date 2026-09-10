@@ -535,6 +535,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     ];
 
     const proposedMd = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^proposed changes/i.test(s.title))?.body.trim() ?? null : null), [designMd]);
+    // The explanation section — Root cause (bug) or Approach (feature) — is what the reviewer reads first.
+    const explanation = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^(root cause|approach)/i.test(s.title)) ?? null : null), [designMd]);
 
     // Which workflow steps have something to show (or are the current one).
     const stepHasContent = (s: Stage): boolean => {
@@ -645,7 +647,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 ) : <div className="empty">no research yet</div>;
             case "design_proposal":
                 return design ? (
-                    <Card title="Design proposal" badge={<span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>}>
+                    <Card title="Design proposal" badge={<><span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>{(design.affectedRepos ?? []).map((r) => <span key={r} className="chip">{r}</span>)}</>}>
+                        {explanation && <div className="proposed explanation"><b>{explanation.title}</b><Markdown source={explanation.body.trim()} /></div>}
                         {proposedMd && <div className="proposed"><b>Proposed changes</b><Markdown source={proposedMd} /></div>}
                         <div className="kv">
                             <b>Plan</b><span>{design.plan.length} layer(s): {design.plan.map((p) => p.layer).join(", ")}</span>
@@ -899,7 +902,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
             {tab === "design" && (
                 design ? (
-                    <Card title="Design proposal" badge={<span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>}>
+                    <Card title="Design proposal" badge={<><span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>{(design.affectedRepos ?? []).map((r) => <span key={r} className="chip">{r}</span>)}</>}>
                         {task.stage === "design_proposal" && reviewBox}
                         <DesignSections design={design} md={designMd} />
                     </Card>
@@ -1128,7 +1131,11 @@ const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design
     const tests = parts.find((p) => /^tests?\b|test plan/i.test(p.title));
     if (tests?.md) tests.md = tests.md.replace(/^(\**Run:?\**)\s*`([^`\n]+)`\s*$/im, "$1\n\n```bash\n$2\n```");
     attach(/qa/i, "QA scenarios", <QaScenarios design={design} />, true);
-    const [active, setActive] = useState(() => Math.max(0, parts.findIndex((p) => /^proposed changes/i.test(p.title))));
+    // Open on the explanation (Root cause / Approach) when the proposal has one; older proposals open on Proposed changes.
+    const [active, setActive] = useState(() => {
+        const i = parts.findIndex((p) => /^(root cause|approach)/i.test(p.title));
+        return i >= 0 ? i : Math.max(0, parts.findIndex((p) => /^proposed changes/i.test(p.title)));
+    });
     const cur = parts[Math.min(active, parts.length - 1)];
     return (
         <>
