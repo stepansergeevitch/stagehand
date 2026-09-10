@@ -1068,7 +1068,20 @@ export class Engine extends EventEmitter {
             if (outcome === null) return out; // failed; the task status says why
             out.push(`${repoLabel(row.repo)}: ${outcome}`);
         }
-        await this.pollAllPrs(this.getTask(taskId)!, { force: true }).catch(() => undefined);
+        // createPrForRepo leaves the task "running · pushing …"; finish the same way an approve does — on to PR Waiting
+        // once every repository has its PR, otherwise back to waiting for the human on the ones that still have none.
+        const env = this.env(task.env_id);
+        const repos = this.draftRepos(taskId, env);
+        const rows = this.prRows(taskId);
+        const missing = repos.filter((r) => !rows.find((x) => x.repo === r)?.number);
+        if (missing.length) {
+            this.setStage(taskId, "pr_creation_review");
+            this.setTaskStatus(taskId, "waiting_user", `PR Creation Review · ${out.join("; ")} — still without a PR: ${missing.map((r) => repoLabel(r)).join(", ")}`);
+            return out;
+        }
+        this.setStage(taskId, "pr_waiting");
+        this.syncPrTaskState(taskId, { force: true });
+        this.pollPrSoon(taskId);
         return out;
     }
 
