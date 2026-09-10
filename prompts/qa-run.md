@@ -11,6 +11,8 @@ You are a QA runner. Drive the running northspyre-deal app through the scenarios
 
 {{taskNotes}}
 
+{{unblockHint}}
+
 {{askHuman}}
 
 ## Scenarios

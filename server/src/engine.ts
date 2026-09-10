@@ -54,17 +54,21 @@ export interface ReviewInput {
     comments?: LineComment[] | undefined;
 }
 
-// Every archived Manual QA attempt so far (oldest first): { N, path } for qa/after-attempt-N.json. The CURRENT
-// qa/after.json is not included — archive it first (see afterStage) if it should count as one of these.
-const qaAttemptFiles = (taskDir: string): Array<{ n: number; path: string }> => {
+// Every archived attempt file matching qa/<prefix>-N.json so far (oldest first): { N, path }. The CURRENT qa/<pass>.json
+// is not included — archive it first (see afterStage) if it should count as one of these. Used both for Manual QA's
+// "failed → auto-return to Implementation" trail (prefix "after-attempt") and for the "blocked → auto-unblock-and-retry"
+// trail (prefix "<pass>-blocked-attempt"), which are independent budgets even within the same run.
+const attemptFiles = (taskDir: string, prefix: string): Array<{ n: number; path: string }> => {
     const dir = join(taskDir, "qa");
     if (!existsSync(dir)) return [];
+    const re = new RegExp(`^${prefix}-(\\d+)\\.json$`);
     return readdirSync(dir)
-        .map((f) => /^after-attempt-(\d+)\.json$/.exec(f))
+        .map((f) => re.exec(f))
         .filter((m): m is RegExpExecArray => !!m)
         .map((m) => ({ n: Number(m[1]), path: join(dir, m[0]) }))
         .sort((a, b) => a.n - b.n);
 };
+const qaAttemptFiles = (taskDir: string): Array<{ n: number; path: string }> => attemptFiles(taskDir, "after-attempt");
 
 // What the implementer sees after Manual QA fails and gets auto-returned: this attempt's failures in full, plus a
 // one-line-per-attempt trail of every earlier automatic fix cycle — so it never has to re-run QA itself just to
@@ -89,6 +93,21 @@ const renderQaFailureNotes = (taskDir: string, qa: QaPassResult, design: DesignR
         parts.push(`### Earlier automatic attempts — for context, do not re-run Manual QA yourself to rediscover this\n${lines.join("\n")}`);
     }
     parts.push("Fix the code so these pass. Do not weaken or remove the failing assertions or the scenarios themselves.");
+    return parts.join("\n\n");
+};
+
+// What the SAME QA runner sees on a "blocked → try to unblock, then retry this same pass" cycle: unlike a fail
+// (a real assert that did not hold, sent to Implementation), a block means the scenario never got far enough to
+// assert anything — a stale dev-server, a real app bug unrelated to this ticket, a data gap — so the runner itself,
+// already sitting in the worktree with Bash and the browser open, gets one narrow exception to stay read-only and
+// go fix the cause, rather than handing it to a separate Implementation run that would start from a cold state.
+const renderUnblockHint = (qa: QaPassResult, blocked: QaPassResult["scenarios"], attemptNum: number, commitRule: string): string => {
+    const parts = [`## Automatic unblock retry ${attemptNum} of ${MAX_UNBLOCK_ATTEMPTS} — the previous attempt could not run these scenarios`];
+    parts.push(blocked.map((b) => `- \`${b.id}\` — ${b.observation}`).join("\n"));
+    if (qa.blockers.length) parts.push(`Blockers: ${qa.blockers.join("; ")}`);
+    parts.push(
+        `Before repeating the scenarios, investigate why: check the dev-server logs, the page's console and network requests, and the DOM. If it is a real, fixable bug in the app's current code in this worktree — not something this ticket's own design is about, just something in the way — fix it with a normal code edit; that is the one exception to staying hands-off with the app in this run. ${commitRule} If you cannot find or fix a cause within reasonable effort, record the scenarios \`blocked\` again with what you tried and observed, and stop.`,
+    );
     return parts.join("\n\n");
 };
 
@@ -170,9 +189,15 @@ const CODE_REF = /`[^`\n]*(?:[./_(:\\]|[a-z][A-Z])[^`\n]*`|`[^`\n]{30,}`|\b[\w./
 const LOGIN_POLL_MS = 3_000;
 // A Manual QA run that still has failing scenarios goes straight back to Implementation with the failure detail as
 // reviewer notes, instead of waiting for the human to notice at User Review. Capped so a genuinely stuck fix doesn't
-// loop forever — after this many automatic returns, it falls through to User Review like a passing (or blocked/
-// needs_human) run always has.
+// loop forever — after this many automatic returns, it needs the human's review regardless (a needs_human-only run,
+// with nothing failed or blocked, still falls through to User Review as normal — that one is a real human judgment
+// call, not something an automatic retry could ever resolve).
 const MAX_AUTO_QA_RETURNS = 2;
+// A blocked scenario (qa_baseline or manual_qa, after ruling out the self-resolving bridge-miss/auth cases above)
+// gets the SAME QA runner one retry cycle to investigate and fix the cause itself before a human is pulled in —
+// see renderUnblockHint. Capped independently of MAX_AUTO_QA_RETURNS since it is a different kind of retry (same
+// stage re-running itself, not a return to Implementation).
+const MAX_UNBLOCK_ATTEMPTS = 2;
 const LOGIN_WAIT_MS = 15 * 60_000;
 type ChromeTabLike = { url: string; title: string };
 const tabKey = (t: { window: number; tab: number; url: string }): string => `${t.window}:${t.tab}:${t.url}`;
@@ -2356,21 +2381,44 @@ export class Engine extends EventEmitter {
             const blocked = qa.scenarios.filter((s) => s.outcome === "blocked");
             const failed = qa.scenarios.filter((s) => s.outcome === "fail").length;
             const needsHuman = qa.scenarios.filter((s) => s.outcome === "needs_human").length;
-            // A baseline with even one blocked scenario is not a solid base to build on: that scenario has no real
-            // "before" state to diff manual_qa against later. Unlike bridge-miss/auth (handled and retried above),
-            // this covers everything else that can block a scenario (an environment problem, a data issue, ...) —
-            // qa_baseline must not silently sail into implementation on a partial or empty result.
-            if (def.stage === "qa_baseline" && blocked.length > 0) {
+            // A blocked scenario never got far enough to assert anything — the reported bug from earlier, a stale
+            // dev-server, missing data — so it is not treated as a normal fail/pass result on its own. Unlike
+            // bridge-miss/auth (self-resolving, handled and retried above), give the SAME runner one budgeted
+            // chance to investigate and fix the cause itself and retry THIS stage (see renderUnblockHint), before
+            // falling back to blocking for a human. This applies to both qa_baseline (a blocked scenario there is
+            // not a solid "before" state to diff manual_qa against later either) and manual_qa.
+            if (blocked.length > 0) {
+                const taskDir = this.taskDir(taskId);
+                const pass = def.stage === "qa_baseline" ? "before" : "after";
+                const prefix = `${pass}-blocked-attempt`;
+                const priorAttempts = attemptFiles(taskDir, prefix).length;
                 const reason = qa.blockers[0] ?? blocked[0]!.observation;
+                if (priorAttempts < MAX_UNBLOCK_ATTEMPTS) {
+                    const attemptNum = priorAttempts + 1;
+                    const passPath = join(taskDir, "qa", `${pass}.json`);
+                    if (existsSync(passPath)) copyFileSync(passPath, join(taskDir, "qa", `${prefix}-${attemptNum}.json`));
+                    const r = rulesOf(this.configDirOf(this.env(task.env_id)));
+                    const commitRule = r.allowCommit
+                        ? `If you do fix something, commit it: every message must match \`${r.commitPattern}\` — ${r.commitHint}${r.commitForbid.length ? ` Never include ${r.commitForbid.map((f) => `\`${f}\``).join(", ")}.` : ""}`
+                        : "Commits are NOT allowed in this environment: leave any fix uncommitted (staging is fine) and mention it in your observation; the human commits.";
+                    const unblockHint = renderUnblockHint(qa, blocked, attemptNum, commitRule);
+                    this.setTaskStatus(
+                        taskId,
+                        "running",
+                        `${def.label} · ${blocked.length}/${qa.scenarios.length} scenario(s) blocked — ${reason} — attempting to unblock and retry (${attemptNum}/${MAX_UNBLOCK_ATTEMPTS})`,
+                    );
+                    this.dispatch(taskId, def.stage, { extraVars: { unblockHint } });
+                    return;
+                }
                 this.setTaskStatus(
                     taskId,
                     "blocked",
-                    `QA baseline · ${blocked.length}/${qa.scenarios.length} scenario(s) blocked, not a solid baseline — ${reason} — fix it, then Retry`,
+                    `${def.label} · ${blocked.length}/${qa.scenarios.length} scenario(s) still blocked after ${MAX_UNBLOCK_ATTEMPTS} automatic unblock attempts — ${reason} — fix it, then Retry`,
                 );
                 return;
             }
-            if (def.stage === "manual_qa" && (failed > 0 || needsHuman > 0 || blocked.length > 0)) {
-                const parts = [failed > 0 ? `${failed} scenario(s) failed` : null, needsHuman > 0 ? `${needsHuman} need your own check` : null, blocked.length > 0 ? `${blocked.length} blocked` : null].filter(Boolean);
+            if (def.stage === "manual_qa" && (failed > 0 || needsHuman > 0)) {
+                const parts = [failed > 0 ? `${failed} scenario(s) failed` : null, needsHuman > 0 ? `${needsHuman} need your own check` : null].filter(Boolean);
                 this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`Manual QA · ${parts.join(" · ")}`, now(), taskId);
                 if (failed > 0) {
                     const taskDir = this.taskDir(taskId);
