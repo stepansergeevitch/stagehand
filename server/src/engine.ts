@@ -915,7 +915,7 @@ export class Engine extends EventEmitter {
 
     // pr.json normalised to one draft per repository. A file from before per-repo drafts ({title, body, base}) is fanned
     // out to every repository of the env — that is what one shared draft used to mean.
-    readPrDraft(taskId: string): PrDraft | null {
+    readPrDraft(taskId: string): (PrDraft & { legacy?: boolean }) | null {
         const raw = this.readArtifactJson<unknown>(taskId, "pr.json");
         if (!raw || typeof raw !== "object") return null;
         const parsed = PrDraft.safeParse(raw);
@@ -925,7 +925,7 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         const env = task ? this.env(task.env_id) : null;
         const repos = env ? this.prRepos(env) : [""];
-        return { base: typeof old.base === "string" && old.base ? old.base : (env?.base_branch ?? "main"), drafts: repos.map((repo) => ({ repo, title: old.title as string, body: typeof old.body === "string" ? old.body : "" })) };
+        return { legacy: true, base: typeof old.base === "string" && old.base ? old.base : (env?.base_branch ?? "main"), drafts: repos.map((repo) => ({ repo, title: old.title as string, body: typeof old.body === "string" ? old.body : "" })) };
     }
 
     // Which repositories this task's PR review covers: the drafted ones, else every repository of the env.

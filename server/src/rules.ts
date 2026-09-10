@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import type { EnvRow } from "./db.js";
+import { prTemplateOverridesOf, type EnvRow } from "./db.js";
 import { envRepos, repoPaths } from "./git.js";
 
 // Per-environment working rules. The same standard skills + one guard hook are generated for every env; only the values differ.
@@ -64,14 +64,31 @@ export const detectPrTemplate = (repoPath: string): string | null => {
     return null;
 };
 
-// One entry per checkout the env owns (the repo itself, or each sub-repo).
-export const prTemplates = (env: EnvRow, rules: Rules): Array<{ dir: string; path: string | null; overridden: boolean }> => {
+// One entry per checkout the env owns (the repo itself, or each sub-repo). Templates are a property of each repository:
+// the env's per-repo override wins, then the config dir's single legacy override, then auto-detection in that repo.
+export interface PrTemplateInfo {
+    dir: string;
+    path: string | null;
+    detected: string | null;
+    source: "env" | "dir" | "detected" | "none";
+    // An override that points at a file that does not exist — shown as a warning, auto-detection is used instead.
+    missing: string | null;
+    overridden: boolean;
+}
+export const prTemplates = (env: EnvRow, rules: Rules): PrTemplateInfo[] => {
     const subs = envRepos(env);
     const dirs = subs.length ? subs : ["."];
+    const overrides = prTemplateOverridesOf(env);
     return dirs.map((dir, i) => {
         const repo = repoPaths(env)[i]!;
-        const detected = rules.prTemplatePath && existsSync(join(repo, rules.prTemplatePath)) ? rules.prTemplatePath : detectPrTemplate(repo);
-        return { dir, path: detected, overridden: !!rules.prTemplatePath };
+        const detected = detectPrTemplate(repo);
+        const own = overrides[dir] ?? overrides[dir === "." ? "" : dir];
+        if (own) {
+            if (existsSync(join(repo, own))) return { dir, path: own, detected, source: "env", missing: null, overridden: true };
+            return { dir, path: detected, detected, source: detected ? "detected" : "none", missing: own, overridden: false };
+        }
+        if (rules.prTemplatePath && existsSync(join(repo, rules.prTemplatePath))) return { dir, path: rules.prTemplatePath, detected, source: "dir", missing: null, overridden: true };
+        return { dir, path: detected, detected, source: detected ? "detected" : "none", missing: null, overridden: false };
     });
 };
 

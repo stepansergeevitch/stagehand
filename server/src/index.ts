@@ -25,7 +25,7 @@ const MODEL_OPTIONS = [
     { value: "opus", label: "Opus 5 (claude-opus-5)" },
     { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
 ];
-import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
+import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, prTemplateOverridesOf, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
 import { matchChromeProfiles, openInProfile, restartChrome } from "./chrome-profiles.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
@@ -616,6 +616,8 @@ app.patch("/api/envs/:id", async (c) => {
             ticketSource: z.enum(["clickup", "linear"]).optional(),
             envVars: z.string().nullable().optional(),
             cleanupCommand: z.string().nullable().optional(),
+            // Per-repository PR template overrides: {"backend": ".github/pull_request_template.md"}; null/"" removes one.
+            prTemplates: z.record(z.string().nullable()).optional(),
         }),
         await c.req.json(),
     );
@@ -631,8 +633,16 @@ app.patch("/api/envs/:id", async (c) => {
         const bad = await badCheckouts({ path: env.path, base_branch: env.base_branch, repos });
         if (bad) return c.json({ error: bad }, 400);
     }
+    const prTemplates = body.prTemplates === undefined ? env.pr_templates : ((): string | null => {
+        const merged = { ...prTemplateOverridesOf(env) };
+        for (const [dir, path] of Object.entries(body.prTemplates)) {
+            if (path && path.trim()) merged[dir] = path.trim().replace(/^\/+/, "");
+            else delete merged[dir];
+        }
+        return Object.keys(merged).length ? JSON.stringify(merged) : null;
+    })();
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, pr_templates = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         order[0] ?? null,
@@ -656,6 +666,7 @@ app.patch("/api/envs/:id", async (c) => {
         body.ticketSource ?? env.ticket_source,
         pick(body.envVars, env.env_vars),
         pick(body.cleanupCommand, env.cleanup_command),
+        prTemplates,
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));

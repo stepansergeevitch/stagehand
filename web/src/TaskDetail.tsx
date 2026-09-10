@@ -1149,6 +1149,16 @@ const PrDraftTabs = ({ detail, onAction }: { detail: TaskDetail; onAction: Props
     const cur = drafts[Math.min(active, drafts.length - 1)]!;
     return (
         <>
+            {pr?.legacy && drafts.length > 1 && (
+                <div className="blocked-box">
+                    <b>This draft predates per-repository PRs:</b> one description was written (on the first repository's template) and is shown under every repository. Redraft so each repository gets its own description on its own template.
+                    {task.status !== "running" && (
+                        <div className="actions" style={{ marginBottom: 0 }}>
+                            <button className="primary" onClick={() => { if (confirm("Redraft the pull requests per repository? The current draft is archived.")) void onAction(() => api.rerun(task.id, "pr_creation_review")); }}>Redraft per repository</button>
+                        </div>
+                    )}
+                </div>
+            )}
             {drafts.length > 1 && (
                 <div className="subtabs pr-repo-tabs">
                     {drafts.map((d, i) => {

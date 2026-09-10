@@ -57,7 +57,7 @@ export interface Env {
     chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
-    rules: string | null; cleanup_command: string | null;
+    rules: string | null; cleanup_command: string | null; pr_templates?: string | null;
 }
 export interface Rules {
     commitPattern: string; commitForbid: string[]; commitHint: string; branchPattern: string; branchHint: string;
@@ -71,7 +71,7 @@ export type PrComment =
 export interface PrComments { number: number; repo: string; repoDir: string; human: PrComment[]; automation: PrComment[]; fetchedAt: string }
 export interface TaskManager { source: "clickup" | "linear"; label: string; configured: boolean; token: string | null; teamId: string | null; envs: string[] }
 export interface EnvRules {
-    rules: Rules; prTemplates: Array<{ dir: string; path: string | null; overridden: boolean }>;
+    rules: Rules; prTemplates: Array<{ dir: string; path: string | null; detected: string | null; source: "env" | "dir" | "detected" | "none"; missing: string | null; overridden: boolean }>;
     configDir: { id: string; name: string; path: string }; usableAccounts: string[]; browserAccounts: string[];
 }
 export interface UsageBucket {
@@ -199,7 +199,8 @@ export interface TaskDetail {
     prStates?: PrState[];
 }
 export interface PrDraftEntry { repo: string; title: string; body: string }
-export interface PrDraft { base: string; drafts: PrDraftEntry[] }
+// `legacy`: pr.json predates per-repo drafts and was fanned out to every repository — redraft before trusting it.
+export interface PrDraft { base: string; drafts: PrDraftEntry[]; legacy?: boolean }
 export interface PrState {
     repo: string; number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null;
     updated_at: string; pushed_at: string | null; approved_at: string | null; state: string | null;
@@ -265,7 +266,7 @@ export const api = {
             chromeDeviceId?: string | null; chromeBrowserName?: string | null; qaSeedHints?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
-            cleanupCommand?: string | null;
+            cleanupCommand?: string | null; prTemplates?: Record<string, string | null>;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),

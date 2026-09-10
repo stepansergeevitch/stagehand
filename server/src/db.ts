@@ -146,8 +146,20 @@ export interface EnvRow {
     rules: string | null;
     // Runs from the worktree before it is removed by "Clean up" (drop a per-task database, free caches, …); {{worktree}} / {{envPath}} placeholders.
     cleanup_command: string | null;
+    // JSON {"<repo dir or .>": "<template path relative to that repo>"} — per-repository PR template overrides; a repo not listed is auto-detected.
+    pr_templates: string | null;
     created_at: string;
 }
+
+export const prTemplateOverridesOf = (env: Pick<EnvRow, "pr_templates">): Record<string, string> => {
+    try {
+        const v: unknown = env.pr_templates ? JSON.parse(env.pr_templates) : {};
+        if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+        return Object.fromEntries(Object.entries(v as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string" && e[1].trim() !== ""));
+    } catch {
+        return {};
+    }
+};
 
 export const accountOrderOf = (env: Pick<EnvRow, "account_order" | "default_account_id">): string[] => {
     try {
@@ -533,6 +545,7 @@ const MIGRATIONS: Array<[string, string]> = [
     // Which repository's draft a PR Creation Review verdict was about (multi-repo envs review one PR per repo).
     ["reviews.repo", `ALTER TABLE reviews ADD COLUMN repo TEXT`],
     ["pr_state.state", `ALTER TABLE pr_state ADD COLUMN state TEXT`],
+    ["envs.pr_templates", `ALTER TABLE envs ADD COLUMN pr_templates TEXT`],
     // Free-form labels the human puts on a task: JSON [{text, color}] (color = CSS hex), shown in the list and the header.
     ["tasks.labels", `ALTER TABLE tasks ADD COLUMN labels TEXT`],
 ];

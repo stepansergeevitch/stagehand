@@ -72,6 +72,12 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
         setter((prev) => ({ ...prev, [k]: e.target.type === "checkbox" ? (e.target as HTMLInputElement).checked : e.target.value }));
     const sg = set(setG);
     const ss = set(setS);
+    // ---- PR templates, one per repository (what the PR-draft agent writes each description on)
+    const [tpl, setTpl] = useState<Record<string, string>>({});
+    useEffect(() => {
+        if (!info) return;
+        setTpl(Object.fromEntries(info.prTemplates.map((t) => [t.dir, t.source === "env" ? t.path ?? "" : t.missing ?? ""])));
+    }, [info]);
 
     return (
         <div className="env-page">
@@ -124,10 +130,28 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
                         <b>Accounts that can run here</b><span>{info.usableAccounts.length ? info.usableAccounts.map((id) => accounts.find((a) => a.id === id)?.name ?? id).join(", ") : "none — set up a token on the AI accounts page"}</span>
                         <b>Browser stages (QA) run as</b><span>{browserAccounts.length ? browserAccounts.map((a) => `${a.name}${a.chrome_browser_name ? ` (Chrome profile ${a.chrome_browser_name})` : ""}`).join(" → ") : "nobody — no listed account has a Chrome-paired browser login (AI accounts → Log in (browser) + Probe Chrome)"}</span>
                         <b>Rules in effect</b><span>commits {info.rules.allowCommit ? "allowed" : "off"} · push {info.rules.allowPush ? "allowed" : "off"} · PR creation {info.rules.allowPrCreate ? "allowed" : "off"} · branch <code>{info.rules.branchPattern}</code></span>
-                        <b>PR templates</b><span>{info.prTemplates.map((t) => `${t.dir === "." ? "" : `${t.dir}: `}${t.path ?? "none"}`).join(" · ")}{info.prTemplates.some((t) => t.overridden) ? " (override)" : ""}</span>
                     </div>
                 )}
             </Section>
+
+            {info && (
+                <Section title="Pull request templates" hint="One template per repository: the PR-draft agent writes each repository's description on its own template, and the human edits it per repository at PR Creation Review. Empty = the template auto-detected in that repository (.github/pull_request_template.md, docs/pull_request_template.md, …); a path here overrides it." saving={saving === "templates"} onSave={async () => {
+                    await save("templates", { prTemplates: Object.fromEntries(info.prTemplates.map((t) => [t.dir, (tpl[t.dir] ?? "").trim() || null])) });
+                    await api.envRules(env.id).then(setInfo).catch((e: Error) => onError(e.message));
+                }}>
+                    {info.prTemplates.map((t) => (
+                        <label key={t.dir}>
+                            {t.dir === "." ? "Repository" : <><code>{t.dir}/</code></>} — template path relative to that repository
+                            <input value={tpl[t.dir] ?? ""} onChange={(e) => setTpl((p) => ({ ...p, [t.dir]: e.target.value }))} placeholder={t.detected ? `auto-detected: ${t.detected}` : "none detected — write the description only"} />
+                            <span className="field-hint">
+                                in effect: {t.path ? <code>{t.path}</code> : "none (description only)"}
+                                {t.source === "env" ? " · this override" : t.source === "dir" ? " · config dir override" : t.source === "detected" ? " · auto-detected" : ""}
+                                {t.missing && <span className="chip bad" style={{ marginLeft: 6 }}>override {t.missing} not found — auto-detected used</span>}
+                            </span>
+                        </label>
+                    ))}
+                </Section>
+            )}
 
             <Section title="Services" hint="Placeholders: {{port}}, {{url}}, {{bePort}}, {{beUrl}} (FE only), {{worktree}}, {{taskDir}}, {{envPath}} (setup only). Commands run from the task's worktree in tmux." saving={saving === "services"} onSave={() => save("services", {
                 appUrl: nul(s.appUrl), beCommand: nul(s.beCommand), feCommand: nul(s.feCommand), beUrlTemplate: nul(s.beUrlTemplate), feUrlTemplate: nul(s.feUrlTemplate),
