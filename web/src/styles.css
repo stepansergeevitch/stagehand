@@ -129,7 +129,8 @@ a { color: var(--accent); }
 
 .detail { overflow: auto; padding: 16px 20px 40px; }
 .detail h1 { font-size: 18px; margin: 0 0 4px; }
-.detail .sub { color: var(--ink-3); font-family: var(--mono); font-size: 12px; margin-bottom: 14px; display: flex; gap: 14px; flex-wrap: wrap; }
+.detail .sub { color: var(--ink-3); font-family: var(--mono); font-size: 12px; margin-bottom: 14px; display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+.detail .sub > .chip { align-self: flex-start; line-height: 17px; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 16px; }
 .timeline { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 18px; }
 .widgets { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
