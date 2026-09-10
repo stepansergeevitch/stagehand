@@ -20,6 +20,7 @@ const CommitManager = ({ taskId, repo, commits, busy: taskBusy, onError }: { tas
     const [started, setStarted] = useState<Set<string>>(new Set());
     const [busy, setBusy] = useState<string | null>(null);
     const [pushing, setPushing] = useState(false);
+    const [pushed, setPushed] = useState<string | null>(null);
     if (commits.length === 0) return null;
     const disabled = taskBusy || busy !== null;
     const reword = async (sha: string) => {
@@ -95,11 +96,14 @@ const CommitManager = ({ taskId, repo, commits, busy: taskBusy, onError }: { tas
                     onClick={() => {
                         if (!confirm(`Force-push ${repoName(repo)} (--force-with-lease)? This updates the PR (if one exists) to the rewritten history.`)) return;
                         setPushing(true);
+                        setPushed(null);
+                        const done = (r: { result: string }) => setPushed(`${r.result} — the PR (if any) now has this history; its checks start over`);
                         void api
                             .forcePush(taskId, repo)
+                            .then(done)
                             .catch(async (e: Error) => {
                                 if (/force-pushing discards them/.test(e.message) && confirm(`${e.message}\n\nDiscard them and force-push anyway?`)) {
-                                    await api.forcePush(taskId, repo, true).catch((e2: Error) => onError(e2.message));
+                                    await api.forcePush(taskId, repo, true).then(done).catch((e2: Error) => onError(e2.message));
                                     return;
                                 }
                                 onError(e.message);
@@ -109,6 +113,7 @@ const CommitManager = ({ taskId, repo, commits, busy: taskBusy, onError }: { tas
                 >
                     {pushing ? "Pushing…" : "Force-push rewritten history"}
                 </button>
+                {pushed && <span className="field-hint" style={{ marginLeft: 8 }}>{pushed}</span>}
             </div>
         </div>
     );

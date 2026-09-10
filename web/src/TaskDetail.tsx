@@ -732,13 +732,23 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 return qaPanel ?? <div className="empty">no QA evidence yet</div>;
             case "implementation":
                 return impl ? (
-                    <Card title="Implementation" badge={<span className={`chip ${impl.gates.tests && impl.gates.typecheck ? "ok" : "bad"}`}>tests {impl.gates.tests ? "✓" : "✗"} · typecheck {impl.gates.typecheck ? "✓" : "✗"}</span>}>
+                    // impl.json can be partial while Implementation is still running (the agent writes notes first) — never assume a field.
+                    <Card
+                        title="Implementation"
+                        badge={
+                            impl.gates ? (
+                                <span className={`chip ${impl.gates.tests && impl.gates.typecheck ? "ok" : "bad"}`}>tests {impl.gates.tests ? "✓" : "✗"} · typecheck {impl.gates.typecheck ? "✓" : "✗"}</span>
+                            ) : (
+                                <span className="chip wait">in progress</span>
+                            )
+                        }
+                    >
                         <div className="kv">
                             <b>Coverage (new lines)</b><span>{impl.coverageNewLines ?? "—"}%</span>
-                            <b>Backend</b><span>{impl.tests.backend ?? "—"}</span>
-                            <b>Frontend</b><span>{impl.tests.frontend ?? "—"}</span>
-                            <b>Files</b><span>{impl.files.map((f) => <code key={f} style={{ marginRight: 8 }}>{f}</code>)}</span>
-                            <b>Commits</b><span>{impl.commits.length ? impl.commits.map((c) => <div key={c}><code>{c}</code></div>) : "none (uncommitted changes)"}</span>
+                            <b>Backend</b><span>{impl.tests?.backend ?? "—"}</span>
+                            <b>Frontend</b><span>{impl.tests?.frontend ?? "—"}</span>
+                            <b>Files</b><span>{(impl.files ?? []).map((f) => <code key={f} style={{ marginRight: 8 }}>{f}</code>)}</span>
+                            <b>Commits</b><span>{impl.commits?.length ? impl.commits.map((c) => <div key={c}><code>{c}</code></div>) : "none (uncommitted changes)"}</span>
                         </div>
                         {impl.notes && <Sub title="Notes from the implementer" open={false}><Markdown source={impl.notes} /></Sub>}
                         <div className="actions"><button onClick={() => setTab("code")}>Open Code changes</button></div>

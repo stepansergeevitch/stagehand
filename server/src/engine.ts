@@ -1013,6 +1013,27 @@ export class Engine extends EventEmitter {
         void this.approvePrRepo(task.id, repo).catch((e: unknown) => console.warn(`[stagehand] approve PR ${task.ticket_id} ${repo}: ${String((e as Error).message ?? e).slice(0, 160)}`));
     }
 
+    // A task that comes back to PR Creation Review after its PR(s) already exist (returned from a later stage, a
+    // re-run, a "changes" verdict) has nothing left to draft or approve — the open PR simply takes the branch's new
+    // commits. Every entry path funnels through dispatch(), which asks this first: when every repository the review
+    // covers already has a PR, mark them approved and go straight to PR Waiting. A partially-opened multi-repo task
+    // still gets the drafting run for the repositories that have no PR yet.
+    private skipPrCreationIfDone(taskId: string): boolean {
+        const task = this.getTask(taskId);
+        if (!task) return false;
+        const env = this.env(task.env_id);
+        const rows = this.prRows(taskId);
+        const repos = this.draftRepos(taskId, env);
+        const opened = repos.filter((r) => rows.find((x) => x.repo === r)?.number);
+        for (const r of opened) if (!rows.find((x) => x.repo === r)?.approved_at) this.upsertPrRow(taskId, r, { approved_at: now() });
+        if (opened.length < repos.length) return false;
+        this.setStage(taskId, "pr_waiting");
+        this.setTaskStatus(taskId, "idle", `PR Waiting · ${opened.map((r) => `${repoPrefix(r, repos)}#${rows.find((x) => x.repo === r)!.number}`).join(", ")} already open — skipped PR Creation Review`);
+        this.syncPrTaskState(taskId, { force: true });
+        this.pollPrSoon(taskId);
+        return true;
+    }
+
     private async approvePrRepo(taskId: string, repo: string): Promise<void> {
         this.upsertPrRow(taskId, repo, { approved_at: now() });
         const outcome = await this.createPrForRepo(taskId, repo);
@@ -1890,6 +1911,7 @@ export class Engine extends EventEmitter {
         if (!task) return;
         const def = STAGE_DEFS[stage];
         if (!def.prompt) return;
+        if (stage === "pr_creation_review" && this.skipPrCreationIfDone(taskId)) return;
         if (def.chrome && !opts.servicesReady) {
             // Browser stages run against the task's own BE/FE when the env defines them; bring them up first, then dispatch for real.
             const env = this.env(task.env_id);
