@@ -471,6 +471,17 @@ label.inline { display: inline-flex; align-items: center; gap: 4px; }
 .attn .name .label-chips { margin-top: 3px; }
 .label-suggestions .label-chip { white-space: nowrap; }
 
+/* design proposal sections: scannable structure */
+.design-section .markdown { font-size: 13.5px; }
+.design-section .markdown strong { color: var(--ink); font-weight: 600; }
+.design-section .markdown li { margin: 5px 0; }
+.design-section .markdown li > strong:first-child { color: var(--accent); }
+.design-section .markdown h3, .design-section .markdown details.md-section > summary > h3 { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 14px 0 4px; }
+.design-section .markdown details.md-section > .md-section-body { border-left-color: var(--accent-soft); }
+.design-section .markdown p { margin: 8px 0; }
+.design-section .markdown table { display: table; width: 100%; }
+.proposed .markdown li > strong:first-child { color: inherit; }
+
 /* PR draft editor: markdown source beside the rendered preview */
 .pr-editor { display: grid; gap: 8px; }
 .pr-editor > label { display: block; font-size: 13px; color: var(--ink-2); }

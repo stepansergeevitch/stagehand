@@ -143,12 +143,15 @@ const FIVE_HOUR = "five_hour";
 const NEEDS_HUMAN: ReadonlySet<TaskStatus> = new Set(["waiting_user", "blocked", "failed", "rate_limited"]);
 
 // Required `## ` sections of design.md, in order (numbering optional); mirrored in prompts/design.md. "A|B" = either title.
-export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem", "Root cause|Approach", "Proposed changes", "Change", "Risks and edge cases", "Tests", "QA"] as const;
+export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem", "Root cause|Approach", "Proposed changes", "Technical changes|Change", "Risks and edge cases", "Tests", "QA"] as const;
 export const DESIGN_MAX_WORDS = 1100;
 const PROPOSED_MAX_WORDS = 120;
 // The explanation section (Root cause / Approach) is the one the reviewer relies on; a few lines is not an explanation.
 const EXPLANATION_MIN_WORDS = 60;
-const EXPLANATION_MAX_WORDS = 280;
+const EXPLANATION_MAX_WORDS = 220;
+// Sections 2–5 are for a product reader: behaviour and the part of the system, never paths, line numbers or identifiers.
+const PROSE_SECTIONS = ["How it works today", "Problem", "Root cause", "Approach", "Proposed changes"] as const;
+const CODE_REF = /`[^`\n]+`|\b[\w./-]+\.(py|ts|tsx|js|jsx|rs|go|java|kt|rb|sql|scss|css|json|ya?ml)\b|\b[\w./-]+:\d+\b|\b[a-z]+_[a-z_]+\b|\b[a-z]+[A-Z]\w+\(|\b[A-Z]+_[A-Z_]+\b/;
 const LOGIN_POLL_MS = 3_000;
 // A Manual QA run that still has failing scenarios goes straight back to Implementation with the failure detail as
 // reviewer notes, instead of waiting for the human to notice at User Review. Capped so a genuinely stuck fix doesn't
@@ -187,9 +190,15 @@ export const designMdProblems = (md: string, opts: { repos?: string[] } = {}): s
     if (explanation !== null) {
         const n = wordCount(explanation);
         const title = has("Root cause") ? "Root cause" : "Approach";
-        if (n < EXPLANATION_MIN_WORDS) problems.push(`the ${title} section is ${n} words — it is the explanation the reviewer relies on: ${title === "Root cause" ? "walk the causal chain symbol by symbol (trigger → code path with values → wrong output) and say why the change removes the cause" : "say where the capability lives and why, the data flow after the change, each design decision with the alternative rejected"} (${EXPLANATION_MIN_WORDS}–${EXPLANATION_MAX_WORDS} words)`);
-        else if (n > EXPLANATION_MAX_WORDS) problems.push(`the ${title} section is ${n} words; keep it under ${EXPLANATION_MAX_WORDS} — one causal chain / one approach, no restating the Change table`);
-        if (!/`[^`\n]*[\w/.-]+\.(py|ts|tsx|js|jsx|rs|go|java|kt|rb|sql|scss|css)(:\d+)?`|`[A-Za-z_][\w.]*\(|`[A-Z][A-Za-z0-9_]+(\.[a-z_]\w*)+`/.test(explanation)) problems.push(`the ${title} section names no file or symbol in backticks — anchor every claim to a \`path:line\` or \`Symbol\``);
+        if (n < EXPLANATION_MIN_WORDS) problems.push(`the ${title} section is ${n} words — it is the explanation the reviewer relies on: ${title === "Root cause" ? "walk the chain of behaviour (the action → what each part of the app does with it → the wrong outcome), the assumption behind it, and why the change removes the cause" : "say which part of the app takes on what and why there, how the data moves after the change, each design decision with the alternative rejected"} (${EXPLANATION_MIN_WORDS}–${EXPLANATION_MAX_WORDS} words)`);
+        else if (n > EXPLANATION_MAX_WORDS) problems.push(`the ${title} section is ${n} words; keep it under ${EXPLANATION_MAX_WORDS} — one causal chain / one approach, no restating the Technical changes table`);
+    }
+    for (const name of PROSE_SECTIONS) {
+        const body = section(name);
+        if (body === null) continue;
+        const hit = CODE_REF.exec(body);
+        if (wordCount(body) >= 40 && !/\*\*[^*\n]+\*\*/.test(body)) problems.push(`the ${name} section has no bold at all — give every bullet a bold lead-in naming the part of the system or the case (**Frontend form** — …) and use \`###\` sub-headings in long sections; plain sentences in a row are hard to scan`);
+        if (hit) problems.push(`the ${name} section contains code or a file reference (${hit[0].slice(0, 40)}) — write it in product words: what the app does or fails to do and which part of the system (the frontend form, the backend service, the loader) does it; paths, line numbers and identifiers belong in Technical changes`);
     }
     const repos = opts.repos ?? [];
     if (repos.length && classification !== null) {
@@ -207,10 +216,13 @@ export const designMdProblems = (md: string, opts: { repos?: string[] } = {}): s
         const words = proposed.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
         if (words === 0) problems.push("the Proposed changes section is empty — 2–6 short bullets saying in plain words what changes and why");
         else if (words > PROPOSED_MAX_WORDS) problems.push(`the Proposed changes section is ${words} words; keep it under ${PROPOSED_MAX_WORDS} — plain words, no tables, no code`);
-        if (/^\s*\|/m.test(proposed)) problems.push("the Proposed changes section must not contain a table — the Change table follows in its own section");
+        if (/^\s*\|/m.test(proposed)) problems.push("the Proposed changes section must not contain a table — the Technical changes table follows in its own section");
     }
-    const change = section("Change");
-    if (change !== null && !/^\s*\**Summary:?\**\s*\S/im.test(change)) problems.push("the Change section must open with a `Summary:` line — the whole change in 1–3 imperative clauses, before the table");
+    const technical = section("Technical changes");
+    const change = technical ?? section("Change");
+    if (change !== null && !/^\s*\**Summary:?\**\s*\S/im.test(change)) problems.push("the Technical changes section must open with a `Summary:` line — the whole change in 1–3 imperative clauses, before the table");
+    if (technical !== null && !/^\s*\**Flow:?\**\s*\S/im.test(technical)) problems.push("the Technical changes section needs a `Flow:` line — the data flow after the change as symbols (`A.field` → `B.method` → `C.total`)");
+    if (technical !== null && !/^\s*\|/m.test(technical)) problems.push("the Technical changes section needs the | Layer | File | Symbol | Before | After | table");
     const risks = section("Risks and edge cases");
     if (risks !== null) {
         const bullets = risks.split("\n").filter((l) => /^\s*[-*]\s+\S/.test(l));

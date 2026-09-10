@@ -1125,7 +1125,7 @@ const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design
             if (replace) delete hit.md;
         } else parts.push({ key: title, title, extra });
     };
-    attach(/^change|implementation|plan by layer/i, "Plan by layer", (
+    attach(/^technical changes|^change|implementation|plan by layer/i, "Plan by layer", (
         <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
     ));
     // The Tests table in design.md already lists every case, so design.json's testPlan is not repeated here. A pre-template

@@ -16,25 +16,28 @@ A senior engineer reviews `design.md` to approve or push back, and uses it to le
 
 Exactly these nine `## ` sections, in this order, with these titles (numbering allowed: `## 1. Classification`). Hard cap: **1100 words in total** (code blocks excluded). A proposal over the cap or missing a section is rejected and sent back to you.
 
+### Formatting inside every section
+The reviewer scans, then reads: use markdown structure, not walls of sentences. Every bullet opens with a **bold lead-in** naming the part of the system, the case or the step, then a dash and the fact (`**Frontend form** — lists every warehouse, never narrowed by the selected company`). Sections 4 and 6 use `###` sub-headings: Root cause → `### What happens`, `### Why`, `### Why the fix removes it`; Approach → `### Where it lives`, `### Data flow`, `### Decisions`, `### What to check`; Technical changes → `### Summary`, `### Mechanism`, `### Changes`, `### Not changed`. Bold the key values, states and names the reviewer will look for. Bold and headings are structure — the ban below on emphasis words ("exactly", "importantly") still applies to the wording.
+
 ### 1. Classification
 One line: `bug` or `feature`, a dash, then the reason in at most 15 words. In a multi-repository workspace add a second line `Repos: <dir>, <dir>` naming every repository the change touches, using the directory names from the layout above (a single-repository project has no such line).
 
 ### 2. How it works today
-The mechanism the ticket touches, as it is now — the part the reviewer should learn. 5–12 bullets, each ONE fact anchored to code: `` `path:line` `Symbol` — what it computes or does `` (≤ 20 words per bullet). Finish with one data-flow line using symbol names: `` `A.field` → `B.method` → `C.total` ``. Describe the system, not the history: no ticket ids, no "shipped by", no "as research found".
+What the application does today in the area the ticket touches, written for a product reader: behaviour, not code. 4–10 bullets, ≤ 20 words each, each naming the part of the system responsible in plain words (the frontend form, the backend service, the loader, the database) and what it does with the data. Example of the right level: "From/To Locations on the transfer form list every warehouse; the frontend never narrows them by the selected company." Wrong level: "FormFields.tsx:23 FROM_LOCATION_FILTERS carries no company_id". No file paths, line numbers, variable or function names in this section — those belong in Technical changes. Describe the system, not the history: no ticket ids, no "shipped by", no "as research found".
 
 ### 3. Problem
-Bug: what is wrong and where, in ≤ 3 bullets (the symptom and the code that produces it). Feature: the gap in ≤ 3 bullets — what is missing, where it has to hook in.
+What is wrong or missing, as the user and the product see it, in ≤ 3 bullets: the visible symptom and the part of the system that produces it, in plain words. Same rule: no paths, line numbers or identifiers.
 
 ### 4. Root cause (bug) / Approach (feature)
-The heading is `## 4. Root cause` for a bug and `## 4. Approach` for a feature. This is the section the reviewer reads most carefully — the explanation, not the list of edits. 80–250 words, 6–12 bullets or short paragraphs (≤ 3 lines each), every claim anchored to a `path:line` or symbol.
-- Bug — **Root cause**: the mechanism of the defect as a causal chain: the triggering input or state → the path through the code (symbol by symbol, with the value each step produces) → the wrong output the user sees. Then why the code does this (the assumption that no longer holds, the case that was never handled, the wrong operand/order/sign) and why the change in the next sections removes the cause rather than masking the symptom. If a second contributing cause exists, name it too.
-- Feature — **Approach**: how it should be built: where the new capability lives and why there (which layer owns the rule, which existing mechanism it extends or mirrors), the data flow after the change as one line of symbols (`A.field` → `B.method` → `C.total`), the 2–4 design decisions that shape it each with the alternative rejected in one clause, and what the reviewer must check to be confident (the invariant, the boundary, the compatibility concern).
+The heading is `## 4. Root cause` for a bug and `## 4. Approach` for a feature. This is the section the reviewer reads most carefully — the explanation in plain words, not the list of edits. 60–220 words, 4–10 bullets or short paragraphs (≤ 3 lines each), written so a product manager follows it: which part of the app does what, why that produces the symptom / why the new capability belongs there. Example of the right level: "The frontend builds the location list once, without the company, so switching Company never narrows it; the backend already accepts a company filter, it is just never sent." No file paths, line numbers, variable or function names — the Technical changes table maps this onto code.
+- Bug — **Root cause**: the chain of behaviour that produces the symptom (the input or action → what each part of the system does with it → the wrong outcome the user sees), the assumption or missed case behind it, and why the change removes the cause rather than masking the symptom. Name a second contributing cause if one exists.
+- Feature — **Approach**: how it should be built: which part of the system takes on what responsibility and why there (what existing mechanism it extends or mirrors), how the data moves through the app after the change, the 2–4 design decisions that shape it each with the alternative rejected in one clause, and what the reviewer must check to be confident (the invariant, the boundary, the compatibility concern).
 
 ### 5. Proposed changes
-The change explained in plain words for someone who will not read the table: 2–6 short bullets, ≤ 120 words in total, no table, no code blocks (inline symbols in backticks are fine). Each bullet: what changes, where, and why it fixes the problem — information-dense, no filler, no restating the ticket. This is the section a reviewer reads first; the table below is its detail.
+The change explained in plain words for someone who will not read the table: 2–6 short bullets, ≤ 120 words in total, no table, no code, no paths or identifiers. Each bullet: what changes, in which part of the app, and why it fixes the problem — information-dense, no filler, no restating the ticket.
 
-### 6. Change
-First a `Summary:` line — the whole change in 1–3 imperative clauses, semicolon-separated, ≤ 60 words, naming the symbols: `Summary: Add BidAttachmentRepository; route the three get_attachment* reads through it; leave the GlobalVendorBid read raw.` Then a table, one row per changed symbol:
+### 6. Technical changes
+Everything technical lives here. First a `Summary:` line — the whole change in 1–3 imperative clauses, semicolon-separated, ≤ 60 words, naming the symbols: `Summary: Add BidAttachmentRepository; route the three get_attachment* reads through it; leave the GlobalVendorBid read raw.` Then a `Flow:` line — the data flow after the change as symbols: `` `A.field` → `B.method` → `C.total` ``. Then 3–10 bullets anchoring the mechanism to code: `` `path:line` `Symbol` — what it does today / will do `` (≤ 20 words each; this is where the reviewer learns the code). Then a table, one row per changed symbol:
 
 | Layer | File | Symbol | Before | After |
 
@@ -54,14 +57,14 @@ A table, one row per test:
 One line per scenario: `` `S1` — <title> — `<start url>` ``, or `none — <reason>`. Nothing else: persona, seed and steps live in design.json, and the UI shows those (not this list) under the QA tab.
 
 ### Banned everywhere in design.md
-Restating the ticket; provenance remarks (`research.md`, `mempalace`, "confirmed", "per the ticket's note", "AC #n"); emphasis and hedging ("exactly", "explicitly", "it is worth noting", "importantly", "this is the … trap"); explaining why something is out of scope for more than one clause; JSON blocks; paragraphs longer than three lines; any claim without a path, symbol or number.
+Restating the ticket; provenance remarks (`research.md`, `mempalace`, "confirmed", "per the ticket's note", "AC #n"); emphasis and hedging ("exactly", "explicitly", "it is worth noting", "importantly", "this is the … trap"); explaining why something is out of scope for more than one clause; JSON blocks; paragraphs longer than three lines; in Technical changes and Tests, any claim without a path, symbol or number; in sections 2–5, any file path, line number or identifier.
 
 ## design.json — structured twin (same content, machine-readable)
 
 - `classification`: `bug` | `feature`.
 - `affectedRepos`: the workspace repository directories the change touches (same names as the `Repos:` line; `[]` for a single-repository project).
 - `scope.inScope` / `scope.outOfScope`: short phrases derived from the ticket's own description and acceptance criteria (not a parent epic's).
-- `plan`: one entry per layer touched (`ws`, `api`, `service`, `repo`, `ast`, `fe`), `changes` = the Change table rows for that layer as one-line strings `File Symbol: before → after`.
+- `plan`: one entry per layer touched (`ws`, `api`, `service`, `repo`, `ast`, `fe`), `changes` = the Technical changes table rows for that layer as one-line strings `File Symbol: before → after`.
 - `testPlan`: per file, the test names from the Tests table (pytest for backend, Jest for frontend; behavioural coverage, corner cases: empty/null, boundaries, error paths, off-by-one, ordering; one assertion focus per test).
 - `qa`: at most 10 browser journeys a later automated run executes with claude-in-chrome. Each: id `S1`..`S10`, title, starting URL (real routes from this repo, e.g. `/deals`, `/deal/{dealId}/pro_forma/{pfId}/table`), persona, `seed`, and ordered steps of `action` → `assert`; `"shot": true` on the steps whose asserted state must be screenshotted (≥ 1 per scenario). Test the NEW behaviour directly; a regression smoke is a supplement. Zero scenarios ONLY when nothing is user-visible (backend-only, refactor, config) — say why in `qaSkippedReason`.
   **Seeding is part of the spec, and it is literal.** `seed` lists, in order, every piece of data the journey depends on, as steps of exactly two kinds:
