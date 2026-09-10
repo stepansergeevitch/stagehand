@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type LineComment } from "./api";
+import { api, repoColorClass, repoName, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type LineComment } from "./api";
 import { storage } from "./storage";
+
+// A file belongs to a repository when its path is exactly that repo's directory or starts with "<repo>/".
+const inRepo = (path: string, repo: string): boolean => !repo || path === repo || path.startsWith(`${repo}/`);
 
 // Which slice of the branch the diff shows: everything vs the base (default, the only view that takes line comments),
 // only what is uncommitted, or a hand-picked set of commits.
@@ -224,6 +227,7 @@ export const DiffView = ({
     prior = [],
     canComment,
     onChange,
+    repos = [],
 }: {
     taskId: string;
     refreshKey: string;
@@ -231,13 +235,19 @@ export const DiffView = ({
     prior?: PriorComment[];
     canComment: boolean;
     onChange: (key: string, c: LineComment | null) => void;
+    // The env's sub-repository directories, for a repo-tabbed view; [] shows the single repo with no tabs.
+    repos?: string[];
 }) => {
     const [diff, setDiff] = useState<DiffResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [filter, setFilter] = useState<DiffFilter>({ kind: "all" });
     const [branch, setBranch] = useState<{ commits: BranchCommit[]; uncommitted: boolean }>({ commits: [], uncommitted: false });
+    const [activeRepo, setActiveRepo] = useState(repos[0] ?? "");
+    const repo = repos.includes(activeRepo) ? activeRepo : (repos[0] ?? "");
     useEffect(() => {
         setFilter({ kind: "all" });
+        setActiveRepo(repos[0] ?? "");
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [taskId]);
     useEffect(() => {
         void api.commits(taskId).then(setBranch).catch(() => undefined);
@@ -248,42 +258,56 @@ export const DiffView = ({
         const f = filter.kind === "all" ? undefined : filter.kind === "uncommitted" ? { uncommitted: true as const } : { shas: filter.shas };
         void api.diff(taskId, f).then(setDiff).catch((e: Error) => setError(e.message));
     }, [taskId, refreshKey, filter]);
+    // The commit picker only offers this repository's commits — its shas mean nothing in another checkout.
+    const repoCommits = branch.commits.filter((c) => c.repo === repo);
     // Line comments anchor to line numbers of the full diff (the current file); a commit slice numbers lines differently.
     const commentsOn = canComment && filter.kind === "all";
-    const picker = <CommitPicker commits={branch.commits} uncommitted={branch.uncommitted} filter={filter} onChange={setFilter} />;
-    if (error) return <div className="blocked-box">diff: {error}</div>;
-    if (!diff) return <div className="diff"><div className="diff-summary mono">{picker} loading diff…</div></div>;
-    const adds = diff.files.reduce((n, f) => n + f.additions, 0);
-    const dels = diff.files.reduce((n, f) => n + f.deletions, 0);
-    return (
-        <div className="diff">
-            <div className="diff-summary mono">
-                {picker}
-                {diff.files.length} file{diff.files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>
-                {commentsOn && <span className="hint"> · tap a line to comment</span>}
-                {canComment && !commentsOn && <span className="hint"> · switch to All changes to comment on lines</span>}
-            </div>
-            {diff.files.length === 0 && <div className="empty">{diff.filtered ? "Nothing in this selection." : `No changes against ${diff.base} yet.`}</div>}
-            {!diff.filtered && (() => {
-                const known = new Set(diff.files.map((f) => f.path));
-                const gone = prior.filter((p) => !known.has(p.path));
-                return gone.length > 0 ? (
-                    <div className="outdated">
-                        {gone.map((c, i) => (
-                            <div key={i} className="line-comment prior outdated-item">
-                                <b>{roundLabel(c)}</b> <span className="chip">file no longer changed</span> <code>{c.path}:{c.line}</code>
-                                <div>{c.text}</div>
-                            </div>
-                        ))}
-                    </div>
-                ) : null;
-            })()}
-            {diff.groups.map((g, gi) => (
-                <div key={gi} className="diff-group">
-                    {diff.filtered && diff.groups.length > 1 && <div className="diff-group-head mono">{g.label} · {g.files.length} file{g.files.length === 1 ? "" : "s"}</div>}
-                    {g.files.map((f) => <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} canComment={commentsOn} onChange={onChange} />)}
-                </div>
+    const picker = <CommitPicker commits={repoCommits} uncommitted={branch.uncommitted} filter={filter} onChange={setFilter} />;
+    const tabs = repos.length > 1 && (
+        <div className="subtabs pr-repo-tabs">
+            {repos.map((r) => (
+                <button key={r} className={`${r === repo ? "active" : ""} repo-${repoColorClass(r, repos)}`} onClick={() => { setActiveRepo(r); setFilter({ kind: "all" }); }}>{repoName(r)}</button>
             ))}
         </div>
+    );
+    if (error) return <>{tabs}<div className="blocked-box">diff: {error}</div></>;
+    if (!diff) return <>{tabs}<div className="diff"><div className="diff-summary mono">{picker} loading diff…</div></div></>;
+    const files = diff.files.filter((f) => inRepo(f.path, repo));
+    const groups = diff.groups.map((g) => ({ ...g, files: g.files.filter((f) => inRepo(f.path, repo)) })).filter((g) => g.files.length > 0);
+    const adds = files.reduce((n, f) => n + f.additions, 0);
+    const dels = files.reduce((n, f) => n + f.deletions, 0);
+    return (
+        <>
+            {tabs}
+            <div className="diff">
+                <div className="diff-summary mono">
+                    {picker}
+                    {files.length} file{files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>
+                    {commentsOn && <span className="hint"> · tap a line to comment</span>}
+                    {canComment && !commentsOn && <span className="hint"> · switch to All changes to comment on lines</span>}
+                </div>
+                {files.length === 0 && <div className="empty">{diff.filtered ? "Nothing in this selection." : `No changes against ${diff.base} yet.`}</div>}
+                {!diff.filtered && (() => {
+                    const known = new Set(files.map((f) => f.path));
+                    const gone = prior.filter((p) => inRepo(p.path, repo) && !known.has(p.path));
+                    return gone.length > 0 ? (
+                        <div className="outdated">
+                            {gone.map((c, i) => (
+                                <div key={i} className="line-comment prior outdated-item">
+                                    <b>{roundLabel(c)}</b> <span className="chip">file no longer changed</span> <code>{c.path}:{c.line}</code>
+                                    <div>{c.text}</div>
+                                </div>
+                            ))}
+                        </div>
+                    ) : null;
+                })()}
+                {groups.map((g, gi) => (
+                    <div key={gi} className="diff-group">
+                        {diff.filtered && groups.length > 1 && <div className="diff-group-head mono">{g.label} · {g.files.length} file{g.files.length === 1 ? "" : "s"}</div>}
+                        {g.files.map((f) => <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} canComment={commentsOn} onChange={onChange} />)}
+                    </div>
+                ))}
+            </div>
+        </>
     );
 };

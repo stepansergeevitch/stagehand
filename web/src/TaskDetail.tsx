@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LabelEditor } from "./Labels";
-import { api, checkOutcome, isApprovalGateCheck, labelsOf, parseChecks, pendingQuestions, prRepos, prStateOf, repoName, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
+import { api, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseChecks, pendingQuestions, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
 import { Chat } from "./Chat";
@@ -404,11 +404,9 @@ const MERGE_KEY = "stagehand.mergeMethod";
 
 // A repository's name as a coloured chip — the same colour for the same repo everywhere, so the PR rows, tabs and
 // comments of one repository are recognisable at a glance.
-const REPO_COLORS = ["accent", "wait", "ok", "warn"] as const;
 const RepoChip = ({ repo, repos }: { repo: string; repos: string[] }) => {
     if (repos.length <= 1 && !repo) return null;
-    const i = Math.max(0, repos.indexOf(repo));
-    return <span className={`chip repo-chip ${REPO_COLORS[i % REPO_COLORS.length]}`} title={repo ? `repository ${repo}/` : "repository"}>{repoName(repo)}</span>;
+    return <span className={`chip repo-chip ${repoColorClass(repo, repos)}`} title={repo ? `repository ${repo}/` : "repository"}>{repoName(repo)}</span>;
 };
 
 const prOutcome = (row: PrState | undefined): { kind: "none" | "manual" | "failed" | "pending" | "approved" | "green" | "merged" | "closed"; text: string; cls: string } => {
@@ -986,7 +984,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 task.branch && task.worktree_path ? (
                     <Card title="Code changes" badge={pending.length > 0 ? <span className="chip wait">{pending.length} 💬</span> : undefined}>
                         {canComment && <p className="field-hint">Tap a line to leave a comment; send them from the PR comments tab or the review box.</p>}
-                        <DiffView taskId={task.id} refreshKey={task.updated_at} comments={comments} prior={prior} canComment={canComment} onChange={changeComment} />
+                        <DiffView taskId={task.id} refreshKey={task.updated_at} comments={comments} prior={prior} canComment={canComment} onChange={changeComment} repos={envRepos(env)} />
                     </Card>
                 ) : <div className="empty">No branch yet.</div>
             )}
@@ -1009,7 +1007,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 <>
                     {prdRepos.length > 1 && (
                         <div className="subtabs pr-repo-tabs">
-                            {prdRepos.map((r, i) => <button key={r} className={`${ghRepo === r ? "active" : ""} repo-${REPO_COLORS[i % REPO_COLORS.length]}`} onClick={() => setGhRepo(r)}>{repoName(r)} <span className="chip">#{prStateOf(detail, r)?.number}</span></button>)}
+                            {prdRepos.map((r) => <button key={r} className={`${ghRepo === r ? "active" : ""} repo-${repoColorClass(r, prdRepos)}`} onClick={() => setGhRepo(r)}>{repoName(r)} <span className="chip">#{prStateOf(detail, r)?.number}</span></button>)}
                         </div>
                     )}
                     <div className="subtabs">
@@ -1203,7 +1201,7 @@ const PrDraftTabs = ({ detail, onAction, focusRepo }: { detail: TaskDetail; onAc
                         const row = prStateOf(detail, d.repo);
                         const o = prOutcome(row);
                         return (
-                            <button key={d.repo} className={`${i === active ? "active" : ""} repo-${REPO_COLORS[i % REPO_COLORS.length]}`} onClick={() => setActive(i)}>
+                            <button key={d.repo} className={`${i === active ? "active" : ""} repo-${repoColorClass(d.repo, repos)}`} onClick={() => setActive(i)}>
                                 {repoName(d.repo)} <span className={`chip ${row?.approved_at ? o.cls || "ok" : "wait"}`}>{row?.number ? `#${row.number}` : row?.approved_at ? "approved" : "pending"}</span>
                             </button>
                         );
@@ -1236,7 +1234,7 @@ const PrPanel = ({ detail, onAction, focusRepo }: { detail: TaskDetail; onAction
                         const rRow = prStateOf(detail, r);
                         const rO = prOutcome(rRow);
                         return (
-                            <button key={r} className={`${i === active ? "active" : ""} repo-${REPO_COLORS[i % REPO_COLORS.length]}`} onClick={() => setActive(i)}>
+                            <button key={r} className={`${i === active ? "active" : ""} repo-${repoColorClass(r, repos)}`} onClick={() => setActive(i)}>
                                 {repoName(r)} <span className={`chip ${rO.cls}`}>{rRow?.number ? `#${rRow.number}` : rO.text}</span>
                             </button>
                         );

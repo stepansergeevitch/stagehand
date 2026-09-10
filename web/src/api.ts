@@ -209,6 +209,19 @@ export interface PrState {
 }
 // How a repository is named in the UI: its directory, or "repo" for a single-repo env.
 export const repoName = (repo: string): string => repo || "repo";
+// The same colour for the same repository everywhere it gets a tab (Pull request, PR Creation Review, Code changes),
+// picked by its position in whichever repo list the caller has.
+export const REPO_COLORS = ["accent", "wait", "ok", "warn"] as const;
+export const repoColorClass = (repo: string, repos: string[]): string => REPO_COLORS[Math.max(0, repos.indexOf(repo)) % REPO_COLORS.length]!;
+// The env's sub-repository directories ([] for a single-repo project); env.repos is a JSON array like ["backend","frontend"].
+export const envRepos = (env: Pick<Env, "repos"> | undefined): string[] => {
+    try {
+        const v: unknown = env?.repos ? JSON.parse(env.repos) : [];
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+        return [];
+    }
+};
 export const prStateOf = (d: Pick<TaskDetail, "prStates">, repo: string): PrState | undefined => d.prStates?.find((r) => r.repo === repo);
 // The repositories a task opens PRs in: the drafted ones, else the ones with a PR row, else none known yet.
 export const prRepos = (d: Pick<TaskDetail, "pr" | "prStates">): string[] => {

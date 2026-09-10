@@ -295,11 +295,16 @@ export class Engine extends EventEmitter {
             this.db.prepare(`UPDATE runs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?`).run("server restarted mid-run", now(), run.id);
             this.setTaskStatus(run.task_id, "failed", "run interrupted by server restart — retry to resume");
         }
-        // Tasks still in the ticket-fetch phase have no run row; the fetch child died with the server.
+        // A task can be "running" with no run row for more than just the ticket-fetch phase: bringing up BE/FE,
+        // running shell seeds, or anything else between stages does the same before the run insert happens deep in
+        // dispatch(). Name the actual stage rather than assuming ticket fetch.
         const fetching = this.db.prepare(`SELECT * FROM tasks WHERE status = 'running'`).all() as TaskRow[];
         for (const t of fetching) {
             const active = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND status = 'running'`).get(t.id) as { n: number };
-            if (active.n === 0) this.setTaskStatus(t.id, "failed", "ticket fetch interrupted by server restart — retry");
+            if (active.n === 0) {
+                const label = t.stage === "research" && !existsSync(join(this.taskDir(t.id), "ticket.json")) ? "fetching the ticket" : `${STAGE_DEFS[t.stage]?.label ?? t.stage} · getting ready to run`;
+                this.setTaskStatus(t.id, "failed", `${label} — interrupted by a server restart, retry to resume`);
+            }
         }
     }
 
@@ -1255,9 +1260,52 @@ export class Engine extends EventEmitter {
         if (!task.branch) return;
         const env = this.env(task.env_id);
         for (const repo of this.draftRepos(task.id, env)) {
+            const note = await this.syncRemoteBranch(task, env, repo).catch((e: unknown) => {
+                console.warn(`[stagehand] pull ${task.ticket_id} ${repo || "(root)"}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                return null;
+            });
+            if (note) this.addAgentNote(task.id, `${repoLabel(repo)}: ${note}`);
             await this.pollPr(task, repo).catch((e: unknown) => console.warn(`[stagehand] PR poll ${task.ticket_id} ${repo || "(root)"}: ${String((e as Error).message ?? e).slice(0, 160)}`));
         }
         this.syncPrTaskState(task.id, opts);
+    }
+
+    // The last remote SHA of each (task, repository) branch we've already pulled or flagged, so a poll that finds
+    // nothing new stays silent — only a change from what was last seen is worth a note.
+    private readonly ackedRemoteSha = new Map<string, string>();
+
+    // When someone pushes straight to the PR's branch on GitHub (a reviewer's suggested-change commit, the human
+    // pushing a fix themselves, a collaborator) the worktree checkout falls behind what the PR actually contains.
+    // Pull it in automatically so Code changes, PR Fix and the next merge all see the real head, and leave a chat
+    // note acknowledging what arrived. Never overwrites local work: skipped while the task is running, while the
+    // worktree has uncommitted changes (tried again next poll), or when local and remote have genuinely diverged
+    // (unpushed local commits alongside new remote ones) — that case is only flagged, never force-resolved.
+    private async syncRemoteBranch(task: TaskRow, env: EnvRow, repo: string): Promise<string | null> {
+        if (!task.branch || !task.worktree_path) return null;
+        if (this.getTask(task.id)?.status === "running") return null;
+        const cwd = this.checkoutOf(task, env, repo);
+        if (!existsSync(cwd)) return null;
+        const key = `${task.id}:${repo}`;
+        await this.git(cwd, ["fetch", "origin", task.branch], env).catch(() => "");
+        const remoteRef = `origin/${task.branch}`;
+        const remoteSha = await this.git(cwd, ["rev-parse", "-q", "--verify", remoteRef], env).catch(() => "");
+        if (!remoteSha || this.ackedRemoteSha.get(key) === remoteSha) return null;
+        const behind = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..${remoteRef}`], env).catch(() => "0")) || 0;
+        if (behind === 0) {
+            this.ackedRemoteSha.set(key, remoteSha);
+            return null;
+        }
+        const ahead = Number(await this.git(cwd, ["rev-list", "--count", `${remoteRef}..HEAD`], env).catch(() => "0")) || 0;
+        if (ahead > 0) {
+            this.ackedRemoteSha.set(key, remoteSha);
+            return `diverged from GitHub — ${behind} commit(s) pushed there, ${ahead} committed here that aren't pushed; resolve by hand (push, or pull and rebase)`;
+        }
+        const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
+        if (dirty.trim()) return null; // uncommitted work in the way — try again once it clears, don't acknowledge yet
+        const subjects = (await this.git(cwd, ["log", "--format=%h %s", `HEAD..${remoteRef}`], env).catch(() => "")).split("\n").filter(Boolean);
+        await this.git(cwd, ["merge", "--ff-only", remoteRef], env);
+        this.ackedRemoteSha.set(key, remoteSha);
+        return `pulled ${behind} commit(s) pushed on GitHub — ${subjects.slice(0, 5).join("; ")}${subjects.length > 5 ? "; …" : ""}`;
     }
 
     // Reads one repository's PR from GitHub into its pr_state row; false when that repository has no PR yet.
