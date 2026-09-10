@@ -355,8 +355,8 @@ const statusChip = (s: string) => {
     return <span className={`chip ${cls}`}>{s.replace("_", " ")}</span>;
 };
 
-export type Tab = "work" | "runs" | "design" | "code" | "comments" | "chat" | "ticket" | "cost";
-export const TASK_TABS: readonly Tab[] = ["work", "runs", "design", "code", "comments", "chat", "ticket", "cost"];
+export type Tab = "work" | "runs" | "design" | "code" | "pr" | "comments" | "chat" | "ticket" | "cost";
+export const TASK_TABS: readonly Tab[] = ["work", "runs", "design", "code", "pr", "comments", "chat", "ticket", "cost"];
 
 const elapsed = (fromIso: string | undefined, toIso?: string | undefined): string => {
     if (!fromIso) return "";
@@ -456,7 +456,11 @@ const MergeControls = ({ task, row, onAction }: { task: TaskDetail["task"]; row:
 };
 
 // One repository's PR in the header widget: repo chip, state, number, checks summary, merge controls.
-const PrRepoRow = ({ detail, repo, repos, onAction }: { detail: TaskDetail; repo: string; repos: string[]; onAction: Props["onAction"] }) => {
+// The header stays compact even when a PR has a long checks list: show at most this many, then a "show N more" that
+// jumps to the full per-repo view on the Pull request tab.
+const HEADER_CHECKS_LIMIT = 5;
+
+const PrRepoRow = ({ detail, repo, repos, onAction, onOpenInTab }: { detail: TaskDetail; repo: string; repos: string[]; onAction: Props["onAction"]; onOpenInTab: (repo: string) => void }) => {
     const { task } = detail;
     const row = prStateOf(detail, repo);
     const o = prOutcome(row);
@@ -464,6 +468,7 @@ const PrRepoRow = ({ detail, repo, repos, onAction }: { detail: TaskDetail; repo
     const gated = checks.filter((c) => !isApprovalGateCheck(c));
     const passed = gated.filter((c) => checkOutcome(c) === "pass").length;
     const live = gated.filter((c) => checkOutcome(c) !== "pass");
+    const extra = live.length - HEADER_CHECKS_LIMIT;
     return (
         <div className={`pr-repo ${o.kind}`}>
             <div className="widget-body">
@@ -477,13 +482,18 @@ const PrRepoRow = ({ detail, repo, repos, onAction }: { detail: TaskDetail; repo
                     <button className="tiny" title="Push this repository's branch and open its PR now (uses the approved draft; needs the env to allow pushes / PR creation, or a PR opened by hand is picked up by branch)" onClick={() => onAction(() => api.createApprovedPrs(task.id))}>Push & open now</button>
                 )}
             </div>
-            {row?.url && !row.merged_at && live.length > 0 && <div className="widget-checks"><ChecksList checks={live} compact /></div>}
+            {row?.url && !row.merged_at && live.length > 0 && (
+                <div className="widget-checks">
+                    <ChecksList checks={live.slice(0, HEADER_CHECKS_LIMIT)} compact />
+                    {extra > 0 && <button className="tiny" onClick={() => onOpenInTab(repo)}>show {extra} more on the Pull request tab</button>}
+                </div>
+            )}
         </div>
     );
 };
 
 // PR status for the header widget: one row per repository, from the stored PR rows (or the draft's repositories).
-const PrWidget = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
+const PrWidget = ({ detail, onAction, onOpenInTab }: { detail: TaskDetail; onAction: Props["onAction"]; onOpenInTab: (repo: string) => void }) => {
     const { task, pr } = detail;
     const repos = prRepos(detail);
     const rows = detail.prStates ?? [];
@@ -514,7 +524,7 @@ const PrWidget = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["o
                     {task.branch && <code className="small">⎇ {task.branch}</code>}
                 </div>
             )}
-            {repos.map((repo) => <PrRepoRow key={repo} detail={detail} repo={repo} repos={repos} onAction={onAction} />)}
+            {repos.map((repo) => <PrRepoRow key={repo} detail={detail} repo={repo} repos={repos} onAction={onAction} onOpenInTab={onOpenInTab} />)}
             {repos.length > 0 && (
                 <div className="field-hint">
                     {task.branch && <code className="small">⎇ {task.branch}</code>}{task.branch ? " · " : ""}
@@ -600,13 +610,18 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             case "implementation": return !!impl;
             case "manual_qa": return !!qaAfter;
             case "user_review": return detail.reviews.some((r) => r.stage === "user_review") || task.stage === "user_review";
-            case "pr_creation_review": return !!pr;
-            default: return PR_STAGES.has(s) && ((detail.prStates?.length ?? 0) > 0 || s === task.stage);
+            default: return false;
         }
     };
-    const steps = STAGE_ORDER.filter((s, i) => i <= currentIdx && !skipped.has(s) && (stepHasContent(s) || s === task.stage));
-    // PR stages share one panel.
-    const stepKey = (s: Stage): Stage => (PR_STAGES.has(s) ? "pr_waiting" : s);
+    // PR stages (draft review through merge) live on their own top-level tab now, not as a Work step.
+    const steps = STAGE_ORDER.filter((s, i) => i <= currentIdx && !skipped.has(s) && s !== "pr_creation_review" && !PR_STAGES.has(s) && (stepHasContent(s) || s === task.stage));
+    const stepKey = (s: Stage): Stage => s;
+    // Jump to the Pull request tab, optionally focusing one repository (from the header's "show more" or a Work pointer).
+    const [prFocusRepo, setPrFocusRepo] = useState<string | null>(null);
+    const openPrTab = (repo?: string) => {
+        setPrFocusRepo(repo ?? null);
+        setTab("pr");
+    };
 
     const reviewBox = waiting && (
         <div className="review-box">
@@ -735,14 +750,16 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     </>
                 );
             case "pr_creation_review":
-                return <PrDraftTabs detail={detail} onAction={onAction} />;
             case "pr_waiting":
+            case "pr_fix":
+            case "pr_green":
+            case "pr_approved":
+            case "done":
+                // Draft review through merge now lives on its own top-level tab, not here.
                 return (
-                    <>
-                        {task.stage === "pr_fix" && reviewBox}
-                        {task.stage === "pr_fix" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
-                        <PrPanel detail={detail} onAction={onAction} />
-                    </>
+                    <Card title="Pull request">
+                        <p>{STAGE_LABEL[task.stage]} — tracked on the <button className="tiny" onClick={() => openPrTab()}>Pull request tab</button>.</p>
+                    </Card>
                 );
             default:
                 return null;
@@ -838,7 +855,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 ) : (
                     <section className="card widget"><h2>App</h2><div className="empty">no worktree yet</div></section>
                 )}
-                <PrWidget detail={detail} onAction={onAction} />
+                <PrWidget detail={detail} onAction={onAction} onOpenInTab={openPrTab} />
             </div>
 
             <div className="timeline">
@@ -903,6 +920,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     ["runs", `Runs (${runs.length})`],
                     ["design", "Design proposal"],
                     ["code", `Code changes${pending.length ? ` (${pending.length} 💬)` : ""}`],
+                    ["pr", `Pull request${prRepos(detail).length > 1 ? "s" : ""}`],
                     ["comments", `PR comments${prior.length || pending.length ? ` (${prior.length + pending.length})` : ""}`],
                     ["chat", `Chat${detail.messages?.length ? ` (${detail.messages.length})` : ""}`],
                     ["ticket", `Ticket${tickets.length > 1 ? `s (${tickets.length})` : ""}${task.notes ? " · notes" : ""}`],
@@ -926,7 +944,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             <div className="feed">{feed.length === 0 ? <div className="k">waiting for events…</div> : feed.slice(-40).map((l, i) => <div key={i}>{l}</div>)}</div>
                         </Card>
                     )}
-                    {waiting && stepKey(step) !== stepKey(task.stage) && task.stage !== "pr_creation_review" && task.stage !== "user_review" && reviewBox}
+                    {waiting && stepKey(step) !== stepKey(task.stage) && task.stage !== "pr_creation_review" && task.stage !== "pr_fix" && task.stage !== "user_review" && reviewBox}
                     {stepPanel(step)}
                     {terminal && (
                         <Card title={<>Terminal <code>{terminal}</code></>}>
@@ -968,6 +986,20 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         <DiffView taskId={task.id} refreshKey={task.updated_at} comments={comments} prior={prior} canComment={canComment} onChange={changeComment} />
                     </Card>
                 ) : <div className="empty">No branch yet.</div>
+            )}
+
+            {tab === "pr" && (
+                <>
+                    {task.stage === "pr_creation_review" ? (
+                        <PrDraftTabs detail={detail} onAction={onAction} focusRepo={prFocusRepo} />
+                    ) : (
+                        <>
+                            {task.stage === "pr_fix" && reviewBox}
+                            {task.stage === "pr_fix" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
+                            <PrPanel detail={detail} onAction={onAction} focusRepo={prFocusRepo} />
+                        </>
+                    )}
+                </>
             )}
 
             {tab === "comments" && (
@@ -1141,11 +1173,11 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
 };
 
 // PR Creation Review: one tab per repository; each draft is edited and approved on its own.
-const PrDraftTabs = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
+const PrDraftTabs = ({ detail, onAction, focusRepo }: { detail: TaskDetail; onAction: Props["onAction"]; focusRepo?: string | null }) => {
     const { task, pr } = detail;
     const drafts = pr?.drafts ?? [];
     const repos = drafts.map((d) => d.repo);
-    const [active, setActive] = useState(0);
+    const [active, setActive] = useState(() => Math.max(0, repos.indexOf(focusRepo ?? "")));
     useEffect(() => setActive(0), [task.id]);
     if (drafts.length === 0) return <div className="empty">no draft yet</div>;
     const approvedCount = drafts.filter((d) => prStateOf(detail, d.repo)?.approved_at).length;
@@ -1183,39 +1215,51 @@ const PrDraftTabs = ({ detail, onAction }: { detail: TaskDetail; onAction: Props
 };
 
 // Details for the PR stages, one card per repository: checks, review, merge — everything the poller stored.
-const PrPanel = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
+// Details for the PR stages: one tab per repository (not stacked cards), each with its own checks, review, merge state.
+const PrPanel = ({ detail, onAction, focusRepo }: { detail: TaskDetail; onAction: Props["onAction"]; focusRepo?: string | null }) => {
     const { task } = detail;
     const repos = prRepos(detail);
+    const [active, setActive] = useState(() => Math.max(0, repos.indexOf(focusRepo ?? "")));
     if (repos.length === 0) return <Card title="Pull request"><p>{task.status_line ?? "No pull request yet."}</p></Card>;
+    const repo = repos[Math.min(active, repos.length - 1)]!;
+    const row = prStateOf(detail, repo);
+    const o = prOutcome(row);
+    const checks = parseChecks(row?.checks_json);
     return (
         <>
-            {repos.map((repo) => {
-                const row = prStateOf(detail, repo);
-                const o = prOutcome(row);
-                const checks = parseChecks(row?.checks_json);
-                return (
-                    <Card key={repo} title={<><RepoChip repo={repo} repos={repos} /> Pull request</>} badge={<span className={`chip ${o.cls}`}>{o.text}</span>}>
-                        {!row?.url && <p className="quiet">{row?.approved_at ? "Approved; not on GitHub yet — see the status line for what is left to do by hand." : "Not created yet."}</p>}
-                        {row?.url && (
-                            <div className="kv">
-                                <b>PR</b><a href={row.url} target="_blank" rel="noreferrer">#{row.number} ↗</a>
-                                <b>Review</b><span>{row.review_decision ? row.review_decision.toLowerCase().replace("_", " ") : "no decision yet"}</span>
-                                <b>Merged</b><span>{row.merged_at ? new Date(row.merged_at).toLocaleString() : row.state === "CLOSED" ? "closed without merge" : "not yet"}</span>
-                                <b>Checks</b>
-                                <span>
-                                    <ChecksList checks={checks} />
-                                    {o.kind === "failed" && task.status !== "running" && (
-                                        <div className="actions" style={{ margin: "8px 0 0" }}>
-                                            <button className="primary" onClick={() => onAction(() => api.fixCi(task.id, repo))}>Fix CI on {repoName(repo)}</button>
-                                        </div>
-                                    )}
-                                </span>
-                                <b>Last poll</b><span>{new Date(row.updated_at).toLocaleString()}{row.pushed_at ? ` · last push ${new Date(row.pushed_at).toLocaleString()}` : ""}</span>
-                            </div>
-                        )}
-                    </Card>
-                );
-            })}
+            {repos.length > 1 && (
+                <div className="subtabs pr-repo-tabs">
+                    {repos.map((r, i) => {
+                        const rRow = prStateOf(detail, r);
+                        const rO = prOutcome(rRow);
+                        return (
+                            <button key={r} className={`${i === active ? "active" : ""} repo-${REPO_COLORS[i % REPO_COLORS.length]}`} onClick={() => setActive(i)}>
+                                {repoName(r)} <span className={`chip ${rO.cls}`}>{rRow?.number ? `#${rRow.number}` : rO.text}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+            <Card title={<><RepoChip repo={repo} repos={repos} /> Pull request</>} badge={<span className={`chip ${o.cls}`}>{o.text}</span>}>
+                {!row?.url && <p className="quiet">{row?.approved_at ? "Approved; not on GitHub yet — see the status line for what is left to do by hand." : "Not created yet."}</p>}
+                {row?.url && (
+                    <div className="kv">
+                        <b>PR</b><a href={row.url} target="_blank" rel="noreferrer">#{row.number} ↗</a>
+                        <b>Review</b><span>{row.review_decision ? row.review_decision.toLowerCase().replace("_", " ") : "no decision yet"}</span>
+                        <b>Merged</b><span>{row.merged_at ? new Date(row.merged_at).toLocaleString() : row.state === "CLOSED" ? "closed without merge" : "not yet"}</span>
+                        <b>Checks</b>
+                        <span>
+                            <ChecksList checks={checks} />
+                            {o.kind === "failed" && task.status !== "running" && (
+                                <div className="actions" style={{ margin: "8px 0 0" }}>
+                                    <button className="primary" onClick={() => onAction(() => api.fixCi(task.id, repo))}>Fix CI on {repoName(repo)}</button>
+                                </div>
+                            )}
+                        </span>
+                        <b>Last poll</b><span>{new Date(row.updated_at).toLocaleString()}{row.pushed_at ? ` · last push ${new Date(row.pushed_at).toLocaleString()}` : ""}</span>
+                    </div>
+                )}
+            </Card>
         </>
     );
 };
