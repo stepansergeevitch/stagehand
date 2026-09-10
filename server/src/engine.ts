@@ -2467,6 +2467,7 @@ export class Engine extends EventEmitter {
                         const notes = renderQaFailureNotes(taskDir, qa, this.readArtifactJson<DesignResult>(taskId, "design.json"), attemptNum);
                         this.setStage(taskId, "implementation");
                         this.setTaskStatus(taskId, "running", `Manual QA · ${failed} scenario(s) failed — sending back to Implementation automatically (fix ${attemptNum}/${MAX_AUTO_QA_RETURNS})`);
+                        this.stopServicesAfterQa(task);
                         this.dispatch(taskId, "implementation", { notes });
                         return;
                     }
@@ -2475,7 +2476,16 @@ export class Engine extends EventEmitter {
                         .run(`Manual QA · ${failed} scenario(s) still failing after ${MAX_AUTO_QA_RETURNS} automatic fix attempts — needs your review`, now(), taskId);
                 }
             }
+            this.stopServicesAfterQa(task);
         }
         if (def.next) this.advance(taskId, def.next);
+    }
+
+    // A QA pass that is over — the task moves on to Implementation or User Review — no longer needs the task's BE/FE,
+    // and a Next dev server left running grows for hours (5 GB seen on a task parked at User Review). Stop the pair here;
+    // the next browser stage brings it back up on demand, and the task page's Start button does too. Same-stage retries
+    // and human-blocked states (log in, "fix it then Retry") return before reaching this, so the app stays up for them.
+    private stopServicesAfterQa(task: TaskRow): void {
+        void this.services.stopAll(task.id).catch((e: unknown) => console.warn(`[stagehand] stop BE/FE after QA ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
     }
 }
