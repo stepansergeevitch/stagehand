@@ -975,6 +975,38 @@ app.get("/api/tasks/:id/commits", async (c) => {
     return c.json(await engine.commits(task.id));
 });
 
+// Reword: a pure metadata edit (relinks commits, no patch is re-applied — cannot conflict), runs synchronously.
+app.post("/api/tasks/:id/commits/:sha/reword", async (c) => {
+    const body = json(z.object({ repo: z.string().optional(), message: z.string().min(1) }), await c.req.json());
+    try {
+        return c.json(await engine.rewordCommit(c.req.param("id"), body.repo ?? "", c.req.param("sha"), body.message));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
+// Remove: a real rewrite (everything after the commit is replayed without it) — goes through the agent in the task's
+// own session so it can resolve conflicts; never pushes. Starts in the background; the result lands in Chat.
+app.post("/api/tasks/:id/commits/:sha/remove", async (c) => {
+    const body = json(z.object({ repo: z.string().optional(), note: z.string().optional() }), await c.req.json().catch(() => ({})));
+    try {
+        await engine.removeCommit(c.req.param("id"), body.repo ?? "", c.req.param("sha"), body.note);
+        return c.json({ started: true });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
+// Push rewritten history (after Remove/Reword) with --force-with-lease. Always a deliberate human click, never automatic.
+app.post("/api/tasks/:id/commits/force-push", async (c) => {
+    const body = json(z.object({ repo: z.string().optional() }), await c.req.json().catch(() => ({})));
+    try {
+        return c.json({ ok: true, result: await engine.forcePushBranch(c.req.param("id"), body.repo ?? "") });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/stop", (c) => {
     engine.stop(c.req.param("id"));
     return c.json(engine.getTask(c.req.param("id")));

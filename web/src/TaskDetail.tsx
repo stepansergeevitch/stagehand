@@ -984,7 +984,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 task.branch && task.worktree_path ? (
                     <Card title="Code changes" badge={pending.length > 0 ? <span className="chip wait">{pending.length} 💬</span> : undefined}>
                         {canComment && <p className="field-hint">Tap a line to leave a comment; send them from the PR comments tab or the review box.</p>}
-                        <DiffView taskId={task.id} refreshKey={task.updated_at} comments={comments} prior={prior} canComment={canComment} onChange={changeComment} repos={envRepos(env)} />
+                        <DiffView taskId={task.id} refreshKey={task.updated_at} comments={comments} prior={prior} canComment={canComment} onChange={changeComment} repos={envRepos(env)} taskBusy={task.status === "running"} onError={onError} />
                     </Card>
                 ) : <div className="empty">No branch yet.</div>
             )}

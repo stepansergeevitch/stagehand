@@ -282,6 +282,23 @@ details.scenario > ol, details.scenario > div { margin-top: 6px; }
 .commit-text { min-width: 0; overflow-wrap: anywhere; }
 .commit-text small { display: block; color: var(--ink-3); font-size: 11.5px; }
 .diff-group-head { font-size: 12px; color: var(--ink-2); padding: 6px 0 4px; margin-top: 8px; border-top: 1px dashed var(--line); }
+/* Code changes: manage this repo's own commits (change message / remove / force-push) */
+.commit-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 10px; }
+.commit-panel > summary { cursor: pointer; list-style: none; padding: 8px 12px; font-size: 13px; color: var(--ink-2); user-select: none; }
+.commit-panel > summary::-webkit-details-marker { display: none; }
+.commit-panel > summary::before { content: "▸ "; color: var(--ink-3); }
+.commit-panel[open] > summary::before { content: "▾ "; }
+.commit-manager { padding: 0 12px 10px; display: grid; gap: 2px; }
+.commit-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.commit-row:first-child { border-top: 0; }
+.commit-sha { flex: none; }
+.commit-subject { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.commit-actions { display: inline-flex; gap: 4px; margin-left: auto; }
+.commit-edit { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; }
+.commit-edit input { flex: 1; min-width: 0; }
+.commit-remove { flex-basis: 100%; margin-top: 4px; padding: 8px 10px; background: var(--bad-soft); border-left: 3px solid var(--bad); border-radius: 4px; }
+.commit-remove textarea { min-height: 50px; margin: 6px 0; }
+.commit-remove.started { display: flex; align-items: center; gap: 10px; background: var(--wait-soft); border-left-color: var(--wait); font-size: 12.5px; }
 .diff-summary .hint { color: var(--ink-3); }
 .diff-file { border: 1px solid var(--line); border-radius: 6px; margin-bottom: 10px; background: var(--panel); overflow: hidden; }
 .diff-file > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--bg); flex-wrap: wrap; }

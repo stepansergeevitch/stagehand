@@ -9,6 +9,102 @@ const inRepo = (path: string, repo: string): boolean => !repo || path === repo |
 // only what is uncommitted, or a hand-picked set of commits.
 export type DiffFilter = { kind: "all" } | { kind: "uncommitted" } | { kind: "commits"; shas: string[] };
 
+// The branch's own commits (this task's work), with Change message (a fast, conflict-free metadata edit) and Remove
+// (a real rewrite the agent performs, since replaying everything after the commit can hit conflicts) per commit, plus
+// a force-push once history has been rewritten. Always shows the full branch, independent of the diff filter above.
+const CommitManager = ({ taskId, repo, commits, busy: taskBusy, onError }: { taskId: string; repo: string; commits: BranchCommit[]; busy: boolean; onError: (m: string) => void }) => {
+    const [editing, setEditing] = useState<string | null>(null);
+    const [text, setText] = useState("");
+    const [removing, setRemoving] = useState<string | null>(null);
+    const [note, setNote] = useState("");
+    const [started, setStarted] = useState<Set<string>>(new Set());
+    const [busy, setBusy] = useState<string | null>(null);
+    const [pushing, setPushing] = useState(false);
+    if (commits.length === 0) return null;
+    const disabled = taskBusy || busy !== null;
+    const reword = async (sha: string) => {
+        const message = text.trim();
+        if (!message) return;
+        setBusy(sha);
+        try {
+            await api.rewordCommit(taskId, sha, repo, message);
+            setEditing(null);
+        } catch (e) {
+            onError(String((e as Error).message ?? e));
+        } finally {
+            setBusy(null);
+        }
+    };
+    const remove = async (sha: string) => {
+        setBusy(sha);
+        try {
+            await api.removeCommit(taskId, sha, repo, note.trim() || undefined);
+            setStarted((s) => new Set(s).add(sha));
+            setNote("");
+        } catch (e) {
+            onError(String((e as Error).message ?? e));
+        } finally {
+            setBusy(null);
+        }
+    };
+    return (
+        <div className="commit-manager">
+            {commits.map((c) => (
+                <div className="commit-row" key={c.sha}>
+                    {editing === c.sha ? (
+                        <div className="commit-edit">
+                            <input autoFocus value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void reword(c.sha)} />
+                            <div className="actions" style={{ margin: 0 }}>
+                                <button className="primary" disabled={busy === c.sha || !text.trim()} onClick={() => void reword(c.sha)}>{busy === c.sha ? "Saving…" : "Save"}</button>
+                                <button disabled={busy === c.sha} onClick={() => setEditing(null)}>Cancel</button>
+                            </div>
+                        </div>
+                    ) : (
+                        <>
+                            <code className="commit-sha">{c.short}</code>
+                            <span className="commit-subject">{c.subject}</span>
+                            <small className="field-hint">{c.author} · {ago(c.at)} ago</small>
+                            <span className="commit-actions">
+                                <button className="tiny" disabled={disabled} onClick={() => { setEditing(c.sha); setText(c.subject); }}>Change message</button>
+                                <button className="tiny danger" disabled={disabled} onClick={() => setRemoving(removing === c.sha ? null : c.sha)}>Remove</button>
+                            </span>
+                        </>
+                    )}
+                    {removing === c.sha && !started.has(c.sha) && (
+                        <div className="commit-remove">
+                            <p className="field-hint">Removes this commit from history entirely (not a revert) — the agent replays everything after it and resolves any conflicts, then re-runs tests. Nothing is pushed; you review the result and push it yourself.</p>
+                            <textarea placeholder="Optional note for the agent: why remove it" value={note} onChange={(e) => setNote(e.target.value)} />
+                            <div className="actions" style={{ margin: 0 }}>
+                                <button className="danger" disabled={disabled} onClick={() => void remove(c.sha)}>{busy === c.sha ? "Starting…" : "Remove this commit"}</button>
+                                <button disabled={disabled} onClick={() => { setRemoving(null); setNote(""); }}>Cancel</button>
+                            </div>
+                        </div>
+                    )}
+                    {started.has(c.sha) && (
+                        <div className="commit-remove started">
+                            Removing — the agent is replaying the branch without this commit; the result (and any conflicts it hit) will appear in Chat.
+                            <button className="tiny" onClick={() => { setRemoving(null); setStarted((s) => { const n = new Set(s); n.delete(c.sha); return n; }); }}>Dismiss</button>
+                        </div>
+                    )}
+                </div>
+            ))}
+            <div className="actions" style={{ margin: "8px 0 0" }}>
+                <button
+                    disabled={disabled || pushing}
+                    title="Push the branch with --force-with-lease — needed after Change message or Remove rewrite the history GitHub already has"
+                    onClick={() => {
+                        if (!confirm(`Force-push ${repoName(repo)} (--force-with-lease)? This updates the PR (if one exists) to the rewritten history.`)) return;
+                        setPushing(true);
+                        void api.forcePush(taskId, repo).catch((e: Error) => onError(e.message)).finally(() => setPushing(false));
+                    }}
+                >
+                    {pushing ? "Pushing…" : "Force-push rewritten history"}
+                </button>
+            </div>
+        </div>
+    );
+};
+
 const ago = (iso: string): string => {
     const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
     if (s < 3600) return `${Math.max(1, Math.floor(s / 60))}m`;
@@ -228,6 +324,8 @@ export const DiffView = ({
     canComment,
     onChange,
     repos = [],
+    taskBusy = false,
+    onError = () => undefined,
 }: {
     taskId: string;
     refreshKey: string;
@@ -237,6 +335,9 @@ export const DiffView = ({
     onChange: (key: string, c: LineComment | null) => void;
     // The env's sub-repository directories, for a repo-tabbed view; [] shows the single repo with no tabs.
     repos?: string[];
+    // A stage/agent run already owns the worktree — disables Change message / Remove / force-push until it's done.
+    taskBusy?: boolean;
+    onError?: (m: string) => void;
 }) => {
     const [diff, setDiff] = useState<DiffResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -270,8 +371,14 @@ export const DiffView = ({
             ))}
         </div>
     );
-    if (error) return <>{tabs}<div className="blocked-box">diff: {error}</div></>;
-    if (!diff) return <>{tabs}<div className="diff"><div className="diff-summary mono">{picker} loading diff…</div></div></>;
+    const commitPanel = repoCommits.length > 0 && (
+        <details className="commit-panel">
+            <summary>Commits ({repoCommits.length}) — rename, remove, force-push</summary>
+            <CommitManager taskId={taskId} repo={repo} commits={repoCommits} busy={taskBusy} onError={onError} />
+        </details>
+    );
+    if (error) return <>{tabs}{commitPanel}<div className="blocked-box">diff: {error}</div></>;
+    if (!diff) return <>{tabs}{commitPanel}<div className="diff"><div className="diff-summary mono">{picker} loading diff…</div></div></>;
     const files = diff.files.filter((f) => inRepo(f.path, repo));
     const groups = diff.groups.map((g) => ({ ...g, files: g.files.filter((f) => inRepo(f.path, repo)) })).filter((g) => g.files.length > 0);
     const adds = files.reduce((n, f) => n + f.additions, 0);
@@ -279,6 +386,7 @@ export const DiffView = ({
     return (
         <>
             {tabs}
+            {commitPanel}
             <div className="diff">
                 <div className="diff-summary mono">
                     {picker}

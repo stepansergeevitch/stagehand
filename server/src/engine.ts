@@ -1617,6 +1617,125 @@ export class Engine extends EventEmitter {
         return this.addMessage(taskId, "agent", reply);
     }
 
+    // ---------- git history edits (Code changes tab: Remove / Change message / force-push) ----------
+
+    // A commit belongs to this task's own work if it's on the branch but not on the base — never let these operate
+    // on inherited history.
+    private async ownCommitShas(cwd: string, env: EnvRow): Promise<Set<string>> {
+        const log = await this.git(cwd, ["rev-list", `origin/${env.base_branch}..HEAD`], env).catch(() => "");
+        return new Set(log.split("\n").filter(Boolean));
+    }
+
+    // Preflight shared by both history edits: the task must not be mid-run, the checkout must exist and be clean, and
+    // the target commit must be one of this task's own (never rewrite something inherited from the base branch).
+    private async gitEditPreflight(taskId: string, repo: string, sha: string): Promise<{ task: TaskRow; env: EnvRow; cwd: string }> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
+        if (!task.branch) throw new Error("task has no branch yet");
+        const env = this.env(task.env_id);
+        const cwd = this.checkoutOf(task, env, repo);
+        if (!existsSync(cwd)) throw new Error(`${repoLabel(repo)}: no worktree checkout yet`);
+        const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
+        if (dirty.trim()) throw new Error(`${repoLabel(repo)}: the worktree has uncommitted changes — commit or discard them first`);
+        const own = await this.ownCommitShas(cwd, env);
+        const full = own.has(sha) ? sha : [...own].find((s) => s.startsWith(sha));
+        if (!full) throw new Error(`${repoLabel(repo)}: ${sha.slice(0, 10)} is not one of this task's own commits on ${task.branch}`);
+        return { task, env, cwd };
+    }
+
+    // Reword: pure metadata edit. Relinks each commit from the target onward onto a fresh parent chain via
+    // `commit-tree`, changing only the target's message — every tree (file content), author and date is preserved
+    // exactly, for the target and for everything after it. Because no patch is ever re-applied, this cannot conflict.
+    async rewordCommit(taskId: string, repo: string, sha: string, message: string): Promise<{ newSha: string }> {
+        const text = message.trim();
+        if (!text) throw new Error("the commit message cannot be empty");
+        if (/\n/.test(text)) throw new Error("one line only — the same rule as a normal commit here");
+        const { env, cwd } = await this.gitEditPreflight(taskId, repo, sha);
+        const gitEnv = { ...process.env, ...parseEnvVars(env.env_vars) };
+        const chain = (await this.git(cwd, ["rev-list", "--reverse", `${sha}^..HEAD`], env)).split("\n").filter(Boolean);
+        let parent = (await this.git(cwd, ["rev-parse", `${sha}^`], env)).trim();
+        for (const commit of chain) {
+            const tree = (await this.git(cwd, ["rev-parse", `${commit}^{tree}`], env)).trim();
+            const meta = execFileSync("git", ["-C", cwd, "log", "-1", "--format=%an%n%ae%n%ad%n%cn%n%ce%n%cd", "--date=raw", commit], { env: gitEnv, encoding: "utf8" }).split("\n");
+            const [an, ae, ad, cn, ce, cd] = meta;
+            const body = commit === sha ? text : execFileSync("git", ["-C", cwd, "show", "-s", "--format=%B", commit], { env: gitEnv, encoding: "utf8" });
+            const newSha = execFileSync(
+                "git",
+                ["-C", cwd, "commit-tree", tree, "-p", parent],
+                { env: { ...gitEnv, GIT_AUTHOR_NAME: an ?? "", GIT_AUTHOR_EMAIL: ae ?? "", GIT_AUTHOR_DATE: ad ?? "", GIT_COMMITTER_NAME: cn ?? "", GIT_COMMITTER_EMAIL: ce ?? "", GIT_COMMITTER_DATE: cd ?? "" }, input: body, encoding: "utf8" },
+            ).trim();
+            parent = newSha;
+        }
+        await this.git(cwd, ["reset", "--hard", parent], env);
+        this.addAgentNote(taskId, `🔧 ${repoLabel(repo)}: reworded ${sha.slice(0, 7)} → "${text}"`);
+        this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+        this.emitTask(taskId);
+        return { newSha: parent };
+    }
+
+    // Remove: a real content change (everything after the target has to be replayed without it), so it goes through
+    // the agent in the task's own session — it can hit conflicts a mechanical rewrite can't judge. Runs with no guard
+    // hook attached (same as Chat), scoped to exactly this one instruction; never pushes. The task's stage and status
+    // are restored afterward — this is a side operation, not a pipeline stage. Validates and starts synchronously
+    // (so a bad request — dirty worktree, task busy, unknown commit — surfaces to the button that triggered it) and
+    // returns once the run has started; the result (success or failure) lands in Chat when it finishes.
+    async removeCommit(taskId: string, repo: string, sha: string, note: string | undefined): Promise<void> {
+        const { task, env, cwd } = await this.gitEditPreflight(taskId, repo, sha);
+        const subject = (await this.git(cwd, ["log", "-1", "--format=%s", sha], env).catch(() => "")).trim();
+        const cd = this.configDirOf(env);
+        const usable = this.usableAccounts(cd.path);
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
+        const prevStatus = task.status;
+        const prevLine = task.status_line;
+        this.setTaskStatus(taskId, "running", `Removing commit ${sha.slice(0, 7)}${repo ? ` (${repo})` : ""}…`);
+        const prompt = renderPrompt("git-remove-commit.md", {
+            repo,
+            cwd,
+            branch: task.branch ?? "",
+            sha,
+            subject,
+            humanNote: note?.trim() ? `\nThe human's note on why: ${note.trim()}` : "",
+        });
+        const run = startClaude({
+            prompt,
+            cwd,
+            configDir: cd.path,
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
+            resume: task.session_id,
+            maxTurns: 60,
+            ...(task.model ? { model: task.model } : {}),
+        });
+        void run.done.then((outcome: RunOutcome) => {
+            this.setTaskStatus(taskId, prevStatus, prevLine ?? undefined);
+            if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "git-edit", stage: null }, outcome.result);
+            const reply = outcome.result?.result?.trim() || (outcome.exitCode !== 0 ? `(did not finish: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
+            this.addMessage(taskId, "agent", `🔧 Remove commit ${sha.slice(0, 7)} "${subject}" (${repoLabel(repo)}):\n\n${reply}`);
+            this.emitTask(taskId);
+        });
+    }
+
+    // Local history now differs from what (if anything) is already on GitHub — the human pushes it explicitly, never
+    // automatically, after reviewing the rewritten log/diff themselves.
+    async forcePushBranch(taskId: string, repo: string): Promise<string> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
+        if (!task.branch) throw new Error("task has no branch yet");
+        const env = this.env(task.env_id);
+        const rules = rulesOf(this.configDirOf(env));
+        if (!rules.allowPush) throw new Error("this environment forbids pushes — push it yourself from the worktree");
+        const cwd = this.checkoutOf(task, env, repo);
+        if (!existsSync(cwd)) throw new Error(`${repoLabel(repo)}: no worktree checkout yet`);
+        await this.git(cwd, ["push", "--force-with-lease", "-u", "origin", task.branch], env);
+        this.resetPrState(taskId, repo);
+        this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+        this.emitTask(taskId);
+        this.pollPrSoon(taskId);
+        return `force-pushed ${repoLabel(repo)}`;
+    }
+
     // Every archived Manual QA attempt for this task (oldest first) — the run(s) that failed and got auto-returned to
     // Implementation before the current/latest qa/after.json. Empty when Manual QA has not failed and auto-looped yet.
     qaHistory(taskId: string): Array<{ attempt: number; data: QaPassResult | null }> {
