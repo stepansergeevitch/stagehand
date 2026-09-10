@@ -1221,8 +1221,8 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                         </div>
                     )}
                     {shots.map((step) => {
-                        const bf = b?.shots.find((x) => x.step === step)?.file;
-                        const af = a?.shots.find((x) => x.step === step)?.file;
+                        const bf = b?.shots?.find((x) => x.step === step)?.file;
+                        const af = a?.shots?.find((x) => x.step === step)?.file;
                         return (
                             <div className="gallery" key={step} style={{ marginTop: 8 }}>
                                 <figure>{shot(bf, `${s.id} · before · step ${step} · ${s.steps[step - 1]?.assert ?? ""}`, "no before shot")}<figcaption>before · step {step} · {s.steps[step - 1]?.assert}</figcaption></figure>
