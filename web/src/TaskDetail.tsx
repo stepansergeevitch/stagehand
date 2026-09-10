@@ -473,6 +473,9 @@ const PrRepoRow = ({ detail, repo, repos, onAction }: { detail: TaskDetail; repo
                 {row?.review_decision && row.review_decision !== "APPROVED" && <span className="chip">{row.review_decision.toLowerCase().replace("_", " ")}</span>}
                 {gated.length > 0 && <span className="mono small">{passed}/{gated.length} checks passed{checks.length > gated.length ? ` (+${checks.length - gated.length} gates)` : ""}</span>}
                 {row?.url && !row.merged_at && row.state !== "CLOSED" && <MergeControls task={task} row={row} onAction={onAction} />}
+                {row?.approved_at && !row.number && task.status !== "running" && (
+                    <button className="tiny" title="Push this repository's branch and open its PR now (uses the approved draft; needs the env to allow pushes / PR creation, or a PR opened by hand is picked up by branch)" onClick={() => onAction(() => api.createApprovedPrs(task.id))}>Push & open now</button>
+                )}
             </div>
             {row?.url && !row.merged_at && live.length > 0 && <div className="widget-checks"><ChecksList checks={live} compact /></div>}
         </div>

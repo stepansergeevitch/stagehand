@@ -996,6 +996,24 @@ export class Engine extends EventEmitter {
         this.pollPrSoon(taskId);
     }
 
+    // Retry push/create for every approved repository that has no PR yet — e.g. after the env's rules were opened up,
+    // or after the human committed what was missing. Returns one outcome line per repository tried.
+    async createApprovedPrs(taskId: string): Promise<string[]> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
+        const pending = this.prRows(taskId).filter((r) => r.approved_at && !r.number);
+        if (pending.length === 0) throw new Error("every approved repository already has its PR");
+        const out: string[] = [];
+        for (const row of pending) {
+            const outcome = await this.createPrForRepo(taskId, row.repo);
+            if (outcome === null) return out; // failed; the task status says why
+            out.push(`${repoLabel(row.repo)}: ${outcome}`);
+        }
+        await this.pollAllPrs(this.getTask(taskId)!, { force: true }).catch(() => undefined);
+        return out;
+    }
+
     // After the human approves one repository's draft: push that checkout (if allowed) and open its PR (if allowed);
     // otherwise say what the human has to do. Returns a short outcome for the status line, or null after a failure
     // (the task status already carries the error). The poller later tracks the PR by head branch, so a PR opened by

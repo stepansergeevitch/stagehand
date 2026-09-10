@@ -1027,6 +1027,16 @@ app.post("/api/tasks/:id/pr/refresh", async (c) => {
     }
 });
 
+// Push and open the PR for every approved repository that has none yet (after the rules changed, or a manual commit).
+app.post("/api/tasks/:id/pr/create", async (c) => {
+    try {
+        const done = await engine.createApprovedPrs(c.req.param("id"));
+        return c.json({ ok: true, done, task: engine.getTask(c.req.param("id")), prStates: engine.prRows(c.req.param("id")) });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 // Merge the PR as the human. Method per repo convention (squash by default); optionally delete the remote branch after.
 app.post("/api/tasks/:id/pr/merge", async (c) => {
     const body = json(z.object({ repo: z.string().optional(), method: z.enum(["squash", "merge", "rebase"]).optional(), deleteBranch: z.boolean().optional() }), await c.req.json().catch(() => ({})));
