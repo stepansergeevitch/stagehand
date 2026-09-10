@@ -1017,9 +1017,9 @@ app.post("/api/tasks/:id/commits/:sha/remove", async (c) => {
 
 // Push rewritten history (after Remove/Reword) with --force-with-lease. Always a deliberate human click, never automatic.
 app.post("/api/tasks/:id/commits/force-push", async (c) => {
-    const body = json(z.object({ repo: z.string().optional() }), await c.req.json().catch(() => ({})));
+    const body = json(z.object({ repo: z.string().optional(), force: z.boolean().optional() }), await c.req.json().catch(() => ({})));
     try {
-        return c.json({ ok: true, result: await engine.forcePushBranch(c.req.param("id"), body.repo ?? "") });
+        return c.json({ ok: true, result: await engine.forcePushBranch(c.req.param("id"), body.repo ?? "", body.force ?? false) });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }

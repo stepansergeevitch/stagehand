@@ -1743,7 +1743,7 @@ export class Engine extends EventEmitter {
 
     // Local history now differs from what (if anything) is already on GitHub — the human pushes it explicitly, never
     // automatically, after reviewing the rewritten log/diff themselves.
-    async forcePushBranch(taskId: string, repo: string): Promise<string> {
+    async forcePushBranch(taskId: string, repo: string, force = false): Promise<string> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
@@ -1753,7 +1753,19 @@ export class Engine extends EventEmitter {
         if (!rules.allowPush) throw new Error("this environment forbids pushes — push it yourself from the worktree");
         const cwd = this.checkoutOf(task, env, repo);
         if (!existsSync(cwd)) throw new Error(`${repoLabel(repo)}: no worktree checkout yet`);
-        await this.git(cwd, ["push", "--force-with-lease", "-u", "origin", task.branch], env);
+        // The lease is checked against the remote-tracking ref, which is only as fresh as the last fetch — git's bare
+        // "stale info" rejection tells the human nothing. Refresh it first and, if GitHub moved in the meantime (an
+        // "Update branch" merge, a reviewer's or bot's commit), say exactly what a force-push would throw away.
+        const known = await this.git(cwd, ["rev-parse", "-q", "--verify", `origin/${task.branch}`], env).catch(() => "");
+        await this.git(cwd, ["fetch", "origin", task.branch], env).catch(() => "");
+        const remote = await this.git(cwd, ["rev-parse", "-q", "--verify", `origin/${task.branch}`], env).catch(() => "");
+        if (!force && known && remote && known !== remote) {
+            const subjects = (await this.git(cwd, ["log", "--format=%h %s", `${known}..${remote}`], env).catch(() => "")).split("\n").filter(Boolean);
+            throw new Error(
+                `GitHub has ${subjects.length} commit(s) on ${task.branch} that arrived since this worktree last fetched — force-pushing discards them: ${subjects.slice(0, 5).join("; ")}${subjects.length > 5 ? "; …" : ""}`,
+            );
+        }
+        await this.git(cwd, ["push", remote ? `--force-with-lease=${task.branch}:${remote}` : "--force-with-lease", "-u", "origin", task.branch], env);
         this.resetPrState(taskId, repo);
         this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
         this.emitTask(taskId);

@@ -337,7 +337,7 @@ export const api = {
     // *started* — it can take a while and may hit conflicts; the outcome lands in Chat.
     rewordCommit: (id: string, sha: string, repo: string, message: string) => post<{ newSha: string }>(`/api/tasks/${id}/commits/${sha}/reword`, { repo, message }),
     removeCommit: (id: string, sha: string, repo: string, note?: string) => post<{ started: true }>(`/api/tasks/${id}/commits/${sha}/remove`, { repo, ...(note ? { note } : {}) }),
-    forcePush: (id: string, repo: string) => post<{ ok: true; result: string }>(`/api/tasks/${id}/commits/force-push`, { repo }),
+    forcePush: (id: string, repo: string, force = false) => post<{ ok: true; result: string }>(`/api/tasks/${id}/commits/force-push`, { repo, force }),
     prComments: (id: string, repo: string) => fetch(`/api/tasks/${id}/pr-comments?repo=${encodeURIComponent(repo)}`).then((r) => j<PrComments | null>(r)),
     resolvePrComment: (id: string, repo: string, commentId: number, resolved: boolean) => post<PrComments | null>(`/api/tasks/${id}/pr-comments/${commentId}/resolve`, { repo, resolved }),
     myTickets: (envId: string) => fetch(`/api/envs/${envId}/my-tickets`).then((r) => j<{ source: "clickup" | "linear"; tickets: MyTicket[]; error?: string }>(r)),

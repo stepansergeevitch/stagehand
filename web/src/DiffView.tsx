@@ -95,7 +95,16 @@ const CommitManager = ({ taskId, repo, commits, busy: taskBusy, onError }: { tas
                     onClick={() => {
                         if (!confirm(`Force-push ${repoName(repo)} (--force-with-lease)? This updates the PR (if one exists) to the rewritten history.`)) return;
                         setPushing(true);
-                        void api.forcePush(taskId, repo).catch((e: Error) => onError(e.message)).finally(() => setPushing(false));
+                        void api
+                            .forcePush(taskId, repo)
+                            .catch(async (e: Error) => {
+                                if (/force-pushing discards them/.test(e.message) && confirm(`${e.message}\n\nDiscard them and force-push anyway?`)) {
+                                    await api.forcePush(taskId, repo, true).catch((e2: Error) => onError(e2.message));
+                                    return;
+                                }
+                                onError(e.message);
+                            })
+                            .finally(() => setPushing(false));
                     }}
                 >
                     {pushing ? "Pushing…" : "Force-push rewritten history"}
