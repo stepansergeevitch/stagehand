@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { STAGE_LABEL, taskLabel, type Env, type Readiness, type Task, type TaskStatus } from "./api";
+import { labelsOf, STAGE_LABEL, taskLabel, type Env, type Readiness, type Task, type TaskStatus } from "./api";
+import { LabelChips } from "./Labels";
 
 // Every task across all environments, grouped by what it is doing: waiting on the human, working, or waiting on others
 // (GitHub checks / reviewers). Finished and stopped tasks stay on the Tasks page.
@@ -29,7 +30,7 @@ const Row = ({ t, onOpen }: { t: Task; onOpen: (t: Task) => void }) => {
     return (
         <div className="attn" onClick={() => onOpen(t)}>
             <span className={`chip ${cls}`}>{label}</span>
-            <span className="name">{taskLabel(t)}<small>{t.title ?? ""}</small></span>
+            <span className="name">{taskLabel(t)}<small>{t.title ?? ""}</small><LabelChips labels={labelsOf(t)} /></span>
             <span className="stage-name">{STAGE_LABEL[t.stage]}</span>
             <span className="age">{age(t.updated_at)}</span>
             {t.status_line && <span className="line">{t.status_line}</span>}

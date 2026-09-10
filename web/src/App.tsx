@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
+import { LabelChips } from "./Labels";
+import { accountOrderOf, accountUsableWith, api, labelsOf, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
 import { TASK_TABS, TaskDetailView, type Tab as TaskTab } from "./TaskDetail";
 import { EnvPage } from "./EnvPage";
 import { ConfigDirPage } from "./ConfigDirPage";
@@ -366,7 +367,7 @@ export const App = () => {
                                             <span className="name">{taskLabel(t)}<small>{t.title ?? ""}</small></span>
                                             <span className="age">{age(t.updated_at)}</span>
                                             <span className="pr" />
-                                            <span className="status">{t.status_line ?? STAGE_LABEL[t.stage]}</span>
+                                            <span className="status"><LabelChips labels={labelsOf(t)} />{t.status_line ?? STAGE_LABEL[t.stage]}</span>
                                         </div>
                                     );
                                 })}

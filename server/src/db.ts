@@ -193,8 +193,15 @@ export interface TaskRow {
     notes: string | null;
     // JSON array of {source,id,url} for the other tickets a batch task covers (ticket_id is the first one).
     extra_tickets: string | null;
+    // JSON array of {text, color} — the human's own tags on the task.
+    labels: string | null;
     created_at: string;
     updated_at: string;
+}
+
+export interface TaskLabel {
+    text: string;
+    color: string;
 }
 
 export const extraTicketsOf = (t: Pick<TaskRow, "extra_tickets">): Array<{ source: "clickup" | "linear"; id: string; url: string | null }> => {
@@ -501,6 +508,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["usage.task_title", `ALTER TABLE usage ADD COLUMN task_title TEXT`],
     // When Stagehand last pushed the branch: right after a push GitHub reports no checks for a moment, which must not read as "green".
     ["pr_state.pushed_at", `ALTER TABLE pr_state ADD COLUMN pushed_at TEXT`],
+    // Free-form labels the human puts on a task: JSON [{text, color}] (color = CSS hex), shown in the list and the header.
+    ["tasks.labels", `ALTER TABLE tasks ADD COLUMN labels TEXT`],
 ];
 
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>

@@ -126,8 +126,15 @@ export const pendingQuestions = (d: Pick<TaskDetail, "questions">): QuestionRoun
 export interface Task {
     id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
     branch: string | null; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
-    pinned: number; notes: string | null; extra_tickets: string | null; created_at: string; updated_at: string;
+    pinned: number; notes: string | null; extra_tickets: string | null; labels?: string | null; created_at: string; updated_at: string;
 }
+export interface TaskLabel { text: string; color: string }
+export const labelsOf = (t: Pick<Task, "labels">): TaskLabel[] => {
+    try {
+        const v: unknown = t.labels ? JSON.parse(t.labels) : [];
+        return Array.isArray(v) ? v.filter((x): x is TaskLabel => !!x && typeof x === "object" && typeof (x as TaskLabel).text === "string" && typeof (x as TaskLabel).color === "string") : [];
+    } catch { return []; }
+};
 export const extraTicketIds = (t: Pick<Task, "extra_tickets">): string[] => {
     try {
         const v: unknown = t.extra_tickets ? JSON.parse(t.extra_tickets) : [];
@@ -256,7 +263,7 @@ export const api = {
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
     // mode "each": one task per ticket; "batch": one task covering every ticket.
     createTasks: (body: { envId: string; tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string }) => post<{ tasks: Task[] }>("/api/tasks", body),
-    patchTask: (id: string, body: { notes?: string | null }) =>
+    patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[] }) =>
         fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Task>(r)),
     returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[] }) => post<Task>(`/api/tasks/${id}/return`, body),
     patchPrDraft: (id: string, body: { title?: string; body?: string; base?: string }) =>

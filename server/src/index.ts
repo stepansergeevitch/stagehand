@@ -712,10 +712,17 @@ app.post("/api/tasks", async (c) => {
 });
 
 app.patch("/api/tasks/:id", async (c) => {
-    const body = json(z.object({ notes: z.string().nullable().optional() }), await c.req.json());
+    const body = json(
+        z.object({
+            notes: z.string().nullable().optional(),
+            labels: z.array(z.object({ text: z.string().min(1).max(60), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) })).max(20).optional(),
+        }),
+        await c.req.json(),
+    );
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
     if (body.notes !== undefined) engine.setNotes(task.id, body.notes);
+    if (body.labels !== undefined) engine.setLabels(task.id, body.labels);
     return c.json(engine.getTask(task.id));
 });
 

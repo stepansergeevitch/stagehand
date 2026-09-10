@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { api, checkOutcome, isApprovalGateCheck, parseChecks, pendingQuestions, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
+import { LabelEditor } from "./Labels";
+import { api, checkOutcome, isApprovalGateCheck, labelsOf, parseChecks, pendingQuestions, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
 import { Chat } from "./Chat";
@@ -706,6 +707,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             <h1>{taskLabel(task)} {task.title ?? ""}</h1>
             <div className="sub">
                 {statusChip(task.status)}
+                <LabelEditor labels={labelsOf(task)} onChange={(next) => onAction(() => api.patchTask(task.id, { labels: next }))} />
                 <span>{STAGE_LABEL[task.stage]}</span>
                 {task.ticket_url ? <a href={task.ticket_url} target="_blank" rel="noreferrer">{task.source} ↗</a> : <span>{task.source}</span>}
                 {task.model && <span className="chip">{task.model}</span>}
