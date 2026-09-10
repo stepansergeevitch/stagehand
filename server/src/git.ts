@@ -190,7 +190,11 @@ export const parseUnifiedDiff = (raw: string, prefix = ""): DiffFile[] => {
 
 // Everything the task changed versus the base branch, committed or not, including untracked files, per checkout.
 const diffOne = async (checkout: string, baseBranch: string, prefix: string, vars: Vars): Promise<DiffFile[]> => {
-    const tracked = await git(checkout, ["diff", "--no-color", "--no-ext-diff", "--unified=3", "--find-renames", `origin/${baseBranch}`, "--"], vars);
+    // Diff against the commit the branch actually forked from, not the base branch's current tip: once a fetch moves
+    // origin/<base> past the fork point, a tip diff shows every upstream commit since then as if the task had changed
+    // those files. Two-dot against the merge-base keeps uncommitted work in the diff (three-dot would drop it).
+    const base = (await git(checkout, ["merge-base", `origin/${baseBranch}`, "HEAD"], vars).catch(() => "")).trim() || `origin/${baseBranch}`;
+    const tracked = await git(checkout, ["diff", "--no-color", "--no-ext-diff", "--unified=3", "--find-renames", base, "--"], vars);
     const files = parseUnifiedDiff(tracked, prefix);
     const untracked = await git(checkout, ["ls-files", "--others", "--exclude-standard"], vars);
     for (const rel of untracked.split("\n").filter(Boolean).slice(0, 50)) {
