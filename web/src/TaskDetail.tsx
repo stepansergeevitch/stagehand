@@ -376,7 +376,7 @@ const ChecksList = ({ checks, compact }: { checks: PrCheck[]; compact?: boolean 
         return () => clearInterval(t);
     }, [running]);
     if (checks.length === 0) return <span className="quiet">none reported yet</span>;
-    const order = { fail: 0, pending: 1, pass: 2 };
+    const order = { fail: 0, pending: 1, cancelled: 2, pass: 3 };
     const sorted = [...checks].sort((a, b) => order[checkOutcome(a)] - order[checkOutcome(b)] || (a.name ?? a.context ?? "").localeCompare(b.name ?? b.context ?? ""));
     return (
         <ul className={`plain checks ${compact ? "compact" : ""}`}>
@@ -388,7 +388,7 @@ const ChecksList = ({ checks, compact }: { checks: PrCheck[]; compact?: boolean 
                 const st = (c.conclusion ?? c.state ?? c.status ?? "pending").toLowerCase().replace(/_/g, " ");
                 return (
                     <li key={i} className={`check ${o} ${gate ? "gate" : ""}`}>
-                        <span className={`chip ${gate ? "" : o === "pass" ? "ok" : o === "fail" ? "bad" : "warn"}`}>{gate ? "manual gate" : o === "pending" ? (c.status === "IN_PROGRESS" || c.startedAt ? "running" : "queued") : st}</span>
+                        <span className={`chip ${gate ? "" : o === "pass" ? "ok" : o === "fail" ? "bad" : o === "cancelled" ? "" : "warn"}`}>{gate ? "manual gate" : o === "pending" ? (c.status === "IN_PROGRESS" || c.startedAt ? "running" : "queued") : st}</span>
                         {url ? <a href={url} target="_blank" rel="noreferrer">{label}</a> : <span>{label}</span>}
                         {o === "pending" && c.startedAt && <span className="field-hint">{elapsed(c.startedAt)}</span>}
                         {o !== "pending" && c.startedAt && c.completedAt && <span className="field-hint">{elapsed(c.startedAt, c.completedAt)}</span>}
@@ -466,8 +466,11 @@ const PrRepoRow = ({ detail, repo, repos, onAction, onOpenInTab }: { detail: Tas
     const o = prOutcome(row);
     const checks = parseChecks(row?.checks_json);
     const gated = checks.filter((c) => !isApprovalGateCheck(c));
+    // Cancelled checks don't count toward "N/M passed" (not a failure, but not a pass either) — shown separately.
+    const cancelled = gated.filter((c) => checkOutcome(c) === "cancelled").length;
+    const countable = gated.length - cancelled;
     const passed = gated.filter((c) => checkOutcome(c) === "pass").length;
-    const live = gated.filter((c) => checkOutcome(c) !== "pass");
+    const live = gated.filter((c) => checkOutcome(c) !== "pass" && checkOutcome(c) !== "cancelled");
     const extra = live.length - HEADER_CHECKS_LIMIT;
     return (
         <div className={`pr-repo ${o.kind}`}>
@@ -476,7 +479,7 @@ const PrRepoRow = ({ detail, repo, repos, onAction, onOpenInTab }: { detail: Tas
                 <span className={`chip ${o.cls}`}>{o.text}</span>
                 {row?.url && <a href={row.url} target="_blank" rel="noreferrer">#{row.number} ↗</a>}
                 {row?.review_decision && row.review_decision !== "APPROVED" && <span className="chip">{row.review_decision.toLowerCase().replace("_", " ")}</span>}
-                {gated.length > 0 && <span className="mono small">{passed}/{gated.length} checks passed{checks.length > gated.length ? ` (+${checks.length - gated.length} gates)` : ""}</span>}
+                {gated.length > 0 && <span className="mono small">{passed}/{countable} checks passed{cancelled ? ` (${cancelled} cancelled)` : ""}{checks.length > gated.length ? ` (+${checks.length - gated.length} gates)` : ""}</span>}
                 {row?.url && !row.merged_at && row.state !== "CLOSED" && <MergeControls task={task} row={row} onAction={onAction} />}
                 {row?.approved_at && !row.number && task.status !== "running" && (
                     <button className="tiny" title="Push this repository's branch and open its PR now (uses the approved draft; needs the env to allow pushes / PR creation, or a PR opened by hand is picked up by branch)" onClick={() => onAction(() => api.createApprovedPrs(task.id))}>Push & open now</button>

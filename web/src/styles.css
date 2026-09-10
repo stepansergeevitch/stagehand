@@ -149,6 +149,7 @@ ul.checks { margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; }
 ul.checks li.check { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 13px; }
 ul.checks.compact li.check { font-size: 12.5px; }
 ul.checks li.check.gate { opacity: .7; }
+ul.checks li.check.cancelled { opacity: .6; }
 ul.checks li.check.pending .chip { animation: pulse 1.6s ease-in-out infinite; }
 .subtabs { display: flex; flex-wrap: wrap; gap: 4px; margin: -6px 0 12px; }
 .subtabs button { padding: 3px 10px; font-size: 12.5px; min-height: 0; border-radius: 999px; color: var(--ink-2); }

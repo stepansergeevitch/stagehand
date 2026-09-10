@@ -141,6 +141,10 @@ interface DispatchOpts {
 // excluded from both the "pending" and "failed" checks that gate PR Green/PR Fix. Convention: job names end in
 // `_hold` (e.g. `deploy_hold`) or match `reset_*_db` (e.g. `reset_staging_db`).
 const isApprovalGateCheck = (c: { name?: string; context?: string }): boolean => /_hold$|reset_.*_db$/i.test(c.name ?? c.context ?? "");
+// A check GitHub cancelled (superseded by a newer push, stopped by hand, a concurrency-group replace) is not a failure
+// of the change itself — treat it as neither passing nor failing, just not counted.
+const isCancelledCheck = (c: { conclusion?: string; state?: string }): boolean => /CANCELLED/i.test(c.conclusion ?? c.state ?? "");
+const isFailedCheck = (c: { conclusion?: string; state?: string }): boolean => !isCancelledCheck(c) && /FAILURE|ERROR|TIMED_OUT/i.test(c.conclusion ?? c.state ?? "");
 
 // Naming a repository in status lines and errors: the sub-repo directory, or "the repository" for a single-repo env.
 const repoLabel = (repo: string): string => repo || "the repository";
@@ -1294,14 +1298,16 @@ export class Engine extends EventEmitter {
             checks = [];
         }
         const gated = checks.filter((c) => !isApprovalGateCheck(c));
-        const failed = gated.filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
+        const failed = gated.filter(isFailedCheck);
         const pending = gated.filter((c) => !c.conclusion && !/SUCCESS|FAILURE|ERROR/i.test(c.state ?? "") && (c.status ?? "") !== "COMPLETED");
+        const cancelled = gated.filter(isCancelledCheck);
         const justPushed = !!row.pushed_at && Date.now() - new Date(row.pushed_at).getTime() < Engine.CHECKS_GRACE_MS;
         if (failed.length) return { kind: "failed", text: `${n} ${failed.length} check(s) failing (${failed.map((c) => c.name ?? c.context ?? "check").join(", ")})` };
         if (pending.length) return { kind: "pending", text: `${n} ${pending.length} check(s) running` };
         if (gated.length === 0 && justPushed) return { kind: "pending", text: `${n} pushed, waiting for checks to start` };
         if (row.review_decision === "APPROVED") return { kind: "approved", text: `${n} approved, waiting for merge` };
-        return { kind: "green", text: `${n} ${gated.length ? "checks passed" : "no checks"}, waiting for review` };
+        const cancelNote = cancelled.length ? ` (${cancelled.length} cancelled)` : "";
+        return { kind: "green", text: `${n} ${gated.length > cancelled.length ? "checks passed" : "no checks"}${cancelNote}, waiting for review` };
     }
 
     // The task's stage/status/line from the aggregate of its PRs: any red → blocked; anything not yet on GitHub or
@@ -1353,7 +1359,7 @@ export class Engine extends EventEmitter {
         const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(row.number), "--json", "statusCheckRollup"], env)) as {
             statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
         };
-        const failed = (pr.statusCheckRollup ?? []).filter((c) => !isApprovalGateCheck(c) && /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
+        const failed = (pr.statusCheckRollup ?? []).filter((c) => !isApprovalGateCheck(c) && isFailedCheck(c));
         if (!failed.length) throw new Error("no failing checks right now — re-poll first");
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");

@@ -224,10 +224,13 @@ export const parseChecks = (json: string | null | undefined): PrCheck[] => {
         return [];
     }
 };
-export const checkOutcome = (c: PrCheck): "pass" | "fail" | "pending" => {
+// A cancelled check (superseded by a newer push, stopped by hand) is not a failure of the change — its own outcome,
+// counted neither as passing nor as blocking.
+export const checkOutcome = (c: PrCheck): "pass" | "fail" | "pending" | "cancelled" => {
     const st = c.conclusion ?? c.state ?? "";
     if (/SUCCESS|NEUTRAL|SKIPPED/i.test(st)) return "pass";
-    if (/FAILURE|ERROR|CANCELLED|TIMED_OUT|ACTION_REQUIRED|STALE/i.test(st)) return "fail";
+    if (/CANCELLED/i.test(st)) return "cancelled";
+    if (/FAILURE|ERROR|TIMED_OUT|ACTION_REQUIRED|STALE/i.test(st)) return "fail";
     return "pending";
 };
 
