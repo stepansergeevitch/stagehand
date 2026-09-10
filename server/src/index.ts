@@ -711,6 +711,34 @@ app.post("/api/tasks", async (c) => {
     return c.json({ tasks: created });
 });
 
+// Every label in use across tasks, most used first, with the colour it most often has — suggestions for the label editor.
+app.get("/api/labels", (c) => {
+    const rows = db.prepare(`SELECT labels FROM tasks WHERE labels IS NOT NULL`).all() as Array<{ labels: string }>;
+    const byText = new Map<string, { text: string; count: number; colors: Map<string, number> }>();
+    for (const r of rows) {
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(r.labels);
+        } catch {
+            continue;
+        }
+        if (!Array.isArray(parsed)) continue;
+        for (const l of parsed as Array<{ text?: unknown; color?: unknown }>) {
+            if (typeof l?.text !== "string" || typeof l?.color !== "string") continue;
+            const key = l.text.trim().toLowerCase();
+            if (!key) continue;
+            const e = byText.get(key) ?? { text: l.text.trim(), count: 0, colors: new Map<string, number>() };
+            e.count++;
+            e.colors.set(l.color, (e.colors.get(l.color) ?? 0) + 1);
+            byText.set(key, e);
+        }
+    }
+    const out = [...byText.values()]
+        .map((e) => ({ text: e.text, count: e.count, color: [...e.colors.entries()].sort((a, b) => b[1] - a[1])[0]![0] }))
+        .sort((a, b) => b.count - a.count || a.text.localeCompare(b.text));
+    return c.json(out);
+});
+
 app.patch("/api/tasks/:id", async (c) => {
     const body = json(
         z.object({
