@@ -367,7 +367,7 @@ export const App = () => {
                                             <span className="name">{taskLabel(t)}<small>{t.title ?? ""}</small></span>
                                             <span className="age">{age(t.updated_at)}</span>
                                             <span className="pr" />
-                                            <span className="status"><LabelChips labels={labelsOf(t)} />{t.status_line ?? STAGE_LABEL[t.stage]}</span>
+                                            <span className="status"><LabelChips labels={labelsOf(t)} /><span className="status-text">{t.status_line ?? STAGE_LABEL[t.stage]}</span></span>
                                         </div>
                                     );
                                 })}

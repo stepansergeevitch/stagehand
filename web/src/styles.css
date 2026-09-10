@@ -446,11 +446,13 @@ label.inline { display: inline-flex; align-items: center; gap: 4px; }
 .qa-blockers { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: start; margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn, #d9a400); }
 
 /* task labels: coloured text chips the human puts on a task */
-.label-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-right: 6px; vertical-align: middle; }
-.label-chip { display: inline-flex; align-items: center; gap: 2px; padding: 0 7px; border-radius: 999px; border: 1px solid; font-family: var(--mono); font-size: 11px; line-height: 17px; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-.label-chip .chip-x { color: inherit; font-size: 12px; opacity: .7; }
+/* one chip per row, full text (a label that does not fit wraps instead of being cut) */
+.label-chips { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; margin: 2px 0 3px; }
+.label-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 10px; border: 1px solid; font-family: var(--mono); font-size: 11px; line-height: 15px; white-space: normal; overflow-wrap: anywhere; max-width: 100%; text-align: left; }
+.label-chip .chip-x { color: inherit; font-size: 12px; opacity: .7; flex: none; }
 .label-chip .chip-x:hover { opacity: 1; }
-.label-editor { position: relative; display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.label-editor { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.label-editor > button.tiny { margin-top: 1px; }
 .label-editor > button.tiny { font-family: var(--sans); }
 .label-menu { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; display: grid; gap: 8px; padding: 10px; width: 260px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.18); font-family: var(--sans); }
 .label-menu > input[type="text"], .label-menu > input:not([type]) { width: 100%; }
@@ -463,8 +465,10 @@ label.inline { display: inline-flex; align-items: center; gap: 4px; }
 .label-swatches .swatch { width: 20px; height: 20px; padding: 0; min-height: 0; border-radius: 50%; border: 2px solid transparent; }
 .label-swatches .swatch.on { border-color: var(--ink); box-shadow: 0 0 0 1px var(--panel) inset; }
 .label-swatches input[type="color"] { width: 26px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: transparent; cursor: pointer; }
-.row .status .label-chips { margin-right: 6px; }
-.attn .name .label-chips { margin-left: 6px; }
+.row .status { white-space: normal; }
+.row .status .status-text { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.attn .name .label-chips { margin-top: 3px; }
+.label-suggestions .label-chip { white-space: nowrap; }
 
 /* PR draft editor: markdown source beside the rendered preview */
 .pr-editor { display: grid; gap: 8px; }
