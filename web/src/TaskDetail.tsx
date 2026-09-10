@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LabelEditor } from "./Labels";
-import { api, checkOutcome, isApprovalGateCheck, labelsOf, parseChecks, pendingQuestions, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
+import { api, checkOutcome, isApprovalGateCheck, labelsOf, parseChecks, pendingQuestions, prRepos, prStateOf, repoName, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
 import { Chat } from "./Chat";
@@ -401,14 +401,37 @@ const ChecksList = ({ checks, compact }: { checks: PrCheck[]; compact?: boolean 
 };
 
 const MERGE_KEY = "stagehand.mergeMethod";
-const MergeControls = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
-    const { task, prState } = detail;
+
+// A repository's name as a coloured chip — the same colour for the same repo everywhere, so the PR rows, tabs and
+// comments of one repository are recognisable at a glance.
+const REPO_COLORS = ["accent", "wait", "ok", "warn"] as const;
+const RepoChip = ({ repo, repos }: { repo: string; repos: string[] }) => {
+    if (repos.length <= 1 && !repo) return null;
+    const i = Math.max(0, repos.indexOf(repo));
+    return <span className={`chip repo-chip ${REPO_COLORS[i % REPO_COLORS.length]}`} title={repo ? `repository ${repo}/` : "repository"}>{repoName(repo)}</span>;
+};
+
+const prOutcome = (row: PrState | undefined): { kind: "none" | "manual" | "failed" | "pending" | "approved" | "green" | "merged" | "closed"; text: string; cls: string } => {
+    if (!row?.number) return row?.approved_at ? { kind: "manual", text: "approved — not on GitHub yet", cls: "warn" } : { kind: "none", text: "not created yet", cls: "" };
+    if (row.merged_at) return { kind: "merged", text: "merged", cls: "ok" };
+    if (row.state === "CLOSED") return { kind: "closed", text: "closed", cls: "bad" };
+    const gated = parseChecks(row.checks_json).filter((c) => !isApprovalGateCheck(c));
+    const failed = gated.filter((c) => checkOutcome(c) === "fail").length;
+    const pending = gated.filter((c) => checkOutcome(c) === "pending").length;
+    if (failed) return { kind: "failed", text: `${failed} check(s) failing`, cls: "bad" };
+    if (pending) return { kind: "pending", text: `${pending} check(s) running`, cls: "warn" };
+    if (gated.length === 0 && row.pushed_at && Date.now() - new Date(row.pushed_at).getTime() < 10 * 60_000) return { kind: "pending", text: "waiting for checks to start", cls: "warn" };
+    if (row.review_decision === "APPROVED") return { kind: "approved", text: "approved", cls: "ok" };
+    return { kind: "green", text: gated.length ? "checks green" : "no checks", cls: "accent" };
+};
+
+const MergeControls = ({ task, row, onAction }: { task: TaskDetail["task"]; row: PrState; onAction: Props["onAction"] }) => {
     const [method, setMethod] = useState<MergeMethod>(() => (storage.get(MERGE_KEY) as MergeMethod | null) ?? "squash");
     const [deleteBranch, setDeleteBranch] = useState(true);
-    const checks = parseChecks(prState?.checks_json).filter((c) => !isApprovalGateCheck(c));
+    const checks = parseChecks(row.checks_json).filter((c) => !isApprovalGateCheck(c));
     const failing = checks.filter((c) => checkOutcome(c) === "fail").length;
     const pending = checks.filter((c) => checkOutcome(c) === "pending").length;
-    const warn = failing ? `${failing} check(s) are failing` : pending ? `${pending} check(s) still running` : prState?.review_decision === "CHANGES_REQUESTED" ? "a reviewer requested changes" : prState?.review_decision !== "APPROVED" ? "not approved yet" : null;
+    const warn = failing ? `${failing} check(s) are failing` : pending ? `${pending} check(s) still running` : row.review_decision === "CHANGES_REQUESTED" ? "a reviewer requested changes" : row.review_decision !== "APPROVED" ? "not approved yet" : null;
     return (
         <span className="merge-controls">
             <select value={method} onChange={(e) => { setMethod(e.target.value as MergeMethod); storage.set(MERGE_KEY, e.target.value); }} title="Merge method">
@@ -422,8 +445,8 @@ const MergeControls = ({ detail, onAction }: { detail: TaskDetail; onAction: Pro
                 disabled={task.status === "running"}
                 title={warn ? `Merge anyway — ${warn}` : "Merge the pull request as you"}
                 onClick={() => {
-                    if (!confirm(`Merge #${prState?.number} (${method})${deleteBranch ? " and delete the remote branch" : ""}?${warn ? `\n\nNote: ${warn}.` : ""}`)) return;
-                    void onAction(() => api.mergePr(task.id, { method, deleteBranch }));
+                    if (!confirm(`Merge ${repoName(row.repo)} #${row.number} (${method})${deleteBranch ? " and delete the remote branch" : ""}?${warn ? `\n\nNote: ${warn}.` : ""}`)) return;
+                    void onAction(() => api.mergePr(task.id, { repo: row.repo, method, deleteBranch }));
                 }}
             >
                 Merge{warn ? " ⚠" : ""}
@@ -432,48 +455,69 @@ const MergeControls = ({ detail, onAction }: { detail: TaskDetail; onAction: Pro
     );
 };
 
-// PR status for the header widget, derived from the stage, the stored PR state and the status line.
-const PrWidget = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
-    const { task, prState, pr } = detail;
-    const checks = parseChecks(prState?.checks_json);
+// One repository's PR in the header widget: repo chip, state, number, checks summary, merge controls.
+const PrRepoRow = ({ detail, repo, repos, onAction }: { detail: TaskDetail; repo: string; repos: string[]; onAction: Props["onAction"] }) => {
+    const { task } = detail;
+    const row = prStateOf(detail, repo);
+    const o = prOutcome(row);
+    const checks = parseChecks(row?.checks_json);
     const gated = checks.filter((c) => !isApprovalGateCheck(c));
-    const failed = gated.filter((c) => checkOutcome(c) === "fail");
-    const passed = gated.filter((c) => checkOutcome(c) === "pass");
-    const pending = gated.filter((c) => checkOutcome(c) === "pending");
+    const passed = gated.filter((c) => checkOutcome(c) === "pass").length;
+    const live = gated.filter((c) => checkOutcome(c) !== "pass");
+    return (
+        <div className={`pr-repo ${o.kind}`}>
+            <div className="widget-body">
+                <RepoChip repo={repo} repos={repos} />
+                <span className={`chip ${o.cls}`}>{o.text}</span>
+                {row?.url && <a href={row.url} target="_blank" rel="noreferrer">#{row.number} ↗</a>}
+                {row?.review_decision && row.review_decision !== "APPROVED" && <span className="chip">{row.review_decision.toLowerCase().replace("_", " ")}</span>}
+                {gated.length > 0 && <span className="mono small">{passed}/{gated.length} checks passed{checks.length > gated.length ? ` (+${checks.length - gated.length} gates)` : ""}</span>}
+                {row?.url && !row.merged_at && row.state !== "CLOSED" && <MergeControls task={task} row={row} onAction={onAction} />}
+            </div>
+            {row?.url && !row.merged_at && live.length > 0 && <div className="widget-checks"><ChecksList checks={live} compact /></div>}
+        </div>
+    );
+};
+
+// PR status for the header widget: one row per repository, from the stored PR rows (or the draft's repositories).
+const PrWidget = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
+    const { task, pr } = detail;
+    const repos = prRepos(detail);
+    const rows = detail.prStates ?? [];
     const [refreshing, setRefreshing] = useState(false);
-    let status: React.ReactNode;
-    if (prState?.merged_at) status = <span className="chip ok">merged</span>;
-    else if (prState?.url) {
-        const cls = failed.length ? "bad" : pending.length > 0 ? "warn" : prState.review_decision === "APPROVED" ? "ok" : "accent";
-        const text = failed.length ? `${failed.length} check(s) failing` : pending.length > 0 ? `${pending.length} check(s) running` : prState.review_decision === "APPROVED" ? "approved" : gated.length ? "checks green" : prState.pushed_at && Date.now() - new Date(prState.pushed_at).getTime() < 10 * 60_000 ? "waiting for checks to start" : STAGE_LABEL[task.stage];
-        status = <span className={`chip ${cls}`}>{text}</span>;
-    } else if (task.stage === "pr_creation_review") status = <span className="chip wait">{task.status === "waiting_user" ? "draft ready — approve to create" : "drafting"}</span>;
-    else if (PR_STAGES.has(task.stage)) status = <span className="chip warn">not created yet</span>;
-    else if (pr) status = <span className="chip">draft</span>;
-    else status = <span className="chip">none yet</span>;
+    const anyOpen = rows.some((r) => r.url && !r.merged_at);
+    const lastPoll = rows.map((r) => r.updated_at).sort().pop();
+    let placeholder: React.ReactNode = null;
+    if (repos.length === 0) {
+        if (task.stage === "pr_creation_review") placeholder = <span className="chip wait">{task.status === "waiting_user" ? "drafts ready — review per repository" : "drafting"}</span>;
+        else if (PR_STAGES.has(task.stage)) placeholder = <span className="chip warn">not created yet</span>;
+        else if (pr) placeholder = <span className="chip">draft</span>;
+        else placeholder = <span className="chip">none yet</span>;
+    }
     return (
         <section className="card widget">
             <h2>
-                Pull request
-                {prState?.url && !prState.merged_at && (
-                    <button className="tiny" disabled={refreshing} title="Re-read checks, review decision and comments from GitHub now" onClick={() => { setRefreshing(true); void onAction(() => api.refreshPr(task.id)).finally(() => setRefreshing(false)); }}>
+                Pull request{repos.length > 1 ? "s" : ""}
+                {anyOpen && (
+                    <button className="tiny" disabled={refreshing} title="Re-read checks, review decisions and comments from GitHub now" onClick={() => { setRefreshing(true); void onAction(() => api.refreshPr(task.id)).finally(() => setRefreshing(false)); }}>
                         {refreshing ? "…" : "↻ refresh"}
                     </button>
                 )}
             </h2>
-            <div className="widget-body">
-                {status}
-                {prState?.url && <a href={prState.url} target="_blank" rel="noreferrer">#{prState.number} ↗</a>}
-                {prState?.review_decision && <span className="chip">{prState.review_decision.toLowerCase().replace("_", " ")}</span>}
-                {gated.length > 0 && <span className="mono small">{passed.length}/{gated.length} checks passed{checks.length > gated.length ? ` (+${checks.length - gated.length} awaiting approval)` : ""}</span>}
-                {!prState?.url && PR_STAGES.has(task.stage) && task.status_line && <span className="small">{task.status_line}</span>}
-                {task.branch && <code className="small">⎇ {task.branch}</code>}
-                {prState?.url && !prState.merged_at && <MergeControls detail={detail} onAction={onAction} />}
-            </div>
-            {prState?.url && !prState.merged_at && (failed.length > 0 || pending.length > 0) && (
-                <div className="widget-checks"><ChecksList checks={[...failed, ...pending]} compact /></div>
+            {placeholder && (
+                <div className="widget-body">
+                    {placeholder}
+                    {PR_STAGES.has(task.stage) && task.status_line && <span className="small">{task.status_line}</span>}
+                    {task.branch && <code className="small">⎇ {task.branch}</code>}
+                </div>
             )}
-            {prState?.url && <div className="field-hint">last poll {new Date(prState.updated_at).toLocaleTimeString()}{prState.pushed_at ? ` · pushed ${new Date(prState.pushed_at).toLocaleTimeString()}` : ""} · polls every 2 min</div>}
+            {repos.map((repo) => <PrRepoRow key={repo} detail={detail} repo={repo} repos={repos} onAction={onAction} />)}
+            {repos.length > 0 && (
+                <div className="field-hint">
+                    {task.branch && <code className="small">⎇ {task.branch}</code>}{task.branch ? " · " : ""}
+                    {lastPoll ? `last poll ${new Date(lastPoll).toLocaleTimeString()} · ` : ""}polls every 2 min
+                </div>
+            )}
         </section>
     );
 };
@@ -506,15 +550,20 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const [selectedComments, setSelectedComments] = useState<Set<number>>(new Set());
     const toggleComment = (id: number) => setSelectedComments((s) => { const next = new Set(s); next.has(id) ? next.delete(id) : next.add(id); return next; });
     useEffect(() => setSelectedComments(new Set()), [task.id]);
+    // Which repository's PR the comments tab looks at (multi-repo tasks have one PR per repository).
+    const prdRepos = (detail.prStates ?? []).filter((r) => r.number).map((r) => r.repo);
+    const [ghRepoRaw, setGhRepo] = useState<string | null>(null);
+    const ghRepo = ghRepoRaw !== null && prdRepos.includes(ghRepoRaw) ? ghRepoRaw : (prdRepos[0] ?? null);
+    const ghRow = ghRepo !== null ? prStateOf(detail, ghRepo) : undefined;
     const [gh, setGh] = useState<PrComments | null>(null);
     const [ghLoading, setGhLoading] = useState(false);
     const [ghError, setGhError] = useState<string | null>(null);
     const loadGh = async () => {
-        if (!detail.prState?.number) return;
+        if (ghRepo === null) return;
         setGhLoading(true);
         setGhError(null);
         try {
-            setGh(await api.prComments(task.id));
+            setGh(await api.prComments(task.id, ghRepo));
         } catch (e) {
             setGhError(String((e as Error).message ?? e));
         } finally {
@@ -523,9 +572,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     };
     useEffect(() => {
         setGh(null);
-        if ((tab === "comments" || tab === "code") && detail.prState?.number) void loadGh();
+        if ((tab === "comments" || tab === "code") && ghRepo !== null) void loadGh();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [task.id, tab, detail.prState?.number]);
+    }, [task.id, tab, ghRepo, ghRow?.number]);
     const prior: PriorComment[] = [
         ...detail.reviews
             .filter((r) => r.stage === "user_review" && r.verdict === "changes")
@@ -549,7 +598,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             case "manual_qa": return !!qaAfter;
             case "user_review": return detail.reviews.some((r) => r.stage === "user_review") || task.stage === "user_review";
             case "pr_creation_review": return !!pr;
-            default: return PR_STAGES.has(s) && (!!detail.prState || s === task.stage);
+            default: return PR_STAGES.has(s) && ((detail.prStates?.length ?? 0) > 0 || s === task.stage);
         }
     };
     const steps = STAGE_ORDER.filter((s, i) => i <= currentIdx && !skipped.has(s) && (stepHasContent(s) || s === task.stage));
@@ -584,7 +633,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     className="primary"
                     onClick={() => onAction(async () => { await api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}) }); clearComments(); setNotes(""); })}
                 >
-                    {task.stage === "pr_creation_review" ? "Approve & create PR" : task.stage === "pr_fix" ? "Approve & push" : "Approve"}
+                    {task.stage === "pr_fix" ? "Approve & push" : "Approve"}
                 </button>
                 <button
                     disabled={!notes.trim() && !(canComment && pending.length > 0)}
@@ -683,18 +732,13 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     </>
                 );
             case "pr_creation_review":
-                return (
-                    <>
-                        {task.stage === "pr_creation_review" && reviewBox}
-                        {pr ? <PrDraftCard pr={pr} editable={task.status !== "running" && !detail.prState?.url} onSave={(patch) => onAction(() => api.patchPrDraft(task.id, patch))} /> : <div className="empty">no draft yet</div>}
-                    </>
-                );
+                return <PrDraftTabs detail={detail} onAction={onAction} />;
             case "pr_waiting":
                 return (
                     <>
                         {task.stage === "pr_fix" && reviewBox}
                         {task.stage === "pr_fix" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
-                        <PrPanel detail={detail} />
+                        <PrPanel detail={detail} onAction={onAction} />
                     </>
                 );
             default:
@@ -820,12 +864,15 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {task.status === "blocked" && (
                 <div className="blocked-box">
                     <b>Blocked.</b> <Linkified text={task.status_line ?? ""} />
-                    {/check\(s\) failing/.test(task.status_line ?? "") && (
-                        <div className="actions" style={{ marginBottom: 0 }}>
-                            <button className="primary" onClick={() => onAction(() => api.fixCi(task.id))}>Fix CI</button>
-                            <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>The agent proposes a fix and commits it locally — nothing is pushed until you review the diff and approve.</span>
-                        </div>
-                    )}
+                    {(() => {
+                        const failing = (detail.prStates ?? []).filter((r) => r.number && parseChecks(r.checks_json).some((c) => !isApprovalGateCheck(c) && checkOutcome(c) === "fail"));
+                        return failing.length > 0 ? (
+                            <div className="actions" style={{ marginBottom: 0 }}>
+                                {failing.map((r) => <button key={r.repo} className="primary" onClick={() => onAction(() => api.fixCi(task.id, r.repo))}>Fix CI{failing.length > 1 || r.repo ? ` on ${repoName(r.repo)}` : ""}</button>)}
+                                <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>The agent proposes a fix and commits it locally — nothing is pushed until you review the diff and approve.</span>
+                            </div>
+                        ) : null;
+                    })()}
                     {/log ?in/i.test(task.status_line ?? "") && !/waiting for you/.test(task.status_line ?? "") && (
                         <div className="actions" style={{ marginBottom: 0 }}>
                             <button className="primary" onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA</button>
@@ -922,6 +969,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
             {tab === "comments" && (
                 <>
+                    {prdRepos.length > 1 && (
+                        <div className="subtabs pr-repo-tabs">
+                            {prdRepos.map((r, i) => <button key={r} className={`${ghRepo === r ? "active" : ""} repo-${REPO_COLORS[i % REPO_COLORS.length]}`} onClick={() => setGhRepo(r)}>{repoName(r)} <span className="chip">#{prStateOf(detail, r)?.number}</span></button>)}
+                        </div>
+                    )}
                     <div className="subtabs">
                         <button className={commentsTab === "user" ? "active" : ""} onClick={() => setCommentsTab("user")}>Human · User comments</button>
                         <button className={commentsTab === "pr" ? "active" : ""} onClick={() => setCommentsTab("pr")}>Human · PR comments{gh ? ` (${gh.human.length})` : ""}</button>
@@ -950,7 +1002,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                         <button
                                             className="primary"
                                             disabled={task.status === "running"}
-                                            onClick={() => void onAction(async () => { await api.fixComments(task.id, [...selectedComments]); setSelectedComments(new Set()); })}
+                                            onClick={() => void onAction(async () => { await api.fixComments(task.id, ghRepo ?? "", [...selectedComments]); setSelectedComments(new Set()); })}
                                         >
                                             Ask agent to address {selectedComments.size} comment(s)
                                         </button>
@@ -959,19 +1011,19 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                 </div>
                             )}
                             <PrCommentList
-                                title={commentsTab === "pr" ? "Comments on the pull request" : "Automation comments on the pull request"}
+                                title={`${commentsTab === "pr" ? "Comments" : "Automation comments"} on the ${ghRepo ? repoName(ghRepo) : ""} pull request`}
                                 items={gh ? (commentsTab === "pr" ? gh.human : gh.automation) : null}
                                 loading={ghLoading}
                                 error={ghError}
-                                hasPr={!!detail.prState?.url}
-                                url={detail.prState?.url ?? null}
+                                hasPr={!!ghRow?.url}
+                                url={ghRow?.url ?? null}
                                 fetchedAt={gh?.fetchedAt ?? null}
                                 onRefresh={() => void loadGh()}
                                 selected={selectedComments}
                                 onToggle={toggleComment}
                                 onResolve={async (id, resolved) => {
                                     try {
-                                        const next = await api.resolvePrComment(task.id, id, resolved);
+                                        const next = await api.resolvePrComment(task.id, ghRepo ?? "", id, resolved);
                                         if (next) setGh(next);
                                     } catch (e) {
                                         onError(String((e as Error).message ?? e));
@@ -996,34 +1048,53 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     );
 };
 
-// The drafted PR: read view, or an editor with the markdown source on one side and the rendered preview on the other.
-// Saving rewrites pr.json, which Approve & create PR then uses.
-const PrDraftCard = ({ pr, editable, onSave }: { pr: { title: string; body: string; base: string }; editable: boolean; onSave: (patch: { title: string; body: string; base: string }) => Promise<void> }) => {
+// One repository's drafted PR: read view, or an editor with the markdown source beside the rendered preview. Saving
+// rewrites that repository's entry in pr.json; approving pushes/opens that repository's PR right away.
+const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDetail; entry: PrDraftEntry; repos: string[]; onAction: Props["onAction"] }) => {
+    const { task, pr } = detail;
+    const row = prStateOf(detail, entry.repo);
+    const created = !!row?.number;
+    const approved = !!row?.approved_at;
+    const reviewing = task.stage === "pr_creation_review" && task.status === "waiting_user";
+    const editable = task.status !== "running" && !created;
     const [editing, setEditing] = useState(false);
-    const [title, setTitle] = useState(pr.title);
-    const [body, setBody] = useState(pr.body);
-    const [base, setBase] = useState(pr.base);
+    const [title, setTitle] = useState(entry.title);
+    const [body, setBody] = useState(entry.body);
+    const [base, setBase] = useState(pr?.base ?? "");
     const [saving, setSaving] = useState(false);
+    const [notes, setNotes] = useState("");
+    const [changes, setChanges] = useState(false);
     useEffect(() => {
         if (!editing) {
-            setTitle(pr.title);
-            setBody(pr.body);
-            setBase(pr.base);
+            setTitle(entry.title);
+            setBody(entry.body);
+            setBase(pr?.base ?? "");
         }
-    }, [pr.title, pr.body, pr.base, editing]);
-    const dirty = title !== pr.title || body !== pr.body || base !== pr.base;
+    }, [entry.title, entry.body, pr?.base, editing]);
+    const dirty = title !== entry.title || body !== entry.body || base !== (pr?.base ?? "");
+    const o = prOutcome(row);
     return (
-        <Card title="PR draft" badge={editable && !editing ? <button className="tiny" onClick={() => setEditing(true)}>Edit</button> : undefined}>
+        <Card
+            title={<><RepoChip repo={entry.repo} repos={repos} /> PR draft</>}
+            badge={
+                <>
+                    {created && <span className={`chip ${o.cls}`}>{row?.url ? <a href={row.url} target="_blank" rel="noreferrer">#{row.number} {o.text} ↗</a> : o.text}</span>}
+                    {!created && approved && <span className="chip warn" title="Approved; Stagehand could not push or open it itself — see the status line">approved · {o.text}</span>}
+                    {!created && !approved && reviewing && <span className="chip wait">awaiting your approval</span>}
+                    {editable && !editing && <button className="tiny" onClick={() => setEditing(true)}>Edit</button>}
+                </>
+            }
+        >
             {!editing && (
                 <>
-                    <div className="kv"><b>Title</b><span>{pr.title}</span><b>Base</b><code>{pr.base}</code></div>
-                    <Markdown source={pr.body} />
+                    <div className="kv"><b>Title</b><span>{entry.title}</span><b>Base</b><code>{pr?.base}</code></div>
+                    <Markdown source={entry.body} />
                 </>
             )}
             {editing && (
                 <div className="pr-editor">
                     <label>Title <input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
-                    <label>Base branch <input value={base} onChange={(e) => setBase(e.target.value)} style={{ maxWidth: 220 }} /></label>
+                    <label>Base branch (shared by every repository) <input value={base} onChange={(e) => setBase(e.target.value)} style={{ maxWidth: 220 }} /></label>
                     <div className="pr-editor-panes">
                         <div className="pr-editor-pane">
                             <div className="pr-editor-head">Markdown</div>
@@ -1035,34 +1106,104 @@ const PrDraftCard = ({ pr, editable, onSave }: { pr: { title: string; body: stri
                         </div>
                     </div>
                     <div className="actions" style={{ marginBottom: 0 }}>
-                        <button className="primary" disabled={saving || !title.trim() || !dirty} onClick={() => { setSaving(true); void onSave({ title: title.trim(), body, base }).then(() => setEditing(false)).finally(() => setSaving(false)); }}>{saving ? "Saving…" : "Save draft"}</button>
+                        <button className="primary" disabled={saving || !title.trim() || !dirty} onClick={() => { setSaving(true); void onAction(() => api.patchPrDraft(task.id, { repo: entry.repo, title: title.trim(), body, base })).then(() => setEditing(false)).finally(() => setSaving(false)); }}>{saving ? "Saving…" : "Save draft"}</button>
                         <button disabled={saving} onClick={() => setEditing(false)}>Cancel</button>
-                        {dirty && <span className="field-hint">unsaved edits</span>}
+                        {dirty && <span className="field-hint">unsaved edits{approved ? " — saving withdraws the approval until you approve again" : ""}</span>}
                     </div>
+                </div>
+            )}
+            {reviewing && !created && !editing && (
+                <div className="review-box" style={{ marginTop: 12, marginBottom: 0 }}>
+                    <b>{repoName(entry.repo)} — your call.</b>
+                    {!approved && (
+                        <div className="actions">
+                            <button className="primary" onClick={() => onAction(() => api.review(task.id, { verdict: "approve", repo: entry.repo }))}>Approve & create {repoName(entry.repo)} PR</button>
+                            <button onClick={() => setChanges((v) => !v)}>{changes ? "Cancel" : "Request changes"}</button>
+                        </div>
+                    )}
+                    {approved && <div className="field-hint" style={{ marginTop: 6 }}>Approved. {task.status_line}</div>}
+                    {changes && (
+                        <>
+                            <textarea placeholder={`What should change in the ${repoName(entry.repo)} description (required)`} value={notes} onChange={(e) => setNotes(e.target.value)} />
+                            <div className="actions" style={{ marginBottom: 0 }}>
+                                <button className="primary" disabled={!notes.trim()} onClick={() => onAction(async () => { await api.review(task.id, { verdict: "changes", repo: entry.repo, notes }); setNotes(""); setChanges(false); })}>Send back to the drafting agent</button>
+                                <span className="field-hint">The agent redrafts this repository's PR (others are copied through unchanged); drafts not yet approved go back to pending.</span>
+                            </div>
+                        </>
+                    )}
                 </div>
             )}
         </Card>
     );
 };
 
-// Details for the PR stages: checks, review, merge — everything the poller stored.
-const PrPanel = ({ detail }: { detail: TaskDetail }) => {
-    const { task, prState } = detail;
-    const checks = parseChecks(prState?.checks_json);
+// PR Creation Review: one tab per repository; each draft is edited and approved on its own.
+const PrDraftTabs = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
+    const { task, pr } = detail;
+    const drafts = pr?.drafts ?? [];
+    const repos = drafts.map((d) => d.repo);
+    const [active, setActive] = useState(0);
+    useEffect(() => setActive(0), [task.id]);
+    if (drafts.length === 0) return <div className="empty">no draft yet</div>;
+    const approvedCount = drafts.filter((d) => prStateOf(detail, d.repo)?.approved_at).length;
+    const cur = drafts[Math.min(active, drafts.length - 1)]!;
     return (
-        <Card title="Pull request">
-            {!prState?.url && <p>{task.status_line ?? "No pull request yet."}</p>}
-            {prState?.url && (
-                <div className="kv">
-                    <b>PR</b><a href={prState.url} target="_blank" rel="noreferrer">#{prState.number} ↗</a>
-                    <b>Review</b><span>{prState.review_decision ? prState.review_decision.toLowerCase().replace("_", " ") : "no decision yet"}</span>
-                    <b>Merged</b><span>{prState.merged_at ? new Date(prState.merged_at).toLocaleString() : "not yet"}</span>
-                    <b>Checks</b>
-                    <span><ChecksList checks={checks} /></span>
-                    <b>Last poll</b><span>{new Date(prState.updated_at).toLocaleString()}{prState.pushed_at ? ` · last push ${new Date(prState.pushed_at).toLocaleString()}` : ""}</span>
+        <>
+            {drafts.length > 1 && (
+                <div className="subtabs pr-repo-tabs">
+                    {drafts.map((d, i) => {
+                        const row = prStateOf(detail, d.repo);
+                        const o = prOutcome(row);
+                        return (
+                            <button key={d.repo} className={`${i === active ? "active" : ""} repo-${REPO_COLORS[i % REPO_COLORS.length]}`} onClick={() => setActive(i)}>
+                                {repoName(d.repo)} <span className={`chip ${row?.approved_at ? o.cls || "ok" : "wait"}`}>{row?.number ? `#${row.number}` : row?.approved_at ? "approved" : "pending"}</span>
+                            </button>
+                        );
+                    })}
+                    <span className="field-hint" style={{ alignSelf: "center", marginTop: 0 }}>{approvedCount}/{drafts.length} approved · the task moves on once every repository is approved</span>
                 </div>
             )}
-        </Card>
+            {task.stage === "pr_creation_review" && <ReviewHistory reviews={detail.reviews} stage="pr_creation_review" />}
+            <PrDraftEntryView key={cur.repo} detail={detail} entry={cur} repos={repos} onAction={onAction} />
+        </>
+    );
+};
+
+// Details for the PR stages, one card per repository: checks, review, merge — everything the poller stored.
+const PrPanel = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
+    const { task } = detail;
+    const repos = prRepos(detail);
+    if (repos.length === 0) return <Card title="Pull request"><p>{task.status_line ?? "No pull request yet."}</p></Card>;
+    return (
+        <>
+            {repos.map((repo) => {
+                const row = prStateOf(detail, repo);
+                const o = prOutcome(row);
+                const checks = parseChecks(row?.checks_json);
+                return (
+                    <Card key={repo} title={<><RepoChip repo={repo} repos={repos} /> Pull request</>} badge={<span className={`chip ${o.cls}`}>{o.text}</span>}>
+                        {!row?.url && <p className="quiet">{row?.approved_at ? "Approved; not on GitHub yet — see the status line for what is left to do by hand." : "Not created yet."}</p>}
+                        {row?.url && (
+                            <div className="kv">
+                                <b>PR</b><a href={row.url} target="_blank" rel="noreferrer">#{row.number} ↗</a>
+                                <b>Review</b><span>{row.review_decision ? row.review_decision.toLowerCase().replace("_", " ") : "no decision yet"}</span>
+                                <b>Merged</b><span>{row.merged_at ? new Date(row.merged_at).toLocaleString() : row.state === "CLOSED" ? "closed without merge" : "not yet"}</span>
+                                <b>Checks</b>
+                                <span>
+                                    <ChecksList checks={checks} />
+                                    {o.kind === "failed" && task.status !== "running" && (
+                                        <div className="actions" style={{ margin: "8px 0 0" }}>
+                                            <button className="primary" onClick={() => onAction(() => api.fixCi(task.id, repo))}>Fix CI on {repoName(repo)}</button>
+                                        </div>
+                                    )}
+                                </span>
+                                <b>Last poll</b><span>{new Date(row.updated_at).toLocaleString()}{row.pushed_at ? ` · last push ${new Date(row.pushed_at).toLocaleString()}` : ""}</span>
+                            </div>
+                        )}
+                    </Card>
+                );
+            })}
+        </>
     );
 };
 

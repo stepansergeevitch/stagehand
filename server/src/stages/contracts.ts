@@ -70,10 +70,16 @@ export const ImplResult = z.object({
 });
 export type ImplResult = z.infer<typeof ImplResult>;
 
-export const PrDraft = z.object({
-    title: z.string(),
+// One PR per repository that has commits: `repo` is the sub-repo directory in a multi-repo workspace, "" for a single repo.
+export const PrDraftEntry = z.object({
+    repo: z.string().default(""),
+    title: z.string().min(1),
     body: z.string(),
+});
+export type PrDraftEntry = z.infer<typeof PrDraftEntry>;
+export const PrDraft = z.object({
     base: z.string(),
+    drafts: z.array(PrDraftEntry).min(1),
 });
 export type PrDraft = z.infer<typeof PrDraft>;
 

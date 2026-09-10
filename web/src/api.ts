@@ -67,7 +67,8 @@ export type PrComment =
     | { kind: "review"; id: number; author: string; state: string; body: string; at: string; url: string }
     | { kind: "line"; id: number; author: string; path: string; line: number | null; side: "old" | "new"; outdated: boolean; body: string; at: string; url: string; replyTo: number | null; snippet: string; threadId: string | null; resolved: boolean }
     | { kind: "general"; id: number; author: string; body: string; at: string; url: string };
-export interface PrComments { number: number; repo: string; human: PrComment[]; automation: PrComment[]; fetchedAt: string }
+// `repo` = GitHub owner/name, `repoDir` = the task's sub-repo directory ("" for a single-repo env).
+export interface PrComments { number: number; repo: string; repoDir: string; human: PrComment[]; automation: PrComment[]; fetchedAt: string }
 export interface TaskManager { source: "clickup" | "linear"; label: string; configured: boolean; token: string | null; teamId: string | null; envs: string[] }
 export interface EnvRules {
     rules: Rules; prTemplates: Array<{ dir: string; path: string | null; overridden: boolean }>;
@@ -179,7 +180,8 @@ export interface TaskDetail {
     design: Design | null; impl: Impl | null; qaBefore: QaPass | null; qaAfter: QaPass | null;
     // Earlier Manual QA attempts (oldest first) that failed and were auto-returned to Implementation before qaAfter.
     qaHistory?: Array<{ attempt: number; data: QaPass | null }>;
-    pr: { title: string; body: string; base: string } | null;
+    // One drafted PR per repository (repo "" for a single-repo env); base is shared.
+    pr: PrDraft | null;
     prFix: { summary: string } | null;
     ticket: Ticket | null;
     // Every stored ticket of the task (one, or several for a batch task), in order.
@@ -192,8 +194,25 @@ export interface TaskDetail {
     // Rounds of questions the agent asked mid-stage; a round with answers === null is what the task is waiting on.
     questions?: QuestionRound[];
     reviews: Review[];
-    prState: { number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null; updated_at: string; pushed_at?: string | null } | null;
+    // One row per repository's PR; empty until a draft is approved or a PR is found by branch. Optional for the
+    // dev-server skew window (see `tickets`).
+    prStates?: PrState[];
 }
+export interface PrDraftEntry { repo: string; title: string; body: string }
+export interface PrDraft { base: string; drafts: PrDraftEntry[] }
+export interface PrState {
+    repo: string; number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null;
+    updated_at: string; pushed_at: string | null; approved_at: string | null; state: string | null;
+}
+// How a repository is named in the UI: its directory, or "repo" for a single-repo env.
+export const repoName = (repo: string): string => repo || "repo";
+export const prStateOf = (d: Pick<TaskDetail, "prStates">, repo: string): PrState | undefined => d.prStates?.find((r) => r.repo === repo);
+// The repositories a task opens PRs in: the drafted ones, else the ones with a PR row, else none known yet.
+export const prRepos = (d: Pick<TaskDetail, "pr" | "prStates">): string[] => {
+    const fromDraft = d.pr?.drafts.map((x) => x.repo) ?? [];
+    const fromRows = (d.prStates ?? []).map((r) => r.repo);
+    return [...new Set([...fromDraft, ...fromRows])];
+};
 export type MergeMethod = "squash" | "merge" | "rebase";
 // One entry of `gh pr view --json statusCheckRollup`: a CheckRun (name/status/conclusion/detailsUrl) or a StatusContext (context/state/targetUrl).
 export interface PrCheck { name?: string; context?: string; conclusion?: string | null; state?: string; status?: string; startedAt?: string; completedAt?: string; detailsUrl?: string; targetUrl?: string; workflowName?: string }
@@ -267,8 +286,8 @@ export const api = {
     patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[] }) =>
         fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Task>(r)),
     returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[] }) => post<Task>(`/api/tasks/${id}/return`, body),
-    patchPrDraft: (id: string, body: { title?: string; body?: string; base?: string }) =>
-        fetch(`/api/tasks/${id}/pr-draft`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ title: string; body: string; base: string }>(r)),
+    patchPrDraft: (id: string, body: { repo: string; title?: string; body?: string; base?: string }) =>
+        fetch(`/api/tasks/${id}/pr-draft`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<PrDraft>(r)),
     cleanup: (id: string, force = false) => post<{ done: string[]; skipped: string[] }>(`/api/tasks/${id}/cleanup${force ? "?force=1" : ""}`),
     deleteTask: (id: string, keepWorktree = false, force = false) =>
         fetch(`/api/tasks/${id}?${new URLSearchParams({ ...(keepWorktree ? { worktree: "keep" } : {}), ...(force ? { force: "1" } : {}) })}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
@@ -278,23 +297,23 @@ export const api = {
     patchSettings: (body: Partial<Omit<Settings, "models" | "notifications">> & { notifications?: Partial<Notifications> }) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
     testNotification: () => post<{ macos: boolean; ntfy: boolean | null; error?: string }>("/api/notifications/test"),
-    review: (id: string, body: { verdict: "approve" | "changes"; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>
+    review: (id: string, body: { verdict: "approve" | "changes"; repo?: string; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>
         post<Task>(`/api/tasks/${id}/review`, body),
     // filter: a set of commit shas (contiguous runs become one group each) or "uncommitted"; none = everything vs the base.
     diff: (id: string, filter?: { shas: string[] } | { uncommitted: true }) =>
         fetch(`/api/tasks/${id}/diff${filter ? ("uncommitted" in filter ? "?scope=uncommitted" : `?commits=${filter.shas.join(",")}`) : ""}`).then((r) => j<DiffResponse>(r)),
     commits: (id: string) => fetch(`/api/tasks/${id}/commits`).then((r) => j<{ commits: BranchCommit[]; uncommitted: boolean }>(r)),
-    prComments: (id: string) => fetch(`/api/tasks/${id}/pr-comments`).then((r) => j<PrComments | null>(r)),
-    resolvePrComment: (id: string, commentId: number, resolved: boolean) => post<PrComments | null>(`/api/tasks/${id}/pr-comments/${commentId}/resolve`, { resolved }),
+    prComments: (id: string, repo: string) => fetch(`/api/tasks/${id}/pr-comments?repo=${encodeURIComponent(repo)}`).then((r) => j<PrComments | null>(r)),
+    resolvePrComment: (id: string, repo: string, commentId: number, resolved: boolean) => post<PrComments | null>(`/api/tasks/${id}/pr-comments/${commentId}/resolve`, { repo, resolved }),
     myTickets: (envId: string) => fetch(`/api/envs/${envId}/my-tickets`).then((r) => j<{ source: "clickup" | "linear"; tickets: MyTicket[]; error?: string }>(r)),
     stop: (id: string) => post<Task>(`/api/tasks/${id}/stop`),
     retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),
     rerun: (id: string, stage: Stage) => post<Task>(`/api/tasks/${id}/rerun`, { stage }),
     qaLogin: (id: string) => post<{ started: true }>(`/api/tasks/${id}/qa-login`),
-    fixCi: (id: string) => post<{ started: true }>(`/api/tasks/${id}/fix-ci`),
-    refreshPr: (id: string) => post<{ task: Task; prState: TaskDetail["prState"] }>(`/api/tasks/${id}/pr/refresh`),
-    mergePr: (id: string, body: { method: MergeMethod; deleteBranch: boolean }) => post<{ ok: true; result: string; task: Task }>(`/api/tasks/${id}/pr/merge`, body),
-    fixComments: (id: string, commentIds: number[]) => post<{ started: true }>(`/api/tasks/${id}/fix-comments`, { commentIds }),
+    fixCi: (id: string, repo: string) => post<{ started: true }>(`/api/tasks/${id}/fix-ci`, { repo }),
+    refreshPr: (id: string) => post<{ task: Task; prStates: PrState[] }>(`/api/tasks/${id}/pr/refresh`),
+    mergePr: (id: string, body: { repo: string; method: MergeMethod; deleteBranch: boolean }) => post<{ ok: true; result: string; task: Task }>(`/api/tasks/${id}/pr/merge`, body),
+    fixComments: (id: string, repo: string, commentIds: number[]) => post<{ started: true }>(`/api/tasks/${id}/fix-comments`, { repo, commentIds }),
     fetchTicket: (id: string) => post<Ticket>(`/api/tasks/${id}/fetch-ticket`),
     openApp: (id: string) => post<{ opened: string; profile: string }>(`/api/tasks/${id}/open-app`),
     pin: (id: string) => post<Task>(`/api/tasks/${id}/pin`),

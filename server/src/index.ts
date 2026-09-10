@@ -756,7 +756,7 @@ app.patch("/api/tasks/:id", async (c) => {
 
 // Edit the drafted PR (title / markdown body / base) before it is created.
 app.patch("/api/tasks/:id/pr-draft", async (c) => {
-    const body = json(z.object({ title: z.string().optional(), body: z.string().optional(), base: z.string().optional() }), await c.req.json());
+    const body = json(z.object({ repo: z.string().optional(), title: z.string().optional(), body: z.string().optional(), base: z.string().optional() }), await c.req.json());
     try {
         return c.json(engine.setPrDraft(c.req.param("id"), body));
     } catch (e) {
@@ -870,14 +870,15 @@ app.get("/api/tasks/:id", (c) => {
         qaBefore: engine.readArtifactJson(task.id, "qa/before.json"),
         qaAfter: engine.readArtifactJson(task.id, "qa/after.json"),
         qaHistory: engine.qaHistory(task.id),
-        pr: engine.readArtifactJson(task.id, "pr.json"),
+        pr: engine.readPrDraft(task.id),
         prFix: engine.readArtifactJson(task.id, "pr_fix.json"),
         ticket: engine.readArtifactJson(task.id, "ticket.json"),
         tickets: engine.tickets(task),
         messages: engine.listMessages(task.id),
         questions: engine.listQuestions(task.id),
         reviews: db.prepare(`SELECT * FROM reviews WHERE task_id = ? ORDER BY created_at`).all(task.id),
-        prState: db.prepare(`SELECT * FROM pr_state WHERE task_id = ?`).get(task.id) ?? null,
+        // One row per repository's PR (repo "" for a single-repo env); empty until a draft is approved or a PR is found by branch.
+        prStates: engine.prRows(task.id),
     });
 });
 
@@ -904,6 +905,8 @@ app.post("/api/tasks/:id/review", async (c) => {
     const body = json(
         z.object({
             verdict: z.enum(["approve", "changes"]),
+            // PR Creation Review: the repository whose draft this verdict is about ("" = single repo; omit when there is one).
+            repo: z.string().optional(),
             routeTo: z.enum(["implementation", "design_proposal"]).optional(),
             notes: z.string().optional(),
             comments: z
@@ -916,11 +919,12 @@ app.post("/api/tasks/:id/review", async (c) => {
     return c.json(engine.getTask(c.req.param("id")));
 });
 
+// ?repo=<sub-repo dir> picks which repository's PR (omit / "" for a single-repo env).
 app.get("/api/tasks/:id/pr-comments", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
     try {
-        return c.json(await engine.prComments(task.id));
+        return c.json(await engine.prComments(task.id, c.req.query("repo") ?? ""));
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 502);
     }
@@ -928,9 +932,9 @@ app.get("/api/tasks/:id/pr-comments", async (c) => {
 
 // Resolve / reopen the review thread a line comment belongs to (the human's own click; agents never do this).
 app.post("/api/tasks/:id/pr-comments/:commentId/resolve", async (c) => {
-    const body = json(z.object({ resolved: z.boolean().optional() }), await c.req.json().catch(() => ({})));
+    const body = json(z.object({ resolved: z.boolean().optional(), repo: z.string().optional() }), await c.req.json().catch(() => ({})));
     try {
-        return c.json(await engine.resolvePrComment(c.req.param("id"), Number(c.req.param("commentId")), body.resolved ?? true));
+        return c.json(await engine.resolvePrComment(c.req.param("id"), body.repo ?? "", Number(c.req.param("commentId")), body.resolved ?? true));
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }
@@ -1006,7 +1010,7 @@ app.post("/api/tasks/:id/qa-login", (c) => {
 app.post("/api/tasks/:id/pr/refresh", async (c) => {
     try {
         await engine.refreshPr(c.req.param("id"));
-        return c.json({ task: engine.getTask(c.req.param("id")), prState: db.prepare(`SELECT * FROM pr_state WHERE task_id = ?`).get(c.req.param("id")) ?? null });
+        return c.json({ task: engine.getTask(c.req.param("id")), prStates: engine.prRows(c.req.param("id")) });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }
@@ -1014,9 +1018,9 @@ app.post("/api/tasks/:id/pr/refresh", async (c) => {
 
 // Merge the PR as the human. Method per repo convention (squash by default); optionally delete the remote branch after.
 app.post("/api/tasks/:id/pr/merge", async (c) => {
-    const body = json(z.object({ method: z.enum(["squash", "merge", "rebase"]).optional(), deleteBranch: z.boolean().optional() }), await c.req.json().catch(() => ({})));
+    const body = json(z.object({ repo: z.string().optional(), method: z.enum(["squash", "merge", "rebase"]).optional(), deleteBranch: z.boolean().optional() }), await c.req.json().catch(() => ({})));
     try {
-        const result = await engine.mergePr(c.req.param("id"), body.method ?? "squash", body.deleteBranch ?? false);
+        const result = await engine.mergePr(c.req.param("id"), body.repo ?? "", body.method ?? "squash", body.deleteBranch ?? false);
         return c.json({ ok: true, result, task: engine.getTask(c.req.param("id")) });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
@@ -1024,8 +1028,9 @@ app.post("/api/tasks/:id/pr/merge", async (c) => {
 });
 
 app.post("/api/tasks/:id/fix-ci", async (c) => {
+    const body = json(z.object({ repo: z.string().optional() }), await c.req.json().catch(() => ({})));
     try {
-        await engine.startPrFix(c.req.param("id"));
+        await engine.startPrFix(c.req.param("id"), body.repo ?? "");
         return c.json({ started: true });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
@@ -1034,9 +1039,9 @@ app.post("/api/tasks/:id/fix-ci", async (c) => {
 
 // Human picks specific PR comments (checkboxes) and asks the agent to address just those, without the full pipeline.
 app.post("/api/tasks/:id/fix-comments", async (c) => {
-    const body = json(z.object({ commentIds: z.array(z.number()).min(1) }), await c.req.json());
+    const body = json(z.object({ repo: z.string().optional(), commentIds: z.array(z.number()).min(1) }), await c.req.json());
     try {
-        await engine.startPrCommentFix(c.req.param("id"), body.commentIds);
+        await engine.startPrCommentFix(c.req.param("id"), body.repo ?? "", body.commentIds);
         return c.json({ started: true });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);

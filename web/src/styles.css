@@ -482,6 +482,18 @@ label.inline { display: inline-flex; align-items: center; gap: 4px; }
 .design-section .markdown table { display: table; width: 100%; }
 .proposed .markdown li > strong:first-child { color: inherit; }
 
+/* one PR per repository: coloured repo chips, one row per PR in the widget, repo tabs above drafts/comments */
+.repo-chip { font-weight: 600; letter-spacing: .02em; }
+.pr-repo { padding: 6px 0; border-top: 1px dashed var(--line); }
+.pr-repo:first-of-type { border-top: 0; padding-top: 0; }
+.pr-repo.failed .widget-body > .chip:nth-child(2) { font-weight: 600; }
+.pr-repo-tabs button.repo-accent.active { border-color: var(--accent); }
+.pr-repo-tabs button.repo-wait.active { border-color: var(--wait); background: var(--wait-soft); }
+.pr-repo-tabs button.repo-ok.active { border-color: var(--ok); background: var(--ok-soft); }
+.pr-repo-tabs button.repo-warn.active { border-color: var(--warn); background: var(--warn-soft); }
+.pr-repo-tabs button .chip { margin-left: 4px; }
+section.card h2 .repo-chip { margin-right: 2px; }
+
 /* PR draft editor: markdown source beside the rendered preview */
 .pr-editor { display: grid; gap: 8px; }
 .pr-editor > label { display: block; font-size: 13px; color: var(--ink-2); }

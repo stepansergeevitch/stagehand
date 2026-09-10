@@ -204,6 +204,23 @@ export interface TaskLabel {
     color: string;
 }
 
+// One pull request of a task: one row per repository (repo = sub-repo directory, '' for a single-repo env). `approved_at`
+// is the human's per-repo approval at PR Creation Review; `number`/`url` exist once the PR is open on GitHub.
+export interface PrStateRow {
+    task_id: string;
+    repo: string;
+    number: number | null;
+    url: string | null;
+    checks_json: string | null;
+    review_decision: string | null;
+    merged_at: string | null;
+    pushed_at: string | null;
+    approved_at: string | null;
+    // GitHub's OPEN / CLOSED / MERGED as of the last poll.
+    state: string | null;
+    updated_at: string;
+}
+
 export const extraTicketsOf = (t: Pick<TaskRow, "extra_tickets">): Array<{ source: "clickup" | "linear"; id: string; url: string | null }> => {
     try {
         const v: unknown = t.extra_tickets ? JSON.parse(t.extra_tickets) : [];
@@ -367,13 +384,18 @@ CREATE TABLE IF NOT EXISTS rate_limits (
     PRIMARY KEY (account_id, window)
 );
 CREATE TABLE IF NOT EXISTS pr_state (
-    task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    repo TEXT NOT NULL DEFAULT '',
     number INTEGER,
     url TEXT,
     checks_json TEXT,
     review_decision TEXT,
     merged_at TEXT,
-    updated_at TEXT NOT NULL
+    pushed_at TEXT,
+    approved_at TEXT,
+    state TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, repo)
 );
 CREATE TABLE IF NOT EXISTS services (
     id TEXT PRIMARY KEY,
@@ -508,6 +530,9 @@ const MIGRATIONS: Array<[string, string]> = [
     ["usage.task_title", `ALTER TABLE usage ADD COLUMN task_title TEXT`],
     // When Stagehand last pushed the branch: right after a push GitHub reports no checks for a moment, which must not read as "green".
     ["pr_state.pushed_at", `ALTER TABLE pr_state ADD COLUMN pushed_at TEXT`],
+    // Which repository's draft a PR Creation Review verdict was about (multi-repo envs review one PR per repo).
+    ["reviews.repo", `ALTER TABLE reviews ADD COLUMN repo TEXT`],
+    ["pr_state.state", `ALTER TABLE pr_state ADD COLUMN state TEXT`],
     // Free-form labels the human puts on a task: JSON [{text, color}] (color = CSS hex), shown in the list and the header.
     ["tasks.labels", `ALTER TABLE tasks ADD COLUMN labels TEXT`],
 ];
@@ -575,6 +600,29 @@ export const openDb = (dataDir: string): DB => {
     for (const [key, sql] of MIGRATIONS) {
         const [table, column] = key.split(".") as [string, string];
         if (!hasColumn(db, table, column)) db.exec(sql);
+    }
+    // pr_state used to be one row per task (PRIMARY KEY task_id). A multi-repo workspace opens one PR per repository, so
+    // the key is now (task_id, repo) with repo = '' for a single-repo env. SQLite cannot change a primary key in place:
+    // rebuild the table once, carrying every existing row over as repo ''.
+    if (!hasColumn(db, "pr_state", "repo")) {
+        db.exec(`ALTER TABLE pr_state RENAME TO pr_state_old`);
+        db.exec(`CREATE TABLE pr_state (
+            task_id TEXT NOT NULL REFERENCES tasks(id),
+            repo TEXT NOT NULL DEFAULT '',
+            number INTEGER,
+            url TEXT,
+            checks_json TEXT,
+            review_decision TEXT,
+            merged_at TEXT,
+            pushed_at TEXT,
+            approved_at TEXT,
+            state TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (task_id, repo)
+        )`);
+        db.exec(`INSERT INTO pr_state (task_id, repo, number, url, checks_json, review_decision, merged_at, pushed_at, approved_at, updated_at)
+                 SELECT task_id, '', number, url, checks_json, review_decision, merged_at, pushed_at, updated_at, updated_at FROM pr_state_old`);
+        db.exec(`DROP TABLE pr_state_old`);
     }
     // Stage identifiers are just data, not schema — renaming one (pr_red -> pr_fix, 2026-09-09: the same stage now also
     // triggers from picked PR comments, not just failing CI, so "red" stopped being accurate) means rewriting any

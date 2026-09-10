@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
+import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { closeChromeTabs, listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
@@ -19,7 +19,7 @@ import type { Services } from "./services.js";
 import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
 import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
-import { DesignResult, ImplResult, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
+import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
 
 // A comment anchored to one line of the review diff. `line` is the new-file line for add/context lines, the old-file line for deletions.
 export interface LineComment {
@@ -37,7 +37,9 @@ export type PrComment =
     | { kind: "general"; id: number; author: string; body: string; at: string; url: string };
 export interface PrComments {
     number: number;
+    // GitHub owner/name of the repository the PR lives in, and the task's sub-repo directory ("" for a single repo).
     repo: string;
+    repoDir: string;
     human: PrComment[];
     automation: PrComment[];
     fetchedAt: string;
@@ -45,6 +47,8 @@ export interface PrComments {
 
 export interface ReviewInput {
     verdict: "approve" | "changes";
+    // PR Creation Review only: which repository's draft the verdict is about ("" = the single repository).
+    repo?: string | undefined;
     routeTo?: "implementation" | "design_proposal" | undefined;
     notes?: string | undefined;
     comments?: LineComment[] | undefined;
@@ -137,6 +141,12 @@ interface DispatchOpts {
 // excluded from both the "pending" and "failed" checks that gate PR Green/PR Fix. Convention: job names end in
 // `_hold` (e.g. `deploy_hold`) or match `reset_*_db` (e.g. `reset_staging_db`).
 const isApprovalGateCheck = (c: { name?: string; context?: string }): boolean => /_hold$|reset_.*_db$/i.test(c.name ?? c.context ?? "");
+
+// Naming a repository in status lines and errors: the sub-repo directory, or "the repository" for a single-repo env.
+const repoLabel = (repo: string): string => repo || "the repository";
+// "backend: " in front of a per-repo status fragment, only when the task spans several repositories.
+const repoPrefix = (repo: string, repos: string[]): string => (repos.length > 1 && repo ? `${repo}: ` : "");
+const repoScopeNote = (repo: string): string => (repo ? `Repository: \`${repo}/\` inside the worktree — every git and gh command below runs inside that directory.\n` : "");
 
 const FIVE_HOUR = "five_hour";
 // Task states in which nothing happens until a human acts (or, for rate limits, until the window resets).
@@ -715,21 +725,6 @@ export class Engine extends EventEmitter {
         this.emitTask(taskId);
     }
 
-    // The human edits the drafted PR title/body before approving; Approve & create PR then uses the edited file.
-    setPrDraft(taskId: string, patch: { title?: string | undefined; body?: string | undefined; base?: string | undefined }): { title: string; body: string; base: string } {
-        const task = this.getTask(taskId);
-        if (!task) throw new Error("task not found");
-        if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
-        const current = this.readArtifactJson<{ title: string; body: string; base: string }>(taskId, "pr.json");
-        const env = this.env(task.env_id);
-        const next = { title: (patch.title ?? current?.title ?? "").trim(), body: patch.body ?? current?.body ?? "", base: (patch.base ?? current?.base ?? env.base_branch).trim() || env.base_branch };
-        if (!next.title) throw new Error("the PR title cannot be empty");
-        writeFileSync(join(this.taskDir(taskId), "pr.json"), JSON.stringify(next, null, 2));
-        this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
-        this.emitTask(taskId);
-        return next;
-    }
-
     setLabels(taskId: string, labels: TaskLabel[]): void {
         const clean = labels.map((l) => ({ text: l.text.trim().slice(0, 40), color: l.color })).filter((l) => l.text);
         this.db.prepare(`UPDATE tasks SET labels = ?, updated_at = ? WHERE id = ?`).run(clean.length ? JSON.stringify(clean) : null, now(), taskId);
@@ -846,9 +841,13 @@ export class Engine extends EventEmitter {
         const comments = input.comments ?? [];
         const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE task_id = ? AND stage = ? AND verdict = 'changes'`).get(taskId, task.stage) as { n: number };
         this.db
-            .prepare(`INSERT INTO reviews (id, task_id, stage, verdict, route_to, notes, comments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-            .run(randomUUID(), taskId, task.stage, input.verdict, input.routeTo ?? null, input.notes ?? null, comments.length ? JSON.stringify(comments) : null, now());
+            .prepare(`INSERT INTO reviews (id, task_id, stage, verdict, route_to, notes, comments, repo, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(randomUUID(), taskId, task.stage, input.verdict, input.routeTo ?? null, input.notes ?? null, comments.length ? JSON.stringify(comments) : null, input.repo ?? null, now());
 
+        if (task.stage === "pr_creation_review") {
+            this.reviewPrDraft(task, input, prior.n + 1);
+            return;
+        }
         if (input.verdict === "changes") {
             const target: Stage = task.stage === "design_proposal" || task.stage === "pr_fix" ? task.stage : (input.routeTo ?? "implementation");
             this.setStage(taskId, target);
@@ -860,10 +859,6 @@ export class Engine extends EventEmitter {
         }
         const next = STAGE_DEFS[task.stage].next;
         if (!next) return;
-        if (task.stage === "pr_creation_review") {
-            void this.createPr(taskId);
-            return;
-        }
         if (task.stage === "pr_fix") {
             void this.pushPrFix(taskId);
             return;
@@ -871,12 +866,17 @@ export class Engine extends EventEmitter {
         this.advance(taskId, next);
     }
 
-    // ---------- pull requests ----------
+    // ---------- pull requests (one per repository) ----------
 
-    private prCheckouts(task: TaskRow, env: EnvRow): string[] {
-        const wt = task.worktree_path ?? env.path;
+    // Repositories a task opens PRs in: each sub-repo of a multi-repo workspace, or "" for the single repository.
+    private prRepos(env: EnvRow): string[] {
         const subs = envRepos(env);
-        return subs.length ? subs.map((d) => join(wt, d)) : [wt];
+        return subs.length ? subs : [""];
+    }
+
+    private checkoutOf(task: TaskRow, env: EnvRow, repo: string): string {
+        const wt = task.worktree_path ?? env.path;
+        return repo ? join(wt, repo) : wt;
     }
 
     private async git(cwd: string, args: string[], env: EnvRow): Promise<string> {
@@ -889,115 +889,202 @@ export class Engine extends EventEmitter {
         return stdout.trim();
     }
 
-    // After the human approves the draft: push (if allowed) and open the PR (if allowed); otherwise tell the human what to do.
-    // The poller then tracks the PR by head branch, so a PR the human opens by hand is picked up the same way.
-    private async createPr(taskId: string): Promise<void> {
+    // Every git checkout of the task (one per repository), for cleanup.
+    private prCheckouts(task: TaskRow, env: EnvRow): string[] {
+        return this.prRepos(env).map((repo) => this.checkoutOf(task, env, repo));
+    }
+
+    prRows(taskId: string): PrStateRow[] {
+        return this.db.prepare(`SELECT * FROM pr_state WHERE task_id = ? ORDER BY repo`).all(taskId) as PrStateRow[];
+    }
+
+    private prRow(taskId: string, repo: string): PrStateRow | undefined {
+        return this.db.prepare(`SELECT * FROM pr_state WHERE task_id = ? AND repo = ?`).get(taskId, repo) as PrStateRow | undefined;
+    }
+
+    private upsertPrRow(taskId: string, repo: string, patch: Partial<Omit<PrStateRow, "task_id" | "repo" | "updated_at">>): void {
+        const cur = this.prRow(taskId, repo);
+        const next = { number: null, url: null, checks_json: null, review_decision: null, merged_at: null, pushed_at: null, approved_at: null, state: null, ...(cur ?? {}), ...patch };
+        this.db
+            .prepare(
+                `INSERT INTO pr_state (task_id, repo, number, url, checks_json, review_decision, merged_at, pushed_at, approved_at, state, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(task_id, repo) DO UPDATE SET number = excluded.number, url = excluded.url, checks_json = excluded.checks_json, review_decision = excluded.review_decision, merged_at = excluded.merged_at, pushed_at = excluded.pushed_at, approved_at = excluded.approved_at, state = excluded.state, updated_at = excluded.updated_at`,
+            )
+            .run(taskId, repo, next.number, next.url, next.checks_json, next.review_decision, next.merged_at, next.pushed_at, next.approved_at, next.state, now());
+    }
+
+    // pr.json normalised to one draft per repository. A file from before per-repo drafts ({title, body, base}) is fanned
+    // out to every repository of the env — that is what one shared draft used to mean.
+    readPrDraft(taskId: string): PrDraft | null {
+        const raw = this.readArtifactJson<unknown>(taskId, "pr.json");
+        if (!raw || typeof raw !== "object") return null;
+        const parsed = PrDraft.safeParse(raw);
+        if (parsed.success) return parsed.data;
+        const old = raw as { title?: unknown; body?: unknown; base?: unknown };
+        if (typeof old.title !== "string") return null;
         const task = this.getTask(taskId);
-        if (!task?.branch) return;
+        const env = task ? this.env(task.env_id) : null;
+        const repos = env ? this.prRepos(env) : [""];
+        return { base: typeof old.base === "string" && old.base ? old.base : (env?.base_branch ?? "main"), drafts: repos.map((repo) => ({ repo, title: old.title as string, body: typeof old.body === "string" ? old.body : "" })) };
+    }
+
+    // Which repositories this task's PR review covers: the drafted ones, else every repository of the env.
+    private draftRepos(taskId: string, env: EnvRow): string[] {
+        const draft = this.readPrDraft(taskId);
+        return draft?.drafts.length ? draft.drafts.map((d) => d.repo) : this.prRepos(env);
+    }
+
+    // The human edits one repository's drafted PR (title / markdown body) or the shared base before approving it.
+    setPrDraft(taskId: string, patch: { repo?: string | undefined; title?: string | undefined; body?: string | undefined; base?: string | undefined }): PrDraft {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
         const env = this.env(task.env_id);
-        const rules = rulesOf(this.configDirOf(env));
-        const draft = this.readArtifactJson<{ title: string; body: string; base: string }>(taskId, "pr.json");
-        const existing = this.db.prepare(`SELECT number, url FROM pr_state WHERE task_id = ?`).get(taskId) as { number: number | null; url: string | null } | undefined;
-        const checkouts = this.prCheckouts(task, env);
-        const created: string[] = [];
-        const manual: string[] = [];
-        let touched = 0;
-        for (const cwd of checkouts) {
-            const ahead = await this.git(cwd, ["log", "--oneline", `origin/${env.base_branch}..HEAD`], env).catch(() => "");
-            const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
-            const label = checkouts.length > 1 ? `${cwd.slice((task.worktree_path ?? env.path).length + 1)}: ` : "";
-            // Nothing committed but changes on disk: an env that forbids agent commits (or an agent that left work
-            // uncommitted) — the human has to commit before anything can be pushed or opened. Say so instead of skipping.
-            if (!ahead && dirty.trim()) {
-                touched++;
-                manual.push(`${label}commit the ${dirty.trim().split("\n").length} changed file(s) and push \`${task.branch}\``);
-                continue;
-            }
-            if (!ahead) continue;
-            touched++;
-            if (!rules.allowPush) {
-                manual.push(`${label}push \`${task.branch}\``);
-                continue;
-            }
-            this.setTaskStatus(taskId, "running", `PR Creation Review · pushing ${task.branch}`);
-            try {
-                await this.git(cwd, ["push", "-u", "origin", task.branch], env);
-            } catch (e) {
-                this.setTaskStatus(taskId, "failed", `push failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
-                return;
-            }
-            // A task sent back after its PR existed just needs the push; the open PR picks the new commits up.
-            if (existing?.number) {
-                this.resetPrState(taskId);
-                created.push(existing.url ?? `#${existing.number}`);
-                continue;
-            }
-            if (!rules.allowPrCreate || !draft) {
-                manual.push(`${label}open the PR from \`${task.branch}\``);
-                continue;
-            }
-            try {
-                const url = await this.gh(cwd, ["pr", "create", "--base", draft.base || env.base_branch, "--head", task.branch, "--title", draft.title, "--body", draft.body], env);
-                created.push(url);
-                const number = Number(url.split("/").pop());
-                this.db
-                    .prepare(`INSERT INTO pr_state (task_id, number, url, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET number = excluded.number, url = excluded.url, updated_at = excluded.updated_at`)
-                    .run(taskId, Number.isFinite(number) ? number : null, url, now());
-            } catch (e) {
-                this.setTaskStatus(taskId, "failed", `gh pr create failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
-                return;
-            }
-        }
-        this.setStage(taskId, "pr_waiting");
-        if (touched === 0) {
-            this.setTaskStatus(taskId, "blocked", `PR Creation Review · nothing to ship: no commits ahead of ${env.base_branch} and no uncommitted changes in the worktree — return the task to Implementation, or delete it`);
+        const current = this.readPrDraft(taskId) ?? { base: env.base_branch, drafts: [] };
+        const repo = patch.repo ?? current.drafts[0]?.repo ?? "";
+        if (this.prRow(taskId, repo)?.number) throw new Error(`the ${repoLabel(repo)} PR already exists on GitHub — edit it there`);
+        const idx = current.drafts.findIndex((d) => d.repo === repo);
+        const cur = idx >= 0 ? current.drafts[idx]! : { repo, title: "", body: "" };
+        const entry = { repo, title: (patch.title ?? cur.title).trim(), body: patch.body ?? cur.body };
+        if (!entry.title) throw new Error("the PR title cannot be empty");
+        const drafts = idx >= 0 ? current.drafts.map((d, i) => (i === idx ? entry : d)) : [...current.drafts, entry];
+        const next: PrDraft = { base: (patch.base ?? current.base ?? env.base_branch).trim() || env.base_branch, drafts };
+        writeFileSync(join(this.taskDir(taskId), "pr.json"), JSON.stringify(next, null, 2));
+        // An edited draft is no longer the approved one (only matters while its PR does not exist yet).
+        if (patch.title !== undefined || patch.body !== undefined) this.db.prepare(`UPDATE pr_state SET approved_at = NULL, updated_at = ? WHERE task_id = ? AND repo = ? AND number IS NULL`).run(now(), taskId, repo);
+        this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+        this.emitTask(taskId);
+        return next;
+    }
+
+    // PR Creation Review is per repository: each draft is approved on its own (its PR is pushed/opened right away) and
+    // the task moves on once every repository's draft is approved. "Changes" redoes the drafting run with notes aimed at
+    // one repository; drafts whose PR already exists are untouched by that.
+    private reviewPrDraft(task: TaskRow, input: ReviewInput, round: number): void {
+        const env = this.env(task.env_id);
+        const repos = this.draftRepos(task.id, env);
+        const repo = input.repo ?? (repos.length === 1 ? repos[0]! : undefined);
+        if (input.verdict === "changes") {
+            this.db.prepare(`UPDATE pr_state SET approved_at = NULL, updated_at = ? WHERE task_id = ? AND number IS NULL`).run(now(), task.id);
+            const scope = repo !== undefined && repos.length > 1 ? `\n\nRevise the draft for repository \`${repo}\` only; copy every other repository's draft from the current pr.json unchanged.` : "";
+            const notes = input.notes?.trim() ? renderReviewNotes(round, input.notes, []) : "The reviewer requested changes without notes; re-examine the draft and improve it.";
+            this.dispatch(task.id, "pr_creation_review", { notes: `${notes}${scope}` });
             return;
         }
-        if (manual.length) {
-            const why = rules.allowCommit && rules.allowPush ? "the agent left this to you" : "this env forbids it for agents";
-            this.setTaskStatus(taskId, "idle", `PR Waiting · ${why} — please ${manual.join(", ")}${created.length ? ` · ${created.join(" ")}` : ""}${!rules.allowPrCreate ? "; then open the PR (title/body in the PR draft card)" : ""}; Stagehand picks the PR up by branch name`);
-        } else this.setTaskStatus(taskId, "idle", `PR Waiting · ${created.join(" ")}`);
+        if (repo === undefined) throw new Error("say which repository's draft you approve");
+        if (!repos.includes(repo)) throw new Error(`no draft for repository ${repo || "(root)"}`);
+        void this.approvePrRepo(task.id, repo).catch((e: unknown) => console.warn(`[stagehand] approve PR ${task.ticket_id} ${repo}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+    }
+
+    private async approvePrRepo(taskId: string, repo: string): Promise<void> {
+        this.upsertPrRow(taskId, repo, { approved_at: now() });
+        const outcome = await this.createPrForRepo(taskId, repo);
+        if (outcome === null) return; // failed; status already says why
+        const task = this.getTask(taskId);
+        if (!task) return;
+        const env = this.env(task.env_id);
+        const repos = this.draftRepos(taskId, env);
+        const rows = this.prRows(taskId);
+        const remaining = repos.filter((r) => !rows.find((x) => x.repo === r)?.approved_at);
+        if (remaining.length) {
+            this.setStage(taskId, "pr_creation_review");
+            this.setTaskStatus(taskId, "waiting_user", `PR Creation Review · ${repoPrefix(repo, repos)}${outcome} — still to review: ${remaining.map((r) => repoLabel(r)).join(", ")}`);
+            return;
+        }
+        this.setStage(taskId, "pr_waiting");
+        this.syncPrTaskState(taskId, { force: true });
         this.pollPrSoon(taskId);
+    }
+
+    // After the human approves one repository's draft: push that checkout (if allowed) and open its PR (if allowed);
+    // otherwise say what the human has to do. Returns a short outcome for the status line, or null after a failure
+    // (the task status already carries the error). The poller later tracks the PR by head branch, so a PR opened by
+    // hand is picked up the same way.
+    private async createPrForRepo(taskId: string, repo: string): Promise<string | null> {
+        const task = this.getTask(taskId);
+        if (!task?.branch) return null;
+        const env = this.env(task.env_id);
+        const rules = rulesOf(this.configDirOf(env));
+        const draft = this.readPrDraft(taskId);
+        const entry = draft?.drafts.find((d) => d.repo === repo);
+        const cwd = this.checkoutOf(task, env, repo);
+        const existing = this.prRow(taskId, repo);
+        const ahead = await this.git(cwd, ["log", "--oneline", `origin/${env.base_branch}..HEAD`], env).catch(() => "");
+        const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
+        // Nothing committed but changes on disk: an env that forbids agent commits (or an agent that left work
+        // uncommitted) — the human has to commit before anything can be pushed or opened.
+        if (!ahead && dirty.trim()) return `${dirty.trim().split("\n").length} changed file(s) are not committed — commit and push \`${task.branch}\` yourself, then open the PR (draft below)`;
+        if (!ahead) return `nothing to ship: no commits ahead of ${env.base_branch}`;
+        if (!rules.allowPush) {
+            return existing?.number
+                ? `push \`${task.branch}\` yourself — PR #${existing.number} picks the commits up`
+                : `this env forbids agent pushes — push \`${task.branch}\` and open the PR yourself (draft below); Stagehand picks it up by branch`;
+        }
+        this.setTaskStatus(taskId, "running", `PR Creation Review · pushing ${repoLabel(repo)} (${task.branch})`);
+        try {
+            await this.git(cwd, ["push", "-u", "origin", task.branch], env);
+        } catch (e) {
+            this.setTaskStatus(taskId, "failed", `${repoLabel(repo)}: push failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            return null;
+        }
+        // A task sent back after its PR existed just needs the push; the open PR picks the new commits up.
+        if (existing?.number) {
+            this.resetPrState(taskId, repo);
+            return `pushed to PR #${existing.number}`;
+        }
+        if (!rules.allowPrCreate || !entry) {
+            this.upsertPrRow(taskId, repo, { pushed_at: now() });
+            return `pushed \`${task.branch}\` — this env forbids agent PR creation: open the PR yourself (draft below); Stagehand picks it up by branch`;
+        }
+        try {
+            const url = await this.gh(cwd, ["pr", "create", "--base", draft?.base || env.base_branch, "--head", task.branch, "--title", entry.title, "--body", entry.body], env);
+            const number = Number(url.split("/").pop());
+            this.upsertPrRow(taskId, repo, { number: Number.isFinite(number) ? number : null, url, pushed_at: now(), state: "OPEN" });
+            return `PR #${Number.isFinite(number) ? number : "?"} created`;
+        } catch (e) {
+            this.setTaskStatus(taskId, "failed", `${repoLabel(repo)}: gh pr create failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            return null;
+        }
     }
 
     // A push changed the PR's head: what was known about checks and review verdicts describes the old commit. Drop it and
     // remember when the push happened, so the next poll starts from "nothing reported yet" instead of stale green/red.
-    private resetPrState(taskId: string): void {
-        this.db.prepare(`UPDATE pr_state SET checks_json = NULL, review_decision = NULL, pushed_at = ?, updated_at = ? WHERE task_id = ?`).run(now(), now(), taskId);
-        this.prCommentsCache.delete(taskId);
+    private resetPrState(taskId: string, repo: string): void {
+        this.upsertPrRow(taskId, repo, { checks_json: null, review_decision: null, pushed_at: now() });
+        this.prCommentsCache.delete(`${taskId}:${repo}`);
     }
 
-    // Poll the PR now (a few seconds after a push GitHub already knows the new head), not at the next 2-minute tick.
+    // Poll every PR of the task now (a few seconds after a push GitHub already knows the new head), not at the next tick.
     private pollPrSoon(taskId: string, delayMs = 4_000): void {
         setTimeout(() => {
             const task = this.getTask(taskId);
-            if (task) void this.pollPr(task).catch((e: unknown) => console.warn(`[stagehand] PR poll ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+            if (task) void this.pollAllPrs(task).catch((e: unknown) => console.warn(`[stagehand] PR poll ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
         }, delayMs).unref();
     }
 
-    // Human-triggered: forget the cached comments, re-read the PR now, return the fresh state.
+    // Human-triggered: forget the cached comments, re-read every PR now.
     async refreshPr(taskId: string): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
-        this.prCommentsCache.delete(taskId);
-        await this.pollPr(task, { force: true });
+        for (const key of [...this.prCommentsCache.keys()]) if (key.startsWith(`${taskId}:`)) this.prCommentsCache.delete(key);
+        await this.pollAllPrs(task, { force: true });
     }
 
-    // Merges the PR as the human (a button they click). The task then moves to Done on the next poll, which runs right away.
-    async mergePr(taskId: string, method: "squash" | "merge" | "rebase", deleteBranch: boolean): Promise<string> {
+    // Merges one repository's PR as the human (a button they click). The task reaches Done once every PR is merged.
+    async mergePr(taskId: string, repo: string, method: "squash" | "merge" | "rebase", deleteBranch: boolean): Promise<string> {
         const task = this.getTask(taskId);
         if (!task?.branch) throw new Error("task has no branch");
         const env = this.env(task.env_id);
-        const state = this.db.prepare(`SELECT number, url, merged_at FROM pr_state WHERE task_id = ?`).get(taskId) as { number: number | null; url: string | null; merged_at: string | null } | undefined;
-        if (!state?.number) throw new Error("no PR recorded for this task yet");
-        if (state.merged_at) throw new Error("already merged");
-        const cwd = this.prCheckouts(task, env)[0]!;
-        this.setTaskStatus(taskId, "running", `merging ${state.url ?? `#${state.number}`} (${method})`);
+        const row = this.prRow(taskId, repo);
+        if (!row?.number) throw new Error(`no PR recorded for ${repoLabel(repo)} yet`);
+        if (row.merged_at) throw new Error("already merged");
+        const cwd = this.checkoutOf(task, env, repo);
+        this.setTaskStatus(taskId, "running", `merging ${repoLabel(repo)} ${row.url ?? `#${row.number}`} (${method})`);
         try {
-            await this.gh(cwd, ["pr", "merge", String(state.number), `--${method}`], env);
+            await this.gh(cwd, ["pr", "merge", String(row.number), `--${method}`], env);
         } catch (e) {
             const msg = String((e as { stderr?: string }).stderr ?? (e as Error).message ?? e).trim().split("\n").slice(-2).join(" ").slice(0, 200);
-            this.setTaskStatus(taskId, "idle", `merge failed: ${msg} · ${state.url ?? ""}`);
+            this.setTaskStatus(taskId, "idle", `${repoLabel(repo)}: merge failed: ${msg} · ${row.url ?? ""}`);
             throw new Error(`merge failed: ${msg}`);
         }
         let note = "";
@@ -1007,28 +1094,30 @@ export class Engine extends EventEmitter {
                 note = ` (remote branch not deleted: ${String((e as Error).message ?? e).slice(0, 80)})`;
             });
         }
-        this.setTaskStatus(taskId, "idle", `merged${note} · ${state.url ?? ""}`);
-        await this.pollPr(this.getTask(taskId)!, { force: true }).catch(() => undefined);
+        this.setTaskStatus(taskId, "idle", `${repoLabel(repo)}: merged${note} · ${row.url ?? ""}`);
+        await this.pollAllPrs(this.getTask(taskId)!, { force: true }).catch(() => undefined);
         return `merged${note}`;
     }
 
-    // Everything said on the GitHub PR: review summaries, line comments and general comments, split into human vs automation by the env's handle list.
-    async prComments(taskId: string): Promise<PrComments | null> {
+    // Everything said on one repository's PR: review summaries, line comments and general comments, split into human vs
+    // automation by the env's handle list.
+    async prComments(taskId: string, repo: string): Promise<PrComments | null> {
         const task = this.getTask(taskId);
         if (!task) return null;
-        const state = this.db.prepare(`SELECT number FROM pr_state WHERE task_id = ?`).get(taskId) as { number: number | null } | undefined;
-        if (!state?.number) return null;
-        const cached = this.prCommentsCache.get(taskId);
+        const row = this.prRow(taskId, repo);
+        if (!row?.number) return null;
+        const key = `${taskId}:${repo}`;
+        const cached = this.prCommentsCache.get(key);
         if (cached && Date.now() - cached.at < 60_000) return cached.data;
         const env = this.env(task.env_id);
-        const cwd = this.prCheckouts(task, env)[0]!;
-        const repo = (JSON.parse(await this.gh(cwd, ["repo", "view", "--json", "nameWithOwner"], env)) as { nameWithOwner: string }).nameWithOwner;
-        const n = state.number;
+        const cwd = this.checkoutOf(task, env, repo);
+        const ghRepo = (JSON.parse(await this.gh(cwd, ["repo", "view", "--json", "nameWithOwner"], env)) as { nameWithOwner: string }).nameWithOwner;
+        const n = row.number;
         const [reviewsRaw, lineRaw, generalRaw, threads] = await Promise.all([
-            this.gh(cwd, ["api", `repos/${repo}/pulls/${n}/reviews`, "--paginate"], env),
-            this.gh(cwd, ["api", `repos/${repo}/pulls/${n}/comments`, "--paginate"], env),
-            this.gh(cwd, ["api", `repos/${repo}/issues/${n}/comments`, "--paginate"], env),
-            this.reviewThreads(cwd, repo, n, env).catch((e: unknown) => {
+            this.gh(cwd, ["api", `repos/${ghRepo}/pulls/${n}/reviews`, "--paginate"], env),
+            this.gh(cwd, ["api", `repos/${ghRepo}/pulls/${n}/comments`, "--paginate"], env),
+            this.gh(cwd, ["api", `repos/${ghRepo}/issues/${n}/comments`, "--paginate"], env),
+            this.reviewThreads(cwd, ghRepo, n, env).catch((e: unknown) => {
                 console.warn(`[stagehand] review threads for #${n}: ${String((e as Error).message ?? e).slice(0, 160)}`);
                 return new Map<number, { threadId: string; resolved: boolean }>();
             }),
@@ -1049,7 +1138,8 @@ export class Engine extends EventEmitter {
             kind: "line" as const,
             id: c.id,
             author: c.user.login,
-            path: c.path,
+            // Paths come back relative to that repository; prefix the sub-repo dir so they match the task's diff view.
+            path: repo ? `${repo}/${c.path}` : c.path,
             line: c.line ?? c.original_line ?? null,
             side: c.side === "LEFT" ? ("old" as const) : ("new" as const),
             outdated: c.line === null,
@@ -1074,12 +1164,13 @@ export class Engine extends EventEmitter {
         const all = [...reviews, ...lines, ...general];
         const data: PrComments = {
             number: n,
-            repo,
+            repo: ghRepo,
+            repoDir: repo,
             human: all.filter((c) => !isBot(c.author)),
             automation: all.filter((c) => isBot(c.author)),
             fetchedAt: now(),
         };
-        this.prCommentsCache.set(taskId, { at: Date.now(), data });
+        this.prCommentsCache.set(key, { at: Date.now(), data });
         return data;
     }
     private prCommentsCache = new Map<string, { at: number; data: PrComments }>();
@@ -1106,123 +1197,142 @@ export class Engine extends EventEmitter {
     }
 
     // Marks a review thread resolved (or reopens it) on GitHub, as the human — a button they click, not an agent action.
-    async resolvePrComment(taskId: string, commentId: number, resolved: boolean): Promise<PrComments | null> {
+    async resolvePrComment(taskId: string, repo: string, commentId: number, resolved: boolean): Promise<PrComments | null> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
-        const comments = await this.prComments(taskId);
+        const comments = await this.prComments(taskId, repo);
         const target = comments?.human.concat(comments.automation).find((c) => c.id === commentId);
         if (!target || target.kind !== "line") throw new Error("comment not found — refresh and try again");
         if (!target.threadId) throw new Error("this comment has no review thread to resolve");
         const env = this.env(task.env_id);
-        const cwd = this.prCheckouts(task, env)[0]!;
+        const cwd = this.checkoutOf(task, env, repo);
         const mutation = resolved ? "resolveReviewThread" : "unresolveReviewThread";
         const raw = JSON.parse(await this.gh(cwd, ["api", "graphql", "-f", `query=mutation($id:ID!){ ${mutation}(input:{threadId:$id}){ thread{ id isResolved } } }`, "-F", `id=${target.threadId}`], env)) as {
             data?: Record<string, { thread?: { isResolved: boolean } } | null>;
             errors?: Array<{ message: string }>;
         };
         if (raw.errors?.length) throw new Error(raw.errors.map((e) => e.message).join("; "));
-        this.prCommentsCache.delete(taskId);
-        return this.prComments(taskId);
+        this.prCommentsCache.delete(`${taskId}:${repo}`);
+        return this.prComments(taskId, repo);
     }
 
-    // Every few ticks: look the PR up (by stored number or by head branch) and move the task through pr_waiting → pr_green → pr_approved → done.
-    // Blocked tasks (failing checks) are polled too — a re-run or a fix pushed by hand must be noticed without a click.
+    // Every few ticks: look every PR up (by stored number or by head branch) and move the task through
+    // pr_waiting → pr_green → pr_approved → done from the aggregate of its repositories. Blocked tasks (failing checks)
+    // are polled too — a re-run or a fix pushed by hand must be noticed without a click.
     private pollCounter = 0;
     private pollPrs(): void {
         if (++this.pollCounter % 8 !== 0) return; // scheduler ticks every 15 s → every 2 min
         const tasks = this.db.prepare(`SELECT * FROM tasks WHERE stage IN ('pr_waiting','pr_green','pr_approved') AND status IN ('idle', 'blocked')`).all() as TaskRow[];
-        for (const task of tasks) void this.pollPr(task).catch((e: unknown) => console.warn(`[stagehand] PR poll ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+        for (const task of tasks) void this.pollAllPrs(task).catch((e: unknown) => console.warn(`[stagehand] PR poll ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
     }
 
     // Once a push is this recent, "no checks reported" means GitHub has not registered them yet, not that there are none.
     private static readonly CHECKS_GRACE_MS = 10 * 60_000;
 
-    private async pollPr(task: TaskRow, opts: { force?: boolean } = {}): Promise<void> {
+    private async pollAllPrs(task: TaskRow, opts: { force?: boolean } = {}): Promise<void> {
         if (!task.branch) return;
         const env = this.env(task.env_id);
-        const cwd = this.prCheckouts(task, env)[0]!;
-        const state = this.db.prepare(`SELECT * FROM pr_state WHERE task_id = ?`).get(task.id) as { number: number | null; url: string | null; pushed_at: string | null } | undefined;
-        let number = state?.number ?? null;
+        for (const repo of this.draftRepos(task.id, env)) {
+            await this.pollPr(task, repo).catch((e: unknown) => console.warn(`[stagehand] PR poll ${task.ticket_id} ${repo || "(root)"}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+        }
+        this.syncPrTaskState(task.id, opts);
+    }
+
+    // Reads one repository's PR from GitHub into its pr_state row; false when that repository has no PR yet.
+    private async pollPr(task: TaskRow, repo: string): Promise<boolean> {
+        if (!task.branch) return false;
+        const env = this.env(task.env_id);
+        const cwd = this.checkoutOf(task, env, repo);
+        if (!existsSync(cwd)) return false;
+        const row = this.prRow(task.id, repo);
+        let number = row?.number ?? null;
         if (!number) {
             const list = JSON.parse(await this.gh(cwd, ["pr", "list", "--head", task.branch, "--state", "all", "--json", "number,url", "--limit", "1"], env)) as Array<{ number: number; url: string }>;
-            if (!list[0]) return;
+            if (!list[0]) return false;
             number = list[0].number;
-            this.db
-                .prepare(`INSERT INTO pr_state (task_id, number, url, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET number = excluded.number, url = excluded.url, updated_at = excluded.updated_at`)
-                .run(task.id, number, list[0].url, now());
+            this.upsertPrRow(task.id, repo, { number, url: list[0].url });
         }
-        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(number), "--json", "url,state,mergedAt,reviewDecision,statusCheckRollup,headRefOid"], env)) as {
+        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(number), "--json", "url,state,mergedAt,reviewDecision,statusCheckRollup"], env)) as {
             url: string;
             state: string;
             mergedAt: string | null;
             reviewDecision: string;
-            headRefOid?: string;
             statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string; status?: string; startedAt?: string; completedAt?: string; detailsUrl?: string; targetUrl?: string; workflowName?: string }>;
         };
-        const checks = pr.statusCheckRollup ?? [];
+        this.upsertPrRow(task.id, repo, { url: pr.url, checks_json: JSON.stringify(pr.statusCheckRollup ?? []), review_decision: pr.reviewDecision ?? null, merged_at: pr.mergedAt ?? null, state: pr.state ?? null });
+        return true;
+    }
+
+    // One repository's PR in a word, from its stored row.
+    private prRepoSummary(row: PrStateRow | undefined): { kind: "none" | "manual" | "pending" | "failed" | "green" | "approved" | "merged" | "closed"; text: string } {
+        if (!row?.number) return row?.approved_at ? { kind: "manual", text: "not on GitHub yet — push / open it" } : { kind: "none", text: "not approved yet" };
+        const n = `#${row.number}`;
+        if (row.merged_at) return { kind: "merged", text: `${n} merged` };
+        if (row.state === "CLOSED") return { kind: "closed", text: `${n} closed without merge` };
+        let checks: Array<{ name?: string; context?: string; conclusion?: string; state?: string; status?: string }> = [];
+        try {
+            checks = row.checks_json ? (JSON.parse(row.checks_json) as typeof checks) : [];
+        } catch {
+            checks = [];
+        }
         const gated = checks.filter((c) => !isApprovalGateCheck(c));
         const failed = gated.filter((c) => /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
         const pending = gated.filter((c) => !c.conclusion && !/SUCCESS|FAILURE|ERROR/i.test(c.state ?? "") && (c.status ?? "") !== "COMPLETED");
-        const justPushed = !!state?.pushed_at && Date.now() - new Date(state.pushed_at).getTime() < Engine.CHECKS_GRACE_MS;
-        this.db
-            .prepare(`UPDATE pr_state SET url = ?, checks_json = ?, review_decision = ?, merged_at = ?, updated_at = ? WHERE task_id = ?`)
-            .run(pr.url, JSON.stringify(checks), pr.reviewDecision ?? null, pr.mergedAt ?? null, now(), task.id);
-        // Re-read: the row passed in may be minutes old (scheduler batch) and the status decides what counts as a change.
-        const cur = this.getTask(task.id) ?? task;
-        if (!opts.force && cur.status !== "idle" && cur.status !== "blocked") {
-            // Something else took the task over meanwhile (a PR Fix run, a return to an earlier stage) — only record, don't steer.
-            this.emitTask(task.id);
-            return;
-        }
-        // Only re-announce a blocked/idle line when it actually changed, so a still-red PR does not re-notify every poll.
-        const set = (status: TaskStatus, line: string): void => {
-            if (cur.status === status && cur.status_line === line) {
-                this.emitTask(task.id);
-                return;
-            }
-            this.setTaskStatus(task.id, status, line);
-        };
-        if (pr.mergedAt) {
-            this.setStage(task.id, "done");
-            set("done", `merged · ${pr.url}`);
-            return;
-        }
-        if (pr.state === "CLOSED") {
-            set("stopped", `PR closed without merge · ${pr.url}`);
-            return;
-        }
-        if (failed.length) {
-            const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");
-            if (cur.stage !== "pr_waiting") this.setStage(task.id, "pr_waiting");
-            set("blocked", `PR Waiting · ${failed.length} check(s) failing (${names}) — click Fix CI to have the agent propose a fix, or fix it yourself · ${pr.url}`);
-            return;
-        }
-        if (pending.length || (gated.length === 0 && justPushed)) {
-            if (cur.stage !== "pr_waiting") this.setStage(task.id, "pr_waiting");
-            set("idle", pending.length ? `PR Waiting · ${pending.length} check(s) running (${pending.map((c) => c.name ?? c.context ?? "check").join(", ")}) · ${pr.url}` : `PR Waiting · pushed, waiting for checks to start · ${pr.url}`);
-            return;
-        }
-        if (pr.reviewDecision === "APPROVED") {
-            if (cur.stage !== "pr_approved") this.setStage(task.id, "pr_approved");
-            set("idle", `PR Approved · waiting for merge · ${pr.url}`);
-            return;
-        }
-        if (cur.stage !== "pr_green") this.setStage(task.id, "pr_green");
-        set("idle", `PR Green · ${gated.length ? "checks passed" : "no checks on this repo"}, waiting for review · ${pr.url}`);
+        const justPushed = !!row.pushed_at && Date.now() - new Date(row.pushed_at).getTime() < Engine.CHECKS_GRACE_MS;
+        if (failed.length) return { kind: "failed", text: `${n} ${failed.length} check(s) failing (${failed.map((c) => c.name ?? c.context ?? "check").join(", ")})` };
+        if (pending.length) return { kind: "pending", text: `${n} ${pending.length} check(s) running` };
+        if (gated.length === 0 && justPushed) return { kind: "pending", text: `${n} pushed, waiting for checks to start` };
+        if (row.review_decision === "APPROVED") return { kind: "approved", text: `${n} approved, waiting for merge` };
+        return { kind: "green", text: `${n} ${gated.length ? "checks passed" : "no checks"}, waiting for review` };
     }
 
-    // Human-triggered only (button in the UI) — never automatic. Re-reads the checks fresh (the cached row can be
-    // up to ~2 minutes stale) and dispatches PR Fix, which commits a fix locally but does not push; the human reviews
-    // the diff and approves or requests changes before pushPrFix() ever runs.
-    async startPrFix(taskId: string): Promise<void> {
+    // The task's stage/status/line from the aggregate of its PRs: any red → blocked; anything not yet on GitHub or
+    // still checking → waiting; every PR merged → done; every PR approved → PR Approved; otherwise PR Green.
+    private syncPrTaskState(taskId: string, opts: { force?: boolean } = {}): void {
+        const cur = this.getTask(taskId);
+        if (!cur) return;
+        if (!["pr_waiting", "pr_green", "pr_approved"].includes(cur.stage)) return;
+        if (!opts.force && cur.status !== "idle" && cur.status !== "blocked") {
+            // Something else took the task over meanwhile (a PR Fix run, a return to an earlier stage) — only record, don't steer.
+            this.emitTask(taskId);
+            return;
+        }
+        const env = this.env(cur.env_id);
+        const repos = this.draftRepos(taskId, env);
+        const rows = this.prRows(taskId);
+        const summaries = repos.map((repo) => ({ repo, ...this.prRepoSummary(rows.find((r) => r.repo === repo)) }));
+        const line = summaries.map((s) => `${repoPrefix(s.repo, repos)}${s.text}`).join(" · ");
+        const kinds = new Set(summaries.map((s) => s.kind));
+        const all = (k: string) => summaries.every((s) => s.kind === k);
+        // Only re-announce a blocked/idle line when it actually changed, so a still-red PR does not re-notify every poll.
+        const set = (stage: Stage, status: TaskStatus, text: string): void => {
+            if (cur.stage !== stage) this.setStage(taskId, stage);
+            if (cur.status === status && cur.status_line === text) {
+                this.emitTask(taskId);
+                return;
+            }
+            this.setTaskStatus(taskId, status, text);
+        };
+        if (all("merged")) return set("done", "done", `merged · ${rows.map((r) => r.url).filter(Boolean).join(" ")}`);
+        if (kinds.has("failed")) return set("pr_waiting", "blocked", `PR Waiting · ${line} — click Fix CI on the failing PR, or fix it yourself`);
+        if (kinds.has("none") || kinds.has("manual") || kinds.has("pending")) return set("pr_waiting", "idle", `PR Waiting · ${line}`);
+        if (summaries.every((s) => s.kind === "closed" || s.kind === "merged")) return set("pr_waiting", "stopped", `PR closed without merge · ${line}`);
+        if (summaries.every((s) => s.kind === "approved" || s.kind === "merged")) return set("pr_approved", "idle", `PR Approved · ${line}`);
+        set("pr_green", "idle", `PR Green · ${line}`);
+    }
+
+    // Human-triggered only (button in the UI) — never automatic. Re-reads that repository's checks fresh (the stored row
+    // can be up to ~2 minutes stale) and dispatches PR Fix, which commits a fix locally but does not push; the human
+    // reviews the diff and approves or requests changes before pushPrFix() ever runs.
+    async startPrFix(taskId: string, repo: string): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
         const env = this.env(task.env_id);
-        const state = this.db.prepare(`SELECT number, url FROM pr_state WHERE task_id = ?`).get(taskId) as { number: number | null; url: string | null } | undefined;
-        if (!state?.number) throw new Error("no PR recorded for this task yet");
-        const cwd = this.prCheckouts(task, env)[0]!;
-        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(state.number), "--json", "statusCheckRollup"], env)) as {
+        const row = this.prRow(taskId, repo);
+        if (!row?.number) throw new Error(`no PR recorded for ${repoLabel(repo)} yet`);
+        const cwd = this.checkoutOf(task, env, repo);
+        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(row.number), "--json", "statusCheckRollup"], env)) as {
             statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
         };
         const failed = (pr.statusCheckRollup ?? []).filter((c) => !isApprovalGateCheck(c) && /FAILURE|ERROR|CANCELLED|TIMED_OUT/i.test(c.conclusion ?? c.state ?? ""));
@@ -1232,20 +1342,19 @@ export class Engine extends EventEmitter {
         this.setStage(taskId, "pr_fix");
         this.dispatch(taskId, "pr_fix", {
             attempt: rounds.n + 1,
-            extraVars: { failureOutput: `Failing checks: ${names}. Read their logs with \`gh pr checks ${state.number}\` and \`gh run view --log-failed <run-id>\` before changing anything.` },
+            extraVars: { failureOutput: `${repoScopeNote(repo)}Failing checks on PR #${row.number}: ${names}. Read their logs with \`gh pr checks ${row.number}\` and \`gh run view --log-failed <run-id>\` (run inside that repository) before changing anything.` },
         });
     }
 
     // Human-triggered only (checkbox picks on the PR comments tab). Same commit-locally-then-review-the-diff cycle as
-    // startPrFix, just sourced from PR comments instead of failing checks — the two commonly won't co-occur, but
-    // nothing stops using this while checks are also red; the agent is told which situation it's actually in.
-    async startPrCommentFix(taskId: string, commentIds: number[]): Promise<void> {
+    // startPrFix, just sourced from one PR's comments instead of failing checks.
+    async startPrCommentFix(taskId: string, repo: string, commentIds: number[]): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
-        const state = this.db.prepare(`SELECT number FROM pr_state WHERE task_id = ?`).get(taskId) as { number: number | null } | undefined;
-        if (!state?.number) throw new Error("no PR recorded for this task yet");
-        const comments = await this.prComments(taskId);
+        const row = this.prRow(taskId, repo);
+        if (!row?.number) throw new Error(`no PR recorded for ${repoLabel(repo)} yet`);
+        const comments = await this.prComments(taskId, repo);
         if (!comments) throw new Error("could not fetch PR comments — re-poll and try again");
         const wanted = new Set(commentIds);
         const picked = [...comments.human, ...comments.automation].filter((c) => wanted.has(c.id));
@@ -1256,13 +1365,14 @@ export class Engine extends EventEmitter {
                 : c.kind === "review"
                   ? `- Review by ${c.author}${c.state !== "COMMENTED" ? ` (${c.state.toLowerCase().replace("_", " ")})` : ""}: ${c.body.trim() || "(no body text)"}`
                   : `- ${c.author}: ${c.body.trim()}`;
-        const failureOutput = `${picked.length} PR comment(s) picked by the human to address (this is not necessarily a CI failure):\n${picked.map(describe).join("\n")}`;
+        const failureOutput = `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (this is not necessarily a CI failure):\n${picked.map(describe).join("\n")}`;
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         this.setStage(taskId, "pr_fix");
         this.dispatch(taskId, "pr_fix", { attempt: rounds.n + 1, extraVars: { failureOutput } });
     }
 
-    // After the human approves a PR-Red fix (already committed locally, never pushed): push it and resume PR polling.
+    // After the human approves a PR Fix (already committed locally, never pushed): push every checkout that has
+    // unpushed commits, reset those PRs' checks and resume polling.
     private async pushPrFix(taskId: string): Promise<void> {
         const task = this.getTask(taskId);
         if (!task?.branch) return;
@@ -1275,16 +1385,19 @@ export class Engine extends EventEmitter {
         }
         this.setTaskStatus(taskId, "running", "PR Fix · pushing the approved fix");
         try {
-            for (const cwd of this.prCheckouts(task, env)) {
-                const ahead = await this.git(cwd, ["log", "--oneline", `origin/${env.base_branch}..HEAD`], env).catch(() => "");
+            for (const repo of this.prRepos(env)) {
+                const cwd = this.checkoutOf(task, env, repo);
+                if (!existsSync(cwd)) continue;
+                const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch], env).catch(() => "");
+                const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `origin/${env.base_branch}..HEAD`], env).catch(() => "");
                 if (!ahead) continue;
-                await this.git(cwd, ["push", "origin", task.branch], env);
+                await this.git(cwd, ["push", "-u", "origin", task.branch], env);
+                this.resetPrState(taskId, repo);
             }
         } catch (e) {
             this.setTaskStatus(taskId, "failed", `push failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
             return;
         }
-        this.resetPrState(taskId);
         this.advance(taskId, "pr_waiting");
         this.pollPrSoon(taskId);
     }
@@ -1953,6 +2066,15 @@ export class Engine extends EventEmitter {
         if (def.stage === "design_proposal") {
             const md = this.designMdProblems(taskId);
             if (md) return { ok: false, error: md };
+        }
+        if (def.stage === "pr_creation_review") {
+            const task = this.getTask(taskId);
+            const repos = task ? this.prRepos(this.env(task.env_id)) : [""];
+            const drafts = (parsed.data as PrDraft).drafts;
+            const unknown = drafts.map((d) => d.repo).filter((r) => !repos.includes(r));
+            if (unknown.length) return { ok: false, error: `pr.json names repositories that are not part of this workspace: ${unknown.map((r) => r || '""').join(", ")} — use ${repos.map((r) => `"${r}"`).join(", ")}` };
+            const dupes = drafts.map((d) => d.repo).filter((r, i, a) => a.indexOf(r) !== i);
+            if (dupes.length) return { ok: false, error: `pr.json has more than one draft for ${dupes.map((r) => r || '""').join(", ")} — one entry per repository` };
         }
         return { ok: true, data: parsed.data };
     }
