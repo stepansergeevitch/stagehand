@@ -165,6 +165,16 @@ const isApprovalGateCheck = (c: { name?: string; context?: string }): boolean =>
 const isCancelledCheck = (c: { conclusion?: string; state?: string }): boolean => /CANCELLED/i.test(c.conclusion ?? c.state ?? "");
 const isFailedCheck = (c: { conclusion?: string; state?: string }): boolean => !isCancelledCheck(c) && /FAILURE|ERROR|TIMED_OUT/i.test(c.conclusion ?? c.state ?? "");
 
+// execFile's error message is "Command failed: <the whole command>\n<stderr>": the useful part — a pre-push hook's verdict,
+// GitHub's rejection reason — is at the END, which a plain slice(0, 160) never reaches. Keep the last few stderr lines.
+const gitErrorTail = (e: unknown): string => {
+    const lines = String((e as Error).message ?? e)
+        .split("\n")
+        .map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").trim())
+        .filter((l) => l && !/^Command failed:/.test(l) && !/^npm warn/i.test(l));
+    return (lines.slice(-4).join(" · ") || "no output").slice(0, 400);
+};
+
 // Naming a repository in status lines and errors: the sub-repo directory, or "the repository" for a single-repo env.
 const repoLabel = (repo: string): string => repo || "the repository";
 // "backend: " in front of a per-repo status fragment, only when the task spans several repositories.
@@ -1113,7 +1123,7 @@ export class Engine extends EventEmitter {
         try {
             await this.git(cwd, ["push", "-u", "origin", task.branch], env);
         } catch (e) {
-            this.setTaskStatus(taskId, "failed", `${repoLabel(repo)}: push failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            this.setTaskStatus(taskId, "failed", `${repoLabel(repo)}: push failed — ${gitErrorTail(e)}`);
             return null;
         }
         // A task sent back after its PR existed just needs the push; the open PR picks the new commits up.
@@ -1131,7 +1141,7 @@ export class Engine extends EventEmitter {
             this.upsertPrRow(taskId, repo, { number: Number.isFinite(number) ? number : null, url, pushed_at: now(), state: "OPEN" });
             return `PR #${Number.isFinite(number) ? number : "?"} created`;
         } catch (e) {
-            this.setTaskStatus(taskId, "failed", `${repoLabel(repo)}: gh pr create failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            this.setTaskStatus(taskId, "failed", `${repoLabel(repo)}: gh pr create failed — ${gitErrorTail(e)}`);
             return null;
         }
     }
