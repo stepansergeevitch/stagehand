@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, type Account, type ConfigDir, type Env, type EnvRules } from "./api";
+import { accountOrderOf, accountUsableWith, api, type Account, type ConfigDir, type Env, type EnvDependencyStatus, type EnvRules } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -25,14 +25,26 @@ const Section = ({ title, hint, children, onSave, saving }: { title: string; hin
     </section>
 );
 
-export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChanged, onError }: {
-    env: Env; accounts: Account[]; configDirs: ConfigDir[]; onBack: () => void; onOpenDir: (id: string) => void; onChanged: () => Promise<void>; onError: (m: string) => void;
+export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, onChanged, onError }: {
+    env: Env; envs: Env[]; accounts: Account[]; configDirs: ConfigDir[]; onBack: () => void; onOpenDir: (id: string) => void; onChanged: () => Promise<void>; onError: (m: string) => void;
 }) => {
     const [saving, setSaving] = useState<string | null>(null);
     const [info, setInfo] = useState<EnvRules | null>(null);
     useEffect(() => {
         void api.envRules(env.id).then(setInfo).catch((e: Error) => onError(e.message));
     }, [env.id, env.config_dir_id, onError]);
+    // ---- dependency: another env's BE this one needs reachable (e.g. Deal → Core)
+    const [dependsOn, setDependsOn] = useState(env.depends_on_env_id ?? "");
+    useEffect(() => setDependsOn(env.depends_on_env_id ?? ""), [env.depends_on_env_id]);
+    const [depStatus, setDepStatus] = useState<EnvDependencyStatus | null>(null);
+    const loadDepStatus = () => void api.envDependency(env.id).then(setDepStatus).catch(() => setDepStatus(null));
+    useEffect(() => {
+        loadDepStatus();
+        if (!env.depends_on_env_id) return;
+        const t = setInterval(loadDepStatus, 15_000);
+        return () => clearInterval(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [env.id, env.depends_on_env_id]);
 
     const save = async (section: string, body: Parameters<typeof api.patchEnv>[1]) => {
         setSaving(section);
@@ -98,6 +110,31 @@ export const EnvPage = ({ env, accounts, configDirs, onBack, onOpenDir, onChange
                 <label>Task system (how bare ids like ABC-123 are resolved)
                     <select value={g.ticketSource} onChange={sg("ticketSource")}><option value="clickup">ClickUp</option><option value="linear">Linear</option></select>
                 </label>
+            </Section>
+
+            <Section
+                title="Depends on"
+                hint="Another environment whose backend this app calls out to and can't work without (e.g. Deal needs Core for auth). Started once — the first task that needs it — and shared by every task of this env after that; it isn't itself under test, so it keeps its own checkout and branch, not a fresh worktree per task. Its own configured port is tried first; a free one is picked only if that's taken."
+                saving={saving === "dependency"}
+                onSave={async () => { await save("dependency", { dependsOnEnvId: dependsOn || null }); loadDepStatus(); }}
+            >
+                <label>Depends on
+                    <select value={dependsOn} onChange={(e) => setDependsOn(e.target.value)}>
+                        <option value="">— none —</option>
+                        {envs.filter((e) => e.id !== env.id).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                    </select>
+                </label>
+                {env.depends_on_env_id && depStatus?.configured && (
+                    <div className="kv" style={{ marginTop: 4 }}>
+                        <b>{depStatus.dependencyEnvName}</b>
+                        <span>
+                            {depStatus.running ? <span className="chip ok">running</span> : <span className="chip">not started yet</span>}
+                            {depStatus.port && <code style={{ marginLeft: 8 }}>:{depStatus.port}</code>}
+                            {depStatus.startedAt && <span className="field-hint" style={{ marginLeft: 8 }}>since {new Date(depStatus.startedAt).toLocaleString()}</span>}
+                            {!depStatus.running && <span className="field-hint" style={{ marginLeft: 8 }}>starts automatically the next time a task here needs it</span>}
+                        </span>
+                    </div>
+                )}
             </Section>
 
             <Section title="Claude config dir and AI accounts" hint="Every agent run for this environment (research, design, QA, implementation, helpers, the terminal) uses the config dir: its skills, hooks, subagents, MCP servers, CLAUDE.md and the commit/branch/PR rules. The AI accounts only supply the login: runs go to the first listed account that is not exhausted; when it hits its rate limit the next one takes over, and the task waits for a reset only when every listed account is exhausted." saving={saving === "claude"} onSave={() => save("claude", { configDirId: nul(dirId), accountOrder: order })}>

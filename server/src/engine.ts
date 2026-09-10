@@ -2038,6 +2038,10 @@ export class Engine extends EventEmitter {
     }
 
     private async bringUpServices(task: TaskRow, env: EnvRow): Promise<boolean> {
+        if (env.depends_on_env_id) {
+            this.setTaskStatus(task.id, "running", `${STAGE_DEFS[task.stage]?.label ?? task.stage} · starting the dependency service this env needs`);
+            await this.services.ensureDependency(env);
+        }
         if (env.be_command) {
             const be = await this.services.start(task, env, "be");
             if (!(await this.services.waitForPort(be.port, 180_000))) return false;
@@ -2306,6 +2310,11 @@ export class Engine extends EventEmitter {
                     this.db.prepare(`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE id = ?`).run(wt.path, now(), taskId);
                     if (wt.reused) {
                         this.setTaskStatus(taskId, "running", `reusing existing worktree/branch with ${wt.existingCommits} commit(s) ahead of ${env.base_branch}`);
+                    }
+                    if (env.depends_on_env_id) {
+                        this.setTaskStatus(taskId, "running", "starting the dependency service this env needs");
+                        const dep = await this.services.ensureDependency(env);
+                        if (dep) envVars.STAGEHAND_DEP_URL = dep.url;
                     }
                     if (env.setup_command) {
                         this.setTaskStatus(taskId, "running", "running worktree setup");

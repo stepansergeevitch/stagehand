@@ -308,7 +308,7 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <EnvPage key={env.id} env={env} accounts={accounts} configDirs={configDirs} onBack={() => setPage("envs")} onOpenDir={(id) => { setDirId(id); setPage("dir"); }} onChanged={reload} onError={setError} />
+                            <EnvPage key={env.id} env={env} envs={envs} accounts={accounts} configDirs={configDirs} onBack={() => setPage("envs")} onOpenDir={(id) => { setDirId(id); setPage("dir"); }} onChanged={reload} onError={setError} />
                         </main>
                     </div>
                 )}

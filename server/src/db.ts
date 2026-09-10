@@ -150,7 +150,24 @@ export interface EnvRow {
     pr_templates: string | null;
     // Open every PR this env creates as a GitHub draft (0/1). The human marks it ready for review themselves.
     pr_draft: number;
+    // Another env whose BE this env's app needs reachable to work at all (e.g. Deal calling out to Core for auth).
+    // Started once, shared, and reused across every task of this env — not per task (the dependency isn't itself
+    // under test, and starting a heavy service N times over is wasteful).
+    depends_on_env_id: string | null;
     created_at: string;
+}
+
+// One shared dependency service per env: started the first time any task of a *dependent* env needs it, reused by
+// every task after that until its process actually dies. Keyed by the env that OWNS the service (e.g. Core), not by
+// the env(s) that depend on it, since one dependency can be shared by several dependents.
+export interface EnvServiceRow {
+    env_id: string;
+    port: number;
+    url: string;
+    tmux: string;
+    command: string;
+    log_path: string;
+    started_at: string;
 }
 
 export const prTemplateOverridesOf = (env: Pick<EnvRow, "pr_templates">): Record<string, string> => {
@@ -482,6 +499,15 @@ CREATE TABLE IF NOT EXISTS questions (
     answered_at TEXT
 );
 CREATE INDEX IF NOT EXISTS questions_task ON questions(task_id, created_at);
+CREATE TABLE IF NOT EXISTS env_services (
+    env_id TEXT PRIMARY KEY REFERENCES envs(id),
+    port INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    tmux TEXT NOT NULL,
+    command TEXT NOT NULL,
+    log_path TEXT NOT NULL,
+    started_at TEXT NOT NULL
+);
 `;
 
 // A round of questions the agent asked the human mid-stage (see prompts: questions.json → NEED_INPUT). `questions`
@@ -549,6 +575,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["pr_state.state", `ALTER TABLE pr_state ADD COLUMN state TEXT`],
     ["envs.pr_templates", `ALTER TABLE envs ADD COLUMN pr_templates TEXT`],
     ["envs.pr_draft", `ALTER TABLE envs ADD COLUMN pr_draft INTEGER NOT NULL DEFAULT 0`],
+    ["envs.depends_on_env_id", `ALTER TABLE envs ADD COLUMN depends_on_env_id TEXT REFERENCES envs(id)`],
     // Free-form labels the human puts on a task: JSON [{text, color}] (color = CSS hex), shown in the list and the header.
     ["tasks.labels", `ALTER TABLE tasks ADD COLUMN labels TEXT`],
 ];

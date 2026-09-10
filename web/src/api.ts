@@ -60,6 +60,16 @@ export interface Env {
     rules: string | null; cleanup_command: string | null; pr_templates?: string | null;
     // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
     pr_draft?: number;
+    // Another env whose BE this one needs reachable to work (started once, shared across every task of this env).
+    depends_on_env_id?: string | null;
+}
+export interface EnvDependencyStatus {
+    configured: boolean;
+    dependencyEnvName?: string;
+    running?: boolean;
+    port?: number | null;
+    url?: string | null;
+    startedAt?: string | null;
 }
 export interface Rules {
     commitPattern: string; commitForbid: string[]; commitHint: string; branchPattern: string; branchHint: string;
@@ -284,11 +294,12 @@ export const api = {
             chromeDeviceId?: string | null; chromeBrowserName?: string | null; qaSeedHints?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
-            cleanupCommand?: string | null; prTemplates?: Record<string, string | null>; prDraft?: boolean;
+            cleanupCommand?: string | null; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
     envRules: (id: string) => fetch(`/api/envs/${id}/rules`).then((r) => j<EnvRules>(r)),
+    envDependency: (id: string) => fetch(`/api/envs/${id}/dependency`).then((r) => j<EnvDependencyStatus>(r)),
     readiness: () => fetch("/api/readiness").then((r) => j<Readiness[]>(r)),
     refreshLimits: (id: string) => post<{ ok: boolean; detail: string }>(`/api/accounts/${id}/refresh-limits`),
     deleteEnv: (id: string) => fetch(`/api/envs/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),

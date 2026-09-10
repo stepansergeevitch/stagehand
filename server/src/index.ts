@@ -621,6 +621,8 @@ app.patch("/api/envs/:id", async (c) => {
             // Per-repository PR template overrides: {"backend": ".github/pull_request_template.md"}; null/"" removes one.
             prTemplates: z.record(z.string().nullable()).optional(),
             prDraft: z.boolean().optional(),
+            // Another env whose BE this one needs reachable to work (started once, shared across every task).
+            dependsOnEnvId: z.string().nullable().optional(),
         }),
         await c.req.json(),
     );
@@ -628,6 +630,10 @@ app.patch("/api/envs/:id", async (c) => {
     if (!env) return c.json({ error: "not found" }, 404);
     if (body.configDirId && !configDirById(body.configDirId)) return c.json({ error: "unknown config dir" }, 400);
     if (body.accountOrder?.some((id) => !accountById(id))) return c.json({ error: "unknown account in accountOrder" }, 400);
+    if (body.dependsOnEnvId) {
+        if (body.dependsOnEnvId === env.id) return c.json({ error: "an env cannot depend on itself" }, 400);
+        if (!envsAll().some((e) => e.id === body.dependsOnEnvId)) return c.json({ error: "unknown dependency env" }, 400);
+    }
     const pick = <T,>(next: T | undefined, cur: T): T => (next === undefined ? cur : next);
     // The ordered list is the source of truth; default_account_id mirrors its head for older readers.
     const order = body.accountOrder ?? (body.defaultAccountId !== undefined ? (body.defaultAccountId ? [body.defaultAccountId] : []) : accountOrderOf(env));
@@ -645,7 +651,7 @@ app.patch("/api/envs/:id", async (c) => {
         return Object.keys(merged).length ? JSON.stringify(merged) : null;
     })();
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, pr_templates = ?, pr_draft = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, pr_templates = ?, pr_draft = ?, depends_on_env_id = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         order[0] ?? null,
@@ -671,9 +677,21 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.cleanupCommand, env.cleanup_command),
         prTemplates,
         body.prDraft === undefined ? env.pr_draft : body.prDraft ? 1 : 0,
+        pick(body.dependsOnEnvId, env.depends_on_env_id),
         env.id,
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));
+});
+
+// Status of an env's shared dependency service (e.g. Deal → Core), for a small indicator on the env page — not
+// started here, only read; ensureDependency() starts it lazily the next time a task of the dependent env needs it.
+app.get("/api/envs/:id/dependency", async (c) => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
+    if (!env) return c.json({ error: "not found" }, 404);
+    if (!env.depends_on_env_id) return c.json({ configured: false });
+    const dep = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.depends_on_env_id) as EnvRow | undefined;
+    const row = services.envServiceRow(env.depends_on_env_id);
+    return c.json({ configured: true, dependencyEnvName: dep?.name ?? "(deleted env)", running: row ? await sessionExists(row.tmux) : false, port: row?.port ?? null, url: row?.url ?? null, startedAt: row?.started_at ?? null });
 });
 
 // Per environment: which accounts can run its agent stages and which can run its browser stages, and what is missing —
