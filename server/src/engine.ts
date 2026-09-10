@@ -900,10 +900,20 @@ export class Engine extends EventEmitter {
         const checkouts = this.prCheckouts(task, env);
         const created: string[] = [];
         const manual: string[] = [];
+        let touched = 0;
         for (const cwd of checkouts) {
             const ahead = await this.git(cwd, ["log", "--oneline", `origin/${env.base_branch}..HEAD`], env).catch(() => "");
-            if (!ahead) continue;
+            const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
             const label = checkouts.length > 1 ? `${cwd.slice((task.worktree_path ?? env.path).length + 1)}: ` : "";
+            // Nothing committed but changes on disk: an env that forbids agent commits (or an agent that left work
+            // uncommitted) — the human has to commit before anything can be pushed or opened. Say so instead of skipping.
+            if (!ahead && dirty.trim()) {
+                touched++;
+                manual.push(`${label}commit the ${dirty.trim().split("\n").length} changed file(s) and push \`${task.branch}\``);
+                continue;
+            }
+            if (!ahead) continue;
+            touched++;
             if (!rules.allowPush) {
                 manual.push(`${label}push \`${task.branch}\``);
                 continue;
@@ -938,8 +948,14 @@ export class Engine extends EventEmitter {
             }
         }
         this.setStage(taskId, "pr_waiting");
-        if (manual.length) this.setTaskStatus(taskId, "idle", `PR Waiting · this env forbids it for agents — please ${manual.join(", ")}; Stagehand will pick the PR up by branch name`);
-        else this.setTaskStatus(taskId, "idle", `PR Waiting · ${created.join(" ")}`);
+        if (touched === 0) {
+            this.setTaskStatus(taskId, "blocked", `PR Creation Review · nothing to ship: no commits ahead of ${env.base_branch} and no uncommitted changes in the worktree — return the task to Implementation, or delete it`);
+            return;
+        }
+        if (manual.length) {
+            const why = rules.allowCommit && rules.allowPush ? "the agent left this to you" : "this env forbids it for agents";
+            this.setTaskStatus(taskId, "idle", `PR Waiting · ${why} — please ${manual.join(", ")}${created.length ? ` · ${created.join(" ")}` : ""}${!rules.allowPrCreate ? "; then open the PR (title/body in the PR draft card)" : ""}; Stagehand picks the PR up by branch name`);
+        } else this.setTaskStatus(taskId, "idle", `PR Waiting · ${created.join(" ")}`);
         this.pollPrSoon(taskId);
     }
 
