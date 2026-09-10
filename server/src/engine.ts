@@ -198,6 +198,9 @@ const MAX_AUTO_QA_RETURNS = 2;
 // see renderUnblockHint. Capped independently of MAX_AUTO_QA_RETURNS since it is a different kind of retry (same
 // stage re-running itself, not a return to Implementation).
 const MAX_UNBLOCK_ATTEMPTS = 2;
+// A stage whose output file fails its contract is re-run with the validation error as notes; outside the fresh-session
+// QA stages each retry resumes the same session, so it is cheap. After this many attempts the task fails for the human.
+const MAX_CONTRACT_ATTEMPTS = 5;
 const LOGIN_WAIT_MS = 15 * 60_000;
 type ChromeTabLike = { url: string; title: string };
 const tabKey = (t: { window: number; tab: number; url: string }): string => `${t.window}:${t.tab}:${t.url}`;
@@ -2180,18 +2183,18 @@ export class Engine extends EventEmitter {
             const validation = this.validateOutput(taskId, def);
             if (!validation.ok) {
                 const attempt = opts.attempt ?? 1;
-                if (attempt < 2) {
+                if (attempt < MAX_CONTRACT_ATTEMPTS) {
                     finish("failed", `contract: ${validation.error}`);
                     this.dispatch(taskId, def.stage, {
                         attempt: attempt + 1,
                         notes:
-                            `## Output contract violation (fix this and rewrite the file)\n\n${validation.error}\n\n` +
+                            `## Output contract violation (fix this and rewrite the file) — attempt ${attempt + 1} of ${MAX_CONTRACT_ATTEMPTS}\n\n${validation.error}\n\n` +
                             `Rewrite \`${this.taskDir(taskId)}/${def.outputFile}\` to match the contract exactly, then reply DONE.`,
                     });
                     return;
                 }
                 finish("failed", `contract: ${validation.error}`);
-                this.setTaskStatus(taskId, "failed", `${def.label} · output contract failed twice`);
+                this.setTaskStatus(taskId, "failed", `${def.label} · output contract failed ${MAX_CONTRACT_ATTEMPTS} times`);
                 return;
             }
             finish("done", undefined, JSON.stringify(validation.data));
