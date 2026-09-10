@@ -151,7 +151,8 @@ const EXPLANATION_MIN_WORDS = 60;
 const EXPLANATION_MAX_WORDS = 220;
 // Sections 2–5 are for a product reader: behaviour and the part of the system, never paths, line numbers or identifiers.
 const PROSE_SECTIONS = ["How it works today", "Problem", "Root cause", "Approach", "Proposed changes"] as const;
-const CODE_REF = /`[^`\n]+`|\b[\w./-]+\.(py|ts|tsx|js|jsx|rs|go|java|kt|rb|sql|scss|css|json|ya?ml)\b|\b[\w./-]+:\d+\b|\b[a-z]+_[a-z_]+\b|\b[a-z]+[A-Z]\w+\(|\b[A-Z]+_[A-Z_]+\b/;
+// A backticked span counts as code when it looks like one (path, identifier, call, constant); a plain word such as `archived` is a product term.
+const CODE_REF = /`[^`\n]*(?:[./_(:\\]|[a-z][A-Z])[^`\n]*`|`[^`\n]{30,}`|\b[\w./-]+\.(py|ts|tsx|js|jsx|rs|go|java|kt|rb|sql|scss|css|json|ya?ml)\b|\b[\w./-]+:\d+\b|\b[a-z]+_[a-z_]+\b|\b[a-z]+[A-Z]\w+\(|\b[A-Z]+_[A-Z_]+\b/;
 const LOGIN_POLL_MS = 3_000;
 // A Manual QA run that still has failing scenarios goes straight back to Implementation with the failure detail as
 // reviewer notes, instead of waiting for the human to notice at User Review. Capped so a genuinely stuck fix doesn't

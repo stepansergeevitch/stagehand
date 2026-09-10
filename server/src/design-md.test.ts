@@ -84,6 +84,9 @@ describe("designMdProblems", () => {
         const plain = good.replace(ROOT_CAUSE, `## 4. Root cause\n${"The returns calculation treats every source that is not a loan as equity, so grant money looks like an equity outflow. ".repeat(5)}\n\n`);
         expect(designMdProblems(plain)).toMatch(/Root cause section has no bold/);
     });
+    it("allows plain product terms in backticks", () => {
+        expect(designMdProblems(good.replace("- **Land development** — additionally credits", "- **Land development** — for `archived` deals additionally credits"))).toBeNull();
+    });
     it("keeps code out of the prose sections", () => {
         const codey = good.replace("- **Returns tab** — subtracts the whole project cost", "- **Returns tab** — `common/returns.py:153` `net_levered_cash_flow` subtracts the whole project cost");
         expect(designMdProblems(codey)).toMatch(/How it works today section contains code or a file reference/);
