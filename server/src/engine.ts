@@ -318,6 +318,7 @@ export class Engine extends EventEmitter {
 
     startScheduler(): void {
         this.timer = setInterval(() => this.tick(), 15_000);
+        this.startCallbackHopWatcher();
         this.recoverInterrupted();
         const n = backfillUsage(this.db, this.cfg.dataDir);
         if (n) console.log(`[stagehand] usage backfilled for ${n} run(s)`);
@@ -676,28 +677,78 @@ export class Engine extends EventEmitter {
     // "logged in" was wrong (a stale tab) and restarting it would loop — the human is asked instead.
     private readonly helperReruns = new Set<string>();
 
+    // ---------- the login callback hop, always on ----------
+    //
+    // Auth0 (deal) and WorkOS (DualEntry) only accept https://localhost:3000 as a callback, so an FE on a Stagehand port
+    // pins that redirect and the browser lands on whatever holds :3000 after logging in (an error page, or another
+    // app). The QA prompt and the login helper move such a tab to the right port themselves — but a human who opens
+    // the app from the App widget or a Session and logs in by hand had nobody doing it, and the login failed. This
+    // watcher does it for every Chrome tab (all profiles) as long as any task's FE is up on a port other than 3000:
+    // it remembers which Stagehand FE origin each tab was on, and when a tab sits on the :3000 callback URL for two
+    // polls (the FE that genuinely lives on 3000 strips that query within a second) it re-opens the same query on
+    // the origin that tab came from — or on the only alt-port FE running, when the tab was never seen on one.
+    private readonly tabOrigins = new Map<string, { origin: string; at: number }>();
+    private hopSeen = "";
+    private startCallbackHopWatcher(): void {
+        const isCallback = (u: string) => /^https?:\/\/localhost:3000\/\?(?=.*\bcode=)(?=.*\bstate=)/.test(u);
+        const tick = async (): Promise<void> => {
+            const rows = this.db.prepare(`SELECT url FROM services WHERE kind = 'fe' AND stopped_at IS NULL AND failed_at IS NULL`).all() as Array<{ url: string }>;
+            const origins = rows.map((r) => new URL(r.url).origin).filter((o) => !/^https?:\/\/localhost:3000$/.test(o));
+            if (origins.length === 0) {
+                this.tabOrigins.clear();
+                this.hopSeen = "";
+                return;
+            }
+            const tabs = await listChromeTabs("Google");
+            const now_ = Date.now();
+            for (const t of tabs) {
+                const key = `${t.window}:${t.tab}`;
+                const on = origins.find((o) => t.url.startsWith(`${o}/`) || t.url === o);
+                if (on) this.tabOrigins.set(key, { origin: on, at: now_ });
+            }
+            for (const [key, v] of this.tabOrigins) if (now_ - v.at > 30 * 60_000) this.tabOrigins.delete(key);
+            const cb = tabs.find((t) => isCallback(t.url));
+            if (!cb) {
+                this.hopSeen = "";
+                return;
+            }
+            const mark = `${cb.window}:${cb.tab}:${cb.url}`;
+            if (this.hopSeen !== mark) {
+                this.hopSeen = mark;
+                return;
+            }
+            this.hopSeen = "";
+            const target = this.tabOrigins.get(`${cb.window}:${cb.tab}`)?.origin ?? (origins.length === 1 ? origins[0] : undefined);
+            if (!target) {
+                console.warn(`[stagehand] login callback on :3000 in a tab never seen on a task FE and ${origins.length} alt-port FEs are up — not hopping`);
+                return;
+            }
+            await setChromeTabUrl(cb, `${target}/${cb.url.slice(cb.url.indexOf("/?") + 1)}`, "Google");
+            console.log(`[stagehand] login callback hopped from localhost:3000 to ${target}`);
+        };
+        let busy = false;
+        setInterval(() => {
+            if (busy) return;
+            busy = true;
+            void tick()
+                .catch((e: unknown) => console.warn(`[stagehand] callback hop watcher: ${String((e as Error).message ?? e).slice(0, 160)}`))
+                .finally(() => {
+                    busy = false;
+                });
+        }, LOGIN_POLL_MS).unref();
+    }
+
     // Polls every tab (all profiles) until one sits on the app, not on a login page and not on an Auth0 callback, for
-    // three consecutive polls. A callback that landed on https://localhost:3000 (alt-port deal FE) is re-opened on the
-    // app's port in the same tab once it has been there for two polls — the app's own FE on 3000 strips that query
-    // within a second, so a query that stays belongs to a login that started on another port.
+    // three consecutive polls. A callback that landed on https://localhost:3000 (alt-port deal FE) is moved to the
+    // app's port by the always-on hop watcher (startCallbackHopWatcher) — this loop only waits for the result.
     private async waitForLogin(appUrl: string, browserKind: string, budgetMs: number, stale: Set<string>): Promise<"logged_in" | "timeout"> {
         const origin = new URL(appUrl).origin;
-        const altPort = !/^https?:\/\/localhost:3000$/.test(origin);
-        const isCallback = (u: string) => /^https?:\/\/localhost:3000\/\?(?=.*\bcode=)(?=.*\bstate=)/.test(u);
         const loginish = (t: ChromeTabLike) => /auth0\.com|\/callback|[?&](code|error)=/.test(t.url) || /welcome|log ?in|sign ?in/i.test(t.title);
         let stableSince = 0;
         let stableUrl = "";
-        let callbackSeen = "";
         const until = Date.now() + budgetMs;
         while (Date.now() < until) {
             const tabs = (await listChromeTabs(browserKind)).filter((t) => !stale.has(tabKey(t)));
-            const cb = tabs.find((t) => isCallback(t.url));
-            if (altPort && cb) {
-                if (callbackSeen === cb.url) {
-                    await setChromeTabUrl(cb, `${appUrl}/${cb.url.slice(cb.url.indexOf("/?") + 1)}`, browserKind).catch(() => undefined);
-                    callbackSeen = "";
-                } else callbackSeen = cb.url;
-            } else callbackSeen = "";
             const onApp = tabs.find((t) => t.url.startsWith(`${origin}/`) && !loginish(t));
             if (onApp) {
                 if (onApp.url !== stableUrl) {
