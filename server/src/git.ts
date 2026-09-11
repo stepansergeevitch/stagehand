@@ -48,7 +48,7 @@ export const repoPaths = (env: RepoLayout): string[] => {
     return subs.length ? subs.map((d) => join(env.path, d)) : [env.path];
 };
 
-// Branch names may contain "/" (e.g. stepanb/inv-1-x); the worktree directory flattens that.
+// Branch names may contain "/" (e.g. yourname/inv-1-x); the worktree directory flattens that.
 export const worktreePathFor = (envPath: string, branch: string): string => join(envPath, ".claude", "worktrees", branch.replace(/\//g, "-"));
 
 export interface WorktreeResult {

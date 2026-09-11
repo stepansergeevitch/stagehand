@@ -106,7 +106,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 <label>Name <input value={g.name} onChange={sg("name")} /></label>
                 <label>Sub-repositories (comma-separated; empty = the path itself is the git repo) <input value={g.repos} onChange={sg("repos")} placeholder="backend, frontend" /></label>
                 <label>Base branch <input value={g.baseBranch} onChange={sg("baseBranch")} /></label>
-                <label>Branch prefix <input value={g.branchPrefix} onChange={sg("branchPrefix")} placeholder="e.g. stepanb/ — prepended to the branch research proposes" /></label>
+                <label>Branch prefix <input value={g.branchPrefix} onChange={sg("branchPrefix")} placeholder="e.g. yourname/ — prepended to the branch research proposes" /></label>
                 <label>Task system (how bare ids like ABC-123 are resolved)
                     <select value={g.ticketSource} onChange={sg("ticketSource")}><option value="clickup">ClickUp</option><option value="linear">Linear</option></select>
                 </label>

@@ -625,7 +625,7 @@ const EnvForm = ({
             <label>Path <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="/Users/you/code/repo — or a workspace folder holding several repos" /></label>
             <label>Sub-repositories (comma-separated; empty = the path itself is the git repo) <input value={repos} onChange={(e) => setRepos(e.target.value)} placeholder="backend, frontend" /></label>
             <label>Base branch <input value={base} onChange={(e) => setBase(e.target.value)} /></label>
-            <label>Branch prefix <input value={branchPrefix} onChange={(e) => setBranchPrefix(e.target.value)} placeholder="e.g. stepanb/ — prepended to the branch research proposes" /></label>
+            <label>Branch prefix <input value={branchPrefix} onChange={(e) => setBranchPrefix(e.target.value)} placeholder="e.g. yourname/ — prepended to the branch research proposes" /></label>
             <label>Task system (how bare ids like ABC-123 are resolved)
                 <select value={ticketSource} onChange={(e) => setTicketSource(e.target.value as "clickup" | "linear")}>
                     <option value="clickup">ClickUp</option><option value="linear">Linear</option>
@@ -675,7 +675,7 @@ const AccountForm = ({ onSubmit }: { onSubmit: (name: string, email?: string) =>
     return (
         <>
             <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 13 }}>Opens a terminal running <code>claude setup-token</code>: finish the claude.ai login in the browser (pick the right account there — the email below is only a label), paste the code back if asked. Stagehand stores the resulting long-lived token and closes the terminal; the account then works in any config dir.</p>
-            <label>Name <input autoFocus value={name} onChange={(e) => setName(e.target.value.toLowerCase())} placeholder="northspyre" /></label>
+            <label>Name <input autoFocus value={name} onChange={(e) => setName(e.target.value.toLowerCase())} placeholder="work" /></label>
             <label>Email (label) <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" /></label>
             <button className="primary" disabled={!/^[a-z0-9-]+$/.test(name)} onClick={() => onSubmit(name, email || undefined)}>Set up token</button>
         </>

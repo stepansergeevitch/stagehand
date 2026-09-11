@@ -137,7 +137,7 @@ export interface EnvRow {
     setup_command: string | null;
     // JSON array of sub-directories that are separate git repos (e.g. ["backend","frontend"]); null = path itself is the repo.
     repos: string | null;
-    // Prepended to research's branch name (e.g. "stepanb/").
+    // Prepended to research's branch name (e.g. "yourname/").
     branch_prefix: string | null;
     ticket_source: "clickup" | "linear";
     // KEY=VALUE per line; exported into every process run for this env (git, setup, BE/FE, claude runs, terminal).

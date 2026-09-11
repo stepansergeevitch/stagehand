@@ -692,7 +692,7 @@ export class Engine extends EventEmitter {
 
     // ---------- the login callback hop, always on ----------
     //
-    // Auth0 (deal) and WorkOS (DualEntry) only accept https://localhost:3000 as a callback, so an FE on a Stagehand port
+    // Identity providers (Auth0, WorkOS) typically only accept https://localhost:3000 as a callback, so an FE on a Stagehand port
     // pins that redirect and the browser lands on whatever holds :3000 after logging in (an error page, or another
     // app). The QA prompt and the login helper move such a tab to the right port themselves — but a human who opens
     // the app from the App widget or a Session and logs in by hand had nobody doing it, and the login failed. This

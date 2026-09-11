@@ -11,7 +11,7 @@ This is the IMPLEMENTATION stage for ticket {{ticketId}} in the worktree {{workt
 ## Rules
 
 - Unit TDD: for each entry in `testPlan`, write the tests first (red), then the implementation (green). Add tests if you find gaps; never drop a planned case.
-- Use the repo's own commands, as documented in its CLAUDE.md / Makefile / pyproject, for tests, coverage and type-checking (northspyre-deal: `uv run pytest`, `npm test`, `uv run basedpyright --level error`; other repos: whatever CLAUDE.md prescribes). Run the targeted tests after each slice.
+- Use the repo's own commands, as documented in its CLAUDE.md / Makefile / pyproject, for tests, coverage and type-checking (whatever CLAUDE.md prescribes, e.g. `uv run pytest`, `npm test`, `uv run basedpyright --level error`). Run the targeted tests after each slice.
 - Coverage on NEW lines must exceed 90% (e.g. `pytest --cov=<touched modules> --cov-report=term-missing <paths>`); add tests until it does.
 - Gates before you finish: all targeted tests green AND the repo's type-checker/linter clean. Fix at the source — no `# type: ignore`, `# pyright: ignore`, `cast`, or baseline entries.
 - {{commitRule}} Never touch `{{baseBranch}}`, never rewrite history. Never push from this stage.

@@ -2,8 +2,11 @@
   "name": "stagehand",
   "private": true,
   "version": "0.1.0",
-  "description": "Local orchestrator that walks ClickUp tickets through Research → Design → Implementation → QA → PR stages with headless Claude Code.",
-  "workspaces": ["server", "web"],
+  "description": "Local orchestrator that walks tickets through research, design, QA, implementation and PR stages with headless Claude Code, pausing where a human must look.",
+  "workspaces": [
+    "server",
+    "web"
+  ],
   "scripts": {
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
     "dev": "npm run dev --workspace=server & npm run dev --workspace=web & wait",
@@ -13,5 +16,8 @@
     "typecheck": "npm run typecheck --workspaces",
     "test": "npm test --workspaces --if-present"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
 }
