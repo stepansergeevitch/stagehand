@@ -204,7 +204,10 @@ const fetchClickUpRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> =>
     if (!cfg.clickupToken) throw new Error("no ClickUp token configured");
     const headers = { Authorization: cfg.clickupToken };
     const teamQ = cfg.clickupTeamId ? `?custom_task_ids=true&team_id=${cfg.clickupTeamId}` : "";
-    const res = await fetch(`https://api.clickup.com/api/v2/task/${encodeURIComponent(ref.id)}${teamQ}`, { headers });
+    // ClickUp returns `description` as flattened plain text (headings, bold and lists gone) unless the markdown
+    // rendition is asked for explicitly — that is what the Ticket tab renders and the prompts quote.
+    const mdQ = `${teamQ ? "&" : "?"}include_markdown_description=true`;
+    const res = await fetch(`https://api.clickup.com/api/v2/task/${encodeURIComponent(ref.id)}${teamQ}${mdQ}`, { headers });
     if (!res.ok) throw new Error(`ClickUp ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const t = (await res.json()) as {
         custom_id?: string; id: string; name: string; status?: { status: string }; markdown_description?: string; description?: string; url?: string; parent?: string | null;
@@ -216,7 +219,7 @@ const fetchClickUpRest = async (ref: TicketRef, cfg: Config): Promise<Ticket> =>
         .map((a) => ({ name: a.title || nameFromUrl(a.url ?? a.url_w_query!), url: a.url_w_query ?? a.url!, mime: a.mimetype ?? null, file: null, size: a.size ?? null, error: null, origin: "attachment" as const }));
     let parent: Ticket["parent"] = null;
     if (t.parent) {
-        const pr = await fetch(`https://api.clickup.com/api/v2/task/${t.parent}`, { headers });
+        const pr = await fetch(`https://api.clickup.com/api/v2/task/${t.parent}?include_markdown_description=true`, { headers });
         if (pr.ok) {
             const p = (await pr.json()) as { custom_id?: string; id: string; name: string; markdown_description?: string; description?: string };
             parent = { id: p.custom_id ?? p.id, title: p.name, description: p.markdown_description ?? p.description ?? "" };
