@@ -102,12 +102,15 @@ const renderQaFailureNotes = (taskDir: string, qa: QaPassResult, design: DesignR
 // assert anything — a stale dev-server, a real app bug unrelated to this ticket, a data gap — so the runner itself,
 // already sitting in the worktree with Bash and the browser open, gets one narrow exception to stay read-only and
 // go fix the cause, rather than handing it to a separate Implementation run that would start from a cold state.
-const renderUnblockHint = (qa: QaPassResult, blocked: QaPassResult["scenarios"], attemptNum: number, commitRule: string): string => {
+const renderUnblockHint = (qa: QaPassResult, blocked: QaPassResult["scenarios"], attemptNum: number, commitRule: string, taskDir: string): string => {
     const parts = [`## Automatic unblock retry ${attemptNum} of ${MAX_UNBLOCK_ATTEMPTS} — the previous attempt could not run these scenarios`];
     parts.push(blocked.map((b) => `- \`${b.id}\` — ${b.observation}`).join("\n"));
     if (qa.blockers.length) parts.push(`Blockers: ${qa.blockers.join("; ")}`);
     parts.push(
-        `Before repeating the scenarios, investigate why: check the dev-server logs, the page's console and network requests, and the DOM. If it is a real, fixable bug in the app's current code in this worktree — not something this ticket's own design is about, just something in the way — fix it with a normal code edit; that is the one exception to staying hands-off with the app in this run. ${commitRule} If you cannot find or fix a cause within reasonable effort, record the scenarios \`blocked\` again with what you tried and observed, and stop.`,
+        `Before repeating the scenarios, investigate why: check the dev-server logs, the page's console and network requests, and the DOM. If it is a real, fixable bug in the app's current code in this worktree — not something this ticket's own design is about, just something in the way — fix it with a normal code edit; that is the one exception to staying hands-off with the app in this run. ${commitRule}`,
+    );
+    parts.push(
+        `**If the cause is the seed step itself** — its SQL names a column, table or value that does not exist, a typo, a wrong path — do not run a rewritten version on your own and do not just record it blocked again: work out the exact corrected command (check the schema and the models), then hand it to the human with the questions mechanism below — one question per broken step, quoting the scenario id, the error, and the corrected command in full as an option (e.g. options: ["apply the corrected command above", "keep the seed as written"]). Reply NEED_INPUT. When the answer comes back and approves a correction (or gives a different one), edit that seed step's text in \`${taskDir}/design.json\` to the approved command — that file is the spec both passes seed from — then run it and continue the scenarios. If the human says the seed is right, follow their explanation of how to unblock instead. If you cannot find a cause within reasonable effort, record the scenarios \`blocked\` again with what you tried and observed, and stop.`,
     );
     return parts.join("\n\n");
 };
@@ -178,6 +181,16 @@ const gitErrorTail = (e: unknown): string => {
 
 // Naming a repository in status lines and errors: the sub-repo directory, or "the repository" for a single-repo env.
 const repoLabel = (repo: string): string => repo || "the repository";
+
+// A psql seed command with every `-c "<sql>"` / `-c '<sql>'` payload wrapped in BEGIN … ROLLBACK, so running it parses
+// and plans the statements against the live schema without changing anything. Unchanged when there is no -c payload.
+export const wrapPsqlInRollback = (cmd: string): string =>
+    cmd.replace(/(-c\s+)("((?:[^"\\]|\\.)*)"|'([^']*)')/g, (_m, flag: string, _q: string, dq: string | undefined, sq: string | undefined) => {
+        const sql = dq ?? sq ?? "";
+        if (/^\s*(begin|\\)/i.test(sql)) return `${flag}${_q}`;
+        const body = sql.replace(/;\s*$/, "");
+        return dq !== undefined ? `${flag}"BEGIN; ${body}; ROLLBACK;"` : `${flag}'BEGIN; ${body}; ROLLBACK;'`;
+    });
 
 // Two chat anchors point at the same diff line thread: same file, same side, same text (line numbers drift as the
 // branch evolves, the quoted line is what identifies it).
@@ -2484,6 +2497,8 @@ export class Engine extends EventEmitter {
         if (def.stage === "design_proposal") {
             const md = this.designMdProblems(taskId);
             if (md) return { ok: false, error: md };
+            const seeds = this.seedDryRunProblems(taskId, parsed.data as DesignResult);
+            if (seeds) return { ok: false, error: seeds };
         }
         if (def.stage === "pr_creation_review") {
             const task = this.getTask(taskId);
@@ -2495,6 +2510,39 @@ export class Engine extends EventEmitter {
             if (dupes.length) return { ok: false, error: `pr.json has more than one draft for ${dupes.map((r) => r || '""').join(", ")} — one entry per repository` };
         }
         return { ok: true, data: parsed.data };
+    }
+
+    // Every psql seed step the design wrote is parsed by the real database before the design is accepted: the SQL is
+    // run inside BEGIN … ROLLBACK, so a wrong column or table (the way ENG-24349's QA got stuck twice) fails the
+    // contract here, when the agent can still fix it, instead of blocking the QA pass. Rows the seed depends on may
+    // not exist yet (a ui: step creates them), so only SQL errors count; a database that is not reachable is logged and
+    // ignored — that is an environment matter, not the design's.
+    private seedDryRunProblems(taskId: string, design: DesignResult): string | null {
+        const task = this.getTask(taskId);
+        if (!task) return null;
+        const env = this.env(task.env_id);
+        const cwd = task.worktree_path ?? env.path;
+        const problems: string[] = [];
+        for (const s of design.qa ?? []) {
+            (s.seed ?? []).forEach((step, i) => {
+                const m = /^\s*(shell|sql)\s*:\s*/i.exec(step);
+                if (!m) return;
+                const cmd = step.slice(m[0].length);
+                if (!/\bpsql\b/.test(cmd) || /<[a-z ]+>/i.test(cmd)) return;
+                const dry = wrapPsqlInRollback(cmd);
+                if (dry === cmd) return;
+                try {
+                    execFileSync("bash", ["-lc", dry], { cwd, env: { ...process.env, ...parseEnvVars(env.env_vars) }, timeout: 60_000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+                } catch (e) {
+                    const err = e as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+                    const text = String(err.stderr ?? err.stdout ?? err.message ?? e);
+                    const sqlErr = /ERROR:\s+(.+)/.exec(text);
+                    if (sqlErr) problems.push(`${s.id} seed ${i + 1}: the database rejects this SQL — ${sqlErr[1]!.trim().slice(0, 200)}`);
+                    else console.warn(`[stagehand] seed dry-run skipped for ${task.ticket_id} ${s.id} seed ${i + 1}: ${text.trim().split("\n").slice(-1)[0]?.slice(0, 160)}`);
+                }
+            });
+        }
+        return problems.length ? `seed steps must run against the real schema (each psql seed is dry-run inside BEGIN…ROLLBACK): ${problems.join("; ")} — check the table's columns (\\d <table>) and the models, then fix the seed text` : null;
     }
 
     private designMdProblems(taskId: string): string | null {
@@ -2599,7 +2647,7 @@ export class Engine extends EventEmitter {
                     const commitRule = r.allowCommit
                         ? `If you do fix something, commit it: every message must match \`${r.commitPattern}\` — ${r.commitHint}${r.commitForbid.length ? ` Never include ${r.commitForbid.map((f) => `\`${f}\``).join(", ")}.` : ""}`
                         : "Commits are NOT allowed in this environment: leave any fix uncommitted (staging is fine) and mention it in your observation; the human commits.";
-                    const unblockHint = renderUnblockHint(qa, blocked, attemptNum, commitRule);
+                    const unblockHint = renderUnblockHint(qa, blocked, attemptNum, commitRule, taskDir);
                     this.setTaskStatus(
                         taskId,
                         "running",
