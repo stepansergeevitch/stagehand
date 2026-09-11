@@ -861,7 +861,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {task.worktree_path ? (
                     <section className="card widget">
                         <h2>App</h2>
-                        <ServicesPanel taskId={task.id} env={env} onError={onError} />
+                        <ServicesPanel taskId={task.id} env={env} busy={task.status === "running"} onError={onError} onFixStarted={() => void onAction(async () => undefined)} />
                     </section>
                 ) : (
                     <section className="card widget"><h2>App</h2><div className="empty">no worktree yet</div></section>
@@ -993,8 +993,24 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {tab === "code" && (
                 task.branch && task.worktree_path ? (
                     <Card title="Code changes" badge={pending.length > 0 ? <span className="chip wait">{pending.length} 💬</span> : undefined}>
-                        {canComment && <p className="field-hint">Tap a line to leave a comment; send them from the PR comments tab or the review box.</p>}
-                        <DiffView taskId={task.id} refreshKey={task.updated_at} comments={comments} prior={prior} canComment={canComment} onChange={changeComment} repos={envRepos(env)} taskBusy={task.status === "running"} onError={onError} />
+                        <p className="field-hint">
+                            {canComment ? "Tap a line to leave a review comment (sent from the PR comments tab or the review box), or ask the agent about it" : "Tap a line to ask the agent about it"}
+                            {task.status === "running" ? " — questions wait until the current run is over." : " — the answer appears under the line and in Chat."}
+                        </p>
+                        <DiffView
+                            taskId={task.id}
+                            refreshKey={task.updated_at}
+                            comments={comments}
+                            prior={prior}
+                            canComment={canComment}
+                            onChange={changeComment}
+                            repos={envRepos(env)}
+                            taskBusy={task.status === "running"}
+                            onError={onError}
+                            threads={(detail.messages ?? []).filter((m) => m.anchor)}
+                            canAsk={task.status !== "running"}
+                            onAsk={(anchor, text) => onAction(() => api.sendMessage(task.id, text, anchor))}
+                        />
                     </Card>
                 ) : <div className="empty">No branch yet.</div>
             )}
@@ -1081,7 +1097,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 </>
             )}
 
-            {tab === "chat" && <Chat taskId={task.id} messages={detail.messages ?? []} status={task.status} onSent={async () => onAction(async () => undefined)} />}
+            {tab === "chat" && <Chat taskId={task.id} messages={detail.messages ?? []} status={task.status} onSent={async () => onAction(async () => undefined)} onOpenCode={() => setTab("code")} />}
 
             {tab === "ticket" && (
                 <>

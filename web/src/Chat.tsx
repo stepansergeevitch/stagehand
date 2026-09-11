@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type Message, type TaskStatus } from "./api";
+import { anchorOf, api, type Message, type TaskStatus } from "./api";
 import { Markdown } from "./Markdown";
 
 // Notes the agent leaves on its own (implementation notes, a CI fix summary) and the human's own questions/answers,
 // in one timeline. Asking a question resumes the task's own session headlessly — same constraint as the terminal:
 // only one thing can drive that session at a time, so it's disabled while a stage run is in progress.
-export const Chat = ({ taskId, messages, status, onSent }: { taskId: string; messages: Message[]; status: TaskStatus; onSent: () => Promise<void> }) => {
+export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId: string; messages: Message[]; status: TaskStatus; onSent: () => Promise<void>; onOpenCode?: () => void }) => {
     const [text, setText] = useState("");
     const [sending, setSending] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -39,15 +39,23 @@ export const Chat = ({ taskId, messages, status, onSent }: { taskId: string; mes
             <p className="field-hint">Notes the agent leaves on its own (implementation notes, CI fixes) appear here, and you can ask it a question about this task — it answers with full context of everything it has done so far. This does not make code changes; those happen through the normal stage flow.</p>
             <div className="chat-log">
                 {messages.length === 0 && <div className="empty">No messages yet.</div>}
-                {messages.map((m) => (
-                    <div key={m.id} className={`chat-msg ${m.role}`}>
-                        <div className="chat-msg-head">
-                            <b>{m.role === "user" ? "You" : "Agent"}</b>
-                            <span className="field-hint">{new Date(m.created_at).toLocaleString()}</span>
+                {messages.map((m) => {
+                    const a = anchorOf(m);
+                    return (
+                        <div key={m.id} className={`chat-msg ${m.role}`}>
+                            <div className="chat-msg-head">
+                                <b>{m.role === "user" ? "You" : "Agent"}</b>
+                                <span className="field-hint">{new Date(m.created_at).toLocaleString()}</span>
+                                {a && (
+                                    <button className="chip accent anchor-chip" title={`About this line of the diff — ${a.snippet.trim().slice(0, 120)}`} onClick={onOpenCode}>
+                                        {a.path}:{a.line}{a.side === "old" ? " (removed)" : ""}
+                                    </button>
+                                )}
+                            </div>
+                            <Markdown source={m.text} />
                         </div>
-                        <Markdown source={m.text} />
-                    </div>
-                ))}
+                    );
+                })}
                 <div ref={bottomRef} />
             </div>
             {error && <div className="blocked-box" style={{ marginBottom: 0 }}>{error}</div>}

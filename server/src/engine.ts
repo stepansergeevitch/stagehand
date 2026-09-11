@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
+import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageAnchor, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { closeChromeTabs, listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 import type { Services } from "./services.js";
+import type { ServiceKind } from "./db.js";
 import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
 import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
@@ -177,6 +178,10 @@ const gitErrorTail = (e: unknown): string => {
 
 // Naming a repository in status lines and errors: the sub-repo directory, or "the repository" for a single-repo env.
 const repoLabel = (repo: string): string => repo || "the repository";
+
+// Two chat anchors point at the same diff line thread: same file, same side, same text (line numbers drift as the
+// branch evolves, the quoted line is what identifies it).
+const sameAnchor = (a: MessageAnchor, b: MessageAnchor): boolean => a.path === b.path && a.side === b.side && a.snippet.trim() === b.snippet.trim();
 // "backend: " in front of a per-repo status fragment, only when the task spans several repositories.
 const repoPrefix = (repo: string, repos: string[]): string => (repos.length > 1 && repo ? `${repo}: ` : "");
 const repoScopeNote = (repo: string): string => (repo ? `Repository: \`${repo}/\` inside the worktree — every git and gh command below runs inside that directory.\n` : "");
@@ -1643,9 +1648,11 @@ export class Engine extends EventEmitter {
         return this.db.prepare(`SELECT * FROM messages WHERE task_id = ? ORDER BY created_at`).all(taskId) as MessageRow[];
     }
 
-    private addMessage(taskId: string, role: "user" | "agent", text: string): MessageRow {
+    private addMessage(taskId: string, role: "user" | "agent", text: string, anchor: MessageAnchor | null = null): MessageRow {
         const id = randomUUID();
-        this.db.prepare(`INSERT INTO messages (id, task_id, role, text, created_at) VALUES (?, ?, ?, ?, ?)`).run(id, taskId, role, text, now());
+        this.db
+            .prepare(`INSERT INTO messages (id, task_id, role, text, created_at, anchor) VALUES (?, ?, ?, ?, ?, ?)`)
+            .run(id, taskId, role, text, now(), anchor ? JSON.stringify(anchor) : null);
         const row = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id) as MessageRow;
         this.emit("message", row);
         return row;
@@ -1660,20 +1667,31 @@ export class Engine extends EventEmitter {
 
     // Asks the task's agent a question in its own session (full context: everything it has done on this task so far).
     // Same constraint as the terminal: a headless stage run and an ad-hoc chat turn cannot share the session at once.
-    async askAgent(taskId: string, text: string): Promise<MessageRow> {
+    // With an anchor, the question is about one line of the task's diff (asked from Code changes): the prompt names the
+    // file, side and line and quotes it, and the reply carries the same anchor so it shows up under that line as a thread.
+    async askAgent(taskId: string, text: string, anchor: MessageAnchor | null = null): Promise<MessageRow> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a headless run owns this session right now — ask again once it's idle");
-        this.addMessage(taskId, "user", text);
+        this.addMessage(taskId, "user", text, anchor);
         const env = this.env(task.env_id);
         const cd = this.configDirOf(env);
         const usable = this.usableAccounts(cd.path);
         const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
-        const prompt =
-            `The human sent this in the task's chat — a question or comment, not necessarily an instruction: "${text.replace(/"/g, '\\"')}"\n\n` +
-            `Answer directly and briefly, drawing on this task's own history (research, design, code, QA) as needed. ` +
-            `If they are actually asking for a change, say what you would do and that it happens through the normal stage flow (Return to a stage, or a new review round) — do not make code changes from this chat.`;
+        const quoted = `"${text.replace(/"/g, '\\"')}"`;
+        const earlier = anchor ? this.listMessages(taskId).filter((m) => m.anchor && sameAnchor(JSON.parse(m.anchor) as MessageAnchor, anchor)).slice(0, -1) : [];
+        const prompt = anchor
+            ? `The human is looking at this task's diff (branch vs base) and asked about ONE specific line of it — ` +
+              `file \`${anchor.path}\`, ${anchor.side === "old" ? `the removed line at old line ${anchor.line}` : `line ${anchor.line} of the current file`}, which reads:\n\n` +
+              `    ${anchor.snippet}\n\n` +
+              (earlier.length ? `Earlier in this same thread:\n${earlier.map((m) => `- ${m.role === "user" ? "Human" : "You"}: ${m.text.replace(/\s+/g, " ").slice(0, 400)}`).join("\n")}\n\n` : "") +
+              `Their question: ${quoted}\n\n` +
+              `Answer directly and briefly about that code. Open the file (in ${task.worktree_path ?? env.path}) and read around the line as needed — explain what it does, why it was changed that way, or what the consequence is, whichever they are asking. ` +
+              `If they are actually asking for a change, say what you would do and that it happens through the normal stage flow (a review comment on the line, Return to a stage) — do not make code changes from this chat.`
+            : `The human sent this in the task's chat — a question or comment, not necessarily an instruction: ${quoted}\n\n` +
+              `Answer directly and briefly, drawing on this task's own history (research, design, code, QA) as needed. ` +
+              `If they are actually asking for a change, say what you would do and that it happens through the normal stage flow (Return to a stage, or a new review round) — do not make code changes from this chat.`;
         const run = startClaude({
             prompt,
             cwd: task.worktree_path ?? env.path,
@@ -1686,7 +1704,7 @@ export class Engine extends EventEmitter {
         const outcome = await run.done;
         if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "chat", stage: null }, outcome.result);
         const reply = outcome.result?.result?.trim() || (outcome.exitCode !== 0 ? `(could not answer: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
-        return this.addMessage(taskId, "agent", reply);
+        return this.addMessage(taskId, "agent", reply, anchor);
     }
 
     // ---------- git history edits (Code changes tab: Remove / Change message / force-push) ----------
@@ -1945,7 +1963,7 @@ export class Engine extends EventEmitter {
                         if (ok) this.dispatch(taskId, stage, { ...opts, servicesReady: true });
                         else this.setTaskStatus(taskId, "blocked", `${def.label} · BE/FE did not come up — check the service logs, then retry`);
                     })
-                    .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · ${String((e as Error).message ?? e).slice(0, 160)}`));
+                    .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · ${String((e as Error).message ?? e).slice(0, 300)}`));
                 return;
             }
         }
@@ -2127,16 +2145,85 @@ export class Engine extends EventEmitter {
             this.setTaskStatus(task.id, "running", `${STAGE_DEFS[task.stage]?.label ?? task.stage} · starting the dependency service this env needs`);
             await this.services.ensureDependency(env);
         }
-        if (env.be_command) {
-            const be = await this.services.start(task, env, "be");
-            if (!(await this.services.waitForPort(be.port, 180_000))) return false;
-        }
-        if (env.fe_command) {
-            const fe = await this.services.start(task, env, "fe");
-            if (!(await this.services.waitForPort(fe.port, 300_000))) return false;
+        // A service that fails to come up throws with the probe's reason (command exited, start budget spent), which
+        // the caller puts on the blocked line — and the App widget shows the same failure with a Fix-with-agent button.
+        for (const kind of ["be", "fe"] as const) {
+            if (!(kind === "be" ? env.be_command : env.fe_command)) continue;
+            const row = await this.services.start(task, env, kind);
+            const r = await this.services.waitUntilUp(row);
+            if (!r.ok) throw new Error(`${kind.toUpperCase()} did not come up: ${r.error} — see its log in the App widget, or let the agent fix it there`);
         }
         this.emitTask(task.id);
         return true;
+    }
+
+    // "Fix with agent" on a BE/FE that failed to start: the task's own agent (its session, full context of the branch)
+    // reads the service log and the command, repairs the cause in the worktree, and Stagehand restarts the service once
+    // the run is over — so the result is a real second start, not the agent's opinion that it should work now. Runs
+    // without the guard hook like Chat and the git edits (an explicit human request, not a pipeline stage); the task's
+    // stage/status are restored afterward. Starts synchronously (bad requests surface to the button) and reports in Chat.
+    async fixService(taskId: string, kind: ServiceKind): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
+        const env = this.env(task.env_id);
+        const row = this.services.get(taskId, kind);
+        if (!row) throw new Error(`no ${kind.toUpperCase()} start to fix — run it first`);
+        const probed = await this.services.probe(row);
+        if (probed.state !== "failed") throw new Error(`the ${kind.toUpperCase()} is ${probed.state}, nothing to fix`);
+        const cd = this.configDirOf(env);
+        const usable = this.usableAccounts(cd.path);
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
+        const cwd = task.worktree_path ?? env.path;
+        const be = kind === "fe" ? this.services.get(taskId, "be") : undefined;
+        const serviceEnv: Record<string, string> = {
+            ...parseEnvVars(env.env_vars),
+            PORT: String(row.port),
+            STAGEHAND_PORT: String(row.port),
+            ...(be ? { STAGEHAND_BE_URL: be.url, STAGEHAND_BE_PORT: String(be.port) } : {}),
+        };
+        const prevStatus = task.status;
+        const prevLine = task.status_line;
+        this.setTaskStatus(taskId, "running", `Fixing the ${kind.toUpperCase()} start failure with the agent…`);
+        const prompt = renderPrompt("fix-service.md", {
+            kind: kind.toUpperCase(),
+            cwd,
+            command: row.command,
+            port: String(row.port),
+            url: row.url,
+            error: probed.error ?? "did not start",
+            logPath: row.log_path,
+            logTail: this.services.logTail(row, 80) || "(the log is empty)",
+            serviceEnv: Object.entries(serviceEnv).map(([k, v]) => `${k}=${v}`).join("\n") || "(none)",
+            taskNotes: task.notes?.trim() ? `\nThe human's standing notes on this task: ${task.notes.trim()}` : "",
+        });
+        const run = startClaude({
+            prompt,
+            cwd,
+            configDir: cd.path,
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
+            resume: task.session_id,
+            maxTurns: 60,
+            ...(task.model ? { model: task.model } : {}),
+        });
+        void run.done.then(async (outcome: RunOutcome) => {
+            if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "fix-service", stage: null }, outcome.result);
+            const reply = outcome.result?.result?.trim() || (outcome.exitCode !== 0 ? `(did not finish: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
+            this.setTaskStatus(taskId, "running", `Restarting the ${kind.toUpperCase()} after the agent's fix…`);
+            let restart: string;
+            try {
+                await this.services.stop(taskId, kind);
+                const fresh = await this.services.start(task, env, kind);
+                const r = await this.services.waitUntilUp(fresh);
+                restart = r.ok ? `✅ The ${kind.toUpperCase()} was restarted and is listening on ${fresh.url}.` : `❌ The ${kind.toUpperCase()} was restarted but failed again: ${r.error}`;
+            } catch (e) {
+                restart = `❌ Could not restart the ${kind.toUpperCase()}: ${String((e as Error).message ?? e)}`;
+            }
+            this.setTaskStatus(taskId, prevStatus, prevLine ?? `${kind.toUpperCase()} start fix finished — see Chat`);
+            this.addMessage(taskId, "agent", `🔧 Fix the ${kind.toUpperCase()} start failure:\n\n${reply}\n\n${restart}`);
+            this.emitTask(taskId);
+        });
     }
 
     recordRateLimit(accountId: string, info: RateLimitInfo): void {

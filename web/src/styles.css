@@ -255,8 +255,11 @@ details.scenario > ol, details.scenario > div { margin-top: 6px; }
 .modal-head .close:hover { color: var(--ink); }
 .field-hint { display: block; color: var(--ink-3); font-size: 12px; margin-top: 3px; }
 .empty { color: var(--ink-3); padding: 30px; text-align: center; }
-.svc { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.svc { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; flex-wrap: wrap; }
 .svc-kind { font-family: var(--mono); font-weight: 500; width: 28px; }
+/* a BE/FE that failed to start: the reason on its own line under the buttons */
+.svc.failed { box-shadow: inset 3px 0 0 var(--bad); padding-left: 8px; }
+.svc-error { flex-basis: 100%; font-size: 12.5px; color: var(--bad); overflow-wrap: anywhere; }
 .open-app { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .button-link { display: inline-block; background: var(--accent); color: #fff; padding: 6px 12px; border-radius: 4px; text-decoration: none; font-weight: 500; }
 .feed { font-family: var(--mono); font-size: 12px; max-height: 220px; overflow: auto; background: var(--code); border-radius: 4px; padding: 8px 10px; }
@@ -327,6 +330,20 @@ details.scenario > ol, details.scenario > div { margin-top: 6px; }
 .outdated-item .chip { margin: 0 4px; }
 .line-comment textarea { min-height: 70px; margin-bottom: 6px; }
 .line-comment .actions { margin: 0; }
+/* Q&A with the agent attached to a diff line */
+.dl.has-thread { box-shadow: inset 3px 0 0 var(--accent); }
+.line-thread { margin: 2px 8px 6px 6.4em; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 4px; font-size: 13px; display: grid; gap: 6px; }
+.line-thread .thread-msg { padding: 4px 8px; border-radius: 4px; background: var(--panel); }
+.line-thread .thread-msg.user { background: transparent; padding: 0 0 2px; }
+.line-thread .thread-msg.pending { color: var(--ink-3); font-style: italic; animation: pulse 1.6s ease-in-out infinite; }
+.line-thread .thread-msg .markdown { max-width: none; font-size: 13px; }
+.line-thread > button.tiny { justify-self: start; font-family: var(--sans); }
+.chat-msg-head .anchor-chip { border: 0; cursor: pointer; padding: 1px 7px; min-height: 0; line-height: 1.4; }
+@media (max-width: 760px) { .line-thread { margin-left: 8px; } }
+/* Sessions page */
+.session-card.selected { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.session-card h2 .inline-edit input { width: 220px; }
+.session-view .term { height: 60vh; min-height: 420px; }
 .review-history { margin: 10px 0 0; font-size: 13px; }
 .review-history details { margin: 4px 0; }
 .review-history summary { cursor: pointer; color: var(--ink-2); }

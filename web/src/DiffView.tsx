@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, repoColorClass, repoName, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type LineComment } from "./api";
+import { anchorOf, api, repoColorClass, repoName, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type LineComment, type Message, type MessageAnchor } from "./api";
+import { Markdown } from "./Markdown";
 import { storage } from "./storage";
 
 // A file belongs to a repository when its path is exactly that repo's directory or starts with "<repo>/".
@@ -8,6 +9,14 @@ const inRepo = (path: string, repo: string): boolean => !repo || path === repo |
 // Which slice of the branch the diff shows: everything vs the base (default, the only view that takes line comments),
 // only what is uncommitted, or a hand-picked set of commits.
 export type DiffFilter = { kind: "all" } | { kind: "uncommitted" } | { kind: "commits"; shas: string[] };
+
+// Where the diff comes from: a task's worktree (the default) or a Sessions-page session's checkout.
+export interface DiffSource {
+    diff: (filter?: { shas: string[] } | { uncommitted: true }) => Promise<DiffResponse>;
+    commits: () => Promise<{ commits: BranchCommit[]; uncommitted: boolean }>;
+}
+const taskSource = (taskId: string): DiffSource => ({ diff: (f) => api.diff(taskId, f), commits: () => api.commits(taskId) });
+export const sessionSource = (sessionId: string): DiffSource => ({ diff: (f) => api.sessionDiff(sessionId, f), commits: () => api.sessionCommits(sessionId) });
 
 // The branch's own commits (this task's work), with Change message (a fast, conflict-free metadata edit) and Remove
 // (a real rewrite the agent performs, since replaying everything after the commit can hit conflicts) per commit, plus
@@ -174,13 +183,24 @@ export const commentKey = (c: Pick<LineComment, "path" | "side" | "line">): stri
 const lineAnchor = (path: string, l: DiffLine): Pick<LineComment, "path" | "side" | "line"> =>
     l.type === "del" ? { path, side: "old", line: l.oldNo ?? 0 } : { path, side: "new", line: l.newNo ?? 0 };
 
-const CommentEditor = ({ initial, onSave, onCancel, onDelete }: { initial: string; onSave: (t: string) => void; onCancel: () => void; onDelete?: () => void }) => {
+// One editor for both things a line takes: a review comment (Save — kept as a draft until the review is sent) and a
+// question for the agent (Ask — sent right away, answered in place). Either button is offered only when allowed.
+const CommentEditor = ({ initial, placeholder, onSave, onAsk, onCancel, onDelete }: { initial: string; placeholder: string; onSave?: (t: string) => void; onAsk?: (t: string) => void; onCancel: () => void; onDelete?: () => void }) => {
     const [text, setText] = useState(initial);
     return (
         <div className="line-comment editing">
-            <textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="What should change here?" />
+            <textarea
+                autoFocus
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder={placeholder}
+                onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) (onSave ?? onAsk)?.(text.trim());
+                }}
+            />
             <div className="actions">
-                <button className="primary" disabled={!text.trim()} onClick={() => onSave(text.trim())}>Save</button>
+                {onSave && <button className="primary" disabled={!text.trim()} onClick={() => onSave(text.trim())}>Save comment</button>}
+                {onAsk && <button className={onSave ? "" : "primary"} disabled={!text.trim()} title="Ask the task's agent about this line; the answer appears here and in Chat" onClick={() => onAsk(text.trim())}>Ask agent</button>}
                 <button onClick={onCancel}>Cancel</button>
                 {onDelete && <button className="danger" onClick={onDelete}>Delete</button>}
             </div>
@@ -197,13 +217,14 @@ export interface PriorComment extends LineComment {
 }
 const roundLabel = (p: PriorComment): string => (p.round > 0 ? `R${p.round}` : `PR${p.by ? ` · ${p.by}` : ""}${p.resolved ? " · resolved" : ""}`);
 
-// Where an earlier round's comment sits in the current diff. Lines move between rounds, so match by the quoted line
-// text (nearest to the original line number) rather than by number alone; unmatched ones are "outdated", like GitHub.
-const placePrior = (file: DiffFile, prior: PriorComment[]): { byKey: Record<string, PriorComment[]>; outdated: PriorComment[] } => {
-    const byKey: Record<string, PriorComment[]> = {};
-    const outdated: PriorComment[] = [];
+// Where something anchored to a line (an earlier round's comment, a chat thread) sits in the current diff. Lines move
+// as the branch evolves, so match by the quoted line text (nearest to the original line number) rather than by number
+// alone; unmatched ones are "outdated", like GitHub.
+const placeAnchored = <T extends MessageAnchor>(file: DiffFile, items: T[]): { byKey: Record<string, T[]>; outdated: T[] } => {
+    const byKey: Record<string, T[]> = {};
+    const outdated: T[] = [];
     const lines = file.hunks.flatMap((h) => h.lines);
-    for (const c of prior.filter((p) => p.path === file.path)) {
+    for (const c of items.filter((p) => p.path === file.path)) {
         const want = c.snippet.trim();
         const candidates = lines.filter((l) => l.text.trim() === want && (c.side === "old" ? l.type === "del" : l.type !== "del"));
         const best = candidates.sort((a, b) => Math.abs((a.newNo ?? a.oldNo ?? 0) - c.line) - Math.abs((b.newNo ?? b.oldNo ?? 0) - c.line))[0];
@@ -217,23 +238,69 @@ const placePrior = (file: DiffFile, prior: PriorComment[]): { byKey: Record<stri
     return { byKey, outdated };
 };
 
+// A chat message with its anchor unpacked, for placement.
+interface ThreadMessage extends MessageAnchor {
+    msg: Message;
+}
+const threadMessages = (messages: Message[]): ThreadMessage[] =>
+    messages.flatMap((msg) => {
+        const a = anchorOf(msg);
+        return a ? [{ ...a, msg }] : [];
+    });
+
+const LineThread = ({ items, asking, canAsk, onReply }: { items: ThreadMessage[]; asking: boolean; canAsk: boolean; onReply: () => void }) => (
+    <div className="line-thread">
+        {items.map(({ msg }) => (
+            <div key={msg.id} className={`thread-msg ${msg.role}`}>
+                <div className="chat-msg-head">
+                    <b>{msg.role === "user" ? "You" : "Agent"}</b>
+                    <span className="field-hint">{new Date(msg.created_at).toLocaleString()}</span>
+                </div>
+                {msg.role === "agent" ? <Markdown source={msg.text} /> : <div>{msg.text}</div>}
+            </div>
+        ))}
+        {asking && <div className="thread-msg agent pending">Agent is answering…</div>}
+        {canAsk && !asking && <button className="tiny" onClick={onReply}>Reply</button>}
+    </div>
+);
+
 const FileDiff = ({
     file,
     comments,
     prior,
+    threads,
     canComment,
+    canAsk,
     onChange,
+    onAsk,
 }: {
     file: DiffFile;
     comments: Record<string, LineComment>;
     prior: PriorComment[];
+    threads: ThreadMessage[];
     canComment: boolean;
+    canAsk: boolean;
     onChange: (key: string, c: LineComment | null) => void;
+    onAsk: (anchor: MessageAnchor, text: string) => Promise<void>;
 }) => {
     const [editing, setEditing] = useState<string | null>(null);
+    // Lines whose question is out with the agent right now (the reply arrives through the messages list).
+    const [asking, setAsking] = useState<Set<string>>(new Set());
     const count = Object.values(comments).filter((c) => c.path === file.path).length;
-    const placed = useMemo(() => placePrior(file, prior), [file, prior]);
+    const placed = useMemo(() => placeAnchored(file, prior), [file, prior]);
+    const placedThreads = useMemo(() => placeAnchored(file, threads), [file, threads]);
     const priorCount = prior.filter((p) => p.path === file.path).length;
+    const threadCount = Object.keys(placedThreads.byKey).length + placedThreads.outdated.length;
+    const interactive = canComment || canAsk;
+    const ask = async (key: string, anchor: MessageAnchor, text: string) => {
+        setEditing(null);
+        setAsking((s) => new Set(s).add(key));
+        try {
+            await onAsk(anchor, text);
+        } finally {
+            setAsking((s) => { const n = new Set(s); n.delete(key); return n; });
+        }
+    };
     return (
         <details className="diff-file" open={file.hunks.length > 0 && file.additions + file.deletions <= 400}>
             <summary>
@@ -242,14 +309,21 @@ const FileDiff = ({
                 <span className="mono stat"><span className="add">+{file.additions}</span> <span className="del">−{file.deletions}</span></span>
                 {count > 0 && <span className="chip wait">{count} 💬</span>}
                 {priorCount > 0 && <span className="chip" title="comments from earlier review rounds">{priorCount} earlier</span>}
+                {threadCount > 0 && <span className="chip accent" title="questions asked to the agent on lines of this file">{threadCount} Q&amp;A</span>}
             </summary>
             {file.binary && <div className="empty">binary file</div>}
-            {placed.outdated.length > 0 && (
+            {(placed.outdated.length > 0 || placedThreads.outdated.length > 0) && (
                 <div className="outdated">
                     {placed.outdated.map((c, i) => (
                         <div key={i} className="line-comment prior outdated-item">
                             <b>{roundLabel(c)}</b> <span className="chip">outdated</span> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
                             <div>{c.text}</div>
+                        </div>
+                    ))}
+                    {placedThreads.outdated.map((t) => (
+                        <div key={t.msg.id} className="line-comment prior outdated-item">
+                            <b>{t.msg.role === "user" ? "You" : "Agent"}</b> <span className="chip">line changed since</span> <code>:{t.line}</code> <code className="snippet">{t.snippet.trim().slice(0, 80)}</code>
+                            <div>{t.msg.text}</div>
                         </div>
                     ))}
                 </div>
@@ -261,12 +335,14 @@ const FileDiff = ({
                         const anchor = lineAnchor(file.path, l);
                         const key = commentKey(anchor);
                         const existing = comments[key];
+                        const thread = placedThreads.byKey[key];
+                        const fullAnchor: MessageAnchor = { ...anchor, snippet: l.text };
                         return (
                             <div key={li}>
                                 <div
-                                    className={`dl ${l.type} ${existing ? "has-comment" : ""} ${placed.byKey[key] ? "has-prior" : ""} ${canComment ? "clickable" : ""}`}
-                                    onClick={() => canComment && setEditing(editing === key ? null : key)}
-                                    title={canComment ? "Tap to comment on this line" : undefined}
+                                    className={`dl ${l.type} ${existing ? "has-comment" : ""} ${placed.byKey[key] ? "has-prior" : ""} ${thread ? "has-thread" : ""} ${interactive ? "clickable" : ""}`}
+                                    onClick={() => interactive && setEditing(editing === key ? null : key)}
+                                    title={interactive ? (canComment ? "Tap to comment on, or ask about, this line" : "Tap to ask the agent about this line") : undefined}
                                 >
                                     <span className="no">{l.oldNo ?? ""}</span>
                                     <span className="no">{l.newNo ?? ""}</span>
@@ -278,6 +354,7 @@ const FileDiff = ({
                                         <b>{roundLabel(p)}</b> {p.text}
                                     </div>
                                 ))}
+                                {(thread || asking.has(key)) && <LineThread items={thread ?? []} asking={asking.has(key)} canAsk={canAsk} onReply={() => setEditing(key)} />}
                                 {existing && editing !== key && (
                                     <div className="line-comment" onClick={() => canComment && setEditing(key)}>
                                         <b>💬</b> {existing.text}
@@ -286,12 +363,11 @@ const FileDiff = ({
                                 {editing === key && (
                                     <CommentEditor
                                         initial={existing?.text ?? ""}
-                                        onSave={(text) => {
-                                            onChange(key, { ...anchor, snippet: l.text, text });
-                                            setEditing(null);
-                                        }}
+                                        placeholder={canComment && canAsk ? "What should change here? — or a question for the agent (⌘/Ctrl+Enter saves the comment)" : canComment ? "What should change here?" : "Ask the agent about this line…"}
+                                        {...(canComment ? { onSave: (text: string) => { onChange(key, { ...anchor, snippet: l.text, text }); setEditing(null); } } : {})}
+                                        {...(canAsk ? { onAsk: (text: string) => void ask(key, fullAnchor, text) } : {})}
                                         onCancel={() => setEditing(null)}
-                                        {...(existing ? { onDelete: () => { onChange(key, null); setEditing(null); } } : {})}
+                                        {...(existing && canComment ? { onDelete: () => { onChange(key, null); setEditing(null); } } : {})}
                                     />
                                 )}
                             </div>
@@ -332,50 +408,65 @@ export const useDraftComments = (taskId: string): [Record<string, LineComment>, 
 
 export const DiffView = ({
     taskId,
+    source,
     refreshKey,
-    comments,
+    comments = {},
     prior = [],
-    canComment,
-    onChange,
+    threads = [],
+    canComment = false,
+    canAsk = false,
+    onChange = () => undefined,
+    onAsk = async () => undefined,
     repos = [],
     taskBusy = false,
     onError = () => undefined,
 }: {
-    taskId: string;
+    // A task's diff (with the commit manager) …
+    taskId?: string;
+    // … or any other checkout's (a Sessions-page session); one of the two is required.
+    source?: DiffSource;
     refreshKey: string;
-    comments: Record<string, LineComment>;
+    comments?: Record<string, LineComment>;
     prior?: PriorComment[];
-    canComment: boolean;
-    onChange: (key: string, c: LineComment | null) => void;
+    // Chat messages anchored to diff lines — shown as threads under the lines they quote.
+    threads?: Message[];
+    canComment?: boolean;
+    canAsk?: boolean;
+    onChange?: (key: string, c: LineComment | null) => void;
+    onAsk?: (anchor: MessageAnchor, text: string) => Promise<void>;
     // The env's sub-repository directories, for a repo-tabbed view; [] shows the single repo with no tabs.
     repos?: string[];
     // A stage/agent run already owns the worktree — disables Change message / Remove / force-push until it's done.
     taskBusy?: boolean;
     onError?: (m: string) => void;
 }) => {
+    const src = useMemo(() => source ?? taskSource(taskId ?? ""), [source, taskId]);
     const [diff, setDiff] = useState<DiffResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [filter, setFilter] = useState<DiffFilter>({ kind: "all" });
     const [branch, setBranch] = useState<{ commits: BranchCommit[]; uncommitted: boolean }>({ commits: [], uncommitted: false });
     const [activeRepo, setActiveRepo] = useState(repos[0] ?? "");
     const repo = repos.includes(activeRepo) ? activeRepo : (repos[0] ?? "");
+    const scope = taskId ?? source;
     useEffect(() => {
         setFilter({ kind: "all" });
         setActiveRepo(repos[0] ?? "");
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [taskId]);
+    }, [scope]);
     useEffect(() => {
-        void api.commits(taskId).then(setBranch).catch(() => undefined);
-    }, [taskId, refreshKey]);
+        void src.commits().then(setBranch).catch(() => undefined);
+    }, [src, refreshKey]);
     useEffect(() => {
         setDiff(null);
         setError(null);
         const f = filter.kind === "all" ? undefined : filter.kind === "uncommitted" ? { uncommitted: true as const } : { shas: filter.shas };
-        void api.diff(taskId, f).then(setDiff).catch((e: Error) => setError(e.message));
-    }, [taskId, refreshKey, filter]);
+        void src.diff(f).then(setDiff).catch((e: Error) => setError(e.message));
+    }, [src, refreshKey, filter]);
+    const threadItems = useMemo(() => threadMessages(threads), [threads]);
     // The commit picker only offers this repository's commits — its shas mean nothing in another checkout.
     const repoCommits = branch.commits.filter((c) => c.repo === repo);
     // Line comments anchor to line numbers of the full diff (the current file); a commit slice numbers lines differently.
+    // Questions match by the line's text, so they work in any view.
     const commentsOn = canComment && filter.kind === "all";
     const picker = <CommitPicker commits={repoCommits} uncommitted={branch.uncommitted} filter={filter} onChange={setFilter} />;
     const tabs = repos.length > 1 && (
@@ -385,7 +476,7 @@ export const DiffView = ({
             ))}
         </div>
     );
-    const commitPanel = repoCommits.length > 0 && (
+    const commitPanel = taskId && repoCommits.length > 0 && (
         <details className="commit-panel">
             <summary>Commits ({repoCommits.length}) — rename, remove, force-push</summary>
             <CommitManager taskId={taskId} repo={repo} commits={repoCommits} busy={taskBusy} onError={onError} />
@@ -405,7 +496,8 @@ export const DiffView = ({
                 <div className="diff-summary mono">
                     {picker}
                     {files.length} file{files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>
-                    {commentsOn && <span className="hint"> · tap a line to comment</span>}
+                    {commentsOn && <span className="hint"> · tap a line to comment{canAsk ? " or ask" : ""}</span>}
+                    {!commentsOn && canAsk && <span className="hint"> · tap a line to ask the agent about it</span>}
                     {canComment && !commentsOn && <span className="hint"> · switch to All changes to comment on lines</span>}
                 </div>
                 {files.length === 0 && <div className="empty">{diff.filtered ? "Nothing in this selection." : `No changes against ${diff.base} yet.`}</div>}
@@ -426,7 +518,9 @@ export const DiffView = ({
                 {groups.map((g, gi) => (
                     <div key={gi} className="diff-group">
                         {diff.filtered && groups.length > 1 && <div className="diff-group-head mono">{g.label} · {g.files.length} file{g.files.length === 1 ? "" : "s"}</div>}
-                        {g.files.map((f) => <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} canComment={commentsOn} onChange={onChange} />)}
+                        {g.files.map((f) => (
+                            <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} threads={threadItems} canComment={commentsOn} canAsk={canAsk} onChange={onChange} onAsk={onAsk} />
+                        ))}
                     </div>
                 ))}
             </div>

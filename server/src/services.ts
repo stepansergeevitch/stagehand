@@ -1,5 +1,5 @@
 import { createServer } from "node:net";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -11,6 +11,26 @@ import { ensureSession, killSession, sessionExists } from "./tmux.js";
 const execFileAsync = promisify(execFile);
 
 const PORT_RANGE: Record<ServiceKind, [number, number]> = { be: [18000, 18999], fe: [13000, 13999] };
+
+// How long a BE/FE gets to start listening on its port before it counts as failed (a Next/Vite dev server compiles
+// first; a Python backend runs migrations). Same budgets the QA bring-up used to wait with.
+export const START_TIMEOUT_MS: Record<ServiceKind, number> = { be: 180_000, fe: 300_000 };
+
+export type ServiceState = "starting" | "running" | "failed";
+export type ServiceStatus = ServiceRow & { running: boolean; state: ServiceState };
+
+// The wrapper around every BE/FE command prints these markers into the log: one when it starts, one when the command
+// exits (the pane then sleeps so the log stays readable). "exited" after the latest start marker = the process is gone.
+const startMarker = (kind: ServiceKind): string => `[stagehand] ${kind.toUpperCase()} on `;
+const exitMarker = (kind: ServiceKind): RegExp => new RegExp(`^\\[stagehand\\] ${kind.toUpperCase()} exited \\((.*)\\)`);
+
+// The log lines written by the current start (after the latest start marker), oldest first.
+const currentRunLog = (row: ServiceRow): string[] => {
+    if (!existsSync(row.log_path)) return [];
+    const lines = readFileSync(row.log_path, "utf8").split("\n");
+    const start = lines.map((l, i) => (l.startsWith(startMarker(row.kind)) ? i : -1)).filter((i) => i >= 0).pop() ?? -1;
+    return lines.slice(start + 1);
+};
 
 const portListening = async (port: number): Promise<boolean> => {
     try {
@@ -49,14 +69,55 @@ export class Services {
         return this.db.prepare(`SELECT * FROM services WHERE task_id = ? AND kind = ? AND stopped_at IS NULL`).get(taskId, kind) as ServiceRow | undefined;
     }
 
-    async status(taskId: string): Promise<Array<ServiceRow & { running: boolean }>> {
-        const rows = this.list(taskId);
-        const out: Array<ServiceRow & { running: boolean }> = [];
-        for (const r of rows) {
-            const alive = (await sessionExists(r.tmux)) && (await portListening(r.port));
-            out.push({ ...r, running: alive });
-        }
+    async status(taskId: string): Promise<ServiceStatus[]> {
+        const out: ServiceStatus[] = [];
+        for (const r of this.list(taskId)) out.push(await this.probe(r));
         return out;
+    }
+
+    // Where a service actually is, and why it is not up if it isn't: listening on its port = running; otherwise its
+    // tmux session gone, its command exited (the log marker), or the start budget spent without a listener = failed —
+    // recorded on the row so the state is stable (and the reason is kept) until the service is stopped or restarted.
+    async probe(row: ServiceRow): Promise<ServiceStatus> {
+        if (row.failed_at) return { ...row, running: false, state: "failed" };
+        const listening = await portListening(row.port);
+        if (listening) return { ...row, running: true, state: "running" };
+        const kind = row.kind.toUpperCase();
+        let error: string | null = null;
+        if (!(await sessionExists(row.tmux))) error = `its tmux session ${row.tmux} is gone — the host or tmux server restarted, or it was killed by hand`;
+        else {
+            const exited = currentRunLog(row).map((l) => exitMarker(row.kind).exec(l)).find((m) => m);
+            if (exited) error = `the ${kind} command exited (status ${exited[1]}) without leaving anything listening on port ${row.port}`;
+            else if (Date.now() - Date.parse(row.started_at) > START_TIMEOUT_MS[row.kind]) error = `nothing is listening on port ${row.port} after ${Math.round(START_TIMEOUT_MS[row.kind] / 60_000)} min`;
+        }
+        if (!error) return { ...row, running: false, state: "starting" };
+        this.db.prepare(`UPDATE services SET failed_at = ?, error = ? WHERE id = ? AND failed_at IS NULL`).run(now(), error, row.id);
+        const fresh = this.db.prepare(`SELECT * FROM services WHERE id = ?`).get(row.id) as ServiceRow;
+        return { ...fresh, running: false, state: "failed" };
+    }
+
+    // The last lines the current start wrote (for the failure notice and the agent's fix prompt).
+    logTail(row: ServiceRow, lines = 60): string {
+        return currentRunLog(row).filter((l) => l.trim() !== "").slice(-lines).join("\n");
+    }
+
+    // Polls until the service is listening (ok) or has failed (with the reason); the start budget in `probe` is what
+    // ends the wait, so a caller never blocks longer than that budget plus one poll.
+    async waitUntilUp(row: ServiceRow): Promise<{ ok: true } | { ok: false; error: string }> {
+        for (;;) {
+            const s = await this.probe(row);
+            if (s.state === "running") return { ok: true };
+            if (s.state === "failed") return { ok: false, error: s.error ?? "failed to start" };
+            await new Promise((r) => setTimeout(r, 2000));
+        }
+    }
+
+    // Records failures even when nobody is looking at the task page (the UI polls only while it is open).
+    startWatch(intervalMs = 15_000): void {
+        setInterval(() => {
+            const rows = this.db.prepare(`SELECT * FROM services WHERE stopped_at IS NULL AND failed_at IS NULL`).all() as ServiceRow[];
+            for (const r of rows) void this.probe(r).catch(() => undefined);
+        }, intervalMs).unref();
     }
 
     private async pickPort(kind: ServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
@@ -82,11 +143,16 @@ export class Services {
         const template = kind === "be" ? env.be_command : env.fe_command;
         if (!template) throw new Error(`env "${env.name}" has no ${kind.toUpperCase()} command configured`);
         const existing = this.get(task.id, kind);
-        if (existing && (await sessionExists(existing.tmux))) return existing;
-        if (existing) this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), existing.id);
+        if (existing) {
+            // A live, healthy (or still starting) row is reused; a failed one is torn down and started over.
+            const probed = await this.probe(existing);
+            if (probed.state !== "failed" && (await sessionExists(existing.tmux))) return existing;
+            await killSession(existing.tmux);
+            this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), existing.id);
+        }
 
         const be = kind === "fe" ? this.get(task.id, "be") : undefined;
-        if (kind === "fe" && !be) throw new Error("start the BE first — the FE command is linked to its URL");
+        if (kind === "fe" && (!be || be.failed_at)) throw new Error(be ? "the BE failed to start — fix or restart it first; the FE command is linked to its URL" : "start the BE first — the FE command is linked to its URL");
 
         const port = await this.pickPort(kind, kind === "be" ? env.be_port : env.fe_port, task);
         const urlTemplate = (kind === "be" ? env.be_url_template : env.fe_url_template) ?? "http://localhost:{{port}}";
@@ -105,8 +171,10 @@ export class Services {
         const logPath = join(logDir, `${kind}.log`);
         const tmux = serviceSessionName(task.ticket_id, kind);
         const cwd = task.worktree_path ?? env.path;
-        // The command may be an && chain; run it in a subshell so its whole stdout+stderr reaches the log.
-        const wrapped = `cd ${JSON.stringify(cwd)}; echo "[stagehand] ${kind.toUpperCase()} on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command} ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind.toUpperCase()} exited (\${PIPESTATUS[0]:-$?})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
+        // The command may be an && chain; run it in a subshell so its whole stdout+stderr reaches the log. The pane
+        // runs in tmux's default shell (the user's — zsh here, where the pipe statuses are `pipestatus[1]`; bash's
+        // is `PIPESTATUS[0]`), so both spellings are tried before falling back to tee's own status.
+        const wrapped = `cd ${JSON.stringify(cwd)}; echo "[stagehand] ${kind.toUpperCase()} on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command} ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind.toUpperCase()} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
         await ensureSession(tmux, cwd, wrapped, {
             ...parseEnvVars(env.env_vars),
             PORT: String(port),
@@ -151,6 +219,7 @@ export class Services {
         await this.stop(taskId, "be");
     }
 
+    // Plain port wait, used for the shared dependency service (which has no row of its own to record failure on).
     async waitForPort(port: number, timeoutMs: number): Promise<boolean> {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {

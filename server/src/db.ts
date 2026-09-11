@@ -308,6 +308,36 @@ export interface MessageRow {
     role: "user" | "agent";
     text: string;
     created_at: string;
+    // JSON MessageAnchor when the message belongs to a diff-line thread; NULL for plain chat.
+    anchor: string | null;
+}
+
+// A diff line a chat message is attached to: the file, which side of the diff, the line number there and the line's
+// text (lines move as the branch evolves; the text is what the UI matches on to place the thread later).
+export interface MessageAnchor {
+    path: string;
+    side: "new" | "old";
+    line: number;
+    snippet: string;
+}
+
+// A free-form interactive `claude` session the human opens from the Sessions page: an env (its config dir, env vars,
+// checkout — optionally its own worktree), an AI account, an optional model. Lives in a tmux session so it survives the
+// browser tab; claude's own session id is fixed up-front so the conversation can be resumed after the pane is closed.
+export interface SessionRow {
+    id: string;
+    name: string;
+    env_id: string;
+    account_id: string | null;
+    model: string | null;
+    cwd: string;
+    worktree_path: string | null;
+    branch: string | null;
+    claude_session_id: string;
+    tmux: string;
+    created_at: string;
+    // NULL until claude has been launched once (the first launch uses --session-id, every later one --resume).
+    opened_at: string | null;
 }
 
 export interface RateLimitRow {
@@ -508,6 +538,20 @@ CREATE TABLE IF NOT EXISTS env_services (
     log_path TEXT NOT NULL,
     started_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    env_id TEXT NOT NULL REFERENCES envs(id),
+    account_id TEXT REFERENCES accounts(id),
+    model TEXT,
+    cwd TEXT NOT NULL,
+    worktree_path TEXT,
+    branch TEXT,
+    claude_session_id TEXT NOT NULL,
+    tmux TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    opened_at TEXT
+);
 `;
 
 // A round of questions the agent asked the human mid-stage (see prompts: questions.json → NEED_INPUT). `questions`
@@ -578,6 +622,12 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.depends_on_env_id", `ALTER TABLE envs ADD COLUMN depends_on_env_id TEXT REFERENCES envs(id)`],
     // Free-form labels the human puts on a task: JSON [{text, color}] (color = CSS hex), shown in the list and the header.
     ["tasks.labels", `ALTER TABLE tasks ADD COLUMN labels TEXT`],
+    // A BE/FE that never came up (start timeout, command exited, tmux session gone) — the row stays visible as failed
+    // until it is stopped or restarted, so the human sees why and can hand it to the agent.
+    ["services.failed_at", `ALTER TABLE services ADD COLUMN failed_at TEXT`],
+    ["services.error", `ALTER TABLE services ADD COLUMN error TEXT`],
+    // A chat message tied to one diff line (path/side/line/snippet as JSON) — a question asked from Code changes.
+    ["messages.anchor", `ALTER TABLE messages ADD COLUMN anchor TEXT`],
 ];
 
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>
@@ -633,6 +683,8 @@ export interface ServiceRow {
     log_path: string;
     started_at: string;
     stopped_at: string | null;
+    failed_at: string | null;
+    error: string | null;
 }
 
 export const openDb = (dataDir: string): DB => {

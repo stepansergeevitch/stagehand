@@ -29,6 +29,7 @@ import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf
 import { matchChromeProfiles, openInProfile, restartChrome } from "./chrome-profiles.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
+import { Sessions } from "./sessions.js";
 import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, probeRateLimits, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
 import { isGitRepo, repoPaths } from "./git.js";
 import { attach, capturePane, ensureSession, killSession, loginSessionName, pipePane, sessionExists, taskSessionName } from "./tmux.js";
@@ -37,7 +38,9 @@ const cfg = loadConfig();
 const db = openDb(cfg.dataDir);
 migrateAccountsToConfigDirs(db, { mainConfigDir: cfg.mainConfigDir, scratchAccountsDir: cfg.accountsDir });
 const services = new Services(db, cfg);
+services.startWatch();
 const engine = new Engine(db, cfg, services);
+const sessions = new Sessions(db, cfg, engine);
 
 const app = new Hono();
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -306,7 +309,8 @@ app.delete("/api/accounts/:id", (c) => {
     if (!acc) return c.json({ error: "not found" }, 404);
     const envs = db.prepare(`SELECT name FROM envs WHERE default_account_id = ?`).all(acc.id) as Array<{ name: string }>;
     const tasks = db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE account_id = ?`).get(acc.id) as { n: number };
-    if (envs.length || tasks.n) return c.json({ error: `in use by ${envs.map((e) => `env ${e.name}`).concat(tasks.n ? [`${tasks.n} task(s)`] : []).join(", ")} — reassign first` }, 400);
+    const sess = db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE account_id = ?`).get(acc.id) as { n: number };
+    if (envs.length || tasks.n || sess.n) return c.json({ error: `in use by ${envs.map((e) => `env ${e.name}`).concat(tasks.n ? [`${tasks.n} task(s)`] : [], sess.n ? [`${sess.n} session(s)`] : []).join(", ")} — reassign first` }, 400);
     clearInterval(tokenCaptures.get(acc.id));
     tokenCaptures.delete(acc.id);
     db.prepare(`DELETE FROM rate_limits WHERE account_id = ?`).run(acc.id);
@@ -463,6 +467,8 @@ app.delete("/api/envs/:id", (c) => {
     if (!env) return c.json({ error: "not found" }, 404);
     const tasks = db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE env_id = ?`).get(env.id) as { n: number };
     if (tasks.n) return c.json({ error: `${tasks.n} task(s) still belong to this environment — delete them first` }, 400);
+    const sess = db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE env_id = ?`).get(env.id) as { n: number };
+    if (sess.n) return c.json({ error: `${sess.n} session(s) still belong to this environment — delete them on the Sessions page first` }, 400);
     db.prepare(`DELETE FROM envs WHERE id = ?`).run(env.id);
     return c.json({ deleted: env.id });
 });
@@ -1146,10 +1152,17 @@ app.get("/api/tasks/:id/messages", (c) => {
     return c.json(engine.listMessages(task.id));
 });
 
+// `anchor` ties the question to one diff line (Code changes → tap a line → Ask); the reply carries the same anchor.
 app.post("/api/tasks/:id/messages", async (c) => {
-    const body = json(z.object({ text: z.string().min(1) }), await c.req.json());
+    const body = json(
+        z.object({
+            text: z.string().min(1),
+            anchor: z.object({ path: z.string().min(1), side: z.enum(["new", "old"]), line: z.number().int().nonnegative(), snippet: z.string() }).nullable().optional(),
+        }),
+        await c.req.json(),
+    );
     try {
-        return c.json(await engine.askAgent(c.req.param("id"), body.text));
+        return c.json(await engine.askAgent(c.req.param("id"), body.text, body.anchor ?? null));
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }
@@ -1180,6 +1193,19 @@ app.post("/api/tasks/:id/services/:kind/stop", async (c) => {
     if (kind !== "be" && kind !== "fe") return c.json({ error: "kind must be be|fe" }, 400);
     await services.stop(c.req.param("id"), kind);
     return c.json(await services.status(c.req.param("id")));
+});
+
+// A failed BE/FE start handed to the task's agent; resolves once the run has started, the outcome (and the automatic
+// restart's result) lands in Chat.
+app.post("/api/tasks/:id/services/:kind/fix", async (c) => {
+    const kind = c.req.param("kind");
+    if (kind !== "be" && kind !== "fe") return c.json({ error: "kind must be be|fe" }, 400);
+    try {
+        await engine.fixService(c.req.param("id"), kind);
+        return c.json({ started: true });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
 });
 
 app.get("/api/tasks/:id/services/:kind/log", (c) => {
@@ -1230,6 +1256,76 @@ app.post("/api/tasks/:id/terminal", async (c) => {
         { ...parseEnvVars(env.env_vars), ...authEnv(acc), CLAUDE_CONFIG_DIR: cd.path },
     );
     return c.json({ terminal: name });
+});
+
+// ---------- free-form claude sessions (Sessions page) ----------
+
+app.get("/api/sessions", async (c) => c.json(await sessions.list()));
+
+app.post("/api/sessions", async (c) => {
+    const body = json(
+        z.object({
+            envId: z.string().min(1),
+            accountId: z.string().nullable().optional(),
+            model: z.string().nullable().optional(),
+            name: z.string().optional(),
+            // A branch name → the session gets its own worktree (created from the env's base branch, setup command run in the pane).
+            branch: z.string().nullable().optional(),
+        }),
+        await c.req.json(),
+    );
+    try {
+        return c.json(await sessions.create(body));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
+app.post("/api/sessions/:id/open", async (c) => {
+    try {
+        return c.json(await sessions.open(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
+app.post("/api/sessions/:id/close", async (c) => {
+    await sessions.close(c.req.param("id"));
+    return c.json(await sessions.list());
+});
+
+app.patch("/api/sessions/:id", async (c) => {
+    const body = json(z.object({ name: z.string().min(1) }), await c.req.json());
+    return c.json(sessions.rename(c.req.param("id"), body.name));
+});
+
+// ?worktree=remove also removes the session's worktree and local branch (refused while it holds unpushed work unless ?force=1).
+app.delete("/api/sessions/:id", async (c) => {
+    try {
+        await sessions.remove(c.req.param("id"), c.req.query("worktree") === "remove", c.req.query("force") === "1");
+        return c.json({ deleted: c.req.param("id") });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
+// Same shape as the task diff: ?commits=… / ?scope=uncommitted narrow it; a session in the env's main checkout (no
+// worktree of its own) only ever shows what is uncommitted there.
+app.get("/api/sessions/:id/diff", async (c) => {
+    const shas = (c.req.query("commits") ?? "").split(",").map((s) => s.trim()).filter((s) => /^[0-9a-f]{7,40}$/i.test(s));
+    try {
+        return c.json(await sessions.diff(c.req.param("id"), c.req.query("scope") === "uncommitted" ? { uncommitted: true } : shas.length ? { shas } : null));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
+app.get("/api/sessions/:id/commits", async (c) => {
+    try {
+        return c.json(await sessions.commits(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
 });
 
 // ---------- websockets ----------

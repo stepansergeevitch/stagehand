@@ -131,8 +131,27 @@ export interface Ticket {
     fetchedVia: "rest" | "mcp";
 }
 export interface TicketAttachment { name: string; url: string; mime: string | null; file: string | null; size: number | null; error: string | null; origin: "attachment" | "description" | "comment" }
-export interface Service { id: string; task_id: string; kind: "be" | "fe"; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string; running: boolean }
-export interface Message { id: string; task_id: string; role: "user" | "agent"; text: string; created_at: string }
+// `state`: starting until the port answers; failed once its command exited, its tmux session vanished, or the start
+// budget ran out — `error` says which. A failed row stays until Stop, Retry, or Fix with agent.
+export type ServiceState = "starting" | "running" | "failed";
+export interface Service {
+    id: string; task_id: string; kind: "be" | "fe"; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string;
+    running: boolean; state: ServiceState; failed_at: string | null; error: string | null;
+}
+// The diff line a chat message hangs on (asked from Code changes); stored as JSON on the message.
+export interface MessageAnchor { path: string; side: "new" | "old"; line: number; snippet: string }
+export interface Message { id: string; task_id: string; role: "user" | "agent"; text: string; created_at: string; anchor?: string | null }
+export const anchorOf = (m: Pick<Message, "anchor">): MessageAnchor | null => {
+    try {
+        const v: unknown = m.anchor ? JSON.parse(m.anchor) : null;
+        return v && typeof v === "object" && typeof (v as MessageAnchor).path === "string" ? (v as MessageAnchor) : null;
+    } catch { return null; }
+};
+// A free-form claude session from the Sessions page (a tmux pane; `alive` = the pane exists right now).
+export interface Session {
+    id: string; name: string; env_id: string; env_name: string; account_id: string | null; account_name: string | null; model: string | null;
+    cwd: string; worktree_path: string | null; branch: string | null; claude_session_id: string; tmux: string; created_at: string; opened_at: string | null; alive: boolean;
+}
 export interface AgentQuestion { id: string; text: string; context: string; options: string[] }
 export interface QuestionRound { id: string; run_id: string | null; stage: Stage; questions: AgentQuestion[]; answers: Record<string, string> | null; created_at: string; answered_at: string | null }
 export const pendingQuestions = (d: Pick<TaskDetail, "questions">): QuestionRound | undefined => d.questions?.find((q) => q.answers === null);
@@ -359,10 +378,24 @@ export const api = {
     startService: (id: string, kind: "be" | "fe") => post<Service>(`/api/tasks/${id}/services/${kind}/start`),
     stopService: (id: string, kind: "be" | "fe") => post<Service[]>(`/api/tasks/${id}/services/${kind}/stop`),
     serviceLog: (id: string, kind: "be" | "fe", lines = 120) => fetch(`/api/tasks/${id}/services/${kind}/log?lines=${lines}`).then((r) => r.text()),
+    // Resolves once the agent run has started; its outcome and the automatic restart's result land in Chat.
+    fixService: (id: string, kind: "be" | "fe") => post<{ started: true }>(`/api/tasks/${id}/services/${kind}/fix`),
+    sessions: () => fetch("/api/sessions").then((r) => j<Session[]>(r)),
+    createSession: (body: { envId: string; accountId?: string | null; model?: string | null; name?: string; branch?: string | null }) => post<Session>("/api/sessions", body),
+    openSession: (id: string) => post<Session>(`/api/sessions/${id}/open`),
+    closeSession: (id: string) => post<Session[]>(`/api/sessions/${id}/close`),
+    renameSession: (id: string, name: string) =>
+        fetch(`/api/sessions/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) }).then((r) => j<Session>(r)),
+    deleteSession: (id: string, removeWorktree: boolean, force = false) =>
+        fetch(`/api/sessions/${id}?${new URLSearchParams({ ...(removeWorktree ? { worktree: "remove" } : {}), ...(force ? { force: "1" } : {}) })}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
+    sessionDiff: (id: string, filter?: { shas: string[] } | { uncommitted: true }) =>
+        fetch(`/api/sessions/${id}/diff${filter ? ("uncommitted" in filter ? "?scope=uncommitted" : `?commits=${filter.shas.join(",")}`) : ""}`).then((r) => j<DiffResponse>(r)),
+    sessionCommits: (id: string) => fetch(`/api/sessions/${id}/commits`).then((r) => j<{ commits: BranchCommit[]; uncommitted: boolean }>(r)),
     artifactUrl: (id: string, rel: string) => `/api/tasks/${id}/artifacts/${rel}`,
     messages: (id: string) => fetch(`/api/tasks/${id}/messages`).then((r) => j<Message[]>(r)),
     answerQuestions: (id: string, roundId: string, answers: Record<string, string>) => post<Task>(`/api/tasks/${id}/questions/${roundId}/answer`, { answers }),
-    sendMessage: (id: string, text: string) => post<Message>(`/api/tasks/${id}/messages`, { text }),
+    // With an anchor the question is about one diff line; the reply carries the same anchor (a thread under that line).
+    sendMessage: (id: string, text: string, anchor?: MessageAnchor) => post<Message>(`/api/tasks/${id}/messages`, { text, ...(anchor ? { anchor } : {}) }),
 };
 
 // A CircleCI job gated behind a manual "Approve" click (deploy/db-reset gates) sits pending forever until a human

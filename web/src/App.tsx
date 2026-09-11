@@ -7,14 +7,16 @@ import { ConfigDirPage } from "./ConfigDirPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
 import { Dashboard, needsAttention } from "./Dashboard";
 import { Analytics } from "./Analytics";
+import { SessionsPage } from "./SessionsPage";
 import { storage } from "./storage";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { LazyTerminal } from "./LazyTerminal";
 
-type Page = "dashboard" | "tasks" | "analytics" | "env" | "dir" | ManageTab;
+type Page = "dashboard" | "tasks" | "sessions" | "analytics" | "env" | "dir" | ManageTab;
 const NAV: { id: Page; label: string; hint: string }[] = [
     { id: "dashboard", label: "Dashboard", hint: "Tasks needing your attention, per environment" },
     { id: "tasks", label: "Tasks", hint: "Tasks in the selected environment" },
+    { id: "sessions", label: "Sessions", hint: "Free-form claude sessions in an environment, with the account and worktree of your choice" },
     { id: "analytics", label: "Analytics", hint: "Token and cost usage by environment, task, account" },
     { id: "envs", label: "Environments", hint: "Repositories, services, which config dir and account they use" },
     { id: "dirs", label: "Config dirs", hint: "Claude config dirs: skills, hooks, rules, Chrome" },
@@ -22,8 +24,8 @@ const NAV: { id: Page; label: string; hint: string }[] = [
     { id: "managers", label: "Task managers", hint: "ClickUp / Linear credentials" },
 ];
 
-// Where the user is, as a URL hash: #/dashboard, #/tasks, #/tasks/<taskId>/<tab>, #/analytics, #/envs, #/env/<envId>,
-// #/dirs, #/dir/<dirId>, #/accounts, #/managers. Reloads and back/forward restore it.
+// Where the user is, as a URL hash: #/dashboard, #/tasks, #/tasks/<taskId>/<tab>, #/sessions, #/analytics, #/envs,
+// #/env/<envId>, #/dirs, #/dir/<dirId>, #/accounts, #/managers. Reloads and back/forward restore it.
 interface Route {
     page: Page;
     selected: string | null;
@@ -31,7 +33,7 @@ interface Route {
     envId: string | null;
     dirId: string | null;
 }
-const PAGES: readonly Page[] = ["dashboard", "tasks", "analytics", "envs", "dirs", "accounts", "managers"];
+const PAGES: readonly Page[] = ["dashboard", "tasks", "sessions", "analytics", "envs", "dirs", "accounts", "managers"];
 const parseHash = (hash: string): Route => {
     const [head = "", a = "", b = ""] = hash.replace(/^#\/?/, "").split("/");
     const r: Route = { page: "dashboard", selected: null, taskTab: "work", envId: null, dirId: null };
@@ -301,6 +303,14 @@ export const App = () => {
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
                             <ErrorBoundary label="Analytics"><Analytics onError={setError} /></ErrorBoundary>
+                        </main>
+                    </div>
+                )}
+                {page === "sessions" && (
+                    <div className="main page">
+                        <main className="detail">
+                            {error && <div className="blocked-box">{error}</div>}
+                            <ErrorBoundary label="Sessions"><SessionsPage envs={envs} accounts={accounts} configDirs={configDirs} settings={settings} onError={setError} /></ErrorBoundary>
                         </main>
                     </div>
                 )}
