@@ -998,7 +998,12 @@ export class Engine extends EventEmitter {
 
     review(taskId: string, input: ReviewInput): void {
         const task = this.getTask(taskId);
-        if (!task || task.status !== "waiting_user") throw new Error("task is not waiting for review");
+        if (!task) throw new Error("task not found");
+        // A repository whose draft was never approved can be approved from any later PR stage (the task moved on when
+        // another repository's PR was opened or fixed): its PR is opened right away, nothing else about the task changes.
+        const lateDraftApproval =
+            input.verdict === "approve" && input.repo !== undefined && task.status !== "running" && (task.stage === "pr_waiting" || task.stage === "pr_fix" || task.stage === "pr_green") && !this.prRow(taskId, input.repo)?.number;
+        if (task.status !== "waiting_user" && !lateDraftApproval) throw new Error("task is not waiting for review");
         if (this.pendingQuestions(taskId)) throw new Error("the agent is waiting for answers to its questions — answer (or dismiss) them first");
         const comments = input.comments ?? [];
         const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE task_id = ? AND stage = ? AND verdict = 'changes'`).get(taskId, task.stage) as { n: number };
@@ -1006,7 +1011,7 @@ export class Engine extends EventEmitter {
             .prepare(`INSERT INTO reviews (id, task_id, stage, verdict, route_to, notes, comments, repo, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
             .run(randomUUID(), taskId, task.stage, input.verdict, input.routeTo ?? null, input.notes ?? null, comments.length ? JSON.stringify(comments) : null, input.repo ?? null, now());
 
-        if (task.stage === "pr_creation_review") {
+        if (task.stage === "pr_creation_review" || lateDraftApproval) {
             this.reviewPrDraft(task, input, prior.n + 1);
             return;
         }
@@ -1655,6 +1660,19 @@ export class Engine extends EventEmitter {
             }
         } catch (e) {
             this.setTaskStatus(taskId, "failed", `push failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            return;
+        }
+        // A fix can land while a repository's draft is still unapproved (its PR never opened before CI on another
+        // repository's PR failed): that draft still needs the human — back to PR Creation Review for it, not on to
+        // PR Waiting where nothing offers to open it.
+        const repos = this.draftRepos(taskId, env);
+        const rows = this.prRows(taskId);
+        const missing = repos.filter((r) => !rows.find((x) => x.repo === r)?.number);
+        if (missing.length) {
+            const opened = repos.filter((r) => !missing.includes(r));
+            this.setStage(taskId, "pr_creation_review");
+            this.setTaskStatus(taskId, "waiting_user", `PR Creation Review · fix pushed${opened.length ? ` to ${opened.map((r) => `${repoPrefix(r, repos)}#${rows.find((x) => x.repo === r)!.number}`).join(", ")}` : ""} — still to review: ${missing.map((r) => repoLabel(r)).join(", ")}`);
+            this.pollPrSoon(taskId);
             return;
         }
         this.advance(taskId, "pr_waiting");

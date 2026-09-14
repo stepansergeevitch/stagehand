@@ -1024,6 +1024,13 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             {task.stage === "pr_fix" && reviewBox}
                             {task.stage === "pr_fix" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
                             <PrPanel detail={detail} onAction={onAction} focusRepo={prFocusRepo} />
+                            {/* A repository whose draft was never approved (the task moved on when another repository's PR opened): still reviewable here. */}
+                            {(pr?.drafts ?? []).some((d) => !prStateOf(detail, d.repo)?.number) && (
+                                <>
+                                    <div className="blocked-box"><b>A pull request is still to be opened.</b> Review and approve the remaining draft below; the task's other PR{prRepos(detail).length > 2 ? "s are" : " is"} unaffected.</div>
+                                    <PrDraftTabs detail={detail} onAction={onAction} focusRepo={(pr?.drafts ?? []).find((d) => !prStateOf(detail, d.repo)?.number)?.repo ?? null} />
+                                </>
+                            )}
                         </>
                     )}
                 </>
@@ -1117,7 +1124,8 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
     const row = prStateOf(detail, entry.repo);
     const created = !!row?.number;
     const approved = !!row?.approved_at;
-    const reviewing = task.stage === "pr_creation_review" && task.status === "waiting_user";
+    // Drafts are reviewed during PR Creation Review — and a draft whose PR never opened stays reviewable from the later PR stages.
+    const reviewing = (task.stage === "pr_creation_review" && task.status === "waiting_user") || (!created && task.status !== "running" && (task.stage === "pr_waiting" || task.stage === "pr_fix" || task.stage === "pr_green"));
     const editable = task.status !== "running" && !created;
     const [editing, setEditing] = useState(false);
     const [title, setTitle] = useState(entry.title);
