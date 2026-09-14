@@ -696,48 +696,94 @@ export class Engine extends EventEmitter {
     // pins that redirect and the browser lands on whatever holds :3000 after logging in (an error page, or another
     // app). The QA prompt and the login helper move such a tab to the right port themselves — but a human who opens
     // the app from the App widget or a Session and logs in by hand had nobody doing it, and the login failed. This
-    // watcher does it for every Chrome tab (all profiles) as long as any task's FE is up on a port other than 3000:
-    // it remembers which Stagehand FE origin each tab was on, and when a tab sits on the :3000 callback URL for two
-    // polls (the FE that genuinely lives on 3000 strips that query within a second) it re-opens the same query on
-    // the origin that tab came from — or on the only alt-port FE running, when the tab was never seen on one.
+    // watcher does it for every Chrome tab (all profiles) as long as any task's FE is up on a port other than 3000.
+    // It remembers which Stagehand FE origin each tab was on, and handles both ways a login can end on :3000:
+    // - nothing (or a foreign app) holds :3000 → the tab sits on the callback URL (`/?code=…` for an SPA, `/auth/callback?code=…`
+    //   for a server-side flow); once it has been there for two polls (an app that genuinely lives on 3000 consumes that
+    //   query within a second) the same path+query is re-opened on the origin the tab came from, where the app finishes
+    //   the exchange (the state cookie is host-scoped, so it is there on any port);
+    // - another instance of the same app holds :3000 (the human's own dev server) → it consumes the callback at once,
+    //   sets the login cookie (host-scoped: valid on every port) and lands the tab on its own pages. The tab is moved
+    //   to the same path on the origin it came from, where it is now logged in. Recognised by the sequence
+    //   task FE → identity provider → localhost:3000, and done at most once a minute per tab so an app whose login is
+    //   per-origin (an SPA with tokens in storage) cannot ping-pong between the two ports.
     private readonly tabOrigins = new Map<string, { origin: string; at: number }>();
+    private readonly tabPrevUrl = new Map<string, string>();
+    private readonly tabHoppedAt = new Map<string, number>();
     private hopSeen = "";
     private startCallbackHopWatcher(): void {
-        const isCallback = (u: string) => /^https?:\/\/localhost:3000\/\?(?=.*\bcode=)(?=.*\bstate=)/.test(u);
+        const on3000 = (u: string) => /^https?:\/\/localhost:3000(\/|$)/.test(u);
+        const isCallback = (u: string) => on3000(u) && /\?(?=.*\bcode=)(?=.*\bstate=)/.test(u);
+        const isIdp = (u: string) => /^https:\/\/[^/]*(auth0\.com|authkit\.app|workos\.com|okta\.com|login\.microsoftonline\.com|accounts\.google\.com)\//.test(u);
+        const pathAndQuery = (u: string): string => {
+            const x = new URL(u);
+            return `${x.pathname}${x.search}${x.hash}`;
+        };
         const tick = async (): Promise<void> => {
             const rows = this.db.prepare(`SELECT url FROM services WHERE kind = 'fe' AND stopped_at IS NULL AND failed_at IS NULL`).all() as Array<{ url: string }>;
             const origins = rows.map((r) => new URL(r.url).origin).filter((o) => !/^https?:\/\/localhost:3000$/.test(o));
             if (origins.length === 0) {
                 this.tabOrigins.clear();
+                this.tabPrevUrl.clear();
                 this.hopSeen = "";
                 return;
             }
             const tabs = await listChromeTabs("Google");
             const now_ = Date.now();
+            const seen = new Set<string>();
             for (const t of tabs) {
                 const key = `${t.window}:${t.tab}`;
+                seen.add(key);
                 const on = origins.find((o) => t.url.startsWith(`${o}/`) || t.url === o);
                 if (on) this.tabOrigins.set(key, { origin: on, at: now_ });
             }
             for (const [key, v] of this.tabOrigins) if (now_ - v.at > 30 * 60_000) this.tabOrigins.delete(key);
+            for (const key of this.tabPrevUrl.keys()) if (!seen.has(key)) this.tabPrevUrl.delete(key);
+            const remember = (): void => {
+                for (const t of tabs) this.tabPrevUrl.set(`${t.window}:${t.tab}`, t.url);
+            };
+            // Case 2: the callback was consumed by the app on :3000 — the tab came from a task FE, went through the
+            // identity provider, and is now on :3000 without a callback query.
+            for (const t of tabs) {
+                const key = `${t.window}:${t.tab}`;
+                if (!on3000(t.url) || isCallback(t.url)) continue;
+                const prev = this.tabPrevUrl.get(key) ?? "";
+                const from = this.tabOrigins.get(key);
+                if (!from || now_ - from.at > 10 * 60_000) continue;
+                // A provider with a live SSO session bounces faster than one poll: the previous poll then still shows
+                // the task FE itself, so a tab that was on it a moment ago and is on :3000 now counts as well.
+                const straightFromFe = prev.startsWith(from.origin) && now_ - from.at <= 2 * LOGIN_POLL_MS + 500;
+                if (!(isIdp(prev) || isCallback(prev) || straightFromFe)) continue;
+                if (now_ - (this.tabHoppedAt.get(key) ?? 0) < 60_000) continue;
+                this.tabHoppedAt.set(key, now_);
+                await setChromeTabUrl(t, `${from.origin}${pathAndQuery(t.url)}`, "Google");
+                console.log(`[stagehand] login landed on localhost:3000 (consumed by the app there); tab moved back to ${from.origin}${pathAndQuery(t.url)}`);
+                remember();
+                return;
+            }
+            // Case 1: the callback is sitting unconsumed on :3000.
             const cb = tabs.find((t) => isCallback(t.url));
             if (!cb) {
                 this.hopSeen = "";
+                remember();
                 return;
             }
             const mark = `${cb.window}:${cb.tab}:${cb.url}`;
             if (this.hopSeen !== mark) {
                 this.hopSeen = mark;
+                remember();
                 return;
             }
             this.hopSeen = "";
             const target = this.tabOrigins.get(`${cb.window}:${cb.tab}`)?.origin ?? (origins.length === 1 ? origins[0] : undefined);
             if (!target) {
                 console.warn(`[stagehand] login callback on :3000 in a tab never seen on a task FE and ${origins.length} alt-port FEs are up — not hopping`);
+                remember();
                 return;
             }
-            await setChromeTabUrl(cb, `${target}/${cb.url.slice(cb.url.indexOf("/?") + 1)}`, "Google");
-            console.log(`[stagehand] login callback hopped from localhost:3000 to ${target}`);
+            await setChromeTabUrl(cb, `${target}${pathAndQuery(cb.url)}`, "Google");
+            console.log(`[stagehand] login callback hopped from localhost:3000 to ${target}${pathAndQuery(cb.url)}`);
+            remember();
         };
         let busy = false;
         setInterval(() => {
