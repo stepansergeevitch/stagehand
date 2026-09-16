@@ -197,7 +197,8 @@ export interface Impl {
 }
 export interface DiffLine { type: "context" | "add" | "del"; oldNo: number | null; newNo: number | null; text: string }
 export interface DiffHunk { header: string; lines: DiffLine[] }
-export interface DiffFile { path: string; status: "added" | "modified" | "deleted" | "renamed"; additions: number; deletions: number; hunks: DiffHunk[]; binary: boolean }
+// `collapsed`: a generated or very large file whose hunks were left out of the response — fetch it alone (`file`) to see them.
+export interface DiffFile { path: string; status: "added" | "modified" | "deleted" | "renamed"; additions: number; deletions: number; hunks: DiffHunk[]; binary: boolean; collapsed?: boolean }
 export interface DiffGroup { label: string; shas: string[]; files: DiffFile[] }
 export interface DiffResponse { base: string; filtered: boolean; groups: DiffGroup[]; files: DiffFile[] }
 export interface BranchCommit { sha: string; short: string; subject: string; author: string; at: string; repo: string }
@@ -283,6 +284,12 @@ const j = async <T,>(res: Response): Promise<T> => {
     if (!res.ok) throw new Error(body.error ?? res.statusText);
     return body;
 };
+const diffQuery = (filter?: { shas: string[] } | { uncommitted: true }, file?: string): string => {
+    const q = new URLSearchParams();
+    if (filter) "uncommitted" in filter ? q.set("scope", "uncommitted") : q.set("commits", filter.shas.join(","));
+    if (file) q.set("file", file);
+    return q.toString();
+};
 const post = <T,>(url: string, body?: unknown): Promise<T> =>
     fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => j<T>(r));
 
@@ -349,8 +356,9 @@ export const api = {
     review: (id: string, body: { verdict: "approve" | "changes"; repo?: string; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>
         post<Task>(`/api/tasks/${id}/review`, body),
     // filter: a set of commit shas (contiguous runs become one group each) or "uncommitted"; none = everything vs the base.
-    diff: (id: string, filter?: { shas: string[] } | { uncommitted: true }) =>
-        fetch(`/api/tasks/${id}/diff${filter ? ("uncommitted" in filter ? "?scope=uncommitted" : `?commits=${filter.shas.join(",")}`) : ""}`).then((r) => j<DiffResponse>(r)),
+    // `file`: only that path, with its hunks even when it would normally be collapsed.
+    diff: (id: string, filter?: { shas: string[] } | { uncommitted: true }, file?: string) =>
+        fetch(`/api/tasks/${id}/diff?${diffQuery(filter, file)}`).then((r) => j<DiffResponse>(r)),
     commits: (id: string) => fetch(`/api/tasks/${id}/commits`).then((r) => j<{ commits: BranchCommit[]; uncommitted: boolean }>(r)),
     // Reword resolves once the (fast, conflict-free) rewrite is done. Remove only resolves once the agent run has
     // *started* — it can take a while and may hit conflicts; the outcome lands in Chat.
@@ -388,8 +396,8 @@ export const api = {
         fetch(`/api/sessions/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) }).then((r) => j<Session>(r)),
     deleteSession: (id: string, removeWorktree: boolean, force = false) =>
         fetch(`/api/sessions/${id}?${new URLSearchParams({ ...(removeWorktree ? { worktree: "remove" } : {}), ...(force ? { force: "1" } : {}) })}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
-    sessionDiff: (id: string, filter?: { shas: string[] } | { uncommitted: true }) =>
-        fetch(`/api/sessions/${id}/diff${filter ? ("uncommitted" in filter ? "?scope=uncommitted" : `?commits=${filter.shas.join(",")}`) : ""}`).then((r) => j<DiffResponse>(r)),
+    sessionDiff: (id: string, filter?: { shas: string[] } | { uncommitted: true }, file?: string) =>
+        fetch(`/api/sessions/${id}/diff?${diffQuery(filter, file)}`).then((r) => j<DiffResponse>(r)),
     sessionCommits: (id: string) => fetch(`/api/sessions/${id}/commits`).then((r) => j<{ commits: BranchCommit[]; uncommitted: boolean }>(r)),
     artifactUrl: (id: string, rel: string) => `/api/tasks/${id}/artifacts/${rel}`,
     messages: (id: string) => fetch(`/api/tasks/${id}/messages`).then((r) => j<Message[]>(r)),

@@ -31,7 +31,7 @@ import { Engine } from "./engine.js";
 import { Services } from "./services.js";
 import { Sessions } from "./sessions.js";
 import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, probeRateLimits, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
-import { isGitRepo, repoPaths } from "./git.js";
+import { collapseLargeFiles, isGitRepo, repoPaths, type DiffGroup } from "./git.js";
 import { attach, capturePane, ensureSession, killSession, loginSessionName, pipePane, sessionExists, taskSessionName } from "./tmux.js";
 
 const cfg = loadConfig();
@@ -981,16 +981,22 @@ app.post("/api/tasks/:id/pr-comments/:commentId/resolve", async (c) => {
 
 // ?commits=<sha>,<sha>… narrows the diff to those commits (contiguous runs become one group each); ?scope=uncommitted
 // shows only what is not committed yet. Without either: everything versus the base branch, as one group.
+// Generated / very large files come back without hunks (`collapsed: true`); ?file=<path> returns that one file in full.
 app.get("/api/tasks/:id/diff", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
     const env = db.prepare(`SELECT base_branch FROM envs WHERE id = ?`).get(task.env_id) as { base_branch: string };
     const shas = (c.req.query("commits") ?? "").split(",").map((s) => s.trim()).filter((s) => /^[0-9a-f]{7,40}$/i.test(s));
     const scope = c.req.query("scope");
+    const only = c.req.query("file") ?? null;
+    const shape = (g: DiffGroup): DiffGroup => ({ ...g, files: collapseLargeFiles(only ? g.files.filter((f) => f.path === only) : g.files, only) });
     const groups = scope === "uncommitted" ? await engine.diffFiltered(task.id, { uncommitted: true }) : shas.length ? await engine.diffFiltered(task.id, { shas }) : null;
-    if (groups) return c.json({ base: env.base_branch, filtered: true, groups, files: groups.flatMap((g) => g.files) });
-    const files = await engine.diff(task.id);
-    return c.json({ base: env.base_branch, filtered: false, groups: [{ label: `all changes vs origin/${env.base_branch}`, shas: [], files }], files });
+    if (groups) {
+        const shaped = groups.map(shape);
+        return c.json({ base: env.base_branch, filtered: true, groups: shaped, files: shaped.flatMap((g) => g.files) });
+    }
+    const all = shape({ label: `all changes vs origin/${env.base_branch}`, shas: [], files: await engine.diff(task.id) });
+    return c.json({ base: env.base_branch, filtered: false, groups: [all], files: all.files });
 });
 
 app.get("/api/tasks/:id/commits", async (c) => {
@@ -1314,7 +1320,7 @@ app.delete("/api/sessions/:id", async (c) => {
 app.get("/api/sessions/:id/diff", async (c) => {
     const shas = (c.req.query("commits") ?? "").split(",").map((s) => s.trim()).filter((s) => /^[0-9a-f]{7,40}$/i.test(s));
     try {
-        return c.json(await sessions.diff(c.req.param("id"), c.req.query("scope") === "uncommitted" ? { uncommitted: true } : shas.length ? { shas } : null));
+        return c.json(await sessions.diff(c.req.param("id"), c.req.query("scope") === "uncommitted" ? { uncommitted: true } : shas.length ? { shas } : null, c.req.query("file") ?? null));
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }

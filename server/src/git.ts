@@ -142,7 +142,16 @@ export interface DiffFile {
     deletions: number;
     hunks: DiffHunk[];
     binary: boolean;
+    // Hunks were left out of the response (a generated or very large file); the client fetches them on request.
+    collapsed?: boolean;
 }
+
+// Generated and very large files make a diff response many megabytes (19 regenerated test snapshots = 3.9 MB), which a
+// phone over the public listener drops as "Load failed". Their hunks are sent only when asked for by path (`keep`).
+const GENERATED_PATH = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock)$|\.min\.(js|css)$|(^|\/)(dist|build|generated|__snapshots__|snapshots)\/|snapshot/i;
+const COLLAPSE_AT = 400;
+export const collapseLargeFiles = (files: DiffFile[], keep: string | null = null): DiffFile[] =>
+    files.map((f) => (f.path !== keep && !f.binary && (GENERATED_PATH.test(f.path) || f.additions + f.deletions > COLLAPSE_AT) ? { ...f, hunks: [], collapsed: true } : f));
 
 // Parses `git diff` unified output into files/hunks/lines with both line numbers, for the review UI.
 export const parseUnifiedDiff = (raw: string, prefix = ""): DiffFile[] => {

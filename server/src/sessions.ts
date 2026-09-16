@@ -6,7 +6,7 @@ import type { Config } from "./config.js";
 import { now, parseEnvVars, type AccountRow, type DB, type EnvRow, type SessionRow } from "./db.js";
 import type { Engine } from "./engine.js";
 import { authEnv } from "./claude/accounts.js";
-import { branchCommits, commitsDiff, createWorktree, removeWorktreeAndBranch, repoPaths, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
+import { branchCommits, collapseLargeFiles, commitsDiff, createWorktree, removeWorktreeAndBranch, repoPaths, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
 import { ensureSession, killSession, sessionExists } from "./tmux.js";
 
 const execFileAsync = promisify(execFile);
@@ -162,20 +162,22 @@ export class Sessions {
         this.db.prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
     }
 
-    async diff(id: string, filter: { shas: string[] } | { uncommitted: true } | null): Promise<SessionDiff> {
+    // `only`: return just that file, in full (generated / very large files are otherwise sent without hunks).
+    async diff(id: string, filter: { shas: string[] } | { uncommitted: true } | null, only: string | null = null): Promise<SessionDiff> {
         const s = this.row(id);
         const env = this.env(s.env_id);
         const vars = parseEnvVars(env.env_vars);
+        const shape = (g: DiffGroup): DiffGroup => ({ ...g, files: collapseLargeFiles(only ? g.files.filter((f) => f.path === only) : g.files, only) });
         if (!s.worktree_path) {
-            const g = await uncommittedGroup(env, env.path, vars);
+            const g = shape(await uncommittedGroup(env, env.path, vars));
             return { base: "HEAD", filtered: true, groups: [g], files: g.files };
         }
         if (filter) {
-            const groups = "uncommitted" in filter ? [await uncommittedGroup(env, s.worktree_path, vars)] : await commitsDiff(env, s.worktree_path, filter.shas, vars);
+            const groups = ("uncommitted" in filter ? [await uncommittedGroup(env, s.worktree_path, vars)] : await commitsDiff(env, s.worktree_path, filter.shas, vars)).map(shape);
             return { base: env.base_branch, filtered: true, groups, files: groups.flatMap((g) => g.files) };
         }
-        const files = await worktreeDiff(env, s.worktree_path, vars);
-        return { base: env.base_branch, filtered: false, groups: [{ label: `all changes vs origin/${env.base_branch}`, shas: [], files }], files };
+        const all = shape({ label: `all changes vs origin/${env.base_branch}`, shas: [], files: await worktreeDiff(env, s.worktree_path, vars) });
+        return { base: env.base_branch, filtered: false, groups: [all], files: all.files };
     }
 
     async commits(id: string): Promise<{ commits: BranchCommit[]; uncommitted: boolean }> {

@@ -12,11 +12,12 @@ export type DiffFilter = { kind: "all" } | { kind: "uncommitted" } | { kind: "co
 
 // Where the diff comes from: a task's worktree (the default) or a Sessions-page session's checkout.
 export interface DiffSource {
-    diff: (filter?: { shas: string[] } | { uncommitted: true }) => Promise<DiffResponse>;
+    // `file`: one path in full — how a collapsed (generated / very large) file's hunks are fetched on request.
+    diff: (filter?: { shas: string[] } | { uncommitted: true }, file?: string) => Promise<DiffResponse>;
     commits: () => Promise<{ commits: BranchCommit[]; uncommitted: boolean }>;
 }
-const taskSource = (taskId: string): DiffSource => ({ diff: (f) => api.diff(taskId, f), commits: () => api.commits(taskId) });
-export const sessionSource = (sessionId: string): DiffSource => ({ diff: (f) => api.sessionDiff(sessionId, f), commits: () => api.sessionCommits(sessionId) });
+const taskSource = (taskId: string): DiffSource => ({ diff: (f, file) => api.diff(taskId, f, file), commits: () => api.commits(taskId) });
+export const sessionSource = (sessionId: string): DiffSource => ({ diff: (f, file) => api.sessionDiff(sessionId, f, file), commits: () => api.sessionCommits(sessionId) });
 
 // The branch's own commits (this task's work), with Change message (a fast, conflict-free metadata edit) and Remove
 // (a real rewrite the agent performs, since replaying everything after the commit can hit conflicts) per commit, plus
@@ -273,6 +274,7 @@ const FileDiff = ({
     canAsk,
     onChange,
     onAsk,
+    onExpand,
 }: {
     file: DiffFile;
     comments: Record<string, LineComment>;
@@ -282,8 +284,11 @@ const FileDiff = ({
     canAsk: boolean;
     onChange: (key: string, c: LineComment | null) => void;
     onAsk: (anchor: MessageAnchor, text: string) => Promise<void>;
+    // Fetches a collapsed file's hunks (generated / very large files are sent without them).
+    onExpand: (path: string) => Promise<void>;
 }) => {
     const [editing, setEditing] = useState<string | null>(null);
+    const [expanding, setExpanding] = useState(false);
     // Lines whose question is out with the agent right now (the reply arrives through the messages list).
     const [asking, setAsking] = useState<Set<string>>(new Set());
     const count = Object.values(comments).filter((c) => c.path === file.path).length;
@@ -312,6 +317,12 @@ const FileDiff = ({
                 {threadCount > 0 && <span className="chip accent" title="questions asked to the agent on lines of this file">{threadCount} Q&amp;A</span>}
             </summary>
             {file.binary && <div className="empty">binary file</div>}
+            {file.collapsed && (
+                <div className="empty collapsed-file">
+                    Generated or very large file — {file.additions + file.deletions} changed lines not loaded.
+                    <button className="tiny" style={{ marginLeft: 8 }} disabled={expanding} onClick={() => { setExpanding(true); void onExpand(file.path).finally(() => setExpanding(false)); }}>{expanding ? "Loading…" : "Show anyway"}</button>
+                </div>
+            )}
             {(placed.outdated.length > 0 || placedThreads.outdated.length > 0) && (
                 <div className="outdated">
                     {placed.outdated.map((c, i) => (
@@ -456,12 +467,20 @@ export const DiffView = ({
     useEffect(() => {
         void src.commits().then(setBranch).catch(() => undefined);
     }, [src, refreshKey]);
+    const filterArg = filter.kind === "all" ? undefined : filter.kind === "uncommitted" ? { uncommitted: true as const } : { shas: filter.shas };
     useEffect(() => {
         setDiff(null);
         setError(null);
-        const f = filter.kind === "all" ? undefined : filter.kind === "uncommitted" ? { uncommitted: true as const } : { shas: filter.shas };
-        void src.diff(f).then(setDiff).catch((e: Error) => setError(e.message));
+        void src.diff(filterArg).then(setDiff).catch((e: Error) => setError(e.message));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [src, refreshKey, filter]);
+    // "Show anyway" on a collapsed file: fetch just that file and splice its hunks into the loaded diff.
+    const expand = async (path: string): Promise<void> => {
+        const one = await src.diff(filterArg, path).catch((e: Error) => { onError(e.message); return null; });
+        const full = one?.files.find((f) => f.path === path);
+        if (!full) return;
+        setDiff((d) => d && { ...d, files: d.files.map((f) => (f.path === path ? full : f)), groups: d.groups.map((g) => ({ ...g, files: g.files.map((f) => (f.path === path ? full : f)) })) });
+    };
     const threadItems = useMemo(() => threadMessages(threads), [threads]);
     // The commit picker only offers this repository's commits — its shas mean nothing in another checkout.
     const repoCommits = branch.commits.filter((c) => c.repo === repo);
@@ -519,7 +538,7 @@ export const DiffView = ({
                     <div key={gi} className="diff-group">
                         {diff.filtered && groups.length > 1 && <div className="diff-group-head mono">{g.label} · {g.files.length} file{g.files.length === 1 ? "" : "s"}</div>}
                         {g.files.map((f) => (
-                            <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} threads={threadItems} canComment={commentsOn} canAsk={canAsk} onChange={onChange} onAsk={onAsk} />
+                            <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} threads={threadItems} canComment={commentsOn} canAsk={canAsk} onChange={onChange} onAsk={onAsk} onExpand={expand} />
                         ))}
                     </div>
                 ))}
