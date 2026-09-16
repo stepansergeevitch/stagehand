@@ -61,6 +61,14 @@ tmux new-session -d -s stagehand-server -c "$PWD/server" 'npx tsx src/index.ts 2
 tmux new-session -d -s stagehand-web -c "$PWD/web" 'npx vite --port 5173'
 ```
 
+The dev UI is plain HTTP on 127.0.0.1:5173. If your browser insists on HTTPS for `localhost` (Safari does once any
+local HTTPS app has sent an HSTS header), serve it over TLS with a locally trusted pair, e.g. from
+[mkcert](https://github.com/FiloSottile/mkcert):
+
+```bash
+STAGEHAND_DEV_TLS_CERT=/path/cert.pem STAGEHAND_DEV_TLS_KEY=/path/key.pem npx vite --port 5173   # https://localhost:5173
+```
+
 Then in the UI: add a Claude config dir, add an AI account (it opens a terminal running `claude setup-token`), add an
 environment (path, base branch, backend/frontend commands with `{{port}}`, setup command), set the ClickUp or Linear
 token under Task managers, and create a task from a ticket id.
