@@ -132,6 +132,10 @@ export class Services {
         }
         const [lo, hi] = PORT_RANGE[kind];
         const taken = new Set((this.db.prepare(`SELECT port FROM services WHERE stopped_at IS NULL`).all() as Array<{ port: number }>).map((r) => r.port));
+        // A restart keeps the port the service had: the FE was started with the BE's URL baked in (and a QA run has the
+        // app's URL in its prompt), so a BE coming back on another port would orphan both.
+        const last = this.db.prepare(`SELECT port FROM services WHERE task_id = ? AND kind = ? AND stopped_at IS NOT NULL ORDER BY stopped_at DESC LIMIT 1`).get(task.id, kind) as { port: number } | undefined;
+        if (last && !taken.has(last.port) && last.port >= lo && last.port <= hi && (await portFree(last.port))) return last.port;
         for (let p = lo; p <= hi; p++) {
             if (taken.has(p)) continue;
             if (await portFree(p)) return p;
