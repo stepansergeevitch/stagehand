@@ -40,7 +40,9 @@ export const STAGE_DEFS: Record<Stage, StageDef> = {
         prompt: "design.md",
         contract: DesignResult,
         outputFile: "design.json",
-        maxTurns: 60,
+        // The thirteen-section proposal (worked case, alternatives, evidence index, contract) plus reading a stacked
+        // task's parent branch(es) did not fit in 60 (INV-132, 2026-09-17: cap hit before design.json was written).
+        maxTurns: 90,
         next: "qa_baseline",
     },
     qa_baseline: {
