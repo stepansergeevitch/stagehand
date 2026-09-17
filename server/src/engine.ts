@@ -2799,6 +2799,9 @@ export class Engine extends EventEmitter {
         }
         if (!outcome.result || outcome.result.is_error || (outcome.exitCode ?? 1) !== 0) {
             // A run that wrote its output file and then died (typically max turns before the final "DONE") still did the work.
+            // Output that was written but does not validate goes back through the normal contract retry — the agent gets
+            // the validation error, not a "stopped before writing" message that hides it (INV-132, 2026-09-17: design.md
+            // only lacked bold lead-ins, and two cap-hit runs reported it as never written).
             if (def.contract && def.outputFile && this.outputWrittenDuringRun(taskId, def.outputFile, runId)) {
                 const validation = this.validateOutput(taskId, def);
                 if (validation.ok) {
@@ -2806,6 +2809,8 @@ export class Engine extends EventEmitter {
                     this.afterStage(taskId, def, validation.data);
                     return;
                 }
+                this.retryContract(taskId, def, opts, validation.error, finish);
+                return;
             }
             const stderrTail = outcome.stderr.trim().split("\n").slice(-3).join(" ").trim();
             const err =
@@ -2823,19 +2828,7 @@ export class Engine extends EventEmitter {
         if (def.contract && def.outputFile) {
             const validation = this.validateOutput(taskId, def);
             if (!validation.ok) {
-                const attempt = opts.attempt ?? 1;
-                if (attempt < MAX_CONTRACT_ATTEMPTS) {
-                    finish("failed", `contract: ${validation.error}`);
-                    this.dispatch(taskId, def.stage, {
-                        attempt: attempt + 1,
-                        notes:
-                            `## Output contract violation (fix this and rewrite the file) — attempt ${attempt + 1} of ${MAX_CONTRACT_ATTEMPTS}\n\n${validation.error}\n\n` +
-                            `Rewrite \`${this.taskDir(taskId)}/${def.outputFile}\` to match the contract exactly, then reply DONE.`,
-                    });
-                    return;
-                }
-                finish("failed", `contract: ${validation.error}`);
-                this.setTaskStatus(taskId, "failed", `${def.label} · output contract failed ${MAX_CONTRACT_ATTEMPTS} times`);
+                this.retryContract(taskId, def, opts, validation.error, finish);
                 return;
             }
             finish("done", undefined, JSON.stringify(validation.data));
@@ -2845,6 +2838,23 @@ export class Engine extends EventEmitter {
         finish("done");
         const next = def.next;
         if (next) this.advance(taskId, next);
+    }
+
+    // The stage's output file exists but fails its contract: re-run the stage (same session outside the fresh-session
+    // QA stages) with the validation error as notes, up to MAX_CONTRACT_ATTEMPTS; then fail for the human.
+    private retryContract(taskId: string, def: StageDef, opts: DispatchOpts, error: string, finish: (status: RunRow["status"], error?: string, resultJson?: string) => void): void {
+        const attempt = opts.attempt ?? 1;
+        finish("failed", `contract: ${error}`);
+        if (attempt < MAX_CONTRACT_ATTEMPTS) {
+            this.dispatch(taskId, def.stage, {
+                attempt: attempt + 1,
+                notes:
+                    `## Output contract violation (fix this and rewrite the file) — attempt ${attempt + 1} of ${MAX_CONTRACT_ATTEMPTS}\n\n${error}\n\n` +
+                    `Rewrite \`${this.taskDir(taskId)}/${def.outputFile}\` to match the contract exactly, then reply DONE.`,
+            });
+            return;
+        }
+        this.setTaskStatus(taskId, "failed", `${def.label} · output contract failed ${MAX_CONTRACT_ATTEMPTS} times`);
     }
 
     // ---------- questions: the agent asks, the human answers, the stage resumes ----------
