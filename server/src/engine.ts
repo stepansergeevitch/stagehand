@@ -2714,6 +2714,18 @@ export class Engine extends EventEmitter {
                 const m = /^\s*(shell|sql)\s*:\s*/i.exec(step);
                 if (!m) return;
                 const cmd = step.slice(m[0].length);
+                // An interpreter called bare in command position (`cd backend && python manage.py …`) must exist on the
+                // orchestrator's PATH; this host has python3 and `poetry run python` but no `python` (INV-130's S2 seed
+                // failed in Manual QA with "python: command not found"). Checked with the same login shell the seed runs in.
+                const bare = /(?:^|&&|\|\||;|\|)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(python3?|node|ruby|php)\b/.exec(cmd);
+                if (bare) {
+                    const interp = bare[1]!;
+                    try {
+                        execFileSync("bash", loginShellArgs(`command -v ${interp}`), { cwd, env: loginShellEnv(parseEnvVars(env.env_vars)), timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
+                    } catch {
+                        problems.push(`${s.id} seed ${i + 1} runs \`${interp}\` directly, which is not on the orchestrator's PATH — invoke it the way the repository's own commands do (\`poetry run ${interp} …\`, \`uv run ${interp} …\`, \`npx …\`)`);
+                    }
+                }
                 if (!/\bpsql\b/.test(cmd) || /<[a-z ]+>/i.test(cmd)) return;
                 const dry = wrapPsqlInRollback(cmd);
                 if (dry === cmd) return;
