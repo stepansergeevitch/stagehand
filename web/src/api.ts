@@ -157,7 +157,7 @@ export interface QuestionRound { id: string; run_id: string | null; stage: Stage
 export const pendingQuestions = (d: Pick<TaskDetail, "questions">): QuestionRound | undefined => d.questions?.find((q) => q.answers === null);
 export interface Task {
     id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
-    branch: string | null; base_branch: string | null; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
+    branch: string | null; base_branch: string | null; skip_qa?: number; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
     pinned: number; notes: string | null; extra_tickets: string | null; labels?: string | null; created_at: string; updated_at: string;
 }
 export interface TaskLabel { text: string; color: string }
@@ -341,7 +341,7 @@ export const api = {
     labelSuggestions: () => fetch("/api/labels").then((r) => j<Array<TaskLabel & { count: number }>>(r)),
     patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[]; baseBranch?: string | null }) =>
         fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Task>(r)),
-    returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[] }) => post<Task>(`/api/tasks/${id}/return`, body),
+    returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[]; skipQa?: boolean }) => post<Task>(`/api/tasks/${id}/return`, body),
     patchPrDraft: (id: string, body: { repo: string; title?: string; body?: string; base?: string }) =>
         fetch(`/api/tasks/${id}/pr-draft`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<PrDraft>(r)),
     cleanup: (id: string, force = false) => post<{ done: string[]; skipped: string[] }>(`/api/tasks/${id}/cleanup${force ? "?force=1" : ""}`),
@@ -353,7 +353,7 @@ export const api = {
     patchSettings: (body: Partial<Omit<Settings, "models" | "notifications">> & { notifications?: Partial<Notifications> }) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
     testNotification: () => post<{ macos: boolean; ntfy: boolean | null; error?: string }>("/api/notifications/test"),
-    review: (id: string, body: { verdict: "approve" | "changes"; repo?: string; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[] }) =>
+    review: (id: string, body: { verdict: "approve" | "changes"; repo?: string; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[]; skipQa?: boolean }) =>
         post<Task>(`/api/tasks/${id}/review`, body),
     // filter: a set of commit shas (contiguous runs become one group each) or "uncommitted"; none = everything vs the base.
     // `file`: only that path, with its hunks even when it would normally be collapsed.

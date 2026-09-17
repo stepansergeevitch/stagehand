@@ -218,6 +218,9 @@ export interface TaskRow {
     // The branch this task's work is based on and its PR targets; null = the env's base_branch. Another task's branch
     // for a stacked PR; the PR poller rewrites it when GitHub retargets the PR after that base is merged.
     base_branch: string | null;
+    // One-shot: the human asked (from User Review's "Request changes" or "Return to a stage…") to skip the browser QA
+    // stages on the way back to User Review this pass; advance() consumes it there.
+    skip_qa: number;
     worktree_path: string | null;
     stage: Stage;
     status: TaskStatus;
@@ -627,6 +630,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["tasks.labels", `ALTER TABLE tasks ADD COLUMN labels TEXT`],
     // Per-task base branch (stacked PRs); null = the env's base_branch.
     ["tasks.base_branch", `ALTER TABLE tasks ADD COLUMN base_branch TEXT`],
+    // One-shot "skip Manual QA (and QA baseline) this pass", set from Request changes / Return to a stage.
+    ["tasks.skip_qa", `ALTER TABLE tasks ADD COLUMN skip_qa INTEGER NOT NULL DEFAULT 0`],
     // A BE/FE that never came up (start timeout, command exited, tmux session gone) — the row stays visible as failed
     // until it is stopped or restarted, so the human sees why and can hand it to the agent.
     ["services.failed_at", `ALTER TABLE services ADD COLUMN failed_at TEXT`],

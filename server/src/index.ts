@@ -818,10 +818,12 @@ app.post("/api/tasks/:id/return", async (c) => {
             stage: z.enum(STAGES as [Stage, ...Stage[]]),
             notes: z.string().optional(),
             comments: z.array(z.object({ path: z.string().min(1), line: z.number().int().positive(), side: z.enum(["new", "old"]), snippet: z.string(), text: z.string().min(1) })).optional(),
+            // Skip the browser QA stages on the way back to User Review this once.
+            skipQa: z.boolean().optional(),
         }),
         await c.req.json(),
     );
-    engine.returnTo(c.req.param("id"), body.stage, body.notes, body.comments);
+    engine.returnTo(c.req.param("id"), body.stage, body.notes, body.comments, body.skipQa === true);
     return c.json(engine.getTask(c.req.param("id")));
 });
 
@@ -959,6 +961,8 @@ app.post("/api/tasks/:id/review", async (c) => {
             comments: z
                 .array(z.object({ path: z.string().min(1), line: z.number().int().positive(), side: z.enum(["new", "old"]), snippet: z.string(), text: z.string().min(1) }))
                 .optional(),
+            // Request changes only: skip the browser QA stages on the way back to User Review this once.
+            skipQa: z.boolean().optional(),
         }),
         await c.req.json(),
     );

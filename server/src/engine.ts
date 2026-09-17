@@ -53,6 +53,8 @@ export interface ReviewInput {
     routeTo?: "implementation" | "design_proposal" | undefined;
     notes?: string | undefined;
     comments?: LineComment[] | undefined;
+    // "changes" only: skip the browser QA stages on the way back to User Review this once (the human QA'd by hand).
+    skipQa?: boolean | undefined;
 }
 
 // Every archived attempt file matching qa/<prefix>-N.json so far (oldest first): { N, path }. The CURRENT qa/<pass>.json
@@ -1018,7 +1020,7 @@ export class Engine extends EventEmitter {
     // "I approved by mistake" / "I want this redone": send the task back to an earlier stage with notes, from any
     // non-running state. Stages with a prompt run again with the notes as reviewer notes (like Request changes);
     // User Review just waits for the human again.
-    returnTo(taskId: string, stage: Stage, notes?: string, comments?: LineComment[]): void {
+    returnTo(taskId: string, stage: Stage, notes?: string, comments?: LineComment[], skipQa = false): void {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
@@ -1026,6 +1028,7 @@ export class Engine extends EventEmitter {
         const cur = STAGES.indexOf(task.stage);
         if (idx < 0 || idx > cur) throw new Error(`cannot return to ${stage} from ${task.stage}`);
         const def = STAGE_DEFS[stage];
+        this.setSkipQa(taskId, skipQa);
         const cs = comments ?? [];
         const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE task_id = ? AND stage = ? AND verdict = 'changes'`).get(taskId, stage) as { n: number };
         this.db
@@ -1134,6 +1137,7 @@ export class Engine extends EventEmitter {
         }
         if (input.verdict === "changes") {
             const target: Stage = task.stage === "design_proposal" || task.stage === "pr_fix" ? task.stage : (input.routeTo ?? "implementation");
+            if (task.stage === "user_review") this.setSkipQa(taskId, input.skipQa === true);
             this.setStage(taskId, target);
             const hasContent = !!input.notes?.trim() || comments.length > 0;
             this.dispatch(taskId, target, {
@@ -1854,13 +1858,24 @@ export class Engine extends EventEmitter {
         });
     }
 
+    // The one-shot "skip QA this pass" flag: set by Request changes / Return to a stage, consumed by advance() when the
+    // task reaches User Review again, so the pass after that runs QA as usual unless asked again.
+    private setSkipQa(taskId: string, on: boolean): void {
+        this.db.prepare(`UPDATE tasks SET skip_qa = ?, updated_at = ? WHERE id = ?`).run(on ? 1 : 0, now(), taskId);
+    }
+
     private advance(taskId: string, stage: Stage): void {
         const task = this.getTask(taskId)!;
         let target = stage;
         if (target === "qa_baseline" || target === "manual_qa") {
             const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
-            if (!design || design.qa.length === 0) target = target === "qa_baseline" ? "implementation" : "user_review";
+            // No browser scenarios in the design, or the human asked to skip QA this pass: hop over the QA stage.
+            if (!design || design.qa.length === 0 || task.skip_qa) {
+                if (task.skip_qa) this.addAgentNote(taskId, `${STAGE_DEFS[target].label} skipped this pass at your request`);
+                target = target === "qa_baseline" ? "implementation" : "user_review";
+            }
         }
+        if (target === "user_review" && task.skip_qa) this.setSkipQa(taskId, false);
         this.setStage(taskId, target);
         const def = STAGE_DEFS[target];
         if (def.kind === "terminal") {

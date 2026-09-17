@@ -281,13 +281,16 @@ const TicketView = ({ detail, onFetch }: { detail: TaskDetail; onFetch: () => Pr
 
 // Stages a task can be sent back to with notes (from any non-running state — e.g. after an accidental Approve).
 const RETURNABLE: Stage[] = ["design_proposal", "implementation", "user_review", "pr_creation_review"];
-const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"]; pending: LineComment[]; onSend: (stage: Stage, notes: string, withComments: boolean) => Promise<void>; onClose: () => void }) => {
+const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"]; pending: LineComment[]; onSend: (stage: Stage, notes: string, withComments: boolean, skipQa: boolean) => Promise<void>; onClose: () => void }) => {
     const idx = STAGE_ORDER.indexOf(task.stage);
     const options = RETURNABLE.filter((s) => STAGE_ORDER.indexOf(s) <= idx);
     const [stage, setStage] = useState<Stage>(options[options.length - 1] ?? "design_proposal");
     const [notes, setNotes] = useState("");
+    const [skipQa, setSkipQa] = useState(false);
     if (options.length === 0) return null;
     const runs = stage !== "user_review";
+    // Returning to a stage before User Review means the QA stages would run again on the way back; offer to skip them once.
+    const qaAhead = runs && STAGE_ORDER.indexOf(stage) < STAGE_ORDER.indexOf("user_review");
     return (
         <div className="review-box">
             <b>Send the task back</b> — later stages run again after it.
@@ -300,8 +303,13 @@ const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"
             </label>
             <textarea placeholder={runs ? "What should change (required)" : "Notes for yourself (optional)"} value={notes} onChange={(e) => setNotes(e.target.value)} />
             {stage === "implementation" && pending.length > 0 && <div className="field-hint">{pending.length} draft line comment(s) from Code changes go along.</div>}
+            {qaAhead && (
+                <label className="inline" style={{ display: "block", margin: "6px 0" }}>
+                    <input type="checkbox" checked={skipQa} onChange={(e) => setSkipQa(e.target.checked)} /> Skip Manual QA this pass — go straight to User Review after {STAGE_LABEL[stage === "design_proposal" ? "implementation" : stage]} (you QA by hand)
+                </label>
+            )}
             <div className="actions" style={{ marginBottom: 0 }}>
-                <button className="primary" disabled={runs && !notes.trim() && !(stage === "implementation" && pending.length > 0)} onClick={() => void onSend(stage, notes, stage === "implementation")}>Send back to {STAGE_LABEL[stage]}</button>
+                <button className="primary" disabled={runs && !notes.trim() && !(stage === "implementation" && pending.length > 0)} onClick={() => void onSend(stage, notes, stage === "implementation", qaAhead && skipQa)}>Send back to {STAGE_LABEL[stage]}</button>
                 <button onClick={onClose}>Cancel</button>
             </div>
         </div>
@@ -546,11 +554,14 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const [notes, setNotes] = useState("");
     const [returning, setReturning] = useState(false);
     const [routeTo, setRouteTo] = useState<"implementation" | "design_proposal">("implementation");
+    // User Review only: skip the browser QA stages on the way back this once (the human QA's by hand).
+    const [skipQa, setSkipQa] = useState(false);
     const [comments, changeComment, clearComments] = useDraftComments(task.id);
     const pending = Object.entries(comments);
     const canComment = task.status === "waiting_user" && task.stage === "user_review";
     const currentIdx = STAGE_ORDER.indexOf(task.stage);
-    const skipped = new Set<Stage>(design && design.qa.length === 0 ? ["qa_baseline", "manual_qa"] : []);
+    // QA stages that will not run: no browser scenarios in the design, or the human asked to skip QA this pass.
+    const skipped = new Set<Stage>(design && design.qa.length === 0 ? ["qa_baseline", "manual_qa"] : task.skip_qa ? ["manual_qa", ...(STAGE_ORDER.indexOf(task.stage) < STAGE_ORDER.indexOf("implementation") ? ["qa_baseline" as Stage] : [])] : []);
     // Waiting on answers to the agent's questions is not a review: the review box stays hidden until they are sent.
     const asking = pendingQuestions(detail);
     const waiting = task.status === "waiting_user" && !asking;
@@ -638,6 +649,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     </select>
                 </label>
             )}
+            {task.stage === "user_review" && (
+                <label className="inline" style={{ display: "block", margin: "6px 0" }}>
+                    <input type="checkbox" checked={skipQa} onChange={(e) => setSkipQa(e.target.checked)} /> Skip Manual QA this pass — come straight back here after the agent's changes (you QA by hand)
+                </label>
+            )}
             <textarea placeholder={canComment ? "General comments (optional if you left line comments in Code changes)" : "Notes for Claude (required for 'Request changes')"} value={notes} onChange={(e) => setNotes(e.target.value)} />
             {canComment && pending.length > 0 && (
                 <div className="pending-comments">
@@ -663,7 +679,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             await api.review(task.id, {
                                 verdict: "changes",
                                 ...(notes.trim() ? { notes } : {}),
-                                ...(task.stage === "user_review" ? { routeTo, comments: pending.map(([, c]) => c) } : {}),
+                                ...(task.stage === "user_review" ? { routeTo, comments: pending.map(([, c]) => c), ...(skipQa ? { skipQa: true } : {}) } : {}),
                             });
                             clearComments();
                             setNotes("");
@@ -850,9 +866,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     task={task}
                     pending={pending.map(([, c]) => c)}
                     onClose={() => setReturning(false)}
-                    onSend={async (stage, text, withComments) => {
+                    onSend={async (stage, text, withComments, skipQa) => {
                         await onAction(async () => {
-                            await api.returnTo(task.id, { stage, ...(text.trim() ? { notes: text } : {}), ...(withComments ? { comments: pending.map(([, c]) => c) } : {}) });
+                            await api.returnTo(task.id, { stage, ...(text.trim() ? { notes: text } : {}), ...(withComments ? { comments: pending.map(([, c]) => c) } : {}), ...(skipQa ? { skipQa: true } : {}) });
                             if (withComments) clearComments();
                         });
                         setReturning(false);
