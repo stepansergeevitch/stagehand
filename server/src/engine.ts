@@ -1765,6 +1765,16 @@ export class Engine extends EventEmitter {
         return candidates.find((a) => !this.exhausted(a.id)) ?? current ?? candidates[0] ?? null;
     }
 
+    // Another task's browser stage (QA baseline / Manual QA) currently running on this account, if any.
+    private runningBrowserRun(accountId: string, exceptTaskId: string): { ticket_id: string; stage: Stage } | null {
+        const browserStages = STAGES.filter((s) => STAGE_DEFS[s]?.chrome);
+        if (browserStages.length === 0) return null;
+        const row = this.db
+            .prepare(`SELECT t.ticket_id, r.stage FROM runs r JOIN tasks t ON t.id = r.task_id WHERE r.account_id = ? AND r.status = 'running' AND r.task_id != ? AND r.stage IN (${browserStages.map(() => "?").join(",")}) LIMIT 1`)
+            .get(accountId, exceptTaskId, ...browserStages) as { ticket_id: string; stage: Stage } | undefined;
+        return row ?? null;
+    }
+
     private runningCount(accountId: string): number {
         const row = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE account_id = ? AND status = 'running'`).get(accountId) as { n: number };
         return row.n;
@@ -2158,8 +2168,17 @@ export class Engine extends EventEmitter {
             this.queueRateLimited(task, account, util.resetsAt, `pre-flight: ${account.name} at ${Math.round(util.utilization * 100)}% of 5h window`);
             return;
         }
+        // Headless stages run side by side up to the configured number per account (the only shared thing is the
+        // account's rate-limit window). Browser stages are different: one account = one Chrome profile = one
+        // extension bridge, so two of them at once would drive the same browser — they run one at a time per account.
+        const browserBusy = def.chrome ? this.runningBrowserRun(account.id, taskId) : null;
+        if (browserBusy) {
+            this.setTaskStatus(taskId, "idle", `queued · ${account.name}'s Chrome is busy with ${browserBusy.ticket_id} (${STAGE_DEFS[browserBusy.stage]?.label ?? browserBusy.stage}) — browser stages run one at a time per account`);
+            this.db.prepare(`UPDATE tasks SET status = 'queued' WHERE id = ?`).run(taskId);
+            return;
+        }
         if (this.runningCount(account.id) >= this.cfg.maxConcurrentRunsPerAccount) {
-            this.setTaskStatus(taskId, "idle", `queued · ${account.name} busy`);
+            this.setTaskStatus(taskId, "idle", `queued · ${account.name} already has ${this.cfg.maxConcurrentRunsPerAccount} run(s) going (maxConcurrentRunsPerAccount in config.json)`);
             this.db.prepare(`UPDATE tasks SET status = 'queued' WHERE id = ?`).run(taskId);
             return;
         }
