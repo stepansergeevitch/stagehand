@@ -821,6 +821,17 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 <button onClick={() => onAction(() => api.pin(task.id))}>{task.pinned ? "Unpin" : "Pin"}</button>
                 {terminal ? <button onClick={onCloseTerminal}>Close terminal</button> : <button disabled={task.status === "running"} onClick={onOpenTerminal}>Open terminal</button>}
                 {task.status !== "running" && currentIdx > 0 && <button onClick={() => setReturning((v) => !v)} title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)">{returning ? "Cancel return" : "Return to a stage…"}</button>}
+                {task.status !== "running" && task.branch && task.worktree_path && (
+                    <button
+                        title="The task's agent rebases the branch onto the latest base, resolves conflicts and re-runs the fast checks; if the branch is on GitHub and this env allows pushes, Stagehand then force-pushes it with lease and the PR checks restart"
+                        onClick={() => {
+                            const base = task.base_branch ?? env?.base_branch ?? "the base branch";
+                            if (confirm(`Rebase ${task.branch} onto the latest origin/${base}?\n\nThe agent resolves conflicts and re-runs checks. If the branch is on GitHub and this env allows pushes, Stagehand force-pushes it afterwards (with lease).`)) void onAction(() => api.rebase(task.id));
+                        }}
+                    >
+                        Rebase onto latest base
+                    </button>
+                )}
                 {task.status !== "running" && task.worktree_path && (
                     <button
                         title="Stop BE/FE, close their Chrome tabs, run the env's cleanup command, remove the worktree and local branch; the task and its history stay"

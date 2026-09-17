@@ -374,6 +374,7 @@ export const api = {
     qaLogin: (id: string) => post<{ started: true }>(`/api/tasks/${id}/qa-login`),
     relaunchChrome: (id: string) => post<Task>(`/api/tasks/${id}/relaunch-chrome`),
     fixCi: (id: string, repo: string) => post<{ started: true }>(`/api/tasks/${id}/fix-ci`, { repo }),
+    rebase: (id: string) => post<{ started: true }>(`/api/tasks/${id}/rebase`),
     refreshPr: (id: string) => post<{ task: Task; prStates: PrState[] }>(`/api/tasks/${id}/pr/refresh`),
     createApprovedPrs: (id: string) => post<{ ok: true; done: string[]; task: Task; prStates: PrState[] }>(`/api/tasks/${id}/pr/create`),
     mergePr: (id: string, body: { repo: string; method: MergeMethod; deleteBranch: boolean }) => post<{ ok: true; result: string; task: Task }>(`/api/tasks/${id}/pr/merge`, body),

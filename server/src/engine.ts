@@ -2549,6 +2549,102 @@ export class Engine extends EventEmitter {
         return true;
     }
 
+    // "Rebase onto latest base" (task page): the task's own agent rebases the branch onto origin/<base> in the worktree,
+    // resolving conflicts and re-running the fast checks under the normal guard (no force-push, no interactive rebase);
+    // Stagehand then force-pushes with lease itself where the env allows pushes and the branch is on GitHub, resets the
+    // PR checks and re-polls. Refuses while a run is in progress, with uncommitted changes, or when already up to date.
+    async startRebase(taskId: string): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
+        if (!task.branch || !task.worktree_path) throw new Error("the task has no branch/worktree yet");
+        const env = this.env(task.env_id);
+        const base = this.baseBranchOf(task, env);
+        const cd = this.configDirOf(env);
+        const usable = this.usableAccounts(cd.path);
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
+        const repos = this.prRepos(env).filter((r) => existsSync(this.checkoutOf(task, env, r)));
+        const behind: string[] = [];
+        for (const repo of repos) {
+            const cwd = this.checkoutOf(task, env, repo);
+            const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
+            if (dirty.trim()) throw new Error(`${repoLabel(repo)} has uncommitted changes — commit or discard them first`);
+            await this.git(cwd, ["fetch", "origin", base], env);
+            const n = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${base}`], env).catch(() => "0")) || 0;
+            if (n > 0) behind.push(`${repoLabel(repo)}: ${n} commit(s)`);
+        }
+        if (behind.length === 0) throw new Error(`already up to date with origin/${base}`);
+        const prevStatus = task.status;
+        const prevLine = task.status_line;
+        this.setTaskStatus(taskId, "running", `Rebasing \`${task.branch}\` onto origin/${base} with the agent…`);
+        const prompt = renderPrompt("rebase.md", {
+            branch: task.branch,
+            baseBranch: base,
+            worktree: task.worktree_path,
+            taskDir: this.taskDir(taskId),
+            repoLayout: describeRepoLayout(this.layoutOf(task, env), task.worktree_path),
+            behind: behind.join("; "),
+            taskNotes: task.notes?.trim() ? `The human's standing notes on this task: ${task.notes.trim()}` : "",
+        });
+        const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path, this.cfg.dataDir);
+        const run = startClaude({
+            prompt,
+            cwd: task.worktree_path,
+            configDir: cd.path,
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
+            settingsPath: rulesMat.settingsPath,
+            appendSystemPrompt: rulesMat.systemPrompt,
+            resume: task.session_id,
+            maxTurns: 80,
+            addDirs: [this.taskDir(taskId)],
+            ...(task.model ? { model: task.model } : {}),
+        });
+        void run.done.then(async (outcome: RunOutcome) => {
+            if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "rebase", stage: null }, outcome.result);
+            const reply = outcome.result?.result?.trim() || (outcome.exitCode !== 0 ? `(did not finish: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
+            const rules = rulesOf(cd);
+            const lines: string[] = [];
+            let pushed = false;
+            for (const repo of repos) {
+                const cwd = this.checkoutOf(task, env, repo);
+                // A rebase left half-way is never pushed: abort it so the checkout is usable, and say so.
+                const inProgress = await this.git(cwd, ["rev-parse", "--git-path", "rebase-merge"], env).then((p) => existsSync(join(cwd, p.trim())), () => false);
+                if (inProgress) {
+                    await this.git(cwd, ["rebase", "--abort"], env).catch(() => "");
+                    lines.push(`❌ ${repoLabel(repo)}: the rebase was left unfinished — aborted, branch unchanged`);
+                    continue;
+                }
+                const upToDate = await this.git(cwd, ["merge-base", "--is-ancestor", `origin/${base}`, "HEAD"], env).then(() => true, () => false);
+                if (!upToDate) {
+                    lines.push(`⚠️ ${repoLabel(repo)}: not rebased (still behind origin/${base})`);
+                    continue;
+                }
+                const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch!], env).catch(() => "");
+                if (!remote.trim()) {
+                    lines.push(`✅ ${repoLabel(repo)}: rebased onto origin/${base}; the branch is not on GitHub yet, nothing to push`);
+                    continue;
+                }
+                if (!rules.allowPush) {
+                    lines.push(`✅ ${repoLabel(repo)}: rebased onto origin/${base}; this env forbids agent pushes — push it yourself: \`git push --force-with-lease origin ${task.branch}\``);
+                    continue;
+                }
+                try {
+                    await this.git(cwd, ["push", "--force-with-lease", "origin", task.branch!], env);
+                    this.resetPrState(taskId, repo);
+                    pushed = true;
+                    lines.push(`✅ ${repoLabel(repo)}: rebased onto origin/${base} and force-pushed (with lease); PR checks restart`);
+                } catch (e) {
+                    lines.push(`❌ ${repoLabel(repo)}: rebased, but the push failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                }
+            }
+            this.setTaskStatus(taskId, prevStatus, prevLine ?? "rebase finished — see Chat");
+            this.addMessage(taskId, "agent", `🔀 Rebase onto origin/${base}:\n\n${reply}\n\n${lines.join("\n")}`);
+            if (pushed) this.pollPrSoon(taskId);
+            this.emitTask(taskId);
+        });
+    }
+
     // "Fix with agent" on a BE/FE that failed to start: the task's own agent (its session, full context of the branch)
     // reads the service log and the command, repairs the cause in the worktree, and Stagehand restarts the service once
     // the run is over — so the result is a real second start, not the agent's opinion that it should work now. Runs

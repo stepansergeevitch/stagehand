@@ -1139,6 +1139,17 @@ app.post("/api/tasks/:id/pr/merge", async (c) => {
     }
 });
 
+// "Rebase onto latest base": the task's agent rebases the branch onto origin/<base> and resolves conflicts; Stagehand
+// force-pushes with lease afterwards where the env allows pushes. Errors (run in progress, dirty tree, up to date) → 400.
+app.post("/api/tasks/:id/rebase", async (c) => {
+    try {
+        await engine.startRebase(c.req.param("id"));
+        return c.json({ started: true });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/fix-ci", async (c) => {
     const body = json(z.object({ repo: z.string().optional() }), await c.req.json().catch(() => ({})));
     try {
