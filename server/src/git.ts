@@ -57,8 +57,17 @@ export interface WorktreeResult {
     existingCommits: number;
 }
 
+// The ref a new task branch starts from: `origin/<base>` when the base exists on GitHub, else a local `<base>` (a stacked
+// task whose base is another task's branch that was never pushed), else a clear error instead of git's.
+const baseRefOf = async (repoPath: string, baseBranch: string, vars: Vars): Promise<string> => {
+    const fetched = await git(repoPath, ["fetch", "origin", baseBranch], vars).then(() => true, () => false);
+    if (fetched && (await git(repoPath, ["rev-parse", "-q", "--verify", `origin/${baseBranch}`], vars).then(() => true, () => false))) return `origin/${baseBranch}`;
+    if (await git(repoPath, ["rev-parse", "-q", "--verify", `refs/heads/${baseBranch}`], vars).then(() => true, () => false)) return baseBranch;
+    throw new Error(`base branch "${baseBranch}" exists neither on origin nor locally in ${repoPath}`);
+};
+
 const createOne = async (repoPath: string, baseBranch: string, branch: string, target: string, vars: Vars): Promise<WorktreeResult> => {
-    await git(repoPath, ["fetch", "origin", baseBranch], vars);
+    const baseRef = await baseRefOf(repoPath, baseBranch, vars);
     if (existsSync(target)) {
         const log = await git(target, ["log", "--oneline", `origin/${baseBranch}..HEAD`], vars);
         return { path: target, reused: true, existingCommits: log ? log.split("\n").length : 0 };
@@ -69,7 +78,7 @@ const createOne = async (repoPath: string, baseBranch: string, branch: string, t
         const log = await git(target, ["log", "--oneline", `origin/${baseBranch}..HEAD`], vars);
         return { path: target, reused: true, existingCommits: log ? log.split("\n").length : 0 };
     }
-    await git(repoPath, ["worktree", "add", target, "-b", branch, `origin/${baseBranch}`], vars);
+    await git(repoPath, ["worktree", "add", target, "-b", branch, baseRef], vars);
     return { path: target, reused: false, existingCommits: 0 };
 };
 

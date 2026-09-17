@@ -215,6 +215,9 @@ export interface TaskRow {
     session_id: string;
     account_id: string | null;
     branch: string | null;
+    // The branch this task's work is based on and its PR targets; null = the env's base_branch. Another task's branch
+    // for a stacked PR; the PR poller rewrites it when GitHub retargets the PR after that base is merged.
+    base_branch: string | null;
     worktree_path: string | null;
     stage: Stage;
     status: TaskStatus;
@@ -622,6 +625,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.depends_on_env_id", `ALTER TABLE envs ADD COLUMN depends_on_env_id TEXT REFERENCES envs(id)`],
     // Free-form labels the human puts on a task: JSON [{text, color}] (color = CSS hex), shown in the list and the header.
     ["tasks.labels", `ALTER TABLE tasks ADD COLUMN labels TEXT`],
+    // Per-task base branch (stacked PRs); null = the env's base_branch.
+    ["tasks.base_branch", `ALTER TABLE tasks ADD COLUMN base_branch TEXT`],
     // A BE/FE that never came up (start timeout, command exited, tmux session gone) — the row stays visible as failed
     // until it is stopped or restarted, so the human sees why and can hand it to the agent.
     ["services.failed_at", `ALTER TABLE services ADD COLUMN failed_at TEXT`],

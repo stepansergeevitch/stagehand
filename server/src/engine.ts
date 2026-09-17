@@ -641,6 +641,25 @@ export class Engine extends EventEmitter {
         return (ordered.length ? ordered : all).filter(accountBrowserReady);
     }
 
+    // The branch this task diffs, rebases and opens its PR against: its own base_branch (a stacked PR's parent branch)
+    // or the env's. `layoutOf` is the env with that base substituted, for the git helpers and prompts that take an env.
+    baseBranchOf(task: Pick<TaskRow, "base_branch">, env: EnvRow): string {
+        return task.base_branch?.trim() || env.base_branch;
+    }
+    private layoutOf(task: Pick<TaskRow, "base_branch">, env: EnvRow): EnvRow {
+        return { ...env, base_branch: this.baseBranchOf(task, env) };
+    }
+    // The human changes what the task is based on (stacking it on another branch, or back to the env default = null).
+    // Takes effect for diffs, prompts and the PR draft right away; an already-created worktree keeps its start point.
+    setBaseBranch(taskId: string, baseBranch: string | null): void {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        const env = this.env(task.env_id);
+        const base = baseBranch?.trim() && baseBranch.trim() !== env.base_branch ? baseBranch.trim() : null;
+        this.db.prepare(`UPDATE tasks SET base_branch = ?, updated_at = ? WHERE id = ?`).run(base, now(), taskId);
+        this.emitTask(taskId);
+    }
+
     // The app URL browser stages and login prompts point at: the env's template with this task's own BE/FE filled in.
     appUrlFor(task: TaskRow, env: EnvRow): string {
         const be = this.services.get(task.id, "be");
@@ -666,8 +685,10 @@ export class Engine extends EventEmitter {
     // ---------- task creation ----------
 
     // One task per call. `tickets` holds one ticket, or several for a batch task (one branch / one PR set covering them all).
-    createTask(envId: string, tickets: string[], accountId?: string, model?: string, notes?: string): TaskRow {
+    createTask(envId: string, tickets: string[], accountId?: string, model?: string, notes?: string, baseBranch?: string): TaskRow {
         const env = this.env(envId);
+        // Only a base that differs from the env's is stored; the env default stays the single source of truth otherwise.
+        const base = baseBranch?.trim() && baseBranch.trim() !== env.base_branch ? baseBranch.trim() : null;
         const refs = tickets.map((t) => parseTicketRef(t, env.ticket_source));
         const ref = refs[0];
         if (!ref) throw new Error("no ticket given");
@@ -678,10 +699,10 @@ export class Engine extends EventEmitter {
         const ts = now();
         this.db
             .prepare(
-                `INSERT INTO tasks (id, env_id, ticket_id, source, ticket_url, model, session_id, account_id, stage, status, status_line, pinned, notes, extra_tickets, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'research', 'running', 'fetching ticket', 0, ?, ?, ?, ?)`,
+                `INSERT INTO tasks (id, env_id, ticket_id, source, ticket_url, model, session_id, account_id, stage, status, status_line, pinned, notes, extra_tickets, base_branch, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'research', 'running', 'fetching ticket', 0, ?, ?, ?, ?, ?)`,
             )
-            .run(id, env.id, ref.id, ref.source, ref.url, model ?? this.cfg.defaultModel, sessionId, accountId ?? accountOrderOf(env)[0] ?? null, notes?.trim() || null, extras.length ? JSON.stringify(extras) : null, ts, ts);
+            .run(id, env.id, ref.id, ref.source, ref.url, model ?? this.cfg.defaultModel, sessionId, accountId ?? accountOrderOf(env)[0] ?? null, notes?.trim() || null, extras.length ? JSON.stringify(extras) : null, base, ts, ts);
         this.taskDir(id);
         const task = this.getTask(id)!;
         this.emit("task", task);
@@ -958,7 +979,7 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task?.worktree_path) return [];
         const env = this.env(task.env_id);
-        return worktreeDiff(env, task.worktree_path, parseEnvVars(env.env_vars));
+        return worktreeDiff(this.layoutOf(task, env), task.worktree_path, parseEnvVars(env.env_vars));
     }
 
     // The same changes narrowed to a set of commits, or to what is not committed yet.
@@ -967,14 +988,15 @@ export class Engine extends EventEmitter {
         if (!task?.worktree_path) return [];
         const env = this.env(task.env_id);
         const vars = parseEnvVars(env.env_vars);
-        return "uncommitted" in filter ? [await uncommittedGroup(env, task.worktree_path, vars)] : commitsDiff(env, task.worktree_path, filter.shas, vars);
+        const layout = this.layoutOf(task, env);
+        return "uncommitted" in filter ? [await uncommittedGroup(layout, task.worktree_path, vars)] : commitsDiff(layout, task.worktree_path, filter.shas, vars);
     }
 
     async commits(taskId: string): Promise<{ commits: BranchCommit[]; uncommitted: boolean }> {
         const task = this.getTask(taskId);
         if (!task?.worktree_path) return { commits: [], uncommitted: false };
         const env = this.env(task.env_id);
-        return branchCommits(env, task.worktree_path, parseEnvVars(env.env_vars));
+        return branchCommits(this.layoutOf(task, env), task.worktree_path, parseEnvVars(env.env_vars));
     }
 
     setAccount(taskId: string, accountId: string): void {
@@ -1049,7 +1071,7 @@ export class Engine extends EventEmitter {
             if (!force) {
                 for (const cwd of checkouts) {
                     const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch], env).catch(() => "");
-                    const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `origin/${env.base_branch}..HEAD`], env).catch(() => "");
+                    const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `origin/${this.baseBranchOf(task, env)}..HEAD`], env).catch(() => "");
                     const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
                     if (ahead || dirty) {
                         const what = [ahead ? `${ahead.split("\n").length} unpushed commit(s)` : null, dirty ? "uncommitted changes" : null].filter(Boolean).join(" and ");
@@ -1187,7 +1209,7 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         const env = task ? this.env(task.env_id) : null;
         const repos = env ? this.prRepos(env) : [""];
-        return { legacy: true, base: typeof old.base === "string" && old.base ? old.base : (env?.base_branch ?? "main"), drafts: repos.map((repo) => ({ repo, title: old.title as string, body: typeof old.body === "string" ? old.body : "" })) };
+        return { legacy: true, base: typeof old.base === "string" && old.base ? old.base : (task && env ? this.baseBranchOf(task, env) : "main"), drafts: repos.map((repo) => ({ repo, title: old.title as string, body: typeof old.body === "string" ? old.body : "" })) };
     }
 
     // Which repositories this task's PR review covers: the drafted ones, else every repository of the env.
@@ -1202,7 +1224,7 @@ export class Engine extends EventEmitter {
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
         const env = this.env(task.env_id);
-        const current = this.readPrDraft(taskId) ?? { base: env.base_branch, drafts: [] };
+        const current = this.readPrDraft(taskId) ?? { base: this.baseBranchOf(task, env), drafts: [] };
         const repo = patch.repo ?? current.drafts[0]?.repo ?? "";
         if (this.prRow(taskId, repo)?.number) throw new Error(`the ${repoLabel(repo)} PR already exists on GitHub — edit it there`);
         const idx = current.drafts.findIndex((d) => d.repo === repo);
@@ -1210,7 +1232,7 @@ export class Engine extends EventEmitter {
         const entry = { repo, title: (patch.title ?? cur.title).trim(), body: patch.body ?? cur.body };
         if (!entry.title) throw new Error("the PR title cannot be empty");
         const drafts = idx >= 0 ? current.drafts.map((d, i) => (i === idx ? entry : d)) : [...current.drafts, entry];
-        const next: PrDraft = { base: (patch.base ?? current.base ?? env.base_branch).trim() || env.base_branch, drafts };
+        const next: PrDraft = { base: (patch.base ?? current.base ?? this.baseBranchOf(task, env)).trim() || this.baseBranchOf(task, env), drafts };
         writeFileSync(join(this.taskDir(taskId), "pr.json"), JSON.stringify(next, null, 2));
         // An edited draft is no longer the approved one (only matters while its PR does not exist yet).
         if (patch.title !== undefined || patch.body !== undefined) this.db.prepare(`UPDATE pr_state SET approved_at = NULL, updated_at = ? WHERE task_id = ? AND repo = ? AND number IS NULL`).run(now(), taskId, repo);
@@ -1323,12 +1345,12 @@ export class Engine extends EventEmitter {
         const entry = draft?.drafts.find((d) => d.repo === repo);
         const cwd = this.checkoutOf(task, env, repo);
         const existing = this.prRow(taskId, repo);
-        const ahead = await this.git(cwd, ["log", "--oneline", `origin/${env.base_branch}..HEAD`], env).catch(() => "");
+        const ahead = await this.git(cwd, ["log", "--oneline", `origin/${this.baseBranchOf(task, env)}..HEAD`], env).catch(() => "");
         const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
         // Nothing committed but changes on disk: an env that forbids agent commits (or an agent that left work
         // uncommitted) — the human has to commit before anything can be pushed or opened.
         if (!ahead && dirty.trim()) return `${dirty.trim().split("\n").length} changed file(s) are not committed — commit and push \`${task.branch}\` yourself, then open the PR (draft below)`;
-        if (!ahead) return `nothing to ship: no commits ahead of ${env.base_branch}`;
+        if (!ahead) return `nothing to ship: no commits ahead of ${this.baseBranchOf(task, env)}`;
         if (!rules.allowPush) {
             return existing?.number
                 ? `push \`${task.branch}\` yourself — PR #${existing.number} picks the commits up`
@@ -1351,7 +1373,7 @@ export class Engine extends EventEmitter {
             return `pushed \`${task.branch}\` — this env forbids agent PR creation: open the PR yourself (draft below); Stagehand picks it up by branch`;
         }
         try {
-            const url = await this.gh(cwd, ["pr", "create", "--base", draft?.base || env.base_branch, "--head", task.branch, "--title", entry.title, "--body", entry.body, ...(env.pr_draft ? ["--draft"] : [])], env);
+            const url = await this.gh(cwd, ["pr", "create", "--base", draft?.base || this.baseBranchOf(task, env), "--head", task.branch, "--title", entry.title, "--body", entry.body, ...(env.pr_draft ? ["--draft"] : [])], env);
             const number = Number(url.split("/").pop());
             this.upsertPrRow(taskId, repo, { number: Number.isFinite(number) ? number : null, url, pushed_at: now(), state: "OPEN" });
             return `PR #${Number.isFinite(number) ? number : "?"} created`;
@@ -1583,11 +1605,23 @@ export class Engine extends EventEmitter {
             return null;
         }
         const ahead = Number(await this.git(cwd, ["rev-list", "--count", `${remoteRef}..HEAD`], env).catch(() => "0")) || 0;
-        if (ahead > 0) {
-            this.ackedRemoteSha.set(key, remoteSha);
-            return `diverged from GitHub — ${behind} commit(s) pushed there, ${ahead} committed here that aren't pushed; resolve by hand (push, or pull and rebase)`;
-        }
         const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
+        if (ahead > 0) {
+            // Local commits the remote does not have by SHA may still be there by content: the branch was rebased on
+            // GitHub (a stacked PR whose parent merged, "Update branch" with rebase, a rebase pushed from elsewhere).
+            // `git cherry` marks a local commit `+` only when no upstream commit has the same patch — none of those
+            // means every local commit is already in the rewritten remote, and the remote can be adopted outright.
+            const cherry = (await this.git(cwd, ["cherry", remoteRef, "HEAD"], env).catch(() => "+ unknown")).split("\n").filter(Boolean);
+            const unique = cherry.filter((l) => l.startsWith("+")).length;
+            if (unique > 0) {
+                this.ackedRemoteSha.set(key, remoteSha);
+                return `diverged from GitHub — ${behind} commit(s) pushed there, ${unique} committed here that aren't there; resolve by hand (push, or pull and rebase)`;
+            }
+            if (dirty.trim()) return null; // uncommitted work on top of the old history — try again once it clears
+            await this.git(cwd, ["reset", "--hard", remoteRef], env);
+            this.ackedRemoteSha.set(key, remoteSha);
+            return `adopted the rebased branch from GitHub (${ahead} local commit(s) were rewritten there with the same content; now at ${remoteSha.slice(0, 7)})`;
+        }
         if (dirty.trim()) return null; // uncommitted work in the way — try again once it clears, don't acknowledge yet
         const subjects = (await this.git(cwd, ["log", "--format=%h %s", `HEAD..${remoteRef}`], env).catch(() => "")).split("\n").filter(Boolean);
         await this.git(cwd, ["merge", "--ff-only", remoteRef], env);
@@ -1609,13 +1643,21 @@ export class Engine extends EventEmitter {
             number = list[0].number;
             this.upsertPrRow(task.id, repo, { number, url: list[0].url });
         }
-        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(number), "--json", "url,state,mergedAt,reviewDecision,statusCheckRollup"], env)) as {
+        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(number), "--json", "url,state,mergedAt,reviewDecision,statusCheckRollup,baseRefName"], env)) as {
             url: string;
             state: string;
             mergedAt: string | null;
             reviewDecision: string;
+            baseRefName?: string;
             statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string; status?: string; startedAt?: string; completedAt?: string; detailsUrl?: string; targetUrl?: string; workflowName?: string }>;
         };
+        // A stacked PR's base is retargeted by GitHub once its parent PR merges (e.g. feature-a → dev). Follow it: the
+        // task's diffs, ahead-counts and the next PR fix then compare against the branch the PR really targets.
+        const knownBase = this.baseBranchOf(task, env);
+        if (pr.state === "OPEN" && pr.baseRefName && pr.baseRefName !== knownBase) {
+            this.db.prepare(`UPDATE tasks SET base_branch = ?, updated_at = ? WHERE id = ?`).run(pr.baseRefName === env.base_branch ? null : pr.baseRefName, now(), task.id);
+            this.addAgentNote(task.id, `${repoLabel(repo)}: GitHub moved PR #${number}'s base from \`${knownBase}\` to \`${pr.baseRefName}\` (the branch it was stacked on was merged) — the task now compares against \`${pr.baseRefName}\``);
+        }
         this.upsertPrRow(task.id, repo, { url: pr.url, checks_json: JSON.stringify(pr.statusCheckRollup ?? []), review_decision: pr.reviewDecision ?? null, merged_at: pr.mergedAt ?? null, state: pr.state ?? null });
         return true;
     }
@@ -1748,7 +1790,7 @@ export class Engine extends EventEmitter {
                 const cwd = this.checkoutOf(task, env, repo);
                 if (!existsSync(cwd)) continue;
                 const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch], env).catch(() => "");
-                const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `origin/${env.base_branch}..HEAD`], env).catch(() => "");
+                const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `origin/${this.baseBranchOf(task, env)}..HEAD`], env).catch(() => "");
                 if (!ahead) continue;
                 await this.git(cwd, ["push", "-u", "origin", task.branch], env);
                 this.resetPrState(taskId, repo);
@@ -1961,7 +2003,7 @@ export class Engine extends EventEmitter {
         if (!existsSync(cwd)) throw new Error(`${repoLabel(repo)}: no worktree checkout yet`);
         const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
         if (dirty.trim()) throw new Error(`${repoLabel(repo)}: the worktree has uncommitted changes — commit or discard them first`);
-        const own = await this.ownCommitShas(cwd, env);
+        const own = await this.ownCommitShas(cwd, this.layoutOf(task, env));
         const full = own.has(sha) ? sha : [...own].find((s) => s.startsWith(sha));
         if (!full) throw new Error(`${repoLabel(repo)}: ${sha.slice(0, 10)} is not one of this task's own commits on ${task.branch}`);
         return { task, env, cwd };
@@ -2113,8 +2155,8 @@ export class Engine extends EventEmitter {
                 : `(Stagehand could not fetch the ticket server-side. Fetch ${task.source} ticket ${allIds.join(", ")} yourself with the ${task.source} MCP tool — for ClickUp: mcp__clickup__clickup_get_task with detail_level "detailed", and its parent if any. If that fails too, write the output file with classification "feature", title "TICKET FETCH FAILED" and the error in summary.)`,
             taskNotes: task.notes?.trim() ? `## Instructions from the human for this task (apply them throughout)\n\n${task.notes.trim()}` : "",
             envPath: env.path,
-            baseBranch: env.base_branch,
-            repoLayout: describeRepoLayout(env, task.worktree_path),
+            baseBranch: this.baseBranchOf(task, env),
+            repoLayout: describeRepoLayout(this.layoutOf(task, env), task.worktree_path),
             ...((): Record<string, string> => {
                 const r = rulesOf(this.configDirOf(env));
                 const templates = prTemplates(env, r);
@@ -2820,11 +2862,11 @@ export class Engine extends EventEmitter {
             this.db.prepare(`UPDATE tasks SET title = ?, branch = ?, updated_at = ? WHERE id = ?`).run(r.title, branch, now(), taskId);
             this.setTaskStatus(taskId, "running", "creating worktree");
             const envVars = parseEnvVars(env.env_vars);
-            void createWorktree(env, branch, envVars)
+            void createWorktree(this.layoutOf(this.getTask(taskId) ?? { base_branch: null }, env), branch, envVars)
                 .then(async (wt) => {
                     this.db.prepare(`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE id = ?`).run(wt.path, now(), taskId);
                     if (wt.reused) {
-                        this.setTaskStatus(taskId, "running", `reusing existing worktree/branch with ${wt.existingCommits} commit(s) ahead of ${env.base_branch}`);
+                        this.setTaskStatus(taskId, "running", `reusing existing worktree/branch with ${wt.existingCommits} commit(s) ahead of ${this.baseBranchOf(this.getTask(taskId) ?? { base_branch: null }, env)}`);
                     }
                     if (env.depends_on_env_id) {
                         this.setTaskStatus(taskId, "running", "starting the dependency service this env needs");

@@ -745,12 +745,14 @@ app.post("/api/tasks", async (c) => {
             accountId: z.string().optional(),
             model: z.string().optional(),
             notes: z.string().optional(),
+            // Branch the work starts from and the PR targets; omitted = the env's base_branch. Another task's branch = a stacked PR.
+            baseBranch: z.string().trim().min(1).optional(),
         }),
         await c.req.json(),
     );
     const tickets = [...new Set([...(body.ticket ? [body.ticket] : []), ...(body.tickets ?? [])].map((t) => t.trim()).filter(Boolean))];
     if (tickets.length === 0) return c.json({ error: "no ticket given" }, 400);
-    const created = body.mode === "batch" || tickets.length === 1 ? [engine.createTask(body.envId, tickets, body.accountId, body.model, body.notes)] : tickets.map((t) => engine.createTask(body.envId, [t], body.accountId, body.model, body.notes));
+    const created = body.mode === "batch" || tickets.length === 1 ? [engine.createTask(body.envId, tickets, body.accountId, body.model, body.notes, body.baseBranch)] : tickets.map((t) => engine.createTask(body.envId, [t], body.accountId, body.model, body.notes, body.baseBranch));
     return c.json({ tasks: created });
 });
 
@@ -787,6 +789,7 @@ app.patch("/api/tasks/:id", async (c) => {
         z.object({
             notes: z.string().nullable().optional(),
             labels: z.array(z.object({ text: z.string().min(1).max(60), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) })).max(20).optional(),
+            baseBranch: z.string().nullable().optional(),
         }),
         await c.req.json(),
     );
@@ -794,6 +797,7 @@ app.patch("/api/tasks/:id", async (c) => {
     if (!task) return c.json({ error: "not found" }, 404);
     if (body.notes !== undefined) engine.setNotes(task.id, body.notes);
     if (body.labels !== undefined) engine.setLabels(task.id, body.labels);
+    if (body.baseBranch !== undefined) engine.setBaseBranch(task.id, body.baseBranch);
     return c.json(engine.getTask(task.id));
 });
 
@@ -989,7 +993,8 @@ app.post("/api/tasks/:id/pr-comments/:commentId/resolve", async (c) => {
 app.get("/api/tasks/:id/diff", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
-    const env = db.prepare(`SELECT base_branch FROM envs WHERE id = ?`).get(task.env_id) as { base_branch: string };
+    const envRow = db.prepare(`SELECT base_branch FROM envs WHERE id = ?`).get(task.env_id) as { base_branch: string };
+    const env = { base_branch: task.base_branch?.trim() || envRow.base_branch };
     const shas = (c.req.query("commits") ?? "").split(",").map((s) => s.trim()).filter((s) => /^[0-9a-f]{7,40}$/i.test(s));
     const scope = c.req.query("scope");
     const only = c.req.query("file") ?? null;

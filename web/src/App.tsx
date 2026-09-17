@@ -527,11 +527,12 @@ const TicketPicker = ({ groups, selected, onToggle }: { groups: Array<[string, M
 
 const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
     accounts: Account[]; env: Env; settings: Settings | null; readiness: Readiness | undefined;
-    onSubmit: (body: { tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string }) => Promise<void>;
+    onSubmit: (body: { tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string }) => Promise<void>;
 }) => {
     const [ticket, setTicket] = useState("");
     const [mode, setMode] = useState<"each" | "batch">("each");
     const [notes, setNotes] = useState("");
+    const [base, setBase] = useState("");
     const [acc, setAcc] = useState(accountOrderOf(env).find((id) => accounts.some((a) => a.id === id)) ?? accounts[0]?.id ?? "");
     const [model, setModel] = useState(settings?.defaultModel ?? "");
     const [mine, setMine] = useState<{ tickets: MyTicket[]; error?: string } | null>(null);
@@ -574,6 +575,10 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                 </label>
             )}
             <label>Extra instructions for the agents (optional; every stage sees them) <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Constraints, where the code lives, what to skip, how to test…" style={{ minHeight: 60 }} /></label>
+            <label>Base branch
+                <input value={base} onChange={(e) => setBase(e.target.value)} placeholder={env.base_branch} />
+                <span className="field-hint">The branch the work starts from and the PR targets — default {env.base_branch}. For a stacked PR, another task's branch; when that branch's PR merges and GitHub retargets this PR, the task follows.</span>
+            </label>
             <label>AI account
                 <select value={acc} onChange={(e) => setAcc(e.target.value)}>
                     {accounts.length === 0 && <option value="">— no account can run in this environment's config dir —</option>}
@@ -590,7 +595,7 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                 </select>
                 <span className="field-hint">Applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet.</span>
             </label>
-            <button className="primary" disabled={list.length === 0 || bad.length > 0 || accounts.length === 0} onClick={() => onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}) })}>
+            <button className="primary" disabled={list.length === 0 || bad.length > 0 || accounts.length === 0} onClick={() => onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}), ...(base.trim() && base.trim() !== env.base_branch ? { baseBranch: base.trim() } : {}) })}>
                 {list.length > 1 ? (mode === "each" ? `Start ${list.length} tasks` : `Start 1 task for ${list.length} tickets`) : "Start task"}
             </button>
         </>

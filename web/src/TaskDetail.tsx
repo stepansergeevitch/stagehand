@@ -528,7 +528,7 @@ const PrWidget = ({ detail, onAction, onOpenInTab }: { detail: TaskDetail; onAct
             {repos.map((repo) => <PrRepoRow key={repo} detail={detail} repo={repo} repos={repos} onAction={onAction} onOpenInTab={onOpenInTab} />)}
             {repos.length > 0 && (
                 <div className="field-hint">
-                    {task.branch && <code className="small">⎇ {task.branch}</code>}{task.branch ? " · " : ""}
+                    {task.branch && <code className="small">⎇ {task.branch}</code>}{task.base_branch && <code className="small" title="base branch (stacked PR) — the branch this task diffs against and its PR targets"> → {task.base_branch}</code>}{task.branch ? " · " : ""}
                     {lastPoll ? `last poll ${new Date(lastPoll).toLocaleTimeString()} · ` : ""}polls every 2 min
                 </div>
             )}
