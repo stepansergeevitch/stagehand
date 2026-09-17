@@ -913,6 +913,12 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Opens the app in the QA Chrome profile; you log in there, Stagehand watches the tab (and moves an Auth0 return from localhost:3000 to the app's port), then re-runs the stage. No agent, no cost.</span>
                         </div>
                     )}
+                    {/Relaunch Chrome for QA/.test(task.status_line ?? "") && (
+                        <div className="actions" style={{ marginBottom: 0 }}>
+                            <button className="primary" onClick={() => onAction(() => api.relaunchChrome(task.id))}>Relaunch Chrome for QA</button>
+                            <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Quits Chrome and reopens it with the switches that keep a covered window rendering (your tabs restore), then retries this stage. Needed once per Chrome start.</span>
+                        </div>
+                    )}
                 </div>
             )}
             {task.status === "rate_limited" && (

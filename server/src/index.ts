@@ -1047,6 +1047,18 @@ app.post("/api/tasks/:id/retry", (c) => {
     return c.json(engine.getTask(c.req.param("id")));
 });
 
+// Quits and reopens the QA browser with QA_CHROME_FLAGS (see chrome-profiles.ts), then retries the task's blocked stage.
+// A human-only action: it closes the user's whole Chrome (tabs restore on relaunch).
+app.post("/api/tasks/:id/relaunch-chrome", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
+    const picked = engine.qaBrowser(task, env);
+    await restartChrome("browser" in picked ? (picked.browser.browser ?? "Google") : "Google");
+    engine.retry(task.id);
+    return c.json(engine.getTask(task.id));
+});
+
 app.get("/api/tasks/:id/usage", (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);

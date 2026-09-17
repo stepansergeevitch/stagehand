@@ -6,7 +6,7 @@ import type { Config } from "./config.js";
 import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageAnchor, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
-import { closeChromeTabs, listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
+import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, openInProfile, QA_CHROME_FLAGS, setChromeTabUrl } from "./chrome-profiles.js";
 import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stampTaskOnUsage } from "./usage.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
 import { branchCommits, commitsDiff, createWorktree, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
@@ -156,6 +156,8 @@ interface DispatchOpts {
     seedsDone?: boolean;
     // Browser stages: a live probe just confirmed the Chrome extension answers for this dispatch — skip re-probing.
     chromeVerified?: boolean;
+    // Browser stages: the running Chrome was confirmed to carry QA_CHROME_FLAGS for this dispatch.
+    chromeFlagsVerified?: boolean;
 }
 
 // CircleCI jobs gated behind a manual "Approve" click in the CircleCI UI (deploy/db-reset gates) sit forever in a
@@ -2239,6 +2241,27 @@ export class Engine extends EventEmitter {
                 this.parkQueued(taskId, stage, opts);
                 return;
             }
+            // A Chrome started from the Dock runs without QA_CHROME_FLAGS: the moment the human's own windows cover the
+            // automation window, its pages stop animating and query-backed pickers render nothing (see chrome-profiles).
+            // Cheap ps check; the fix is one relaunch, which only the human should trigger (it closes their Chrome).
+            if (!opts.chromeFlagsVerified) {
+                const picked = this.qaBrowser(task, env);
+                const browserKind = "browser" in picked ? (picked.browser.browser ?? "Google") : "Google";
+                void chromeHasQaFlags(browserKind)
+                    .then((ok) => {
+                        if (ok) {
+                            this.dispatch(taskId, stage, { ...opts, chromeFlagsVerified: true });
+                            return;
+                        }
+                        this.setTaskStatus(
+                            taskId,
+                            "blocked",
+                            `${def.label} · Chrome is running without ${QA_CHROME_FLAGS.join(" ")}, so its pages freeze whenever another window covers the QA window (pickers open empty) — click Relaunch Chrome for QA (quits and reopens Chrome with the flags; tabs restore), which retries this stage`,
+                        );
+                    })
+                    .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · could not inspect Chrome's launch flags: ${String((e as Error).message ?? e).slice(0, 160)}`));
+                return;
+            }
             // The account's chrome_capable flag is only as fresh as the last manual Probe Chrome — it can go stale (the
             // extension disconnects, Chrome restarts, a new config dir was never introduced to it). Confirm live, once,
             // right before spending a full QA run on a bridge that will not answer.
@@ -2322,6 +2345,10 @@ export class Engine extends EventEmitter {
         });
         this.active.set(runId, run);
         this.db.prepare(`UPDATE runs SET pid = ? WHERE id = ?`).run(run.pid ?? null, runId);
+        // While a browser run drives the app, keep the tab it drives in the foreground of its window (see
+        // activateChromeTab): the runner works in whatever tab it created, and a later tabs_create leaves an empty
+        // new tab active in front of it — from then on every popover opens into a throttled, hidden document.
+        const tabKeeper = def.chrome ? this.startTabKeeper(task, env) : null;
 
         run.on("activity", (ev: ActivityEvent) => {
             // A run without --model tells us what this account's default really is.
@@ -2339,9 +2366,27 @@ export class Engine extends EventEmitter {
         run.on("rate_limit", (info: RateLimitInfo) => this.recordRateLimit(account.id, info));
 
         void run.done.then((outcome) => {
+            if (tabKeeper) clearInterval(tabKeeper);
             this.active.delete(runId);
             this.onRunClosed(taskId, runId, def, account, outcome, opts);
         });
+    }
+
+    private static readonly TAB_KEEPER_MS = 5_000;
+    // Every few seconds, make the newest tab on the task's app origin the active tab of its Chrome window. Cheap
+    // (one osascript), never brings Chrome to the front, no-op when the tab is already active or does not exist yet.
+    private startTabKeeper(task: TaskRow, env: EnvRow): NodeJS.Timeout | null {
+        let origin: string;
+        try {
+            origin = new URL(this.appUrlFor(task, env)).origin;
+        } catch {
+            return null;
+        }
+        const picked = this.qaBrowser(task, env);
+        const kind = "browser" in picked ? (picked.browser.browser ?? "Google") : "Google";
+        const timer = setInterval(() => void activateChromeTab(`${origin}/`, kind), Engine.TAB_KEEPER_MS);
+        timer.unref();
+        return timer;
     }
 
     // Executes every `shell:` seed step of every scenario from the worktree (env vars applied, 120 s each) and returns a

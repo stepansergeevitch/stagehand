@@ -113,6 +113,23 @@ export const setChromeTabUrl = (tabRef: Pick<ChromeTab, "window" | "tab">, url: 
     return osascript(`tell application "${app}" to set URL of tab ${tabRef.tab} of window ${tabRef.window} to "${url.replace(/"/g, '\\"')}"`).then(() => undefined);
 };
 
+// Makes the newest tab whose URL starts with the prefix the active tab of its window and un-minimizes that window,
+// without bringing the window to the front (the human keeps their own focus). Chrome treats a non-active tab as
+// hidden: requestAnimationFrame stops and timers are throttled, so a page that positions a popover or dropdown in an
+// animation frame opens it but never renders its content there — which is exactly what the QA runner sees when it
+// works in a tab that is not the window's active one (DualEntry comboboxes, 2026-09-17). Returns true when a tab
+// matched (whether or not anything had to change); false when Chrome is not running or nothing matched.
+export const activateChromeTab = async (urlPrefix: string, browser = "Google"): Promise<boolean> => {
+    const app = APP_NAMES[browser] ?? "Google Chrome";
+    const prefix = urlPrefix.replace(/"/g, '\\"');
+    const script =
+        `if application "${app}" is not running then return "0"\n` +
+        `tell application "${app}"\n repeat with w in windows\n  repeat with i from (count of tabs of w) to 1 by -1\n   if URL of tab i of w starts with "${prefix}" then\n` +
+        `    if minimized of w then set minimized of w to false\n    if active tab index of w is not i then set active tab index of w to i\n    return "1"\n   end if\n  end repeat\n end repeat\n return "0"\nend tell`;
+    const out = await osascript(script).catch(() => "0");
+    return out.trim() === "1";
+};
+
 // Closes every open tab whose URL starts with one of the given prefixes (e.g. a task's now-dead BE/FE localhost URLs),
 // across every window. Iterates tab indices backwards within each window so closing one doesn't shift the rest out
 // from under the loop. A no-op (returns 0) when the browser isn't running or nothing matches — never throws.
@@ -137,6 +154,27 @@ export const restartChrome = async (browser = "Google"): Promise<void> => {
     const app = APP_NAMES[browser] ?? "Google Chrome";
     await new Promise<void>((resolve) => execFile("osascript", ["-e", `tell application "${app}" to quit`], () => resolve()));
     await new Promise((r) => setTimeout(r, 2_000));
-    await new Promise<void>((resolve, reject) => execFile("open", ["-a", app], (err) => (err ? reject(err) : resolve())));
+    // `--args` only reaches the browser when it is not already running — which is the case right after the quit above.
+    await new Promise<void>((resolve, reject) => execFile("open", ["-a", app, "--args", ...QA_CHROME_FLAGS], (err) => (err ? reject(err) : resolve())));
     await new Promise((r) => setTimeout(r, 3_000));
+};
+
+// macOS Chrome treats a window that other windows fully cover as hidden: requestAnimationFrame stops and Intersection/
+// ResizeObserver callbacks never fire in its documents. The automation window is usually covered by whatever the human
+// is working in, so a QA run's page half-freezes — a query-backed picker opens its popover but never renders options
+// while a static select still works (DualEntry, 2026-09-17: Slack fullscreen over the QA window; pickers empty in
+// three runs, fine the moment the window was uncovered). These switches are what Puppeteer/Playwright pass for the
+// same reason; they only take effect at launch, so a Chrome started from the Dock has to be relaunched through
+// restartChrome once.
+export const QA_CHROME_FLAGS = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"] as const;
+
+// Whether the running browser was launched with every QA_CHROME_FLAGS switch (true when it is not running at all —
+// the next launch will carry them). Reads the browser process's own command line.
+export const chromeHasQaFlags = async (browser = "Google"): Promise<boolean> => {
+    const app = APP_NAMES[browser] ?? "Google Chrome";
+    const pids = await new Promise<string>((resolve) => execFile("pgrep", ["-x", app], (_err, stdout) => resolve(String(stdout ?? ""))));
+    const pid = pids.trim().split("\n").filter(Boolean)[0];
+    if (!pid) return true;
+    const cmd = await new Promise<string>((resolve) => execFile("ps", ["-o", "command=", "-p", pid], (_err, stdout) => resolve(String(stdout ?? ""))));
+    return QA_CHROME_FLAGS.every((f) => cmd.includes(f));
 };
