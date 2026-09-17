@@ -9,7 +9,7 @@ import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/a
 import { closeChromeTabs, listChromeTabs, openInProfile, setChromeTabUrl } from "./chrome-profiles.js";
 import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stampTaskOnUsage } from "./usage.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
-import { branchCommits, commitsDiff, createWorktree, envRepos, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
+import { branchCommits, commitsDiff, createWorktree, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -2369,9 +2369,9 @@ export class Engine extends EventEmitter {
                 const cmd = step.slice(m[0].length);
                 log.push(`### ${s.id} seed ${i + 1}\n$ ${cmd}`);
                 try {
-                    const out = execFileSync("bash", ["-lc", cmd], {
+                    const out = execFileSync("bash", loginShellArgs(cmd), {
                         cwd: task.worktree_path ?? env.path,
-                        env: { ...process.env, ...parseEnvVars(env.env_vars) },
+                        env: loginShellEnv(parseEnvVars(env.env_vars)),
                         timeout: 120_000,
                         maxBuffer: 4 * 1024 * 1024,
                         stdio: ["ignore", "pipe", "pipe"],
@@ -2718,7 +2718,7 @@ export class Engine extends EventEmitter {
                 const dry = wrapPsqlInRollback(cmd);
                 if (dry === cmd) return;
                 try {
-                    execFileSync("bash", ["-lc", dry], { cwd, env: { ...process.env, ...parseEnvVars(env.env_vars) }, timeout: 60_000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+                    execFileSync("bash", loginShellArgs(dry), { cwd, env: loginShellEnv(parseEnvVars(env.env_vars)), timeout: 60_000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
                 } catch (e) {
                     const err = e as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
                     const text = String(err.stderr ?? err.stdout ?? err.message ?? e);
@@ -2775,7 +2775,10 @@ export class Engine extends EventEmitter {
                     }
                     if (env.setup_command) {
                         this.setTaskStatus(taskId, "running", "running worktree setup");
-                        await runWorktreeSetup(wt.path, env.path, env.setup_command, envVars);
+                        const out = await runWorktreeSetup(wt.path, env.path, env.setup_command, envVars);
+                        // The tail of what setup printed goes to server.log: an `npm ci` that skips a native binding
+                        // only says so here (npm WARN EBADENGINE), and the FE fails minutes later with no trace of why.
+                        if (out) console.error(`[setup] ${task.ticket_id} ${wt.path}\n${out.slice(-1500)}`);
                     }
                     this.advance(taskId, "design_proposal");
                 })

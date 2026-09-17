@@ -90,14 +90,23 @@ export const createWorktree = async (env: RepoLayout, branch: string, vars: Vars
     return { path: root, reused, existingCommits };
 };
 
+// Setup, seed and cleanup commands run in a login shell so the user's profile is loaded (gh, poetry, uv, nvm…). On
+// macOS a login shell also runs /etc/profile → path_helper, which rebuilds PATH from /etc/paths with /usr/local/bin
+// FIRST and only then appends what the server was started with — so a stale root-owned /usr/local/bin/node (v22.0.0,
+// npm 10.5) shadowed Homebrew's node 25 / npm 11, and `npm ci` silently skipped the optional native bindings whose
+// engines field excludes that node (oxfmt, oxlint on DualEntry, 2026-09-17). The server's own PATH is re-prepended
+// after the profile so the tools it was started with win again.
+export const loginShellArgs = (command: string): string[] => ["-lc", `export PATH="$STAGEHAND_PATH:$PATH"; ${command}`];
+export const loginShellEnv = (vars: Vars = {}): NodeJS.ProcessEnv => ({ ...process.env, ...vars, STAGEHAND_PATH: process.env.PATH ?? "" });
+
 // Gitignored runtime files (certs, .env, node_modules) don't come with a worktree; the env's setup command creates them.
 export const runWorktreeSetup = async (worktree: string, envPath: string, command: string, vars: Vars = {}): Promise<string> => {
     const rendered = command.replace(/\{\{envPath\}\}/g, envPath).replace(/\{\{worktree\}\}/g, worktree);
-    const { stdout, stderr } = await execFileAsync("bash", ["-lc", rendered], {
+    const { stdout, stderr } = await execFileAsync("bash", loginShellArgs(rendered), {
         cwd: worktree,
         maxBuffer: 8 * 1024 * 1024,
         timeout: 600_000,
-        env: { ...process.env, ...vars },
+        env: loginShellEnv(vars),
     });
     return (stdout + stderr).trim().slice(-2000);
 };
