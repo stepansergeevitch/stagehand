@@ -2230,6 +2230,15 @@ export class Engine extends EventEmitter {
                 else this.setTaskStatus(taskId, "blocked", `${def.label} · ${chrome.reason}`);
                 return;
             }
+            // One account = one Chrome profile = one extension bridge: while another task's browser run drives it, this
+            // task waits — checked BEFORE the live probe below, because a probe against a Chrome that is mid-run can
+            // fail and would then wrongly mark the account as not Chrome-capable (seen on INV-63 vs INV-130, 2026-09-17).
+            const chromeBusy = this.runningBrowserRun(chrome.account.id, taskId);
+            if (chromeBusy) {
+                this.setTaskStatus(taskId, "idle", `queued · ${chrome.account.name}'s Chrome is busy with ${chromeBusy.ticket_id} (${STAGE_DEFS[chromeBusy.stage]?.label ?? chromeBusy.stage}) — browser stages run one at a time per account`);
+                this.parkQueued(taskId, stage, opts);
+                return;
+            }
             // The account's chrome_capable flag is only as fresh as the last manual Probe Chrome — it can go stale (the
             // extension disconnects, Chrome restarts, a new config dir was never introduced to it). Confirm live, once,
             // right before spending a full QA run on a bridge that will not answer.
