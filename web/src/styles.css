@@ -480,6 +480,8 @@ label.inline { display: inline-flex; align-items: center; gap: 4px; }
 .qa-obs-label { font-size: 13px; color: var(--ink-2); white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
 .qa-obs-text { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.45; color: var(--ink); }
 .qa-obs-text li { margin: 1px 0; }
+/* API scenarios: the runner's commands and trimmed output, shown where a browser step would show its screenshot. */
+.qa-log { margin: 0; padding: 8px 10px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.4; background: var(--bg-2, #f6f6f6); border-radius: 6px; }
 .qa-blockers { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; align-items: start; margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn, #d9a400); }
 
 /* task labels: coloured text chips the human puts on a task */

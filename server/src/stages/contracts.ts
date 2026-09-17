@@ -15,6 +15,9 @@ export type ResearchResult = z.infer<typeof ResearchResult>;
 export const QaScenario = z.object({
     id: z.string().regex(/^S\d+$/),
     title: z.string(),
+    // "browser": a claude-in-chrome journey (url = start route). "api": each step's action is one exact curl command the
+    // runner executes with Bash (url = the endpoint path, informational) — for changes with no user-visible surface.
+    kind: z.enum(["browser", "api"]).default("browser"),
     url: z.string(),
     persona: z.string().default("default user"),
     // Data the journey needs, as concrete steps the runner performs itself before the first step (UI actions, API calls
@@ -54,6 +57,8 @@ export const QaPassResult = z.object({
             observation: z.string(),
             // A blocked or needs_human scenario legitimately has no screenshots.
             shots: z.array(z.object({ step: z.number().int(), file: z.string() })).default([]),
+            // API scenarios: the exact command(s) run and their trimmed output — the evidence a screenshot is for a browser step.
+            log: z.string().default(""),
         }),
     ),
     blockers: z.array(z.string()).default([]),

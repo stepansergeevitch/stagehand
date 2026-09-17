@@ -1356,14 +1356,14 @@ const QaScenarios = ({ design }: { design: NonNullable<TaskDetail["design"]> }) 
         {design.qa.map((s) => (
             <details className="scenario" key={s.id} open>
                 <summary>
-                    <h3><span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
+                    <h3><span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip" title="API scenario: the runner executes each step's command with Bash and records the output">API</span>}<span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
                 </summary>
                 {s.seed && s.seed.length > 0 ? (
                     <div className="seed"><b>Seed</b><ul className="plain">{s.seed.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
                 ) : (
                     <div className="seed quiet">Seed: nothing beyond a logged-in user</div>
                 )}
-                <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
+                <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{s.kind === "api" ? <code>{st.action}</code> : st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
             </details>
         ))}
     </>
@@ -1460,7 +1460,7 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                 <details className="scenario" key={s.id} open>
                     <summary>
                         <h3>
-                            <span className="chip accent">{s.id}</span><span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}</span> <span>after {chip(a?.outcome)}</span>
+                            <span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip">API</span>}<span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}</span> <span>after {chip(a?.outcome)}</span>
                             {(suspicious(b) || suspicious(a)) && <span className="chip warn" title="The runner marked this pass but its observation mentions an error — check the screenshots">⚠ observation mentions an error</span>}
                         </h3>
                     </summary>
@@ -1477,6 +1477,16 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                                     <ul className="qa-obs-text">{p.observation.split(/;\s+/).map((frag, i) => <li key={i}>{frag}</li>)}</ul>
                                 </div>
                             ) : null)}
+                        </div>
+                    )}
+                    {(b?.log || a?.log) && (
+                        <div className="gallery" style={{ marginTop: 8 }}>
+                            {[b, a].map((p) => (
+                                <figure key={p === b ? "before" : "after"}>
+                                    {p?.log ? <pre className="qa-log">{p.log}</pre> : <div className="empty">no {p === b ? "before" : "after"} output</div>}
+                                    <figcaption>{p === b ? "before" : "after"} · commands and output</figcaption>
+                                </figure>
+                            ))}
                         </div>
                     )}
                     {shots.map((step) => {

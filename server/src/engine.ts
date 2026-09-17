@@ -671,6 +671,14 @@ export class Engine extends EventEmitter {
         this.emitTask(taskId);
     }
 
+    // Whether a QA pass of this task drives a browser at all: a design whose scenarios are all `kind: "api"` runs with
+    // Bash + curl only — no Chrome bridge, no probe, no one-browser-per-account serialization, no tab keeper.
+    private qaNeedsBrowser(taskId: string): boolean {
+        const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+        const scenarios = design?.qa ?? [];
+        return scenarios.length === 0 || scenarios.some((s) => (s.kind ?? "browser") === "browser");
+    }
+
     // The app URL browser stages and login prompts point at: the env's template with this task's own BE/FE filled in.
     appUrlFor(task: TaskRow, env: EnvRow): string {
         const be = this.services.get(task.id, "be");
@@ -2217,7 +2225,19 @@ export class Engine extends EventEmitter {
             const appUrl = this.appUrlFor(task, env);
             vars["appUrl"] = appUrl;
             vars["chromeSelect"] = this.chromeSelectStep(this.browserAccounts(env).find((a) => a.id === task.account_id) ?? this.browserAccounts(env)[0] ?? null);
-            vars["firstUrl"] = scenarios[0]?.url ?? "/";
+            const firstBrowser = scenarios.find((s) => (s.kind ?? "browser") === "browser");
+            vars["firstUrl"] = firstBrowser?.url ?? "/";
+            const beUrl = be?.url ?? "";
+            // The browser steps of the setup only when a scenario drives a browser; an API-only pass must not touch Chrome.
+            vars["browserSetup"] = firstBrowser
+                ? [
+                      `1. ${vars["chromeSelect"]} Then load the browser tools in ONE ToolSearch call: \`select:mcp__claude-in-chrome__tabs_context_mcp,mcp__claude-in-chrome__tabs_create_mcp,mcp__claude-in-chrome__navigate,mcp__claude-in-chrome__javascript_tool,mcp__claude-in-chrome__read_page,mcp__claude-in-chrome__find,mcp__claude-in-chrome__form_input,mcp__claude-in-chrome__computer,mcp__claude-in-chrome__get_page_text,mcp__claude-in-chrome__read_network_requests,mcp__claude-in-chrome__browser_batch\`. If \`tabs_context_mcp\` errors with "extension is not connected", wait 5 seconds and call it once more before giving up (blocker: "browser extension not connected").`,
+                      `2. Call \`tabs_context_mcp\` first, then \`tabs_create_mcp\` — do not reuse existing tabs. **Work in that one tab for the whole run and never create another**: a new tab becomes the window's active tab, the tab you were driving drops into the background, and Chrome throttles background documents — a dropdown or popover opens there but never renders its options, which looks like an app bug and is not one. Stagehand re-activates your app tab every few seconds; a second app tab defeats that. If a popover still opens empty, run \`mcp__claude-in-chrome__javascript_tool\` with \`document.visibilityState\` — \`hidden\` means the tab is in the background: record the scenario \`blocked\` with the blocker \`app tab hidden in Chrome\`, not as an application defect. **Do not call \`resize_window\` to change the viewport**: it does not resize the window, it applies a page zoom (75 %) that Chrome remembers for the origin, and every screenshot then shows a shrunken page in the top-left corner with grey filler. After the first page load, run \`mcp__claude-in-chrome__javascript_tool\` once with \`({ zoom: Math.round(outerWidth / innerWidth * 100), ow: outerWidth, oh: outerHeight, w: innerWidth, h: innerHeight })\` — \`zoom\` is the page zoom in percent (\`devicePixelRatio\` is NOT a zoom signal: it is 2 on a Retina display at 100 %). If \`zoom\` is outside 95–105, fix it yourself, re-running the same check after each step: (1) \`mcp__claude-in-chrome__resize_window\` with exactly \`ow\` × \`oh\` — the tool zooms relative to the window's real size, so asking for the real size restores 100 %; (2) if still off, \`mcp__claude-in-chrome__computer\` with \`action: "key"\`, \`text: "cmd+0"\` on the app tab. Only if it is still off after both, add the blocker "page zoom is <zoom>% in the QA Chrome profile and could not be reset — press ⌘0 on the app tab" and continue. A zoom you corrected is not a blocker and is not mentioned in the output.`,
+                      `3. The app base URL is \`${appUrl}\`; every browser scenario URL below is relative to it. Navigate to \`${appUrl}${firstBrowser.url}\`. If the page redirects to Auth0 (\`*.auth0.com\`), or shows a splash/"Sign in"/welcome page instead of the application, wait 5 seconds and re-read once (silent auth may still be completing); if it is still a login page, the app needs a login that you must NOT perform: write the output file with every browser scenario \`blocked\`, \`blockers: ["login required in the automation Chrome window"]\`, and stop (API scenarios still run).\n   **Login callback on the wrong port:** if the tab ends up on a URL like \`https://localhost:3000/?code=…&state=…\` (a different port than \`${appUrl}\`, usually an error page), the login itself succeeded; navigate the SAME tab to \`${appUrl}/?code=…&state=…\` with the identical query string (call \`tabs_context_mcp\` to read the exact URL). The app then completes the login and shows the requested page; continue normally.`,
+                      `4. If a page shows a connection error, retry once after 5 seconds, then record \`blocked\` with the error.`,
+                  ].join("\n")
+                : `1. Every scenario below is an **API scenario**: this pass needs no browser — do NOT load or call any \`mcp__claude-in-chrome__*\` tool. The backend answers at \`${beUrl || "(see the BE log for its port)"}\`, the frontend at \`${appUrl}\`; the commands below already carry the right host and port.`;
+            const fill = (s: string): string => s.replace(/\{\{beUrl\}\}/g, beUrl).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{appUrl\}\}/g, appUrl);
             const logs = [be ? `BE log: ${be.log_path}` : null, fe ? `FE log: ${fe.log_path}` : null].filter(Boolean).join("; ");
             vars["qaSetup"] = env.qa_script
                 ? `0. Bring the app up first by running this from the worktree with Bash: \`${env.qa_script}\`. If it exits non-zero, write every scenario as \`blocked\` with the script's last lines as the blocker and stop.`
@@ -2225,7 +2245,9 @@ export class Engine extends EventEmitter {
             vars["scenarios"] = scenarios
                 .map(
                     (s) =>
-                        `### ${s.id} — ${s.title}\nStart: \`${s.url}\` · Persona: ${s.persona}\n` +
+                        ((s.kind ?? "browser") === "api"
+                            ? `### ${s.id} — ${s.title} (API scenario — run each step's command with Bash, exactly as written)\nEndpoint: \`${s.url}\` · Caller: ${s.persona}\n`
+                            : `### ${s.id} — ${s.title}\nStart: \`${s.url}\` · Persona: ${s.persona}\n`) +
                         ((s.seed ?? []).length
                             ? `Seed:\n${((): string => {
                                   let afterUi = false;
@@ -2239,7 +2261,13 @@ export class Engine extends EventEmitter {
                                       .join("\n");
                               })()}\n`
                             : "Seed: nothing beyond a logged-in user.\n") +
-                        s.steps.map((st, i) => `${i + 1}. ${st.action} → **assert:** ${st.assert}${st.shot ? " **[shot]**" : ""}`).join("\n"),
+                        s.steps
+                            .map((st, i) =>
+                                (s.kind ?? "browser") === "api"
+                                    ? `${i + 1}. run:\n\`\`\`bash\n${fill(st.action)}\n\`\`\`\n   → **assert:** ${st.assert}`
+                                    : `${i + 1}. ${st.action} → **assert:** ${st.assert}${st.shot ? " **[shot]**" : ""}`,
+                            )
+                            .join("\n"),
                 )
                 .join("\n\n");
         }
@@ -2268,7 +2296,9 @@ export class Engine extends EventEmitter {
         }
         const env = this.env(task.env_id);
         const cd = this.configDirOf(env);
-        if (def.chrome && !cd.chrome_capable) {
+        // Services and seeds apply to every QA pass; the Chrome machinery only when a scenario actually drives a browser.
+        const chromeNeeded = def.chrome === true && this.qaNeedsBrowser(taskId);
+        if (chromeNeeded && !cd.chrome_capable) {
             this.setTaskStatus(taskId, "blocked", `${def.label} · config dir ${cd.name} has no Chrome connection — probe it on the Config dirs page, then retry`);
             return;
         }
@@ -2290,7 +2320,7 @@ export class Engine extends EventEmitter {
         let account = picked;
         let runAuth: Record<string, string> = authEnv(picked);
         let runDir = cd.path;
-        if (def.chrome) {
+        if (chromeNeeded) {
             const chrome = this.chromeContext(env, cd, task);
             if (!chrome.ok) {
                 // Every Chrome-ready account is at its cap: park with a resume time rather than blocking (the list was already tried).
@@ -2363,7 +2393,7 @@ export class Engine extends EventEmitter {
         // Headless stages run side by side up to the configured number per account (the only shared thing is the
         // account's rate-limit window). Browser stages are different: one account = one Chrome profile = one
         // extension bridge, so two of them at once would drive the same browser — they run one at a time per account.
-        const browserBusy = def.chrome ? this.runningBrowserRun(account.id, taskId) : null;
+        const browserBusy = chromeNeeded ? this.runningBrowserRun(account.id, taskId) : null;
         if (browserBusy) {
             this.setTaskStatus(taskId, "idle", `queued · ${account.name}'s Chrome is busy with ${browserBusy.ticket_id} (${STAGE_DEFS[browserBusy.stage]?.label ?? browserBusy.stage}) — browser stages run one at a time per account`);
             this.parkQueued(taskId, stage, opts);
@@ -2404,7 +2434,7 @@ export class Engine extends EventEmitter {
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...(fresh ? {} : priorRuns.n === 0 ? { sessionId: task.session_id, name: task.ticket_id } : { resume: task.session_id }),
-            chrome: def.chrome === true,
+            chrome: chromeNeeded,
             ...(explicitModel ? { model: explicitModel } : {}),
             ...(def.maxTurns ? { maxTurns: def.maxTurns } : {}),
             addDirs: [this.taskDir(taskId)],
@@ -2415,7 +2445,7 @@ export class Engine extends EventEmitter {
         // While a browser run drives the app, keep the tab it drives in the foreground of its window (see
         // activateChromeTab): the runner works in whatever tab it created, and a later tabs_create leaves an empty
         // new tab active in front of it — from then on every popover opens into a throttled, hidden document.
-        const tabKeeper = def.chrome ? this.startTabKeeper(task, env) : null;
+        const tabKeeper = chromeNeeded ? this.startTabKeeper(task, env) : null;
 
         run.on("activity", (ev: ActivityEvent) => {
             // A run without --model tells us what this account's default really is.
