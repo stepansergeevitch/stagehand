@@ -508,7 +508,10 @@ export class Engine extends EventEmitter {
         for (const task of due) {
             const run = this.latestRun(task.id);
             if (task.status === "rate_limited" && run?.resume_at && new Date(run.resume_at).getTime() > Date.now()) continue;
-            this.dispatch(task.id, task.stage, { notes: "You were interrupted (rate limit or queue). Continue from the current state of the task directory; do not redo finished work." });
+            this.dispatch(task.id, task.stage, {
+                ...(this.queuedOpts.get(`${task.id}:${task.stage}`) ?? {}),
+                notes: "You were interrupted (rate limit or queue). Continue from the current state of the task directory; do not redo finished work.",
+            });
         }
     }
 
@@ -769,6 +772,16 @@ export class Engine extends EventEmitter {
     // Tasks whose current run was started by the login helper: if that run is auth-blocked again, the helper's
     // "logged in" was wrong (a stale tab) and restarting it would loop — the human is asked instead.
     private readonly helperReruns = new Set<string>();
+    // What a browser-stage dispatch had already paid for (seeds run, Chrome bridge probed) when it was parked behind a
+    // busy Chrome profile or the concurrency cap, keyed `taskId:stage`. tick() re-dispatches with it, so a queued task
+    // re-checks the queue every 15 s instead of re-seeding and re-probing (a `claude -p --chrome` session) each time.
+    // Services are deliberately not carried over: bringUpServices is cheap when they are alive and restarts them if not.
+    private readonly queuedOpts = new Map<string, DispatchOpts>();
+    private parkQueued(taskId: string, stage: Stage, opts: DispatchOpts): void {
+        const { notes: _notes, servicesReady: _services, ...rest } = opts;
+        this.queuedOpts.set(`${taskId}:${stage}`, rest);
+        this.db.prepare(`UPDATE tasks SET status = 'queued' WHERE id = ?`).run(taskId);
+    }
 
     // ---------- the login callback hop, always on ----------
     //
@@ -2254,14 +2267,15 @@ export class Engine extends EventEmitter {
         const browserBusy = def.chrome ? this.runningBrowserRun(account.id, taskId) : null;
         if (browserBusy) {
             this.setTaskStatus(taskId, "idle", `queued · ${account.name}'s Chrome is busy with ${browserBusy.ticket_id} (${STAGE_DEFS[browserBusy.stage]?.label ?? browserBusy.stage}) — browser stages run one at a time per account`);
-            this.db.prepare(`UPDATE tasks SET status = 'queued' WHERE id = ?`).run(taskId);
+            this.parkQueued(taskId, stage, opts);
             return;
         }
         if (this.runningCount(account.id) >= this.cfg.maxConcurrentRunsPerAccount) {
             this.setTaskStatus(taskId, "idle", `queued · ${account.name} already has ${this.cfg.maxConcurrentRunsPerAccount} run(s) going (maxConcurrentRunsPerAccount in config.json)`);
-            this.db.prepare(`UPDATE tasks SET status = 'queued' WHERE id = ?`).run(taskId);
+            this.parkQueued(taskId, stage, opts);
             return;
         }
+        this.queuedOpts.delete(`${taskId}:${stage}`);
 
         const runId = randomUUID();
         const attempt = opts.attempt ?? 1;
