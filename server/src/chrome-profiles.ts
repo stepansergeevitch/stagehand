@@ -150,12 +150,17 @@ export const closeChromeTabs = async (urlPrefixes: string[], browser = "Google")
 // to restart Chrome for the installation to take effect" — and a probe that failed before a restart succeeded right
 // after, from the same directory, with nothing else changed). Used only as an explicit, human-triggered fallback
 // (the Probe Chrome button) after a first probe attempt fails — never from an unattended background dispatch.
-export const restartChrome = async (browser = "Google"): Promise<void> => {
+// `profileDir` (e.g. "Profile 2"): the Chrome profile whose window to open on relaunch. A relaunched Chrome can come up
+// with no window at all (session restore off, or nothing to restore) — then no profile is loaded, the extension in the
+// QA profile never starts, and every probe answers "Browser extension is not connected" (seen 2026-09-17 after a
+// relaunch: 0 windows, bridge dead until a window of Profile 2 was opened by hand).
+export const restartChrome = async (browser = "Google", profileDir?: string): Promise<void> => {
     const app = APP_NAMES[browser] ?? "Google Chrome";
     await new Promise<void>((resolve) => execFile("osascript", ["-e", `tell application "${app}" to quit`], () => resolve()));
     await new Promise((r) => setTimeout(r, 2_000));
     // `--args` only reaches the browser when it is not already running — which is the case right after the quit above.
-    await new Promise<void>((resolve, reject) => execFile("open", ["-a", app, "--args", ...QA_CHROME_FLAGS], (err) => (err ? reject(err) : resolve())));
+    const args = ["-a", app, "--args", ...QA_CHROME_FLAGS, ...(profileDir ? [`--profile-directory=${profileDir}`, "about:blank"] : [])];
+    await new Promise<void>((resolve, reject) => execFile("open", args, (err) => (err ? reject(err) : resolve())));
     await new Promise((r) => setTimeout(r, 3_000));
 };
 

@@ -2273,7 +2273,8 @@ export class Engine extends EventEmitter {
                             this.dispatch(taskId, stage, { ...opts, chromeVerified: true });
                             return;
                         }
-                        this.db.prepare(`UPDATE accounts SET chrome_capable = 0, chrome_device_id = NULL, chrome_browser_name = NULL WHERE id = ?`).run(chrome.account.id);
+                        // Only the capability flag drops; the device id / profile stay so a relaunch can reopen that profile.
+                        this.db.prepare(`UPDATE accounts SET chrome_capable = 0 WHERE id = ?`).run(chrome.account.id);
                         this.setTaskStatus(
                             taskId,
                             "blocked",

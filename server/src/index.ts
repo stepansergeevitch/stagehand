@@ -412,7 +412,9 @@ app.post("/api/accounts/:id/probe-chrome", async (c) => {
     let restarted = false;
     if (!r.ok) {
         // A brand-new browser dir's first connection often needs Chrome restarted once before the extension notices it.
-        await restartChrome();
+        // Reopen the account's known QA profile so its extension actually loads after the relaunch.
+        const known = chromeBrowsersOf(acc).find((b) => b.deviceId === acc.chrome_device_id) ?? chromeBrowsersOf(acc)[0];
+        await restartChrome(known?.browser ?? "Google", known?.profileDir);
         restarted = true;
         r = await probeChrome(dir, cfg.dataDir, 2, onProbeResult);
     }
@@ -424,11 +426,13 @@ app.post("/api/accounts/:id/probe-chrome", async (c) => {
     // Keep a chosen profile if it is still connected; otherwise pick the only one, if there is exactly one.
     const keep = acc.chrome_device_id && browsers.some((b) => b.deviceId === acc.chrome_device_id) ? acc.chrome_device_id : browsers.length === 1 ? browsers[0]!.deviceId : null;
     const chosen = browsers.find((b) => b.deviceId === keep);
+    // A failed probe keeps the last known browser list and choice: the profile directory in it is what a later
+    // "Relaunch Chrome for QA" / probe restart needs to open the right profile window again.
     db.prepare(`UPDATE accounts SET chrome_capable = ?, chrome_browsers = ?, chrome_device_id = ?, chrome_browser_name = ? WHERE id = ?`).run(
         r.ok ? 1 : 0,
-        r.ok ? JSON.stringify(browsers) : null,
-        chosen?.deviceId ?? null,
-        chosen ? chromeBrowserLabel(chosen) : null,
+        r.ok ? JSON.stringify(browsers) : acc.chrome_browsers,
+        r.ok ? (chosen?.deviceId ?? null) : acc.chrome_device_id,
+        r.ok ? (chosen ? chromeBrowserLabel(chosen) : null) : acc.chrome_browser_name,
         acc.id,
     );
     emitAccount(acc.id);
@@ -1054,7 +1058,7 @@ app.post("/api/tasks/:id/relaunch-chrome", async (c) => {
     if (!task) return c.json({ error: "not found" }, 404);
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
     const picked = engine.qaBrowser(task, env);
-    await restartChrome("browser" in picked ? (picked.browser.browser ?? "Google") : "Google");
+    await restartChrome("browser" in picked ? (picked.browser.browser ?? "Google") : "Google", "browser" in picked ? picked.browser.profileDir : undefined);
     engine.retry(task.id);
     return c.json(engine.getTask(task.id));
 });
