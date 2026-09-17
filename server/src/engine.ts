@@ -2564,17 +2564,38 @@ export class Engine extends EventEmitter {
         const usable = this.usableAccounts(cd.path);
         const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
-        const repos = this.prRepos(env).filter((r) => existsSync(this.checkoutOf(task, env, r)));
+        const allRepos = this.prRepos(env).filter((r) => existsSync(this.checkoutOf(task, env, r)));
         const behind: string[] = [];
-        for (const repo of repos) {
+        const fastForwarded: string[] = [];
+        const repos: string[] = [];
+        for (const repo of allRepos) {
             const cwd = this.checkoutOf(task, env, repo);
             const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
             if (dirty.trim()) throw new Error(`${repoLabel(repo)} has uncommitted changes — commit or discard them first`);
             await this.git(cwd, ["fetch", "origin", base], env);
             const n = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${base}`], env).catch(() => "0")) || 0;
-            if (n > 0) behind.push(`${repoLabel(repo)}: ${n} commit(s)`);
+            if (n === 0) continue;
+            // Commits of this checkout's own: on neither the base nor the env's trunk (a stacked task forked from a
+            // newer trunk than its parent carries trunk commits its parent lacks — those are not "its own").
+            await this.git(cwd, ["fetch", "origin", env.base_branch], env).catch(() => "");
+            const own = Number(await this.git(cwd, ["rev-list", "--count", "HEAD", `^origin/${base}`, `^origin/${env.base_branch}`], env).catch(() => "0")) || 0;
+            // A checkout with nothing of its own (a multi-repo task that only touched the other repository) has no
+            // history to replay: move it to the base outright, so a stacked task's untouched repository matches its
+            // parent. Nothing is lost — every commit here is on the base or the trunk.
+            if (own === 0) {
+                await this.git(cwd, ["reset", "--hard", `origin/${base}`], env);
+                fastForwarded.push(`${repoLabel(repo)}: moved to origin/${base} (no commits of its own)`);
+                continue;
+            }
+            behind.push(`${repoLabel(repo)}: ${n} commit(s)`);
+            repos.push(repo);
         }
-        if (behind.length === 0) throw new Error(`already up to date with origin/${base}`);
+        if (repos.length === 0) {
+            if (fastForwarded.length === 0) throw new Error(`already up to date with origin/${base}`);
+            this.addMessage(taskId, "agent", `🔀 Rebase onto origin/${base}:\n\n${fastForwarded.map((l) => `✅ ${l}`).join("\n")}\n\nNothing to replay — no agent run needed.`);
+            this.emitTask(taskId);
+            return;
+        }
         const prevStatus = task.status;
         const prevLine = task.status_line;
         this.setTaskStatus(taskId, "running", `Rebasing \`${task.branch}\` onto origin/${base} with the agent…`);
