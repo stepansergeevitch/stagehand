@@ -599,7 +599,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     ];
 
     const proposedMd = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^proposed changes/i.test(s.title))?.body.trim() ?? null : null), [designMd]);
-    // The explanation section — Root cause (bug) or Approach (feature) — is what the reviewer reads first.
+    // The one-screen Decision (problem, recommendation, decisive insight, price, decision requested, open blocker) opens the review.
+    const decisionMd = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^decision/i.test(s.title))?.body.trim() ?? null : null), [designMd]);
+    // The explanation section — Root cause (bug) or Approach (feature) — is what the reviewer reads next.
     const explanation = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^(root cause|approach)/i.test(s.title)) ?? null : null), [designMd]);
 
     // Which workflow steps have something to show (or are the current one).
@@ -717,6 +719,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             case "design_proposal":
                 return design ? (
                     <Card title="Design proposal" badge={<><span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>{(design.affectedRepos ?? []).map((r) => <span key={r} className="chip">{r}</span>)}</>}>
+                        {decisionMd && <div className="proposed decision"><b>Decision</b><Markdown source={decisionMd} /></div>}
                         {explanation && <div className="proposed explanation"><b>{explanation.title}</b><Markdown source={explanation.body.trim()} /></div>}
                         {proposedMd && <div className="proposed"><b>Proposed changes</b><Markdown source={proposedMd} /></div>}
                         <div className="kv">
@@ -1366,10 +1369,11 @@ const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design
     const tests = parts.find((p) => /^tests?\b|test plan/i.test(p.title));
     if (tests?.md) tests.md = tests.md.replace(/^(\**Run:?\**)\s*`([^`\n]+)`\s*$/im, "$1\n\n```bash\n$2\n```");
     attach(/qa/i, "QA scenarios", <QaScenarios design={design} />, true);
-    // Open on the explanation (Root cause / Approach) when the proposal has one; older proposals open on Proposed changes.
+    // Open on the one-screen Decision; proposals from before that section open on the explanation (Root cause / Approach),
+    // older ones still on Proposed changes.
     const [active, setActive] = useState(() => {
-        const i = parts.findIndex((p) => /^(root cause|approach)/i.test(p.title));
-        return i >= 0 ? i : Math.max(0, parts.findIndex((p) => /^proposed changes/i.test(p.title)));
+        const first = [/^decision/i, /^(root cause|approach)/i, /^proposed changes/i].map((re) => parts.findIndex((p) => re.test(p.title))).find((i) => i >= 0);
+        return first ?? 0;
     });
     const cur = parts[Math.min(active, parts.length - 1)];
     return (

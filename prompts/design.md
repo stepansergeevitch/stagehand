@@ -10,54 +10,106 @@ This is the DESIGN PROPOSAL stage for ticket {{ticketId}}. You are now in the ta
 
 ## Who reads this and why
 
-A senior engineer reviews `design.md` to approve or push back, and uses it to learn how this part of the system works. They will read the code themselves if a claim looks off. Write for that reader: facts with locations, no persuasion, no narration of how you found things.
+A senior engineer reviews `design.md` to understand the change, challenge it and decide — not to be persuaded. They may not know this part of the system; they will read the code themselves if a claim looks off. Optimise for accurate understanding under a short review-time budget: the decision on the first screen, one concrete case they can trace, the strongest real alternative, the evidence next to the claim it supports, and a clear line between what they are approving and what stays yours. Facts with locations, no persuasion, no narration of how you found things. Separate what you observed from what you inferred or assumed — never imply a scenario or test ran when it was only described.
 
 ## design.md — strict template
 
-Exactly these nine `## ` sections, in this order, with these titles (numbering allowed: `## 1. Classification`). Hard cap: **1100 words in total** (code blocks excluded). A proposal over the cap or missing a section is rejected and sent back to you.
+Exactly these thirteen `## ` sections, in this order, with these titles (numbering allowed: `## 1. Decision`). Hard cap: **1400 words in total**, code blocks and table rows excluded. A proposal over the cap, missing a section or failing a rule below is rejected and sent back to you.
 
 ### Formatting inside every section
-The reviewer scans, then reads: use markdown structure, not walls of sentences. Every bullet opens with a **bold lead-in** naming the part of the system, the case or the step, then a dash and the fact (`**Frontend form** — lists every warehouse, never narrowed by the selected company`). Sections 4 and 6 use `###` sub-headings: Root cause → `### What happens`, `### Why`, `### Why the fix removes it`; Approach → `### Where it lives`, `### Data flow`, `### Decisions`, `### What to check`; Technical changes → `### Summary`, `### Mechanism`, `### Changes`, `### Not changed`. Bold the key values, states and names the reviewer will look for. Bold and headings are structure — the ban below on emphasis words ("exactly", "importantly") still applies to the wording.
+The reviewer scans, then reads: use markdown structure, not walls of sentences. Every bullet opens with a **bold lead-in** naming the part of the system, the case or the step, then a dash and the fact (`**Frontend form** — lists every warehouse, never narrowed by the selected company`). Bold the key values, states and names the reviewer will look for. Bold and headings are structure — the ban below on emphasis words ("exactly", "importantly") still applies to the wording. Use one running example (one named record with concrete values) from the Decision through the Worked case, the Alternatives and the Review questions; do not switch examples between sections.
 
-### 1. Classification
+### Evidence citations
+Consequential claims carry a citation to a row of the Evidence section: `[E1]` for something you observed in the code, `[A1]` for an assumption, `[U1]` for an unknown. Cite in Decision (the decisive insight), Root cause / Approach (at least two), Why this option and Technical changes. A cited id must exist in the Evidence table and every Evidence row must be cited at least once.
+
+### 1. Decision
+Six labelled lines in this order, each `**Label:**` then ≤ 30 words, ≤ 150 words in total, product words (no paths, identifiers or line numbers):
+- `**Problem:**` one concrete situation, what happens today, why it matters.
+- `**Recommendation:**` the behaviour or mechanism to adopt, at most two sentences.
+- `**Decisive insight:**` the fact or constraint that makes this the choice, and its consequence; cite the row that supports it (`[E1]`).
+- `**Price:**` the main disadvantage and who bears it.
+- `**Decision requested:**` the specific choice the reviewer is making and its material consequence — never "approve the design".
+- `**Open blocker:**` the unanswered question that could reverse the recommendation (cite `[U1]`), or `none`.
+
+### 2. Classification
 One line: `bug` or `feature`, a dash, then the reason in at most 15 words. In a multi-repository workspace add a second line `Repos: <dir>, <dir>` naming every repository the change touches, using the directory names from the layout above (a single-repository project has no such line).
 
-### 2. How it works today
-What the application does today in the area the ticket touches, written for a product reader: behaviour, not code. 4–10 bullets, ≤ 20 words each, each naming the part of the system responsible in plain words (the frontend form, the backend service, the loader, the database) and what it does with the data. Example of the right level: "From/To Locations on the transfer form list every warehouse; the frontend never narrows them by the selected company." Wrong level: "FormFields.tsx:23 FROM_LOCATION_FILTERS carries no company_id". No file paths, line numbers, variable or function names in this section — those belong in Technical changes. Describe the system, not the history: no ticket ids, no "shipped by", no "as research found".
-
-### 3. Problem
-What is wrong or missing, as the user and the product see it, in ≤ 3 bullets: the visible symptom and the part of the system that produces it, in plain words. Same rule: no paths, line numbers or identifiers.
+### 3. How it works today
+What the application does today in the area the ticket touches, written for a product reader: behaviour, not code. 4–10 bullets, ≤ 20 words each, each naming the part of the system responsible in plain words (the frontend form, the backend service, the loader, the database) and what it does with the data. Example of the right level: "From/To Locations on the transfer form list every warehouse; the frontend never narrows them by the selected company." Wrong level: "FormFields.tsx:23 FROM_LOCATION_FILTERS carries no company_id". No file paths, line numbers, variable or function names in this section — those belong in Technical changes. Describe the system, not the history: no ticket ids, no "shipped by", no "as research found". Close with one line `**Invariant:**` — what must stay true across the change, with its precise scope.
 
 ### 4. Root cause (bug) / Approach (feature)
-The heading is `## 4. Root cause` for a bug and `## 4. Approach` for a feature. This is the section the reviewer reads most carefully — the explanation in plain words, not the list of edits. 60–220 words, 4–10 bullets or short paragraphs (≤ 3 lines each), written so a product manager follows it: which part of the app does what, why that produces the symptom / why the new capability belongs there. Example of the right level: "The frontend builds the location list once, without the company, so switching Company never narrows it; the backend already accepts a company filter, it is just never sent." No file paths, line numbers, variable or function names — the Technical changes table maps this onto code.
-- Bug — **Root cause**: the chain of behaviour that produces the symptom (the input or action → what each part of the system does with it → the wrong outcome the user sees), the assumption or missed case behind it, and why the change removes the cause rather than masking the symptom. Name a second contributing cause if one exists.
-- Feature — **Approach**: how it should be built: which part of the system takes on what responsibility and why there (what existing mechanism it extends or mirrors), how the data moves through the app after the change, the 2–4 design decisions that shape it each with the alternative rejected in one clause, and what the reviewer must check to be confident (the invariant, the boundary, the compatibility concern).
+The heading is `## 4. Root cause` for a bug and `## 4. Approach` for a feature. This is the section the reviewer reads most carefully — the explanation in plain words, not the list of edits. 60–320 words outside the table, written so a product manager follows it: which part of the app does what, why that produces the symptom / why the new capability belongs there. No file paths, line numbers, variable or function names — the Technical changes table maps this onto code. Use `###` sub-headings, in this order:
+- Bug — `### What happens` (the input or action → what each part of the system does with it → the wrong outcome the user sees), `### Why` (the assumption or missed case behind it; a second contributing cause if one exists), `### Worked case`, `### Failure variant`, `### Why the fix removes it` (why the change removes the cause rather than masking the symptom).
+- Feature — `### Where it lives` (which part of the system takes on what responsibility and why there — what existing mechanism it extends or mirrors), `### Data flow` (how the data moves through the app after the change), `### Worked case`, `### Failure variant`, `### What to check` (the invariant, the boundary, the compatibility concern the reviewer must be confident about).
 
-### 5. Proposed changes
+`### Worked case` — one concrete input (a named record with real-looking values: quantities, amounts, dates, states), traced through today's behaviour and the proposed behaviour side by side in one table:
+
+| Step | Actor and action | Today | After the change | Why this step |
+
+3–8 rows; one clause per cell; the first row where Today and After differ is the point of the change — bold both cells. The table must show why the mechanism produces the promised result, not only that it does.
+
+`### Failure variant` — change one event on the same input (a crash, timeout, duplicate submission, invalid input, concurrent edit, missing record): 2–4 bullets on what the system does after the change, what recovers it, and the limitation that remains. Pick the variation that matters for this decision, not a generic one.
+
+### 5. Why this option
+State the 2–4 decisive criteria first, one line each. Then compare on those criteria, same running example, in one table:
+
+| Criterion | Proposed | Strongest alternative | Minimal change / status quo |
+
+One clause per cell: the mechanism and what it costs on that criterion. The strongest alternative is the one a reasonable engineer would reach for — for a bug, usually the symptom-level patch; for a feature, the other credible placement — never a straw man. After the table, two lines: `**Why the alternative loses here:**` the precise difference, shown on the worked case; `**Reverse if:**` the changed requirement, verified fact or preference that would make the alternative the right call. Product words; no scores ("scalability 9/10"); ≤ 200 words outside the table.
+
+### 6. Proposed changes
 The change explained in plain words for someone who will not read the table: 2–6 short bullets, ≤ 120 words in total, no table, no code, no paths or identifiers. Each bullet: what changes, in which part of the app, and why it fixes the problem — information-dense, no filler, no restating the ticket.
 
-### 6. Technical changes
-Everything technical lives here. First a `Summary:` line — the whole change in 1–3 imperative clauses, semicolon-separated, ≤ 60 words, naming the symbols: `Summary: Add BidAttachmentRepository; route the three get_attachment* reads through it; leave the GlobalVendorBid read raw.` Then a `Flow:` line — the data flow after the change as symbols: `` `A.field` → `B.method` → `C.total` ``. Then 3–10 bullets anchoring the mechanism to code: `` `path:line` `Symbol` — what it does today / will do `` (≤ 20 words each; this is where the reviewer learns the code). Then a table, one row per changed symbol:
+### 7. Technical changes
+Everything technical lives here. First a `Summary:` line — the whole change in 1–3 imperative clauses, semicolon-separated, ≤ 60 words, naming the symbols: `Summary: Add BidAttachmentRepository; route the three get_attachment* reads through it; leave the GlobalVendorBid read raw.` Then a `Flow:` line — the data flow after the change as symbols: `` `A.field` → `B.method` → `C.total` ``. Then 3–10 bullets anchoring the mechanism to code: `` `path:line` `Symbol` — what it does today / will do `` (≤ 20 words each; this is where the reviewer learns the code; cite `[E…]` rows where the bullet is the evidence for a claim made earlier). Then a table, one row per changed symbol:
 
 | Layer | File | Symbol | Before | After |
 
 `Before` and `After` are expressions or one-clause behaviours, not prose (`revenue*(1-closing%)` → `revenue*(1-closing%) + coalesce(credit,0)`). A new symbol has `—` in Before. After the table, `Not changed:` with at most 4 bullets of the form `` `thing` — reason `` (≤ 12 words each), only for things a reviewer would expect to see changed.
 
-### 7. Risks and edge cases
-At most 5 bullets, each with an action: `case → behaviour after the change → action: <what the implementation or reviewer does about it, ≤ 15 words> → covered by <test name>` or `→ action: <…> → accepted, <reason ≤ 10 words>`. The action is concrete (add a guard, floor at 0, order the operands, add test X, ask product) — never "monitor" or "be careful". Include the sign/ordering/null traps that matter for this change.
+### 8. Evidence
+The index the citations resolve to — not the explanation. One table:
 
-### 8. Tests
+| ID | Claim | Status | Source | If wrong |
+
+- `ID`: `E1`, `E2`… for Observed or Measured; `A1`… for Assumed, Inferred or Preference; `U1`… for Unknown.
+- `Status`: one of `Observed`, `Measured`, `Inferred`, `Assumed`, `Preference`, `Unknown`.
+- `Source`: Observed → `` `path:line` `Symbol` `` in this worktree (the reviewer opens it); Measured → what was run and the number; Inferred → the observations it follows from (`E1, E3`); Assumed → why it is plausible; Preference → whose stated preference; Unknown → how to resolve it and who can.
+- `If wrong`: the decision or section that changes.
+
+4–12 rows. At least one Observed row. At least one Assumed, Inferred or Unknown row — if there is truly none, write the line `No assumptions or unknowns.` under the table. An inference is not an observation; a test you plan is not a test that passed; one traced case is not every execution.
+
+### 9. Contract
+What approval means, six labelled lines, ≤ 150 words:
+- `**Guaranteed:**` the observable behaviour after the change and the assumption it holds under.
+- `**Target:**` intended but not guaranteed (ordering, timing, performance), or `none`.
+- `**Unresolved:**` behaviour this proposal deliberately does not settle, or `none`.
+- `**Fixed by approval:**` the contracts, invariants and tradeoffs the reviewer locks by approving.
+- `**Left to implementation:**` the reversible details the implementer decides without coming back.
+- `**Reopen if:**` the discoveries during implementation that must bring the design back for review.
+
+### 10. Risks and edge cases
+At most 5 bullets, each with an action: `case → behaviour after the change → action: <what the implementation or reviewer does about it, ≤ 15 words> → covered by <test name>` or `→ action: <…> → accepted, <reason ≤ 10 words>`. The action is concrete (add a guard, floor at 0, order the operands, add test X, ask product) — never "monitor" or "be careful". Include the sign/ordering/null traps that matter for this change. The Failure variant's remaining limitation belongs here with its action.
+
+### 11. Tests
 A table, one row per test:
 
 | File | Test | Asserts |
 
 `Asserts` ≤ 15 words with concrete values or relations (`net_revenue == 9500 - 300`). Then a line `Run:` followed by a fenced ```bash block with the exact commands, one per line. No list of test cases outside the table — the table is the list.
 
-### 9. QA
+### 12. QA
 One line per scenario: `` `S1` — <title> — `<start url>` ``, or `none — <reason>`. Nothing else: persona, seed and steps live in design.json, and the UI shows those (not this list) under the QA tab.
 
+### 13. Review questions
+Exactly two bullets, each one question for the reviewer, nothing else:
+- `**Behavior** — ` if one condition in the worked case changes (name it), what happens and why?
+- `**Choice** — ` which requirement or fact would make the strongest alternative preferable?
+
+These are prompts for the reviewer's own check, not a test; they may skip them.
+
 ### Banned everywhere in design.md
-Restating the ticket; provenance remarks (`research.md`, `mempalace`, "confirmed", "per the ticket's note", "AC #n"); emphasis and hedging ("exactly", "explicitly", "it is worth noting", "importantly", "this is the … trap"); explaining why something is out of scope for more than one clause; JSON blocks; paragraphs longer than three lines; in Technical changes and Tests, any claim without a path, symbol or number; in sections 2–5, any file path, line number or identifier.
+Restating the ticket; provenance remarks in prose (`research.md`, `mempalace`, "confirmed", "per the ticket's note", "AC #n" — the Evidence table is the one place for status); emphasis and hedging ("exactly", "explicitly", "it is worth noting", "importantly", "this is the … trap"); explaining why something is out of scope for more than one clause; JSON blocks; numeric scores without units and method; paragraphs longer than three lines; in Technical changes and Tests, any claim without a path, symbol or number; in sections 1, 3–6, any file path, line number or identifier.
 
 ## design.json — structured twin (same content, machine-readable)
 

@@ -204,14 +204,22 @@ const FIVE_HOUR = "five_hour";
 const NEEDS_HUMAN: ReadonlySet<TaskStatus> = new Set(["waiting_user", "blocked", "failed", "rate_limited"]);
 
 // Required `## ` sections of design.md, in order (numbering optional); mirrored in prompts/design.md. "A|B" = either title.
-export const DESIGN_SECTIONS = ["Classification", "How it works today", "Problem", "Root cause|Approach", "Proposed changes", "Technical changes|Change", "Risks and edge cases", "Tests", "QA"] as const;
-export const DESIGN_MAX_WORDS = 1100;
+export const DESIGN_SECTIONS = ["Decision", "Classification", "How it works today", "Root cause|Approach", "Why this option", "Proposed changes", "Technical changes|Change", "Evidence", "Contract", "Risks and edge cases", "Tests", "QA", "Review questions"] as const;
+// Word caps count prose only: code blocks and table rows are excluded everywhere.
+export const DESIGN_MAX_WORDS = 1400;
 const PROPOSED_MAX_WORDS = 120;
+const DECISION_MAX_WORDS = 150;
+const OPTIONS_MAX_WORDS = 200;
+const CONTRACT_MAX_WORDS = 150;
 // The explanation section (Root cause / Approach) is the one the reviewer relies on; a few lines is not an explanation.
 const EXPLANATION_MIN_WORDS = 60;
-const EXPLANATION_MAX_WORDS = 220;
-// Sections 2–5 are for a product reader: behaviour and the part of the system, never paths, line numbers or identifiers.
-const PROSE_SECTIONS = ["How it works today", "Problem", "Root cause", "Approach", "Proposed changes"] as const;
+const EXPLANATION_MAX_WORDS = 320;
+// The labelled lines the one-screen Decision and the Contract must carry, in this order.
+const DECISION_LABELS = ["Problem", "Recommendation", "Decisive insight", "Price", "Decision requested", "Open blocker"] as const;
+const CONTRACT_LABELS = ["Guaranteed", "Target", "Unresolved", "Fixed by approval", "Left to implementation", "Reopen if"] as const;
+const EVIDENCE_STATUSES = ["Observed", "Measured", "Inferred", "Assumed", "Preference", "Unknown"] as const;
+// Sections for a product reader: behaviour and the part of the system, never paths, line numbers or identifiers.
+const PROSE_SECTIONS = ["Decision", "How it works today", "Root cause", "Approach", "Why this option", "Proposed changes"] as const;
 // A backticked span counts as code when it looks like one (path, identifier, call, constant); a plain word such as `archived` is a product term.
 const CODE_REF = /`[^`\n]*(?:[./_(:\\]|[a-z][A-Z])[^`\n]*`|`[^`\n]{30,}`|\b[\w./-]+\.(py|ts|tsx|js|jsx|rs|go|java|kt|rb|sql|scss|css|json|ya?ml)\b|\b[\w./-]+:\d+\b|\b[a-z]+_[a-z_]+\b|\b[a-z]+[A-Z]\w+\(|\b[A-Z]+_[A-Z_]+\b/;
 const LOGIN_POLL_MS = 3_000;
@@ -244,25 +252,95 @@ export const designMdProblems = (md: string, opts: { repos?: string[] } = {}): s
         const alternatives = want.split("|");
         if (!alternatives.some(has)) problems.push(`design.md is missing the section "## ${alternatives.join('" or "## ')}"`);
     }
-    const words = md.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
-    if (words > DESIGN_MAX_WORDS) problems.push(`design.md is ${words} words; the cap is ${DESIGN_MAX_WORDS} — cut repetition, provenance remarks and prose around tables, keep every path:line`);
+    // Prose only: code blocks and table rows are structure, not review-time reading.
+    const wordCount = (s: string): number => s.replace(/```[\s\S]*?```/g, " ").split("\n").filter((l) => !/^\s*\|/.test(l)).join(" ").split(/\s+/).filter(Boolean).length;
+    const words = wordCount(md);
+    if (words > DESIGN_MAX_WORDS) problems.push(`design.md is ${words} words of prose; the cap is ${DESIGN_MAX_WORDS} — cut repetition, provenance remarks and prose around tables, keep every path:line`);
     if (/^\s*```json/m.test(md)) problems.push("design.md contains a JSON block — describe scenarios and plans in prose/tables; design.json carries the structure");
     const section = (name: string): string | null => {
         const m = new RegExp(`^##\\s+(?:\\d+[.)]\\s*)?${name}[^\\n]*\\n([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "im").exec(md);
         return m ? m[1]! : null;
     };
-    const wordCount = (s: string): number => s.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
+    const subsection = (body: string, name: string): string | null => {
+        const m = new RegExp(`^###\\s+${name}[^\\n]*\\n([\\s\\S]*?)(?=^###\\s|(?![\\s\\S]))`, "im").exec(body);
+        return m ? m[1]! : null;
+    };
+    // `**Label:** text`, `Label: text` or `- **Label** — text` at the start of a line.
+    const labelled = (body: string, label: string): boolean => new RegExp(`^\\s*(?:[-*]\\s*)?\\**${label}\\**:?\\**\\s*[—–-]?\\s*\\S`, "im").test(body);
+    const hasTable = (body: string): boolean => /^\s*\|.*\|\s*\n\s*\|\s*:?-+/m.test(body);
+    const citations = (body: string): string[] => [...body.matchAll(/\[([EAU]\d+)\]/g)].map((m) => m[1]!);
     const classification = section("Classification");
     const isBug = !!classification && /^\s*`?bug`?\b/im.test(classification);
     const isFeature = !!classification && /^\s*`?feature`?\b/im.test(classification);
     if (isBug && !has("Root cause")) problems.push("a bug needs the section `## 4. Root cause` (not Approach): the causal chain from trigger to wrong output, with path:line");
     if (isFeature && !has("Approach")) problems.push("a feature needs the section `## 4. Approach` (not Root cause): how it should be built, where it lives and why, the data flow, the key decisions");
+    const decision = section("Decision");
+    if (decision !== null) {
+        const missing = DECISION_LABELS.filter((l) => !labelled(decision, l));
+        if (missing.length) problems.push(`the Decision section is missing the line(s) ${missing.map((l) => `\`**${l}:**\``).join(", ")} — six labelled lines: Problem, Recommendation, Decisive insight, Price, Decision requested, Open blocker`);
+        const n = wordCount(decision);
+        if (n > DECISION_MAX_WORDS) problems.push(`the Decision section is ${n} words; keep it under ${DECISION_MAX_WORDS} — six lines of at most 30 words, the one-screen decision`);
+        if (citations(decision).length === 0) problems.push("the Decision section cites no evidence — the Decisive insight line names the Evidence row that supports it, e.g. `[E1]`");
+    }
     const explanation = section("Root cause") ?? section("Approach");
     if (explanation !== null) {
         const n = wordCount(explanation);
         const title = has("Root cause") ? "Root cause" : "Approach";
-        if (n < EXPLANATION_MIN_WORDS) problems.push(`the ${title} section is ${n} words — it is the explanation the reviewer relies on: ${title === "Root cause" ? "walk the chain of behaviour (the action → what each part of the app does with it → the wrong outcome), the assumption behind it, and why the change removes the cause" : "say which part of the app takes on what and why there, how the data moves after the change, each design decision with the alternative rejected"} (${EXPLANATION_MIN_WORDS}–${EXPLANATION_MAX_WORDS} words)`);
+        if (n < EXPLANATION_MIN_WORDS) problems.push(`the ${title} section is ${n} words — it is the explanation the reviewer relies on: ${title === "Root cause" ? "walk the chain of behaviour (the action → what each part of the app does with it → the wrong outcome), the assumption behind it, and why the change removes the cause" : "say which part of the app takes on what and why there, how the data moves after the change, what the reviewer must check"} (${EXPLANATION_MIN_WORDS}–${EXPLANATION_MAX_WORDS} words outside the table)`);
         else if (n > EXPLANATION_MAX_WORDS) problems.push(`the ${title} section is ${n} words; keep it under ${EXPLANATION_MAX_WORDS} — one causal chain / one approach, no restating the Technical changes table`);
+        const worked = subsection(explanation, "Worked case");
+        if (worked === null) problems.push(`the ${title} section needs a \`### Worked case\` — one concrete input traced through today's and the proposed behaviour in a | Step | Actor and action | Today | After the change | Why this step | table`);
+        else if (!hasTable(worked)) problems.push("the Worked case has no table — trace the one concrete input step by step: | Step | Actor and action | Today | After the change | Why this step |");
+        if (subsection(explanation, "Failure variant") === null) problems.push(`the ${title} section needs a \`### Failure variant\` — change one event on the same input (crash, timeout, duplicate, invalid input, concurrent edit) and say what the system does after the change and what limitation remains`);
+        if (citations(explanation).length < 2) problems.push(`the ${title} section cites ${citations(explanation).length} evidence row(s) — the claims that carry the argument cite the rows that support them (\`[E1]\`, \`[A1]\`), at least two`);
+    }
+    const options = section("Why this option");
+    if (options !== null) {
+        if (!hasTable(options) || !/^\s*\|[^\n]*proposed[^\n]*alternative/im.test(options)) problems.push("the Why this option section needs the | Criterion | Proposed | Strongest alternative | Minimal change / status quo | table — one row per decisive criterion, same running example");
+        if (!labelled(options, "Reverse if")) problems.push("the Why this option section needs a `**Reverse if:**` line — the changed requirement, verified fact or preference that would make the alternative the right call");
+        if (!labelled(options, "Why the alternative loses here")) problems.push("the Why this option section needs a `**Why the alternative loses here:**` line — the precise difference, shown on the worked case");
+        const n = wordCount(options);
+        if (n > OPTIONS_MAX_WORDS) problems.push(`the Why this option section is ${n} words outside the table; keep it under ${OPTIONS_MAX_WORDS}`);
+        if (/\b\d+\s*\/\s*10\b/.test(options)) problems.push("the Why this option section scores options (n/10) — compare mechanisms and costs on the criteria, or give units and the measurement method");
+    }
+    const evidence = section("Evidence");
+    if (evidence !== null) {
+        const rows = evidence.split("\n").map((l) => l.trim()).filter((l) => /^\|/.test(l)).map((l) => l.split("|").map((c) => c.trim()).slice(1, -1)).filter((cells) => /^`?[EAU]\d+`?$/.test(cells[0] ?? ""));
+        const ids = rows.map((cells) => cells[0]!.replace(/`/g, ""));
+        if (rows.length === 0) problems.push("the Evidence section needs the | ID | Claim | Status | Source | If wrong | table with ids E1…, A1…, U1… — the index every `[E1]` citation resolves to");
+        else {
+            const badStatus = rows.filter((cells) => !EVIDENCE_STATUSES.some((s) => (cells[2] ?? "").toLowerCase().startsWith(s.toLowerCase())));
+            if (badStatus.length) problems.push(`Evidence row(s) ${badStatus.map((c) => c[0]).join(", ")} have a Status outside ${EVIDENCE_STATUSES.join(" / ")}`);
+            const badPrefix = rows.filter((cells) => {
+                const status = (cells[2] ?? "").toLowerCase();
+                const id = cells[0]!.replace(/`/g, "");
+                return (id.startsWith("E") && !/^(observed|measured)/.test(status)) || (id.startsWith("A") && !/^(assumed|inferred|preference)/.test(status)) || (id.startsWith("U") && !/^unknown/.test(status));
+            });
+            if (badPrefix.length) problems.push(`Evidence row(s) ${badPrefix.map((c) => c[0]).join(", ")}: E ids are Observed or Measured, A ids Assumed, Inferred or Preference, U ids Unknown`);
+            const noSource = rows.filter((cells) => /^observed/i.test(cells[2] ?? "") && !/[\w./-]+:\d+|https?:\/\//.test(cells[3] ?? ""));
+            if (noSource.length) problems.push(`Evidence row(s) ${noSource.map((c) => c[0]).join(", ")} are Observed without a \`path:line\` source — the reviewer opens it`);
+            if (!rows.some((cells) => /^(observed|measured)/i.test(cells[2] ?? ""))) problems.push("the Evidence table has no Observed row — at least one claim about the current code with its path:line");
+            if (!rows.some((cells) => /^(assumed|inferred|unknown)/i.test(cells[2] ?? "")) && !/no assumptions or unknowns/i.test(evidence)) problems.push("the Evidence table has no Assumed, Inferred or Unknown row — surface what was not verified, or write `No assumptions or unknowns.` under the table");
+            const outside = md.replace(evidence, "");
+            const cited = new Set(citations(outside));
+            const uncited = ids.filter((id) => !cited.has(id));
+            if (uncited.length) problems.push(`Evidence row(s) ${uncited.join(", ")} are never cited — cite them where the claim is made (\`[${uncited[0]}]\`) or drop them`);
+            const dangling = [...cited].filter((id) => !ids.includes(id));
+            if (dangling.length) problems.push(`citation(s) ${dangling.map((id) => `[${id}]`).join(", ")} have no row in the Evidence table`);
+        }
+    }
+    const contract = section("Contract");
+    if (contract !== null) {
+        const missing = CONTRACT_LABELS.filter((l) => !labelled(contract, l));
+        if (missing.length) problems.push(`the Contract section is missing the line(s) ${missing.map((l) => `\`**${l}:**\``).join(", ")} — six labelled lines: Guaranteed, Target, Unresolved, Fixed by approval, Left to implementation, Reopen if`);
+        const n = wordCount(contract);
+        if (n > CONTRACT_MAX_WORDS) problems.push(`the Contract section is ${n} words; keep it under ${CONTRACT_MAX_WORDS}`);
+    }
+    const questions = section("Review questions");
+    if (questions !== null) {
+        const bullets = questions.split("\n").filter((l) => /^\s*[-*]\s+\S/.test(l));
+        if (bullets.length !== 2) problems.push(`the Review questions section has ${bullets.length} bullet(s) — exactly two: **Behavior** (one changed condition in the worked case) and **Choice** (what would make the alternative preferable)`);
+        else if (!bullets.every((l) => /\?\s*$/.test(l))) problems.push("each Review questions bullet is one question and ends with `?`");
     }
     for (const name of PROSE_SECTIONS) {
         const body = section(name);
@@ -282,6 +360,8 @@ export const designMdProblems = (md: string, opts: { repos?: string[] } = {}): s
             if (unknown.length) problems.push(`the \`Repos:\` line names ${unknown.join(", ")}, which are not repositories of this workspace (${repos.join(", ")}) — use the directory names exactly`);
         }
     }
+    const today = section("How it works today");
+    if (today !== null && !labelled(today, "Invariant")) problems.push("the How it works today section ends with an `**Invariant:**` line — what must stay true across the change, with its precise scope");
     const proposed = section("Proposed changes");
     if (proposed !== null) {
         const words = proposed.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
