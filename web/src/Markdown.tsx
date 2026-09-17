@@ -46,8 +46,18 @@ const foldHeadings = (container: Element, lvl: number): void => {
     }
 };
 
-const render = (source: string): string => {
-    const clean = DOMPurify.sanitize(marked.parse(source, { async: false }) as string);
+// Artifacts are read raw from disk, so a field an agent wrote in the wrong shape (an array of notes, an object) reaches
+// the page before the contract check bounces the run — render it rather than crash the task view (marked throws on
+// anything but a string).
+const asMarkdownText = (source: unknown): string => {
+    if (typeof source === "string") return source;
+    if (source == null) return "";
+    if (Array.isArray(source)) return source.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join("\n\n");
+    return "```json\n" + JSON.stringify(source, null, 2) + "\n```";
+};
+
+const render = (source: unknown): string => {
+    const clean = DOMPurify.sanitize(marked.parse(asMarkdownText(source), { async: false }) as string);
     const doc = new DOMParser().parseFromString(`<div>${clean}</div>`, "text/html");
     const root = doc.body.firstElementChild;
     if (!root) return clean;
@@ -55,7 +65,7 @@ const render = (source: string): string => {
     return root.innerHTML;
 };
 
-export const Markdown = ({ source }: { source: string }) => {
+export const Markdown = ({ source }: { source: string | unknown }) => {
     const html = useMemo(() => render(source), [source]);
     return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 };

@@ -117,15 +117,24 @@ const renderUnblockHint = (qa: QaPassResult, blocked: QaPassResult["scenarios"],
     return parts.join("\n\n");
 };
 
-// What the implementer sees: the general notes, then every line comment with its anchor and the quoted line.
-const renderReviewNotes = (round: number, notes: string | undefined, comments: LineComment[]): string => {
+// What the agent sees on a review round: the general notes, then every line comment with its anchor and the quoted
+// line, then where THIS stage records how each point was resolved — the closing line names the stage's own output
+// file, because a design revision told to "list it in impl.json notes" wrote an impl.json (with an array of notes)
+// that the task page then rendered as an Implementation result (INV-131, 2026-09-17).
+const renderReviewNotes = (round: number, notes: string | undefined, comments: LineComment[], stage: Stage): string => {
     const parts: string[] = [`## Reviewer notes — review round ${round} (address every point)`];
     if (notes?.trim()) parts.push(notes.trim());
     if (comments.length) {
         parts.push("### Line comments (path:line refer to the current diff against the base branch; the quoted text is the line as it is now)");
         for (const c of comments) parts.push(`- \`${c.path}:${c.line}\` (${c.side === "old" ? "removed line" : "line"}) — \`${c.snippet.trim().slice(0, 160)}\`\n  → ${c.text.trim()}`);
     }
-    parts.push("When done, list in impl.json `notes` each reviewer point and how you resolved it (or why not).");
+    const closing: Partial<Record<Stage, string>> = {
+        implementation: "When done, list in impl.json `notes` (one markdown string, not an array) each reviewer point and how you resolved it (or why not).",
+        design_proposal: "Address every point inside design.md and design.json themselves — they are this stage's only output; do not write impl.json or any other file. Where a point changed a decision, the Decision, Evidence and Contract sections must reflect it.",
+        pr_fix: "When done, cover each reviewer point in pr-fix.json `summary`.",
+        pr_creation_review: "Revise pr.json accordingly; write nothing else.",
+    };
+    parts.push(closing[stage] ?? "When done, say in this stage's output how each reviewer point was resolved (or why not).");
     return parts.join("\n\n");
 };
 
@@ -1042,7 +1051,7 @@ export class Engine extends EventEmitter {
         const hasContent = !!notes?.trim() || cs.length > 0;
         this.dispatch(taskId, stage, {
             notes: hasContent
-                ? `${renderReviewNotes(prior.n + 1, notes, cs)}\n\n(The task was sent back to this stage by the human after a later stage; later stages will run again after you.)`
+                ? `${renderReviewNotes(prior.n + 1, notes, cs, stage)}\n\n(The task was sent back to this stage by the human after a later stage; later stages will run again after you.)`
                 : "The human sent the task back to this stage without notes; re-examine the work and improve it. Later stages will run again after you.",
         });
     }
@@ -1141,7 +1150,7 @@ export class Engine extends EventEmitter {
             this.setStage(taskId, target);
             const hasContent = !!input.notes?.trim() || comments.length > 0;
             this.dispatch(taskId, target, {
-                notes: hasContent ? renderReviewNotes(prior.n + 1, input.notes, comments) : "The reviewer requested changes without notes; re-examine the work and improve it.",
+                notes: hasContent ? renderReviewNotes(prior.n + 1, input.notes, comments, target) : "The reviewer requested changes without notes; re-examine the work and improve it.",
             });
             return;
         }
@@ -1255,7 +1264,7 @@ export class Engine extends EventEmitter {
         if (input.verdict === "changes") {
             this.db.prepare(`UPDATE pr_state SET approved_at = NULL, updated_at = ? WHERE task_id = ? AND number IS NULL`).run(now(), task.id);
             const scope = repo !== undefined && repos.length > 1 ? `\n\nRevise the draft for repository \`${repo}\` only; copy every other repository's draft from the current pr.json unchanged.` : "";
-            const notes = input.notes?.trim() ? renderReviewNotes(round, input.notes, []) : "The reviewer requested changes without notes; re-examine the draft and improve it.";
+            const notes = input.notes?.trim() ? renderReviewNotes(round, input.notes, [], "pr_creation_review") : "The reviewer requested changes without notes; re-examine the draft and improve it.";
             this.dispatch(task.id, "pr_creation_review", { notes: `${notes}${scope}` });
             return;
         }
