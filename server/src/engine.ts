@@ -517,6 +517,7 @@ export class Engine extends EventEmitter {
 
     private tick(): void {
         this.pollPrs();
+        this.processPendingRebases();
         const due = this.db
             .prepare(`SELECT * FROM tasks WHERE status IN ('rate_limited', 'queued')`)
             .all() as TaskRow[];
@@ -1221,6 +1222,7 @@ export class Engine extends EventEmitter {
                 const unique = (await this.git(cwd, ["cherry", "HEAD", `origin/${branch}`], env).catch(() => "+ unknown")).split("\n").filter((l) => l.startsWith("+")).length;
                 if (unique === 0) {
                     await this.git(cwd, ["push", `--force-with-lease=${branch}:${remote}`, "-u", "origin", branch], env);
+                    this.onBranchRewritten(env, branch);
                     return `force-pushed with lease — the ${remoteOnly} remote commit(s) were already here by content (history rewritten locally)`;
                 }
                 try {
@@ -2311,6 +2313,7 @@ export class Engine extends EventEmitter {
         }
         await this.git(cwd, ["push", remote ? `--force-with-lease=${task.branch}:${remote}` : "--force-with-lease", "-u", "origin", task.branch], env);
         this.resetPrState(taskId, repo);
+        this.onBranchRewritten(env, task.branch);
         this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
         this.emitTask(taskId);
         this.pollPrSoon(taskId);
@@ -2725,7 +2728,11 @@ export class Engine extends EventEmitter {
     // resolving conflicts and re-running the fast checks under the normal guard (no force-push, no interactive rebase);
     // Stagehand then force-pushes with lease itself where the env allows pushes and the branch is on GitHub, resets the
     // PR checks and re-polls. Refuses while a run is in progress, with uncommitted changes, or when already up to date.
-    async startRebase(taskId: string): Promise<void> {
+    // Plain `git rebase` first: the task's own commits (on neither the base nor the trunk) are replayed onto the new
+    // base with `--onto`, so a base that was rewritten under the branch (a stacked parent force-pushed) replays only
+    // this task's work. The agent is brought in only for a checkout where that conflicts — the user's rule (2026-09-18):
+    // "agentic rebase takes a lot of time. Let's do agentic only if simple git rebase is not clean".
+    async startRebase(taskId: string, opts: { auto?: boolean } = {}): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
@@ -2766,23 +2773,43 @@ export class Engine extends EventEmitter {
             behind.push(`${repoLabel(repo)}: ${n} commit(s)`);
             repos.push(repo);
         }
+        const header = opts.auto ? `🔀 Auto-rebase onto origin/${base} (the base branch was rewritten):` : `🔀 Rebase onto origin/${base}:`;
         if (repos.length === 0) {
             if (fastForwarded.length === 0) throw new Error(`already up to date with origin/${base}`);
             const resync = await this.resyncAfterHistoryChange(task, env, headsBefore);
-            this.addMessage(taskId, "agent", `🔀 Rebase onto origin/${base}:\n\n${fastForwarded.map((l) => `✅ ${l}`).join("\n")}${resync ? `\n${resync}` : ""}\n\nNothing to replay — no agent run needed.`);
+            this.addMessage(taskId, "agent", `${header}\n\n${fastForwarded.map((l) => `✅ ${l}`).join("\n")}${resync ? `\n${resync}` : ""}\n\nNothing to replay — no agent run needed.`);
+            this.emitTask(taskId);
+            return;
+        }
+        // Mechanical pass per checkout; the ones that conflict go to the agent.
+        const plain: string[] = fastForwarded.map((l) => `✅ ${l}`);
+        const conflicted: string[] = [];
+        for (const repo of repos) {
+            const cwd = this.checkoutOf(task, env, repo);
+            const r = await this.plainRebase(cwd, env, base, headsBefore.get(repo) ?? "");
+            if (r.ok) plain.push(`✅ ${repoLabel(repo)}: plain rebase onto origin/${base}, no conflicts (${r.replayed} commit(s) replayed)`);
+            else {
+                conflicted.push(repo);
+                plain.push(`⚠️ ${repoLabel(repo)}: plain rebase conflicted in ${r.conflict} — handed to the agent`);
+            }
+        }
+        if (conflicted.length === 0) {
+            const lines = await this.finishRebase(task, env, base, repos, headsBefore);
+            this.addMessage(taskId, "agent", `${header}\n\n${plain.join("\n")}\n${lines.join("\n")}`);
             this.emitTask(taskId);
             return;
         }
         const prevStatus = task.status;
         const prevLine = task.status_line;
-        this.setTaskStatus(taskId, "running", `Rebasing \`${task.branch}\` onto origin/${base} with the agent…`);
+        this.setTaskStatus(taskId, "running", `Rebasing \`${task.branch}\` onto origin/${base} with the agent (plain rebase conflicted in ${conflicted.map(repoLabel).join(", ")})…`);
         const prompt = renderPrompt("rebase.md", {
             branch: task.branch,
             baseBranch: base,
             worktree: task.worktree_path,
             taskDir: this.taskDir(taskId),
             repoLayout: describeRepoLayout(this.layoutOf(task, env), task.worktree_path),
-            behind: behind.join("; "),
+            behind: behind.filter((l) => conflicted.some((repo) => l.startsWith(`${repoLabel(repo)}:`))).join("; "),
+            conflicted: conflicted.map(repoLabel).join(", "),
             taskNotes: task.notes?.trim() ? `The human's standing notes on this task: ${task.notes.trim()}` : "",
         });
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path, this.cfg.dataDir);
@@ -2801,48 +2828,107 @@ export class Engine extends EventEmitter {
         void run.done.then(async (outcome: RunOutcome) => {
             if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "rebase", stage: null }, outcome.result);
             const reply = outcome.result?.result?.trim() || (outcome.exitCode !== 0 ? `(did not finish: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
-            const rules = rulesOf(cd);
-            const lines: string[] = [];
-            let pushed = false;
-            for (const repo of repos) {
-                const cwd = this.checkoutOf(task, env, repo);
-                // A rebase left half-way is never pushed: abort it so the checkout is usable, and say so.
-                const inProgress = await this.git(cwd, ["rev-parse", "--git-path", "rebase-merge"], env).then((p) => existsSync(join(cwd, p.trim())), () => false);
-                if (inProgress) {
-                    await this.git(cwd, ["rebase", "--abort"], env).catch(() => "");
-                    lines.push(`❌ ${repoLabel(repo)}: the rebase was left unfinished — aborted, branch unchanged`);
-                    continue;
-                }
-                const upToDate = await this.git(cwd, ["merge-base", "--is-ancestor", `origin/${base}`, "HEAD"], env).then(() => true, () => false);
-                if (!upToDate) {
-                    lines.push(`⚠️ ${repoLabel(repo)}: not rebased (still behind origin/${base})`);
-                    continue;
-                }
-                const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch!], env).catch(() => "");
-                if (!remote.trim()) {
-                    lines.push(`✅ ${repoLabel(repo)}: rebased onto origin/${base}; the branch is not on GitHub yet, nothing to push`);
-                    continue;
-                }
-                if (!rules.allowPush) {
-                    lines.push(`✅ ${repoLabel(repo)}: rebased onto origin/${base}; this env forbids agent pushes — push it yourself: \`git push --force-with-lease origin ${task.branch}\``);
-                    continue;
-                }
-                try {
-                    await this.git(cwd, ["push", "--force-with-lease", "origin", task.branch!], env);
-                    this.resetPrState(taskId, repo);
-                    pushed = true;
-                    lines.push(`✅ ${repoLabel(repo)}: rebased onto origin/${base} and force-pushed (with lease); PR checks restart`);
-                } catch (e) {
-                    lines.push(`❌ ${repoLabel(repo)}: rebased, but the push failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
-                }
-            }
-            const resync = await this.resyncAfterHistoryChange(task, env, headsBefore);
-            if (resync) lines.push(resync);
+            const lines = await this.finishRebase(task, env, base, repos, headsBefore);
             this.setTaskStatus(taskId, prevStatus, prevLine ?? "rebase finished — see Chat");
-            this.addMessage(taskId, "agent", `🔀 Rebase onto origin/${base}:\n\n${reply}\n\n${lines.join("\n")}`);
-            if (pushed) this.pollPrSoon(taskId);
+            this.addMessage(taskId, "agent", `${header}\n\n${plain.join("\n")}\n\n${reply}\n\n${lines.join("\n")}`);
             this.emitTask(taskId);
         });
+    }
+
+    // `git rebase --onto origin/<base> <parent of the oldest own commit>`: replays exactly this checkout's own commits
+    // (on neither the base nor the trunk), non-interactively. Any conflict aborts and restores the checkout to where it
+    // was; the caller hands that checkout to the agent.
+    private async plainRebase(cwd: string, env: EnvRow, base: string, headBefore: string): Promise<{ ok: true; replayed: number } | { ok: false; conflict: string }> {
+        const own = (await this.git(cwd, ["rev-list", "--reverse", "HEAD", `^origin/${base}`, `^origin/${env.base_branch}`], env).catch(() => "")).split("\n").filter(Boolean);
+        if (own.length === 0) return { ok: true, replayed: 0 };
+        try {
+            await this.git(cwd, ["-c", "core.editor=true", "-c", "rebase.autoStash=false", "rebase", "--onto", `origin/${base}`, `${own[0]}^`], env);
+            return { ok: true, replayed: own.length };
+        } catch (e) {
+            const files = (await this.git(cwd, ["diff", "--name-only", "--diff-filter=U"], env).catch(() => "")).split("\n").filter(Boolean);
+            await this.git(cwd, ["rebase", "--abort"], env).catch(() => "");
+            if (headBefore) await this.git(cwd, ["reset", "--hard", headBefore], env).catch(() => "");
+            return { ok: false, conflict: files.length ? files.slice(0, 6).join(", ") + (files.length > 6 ? ", …" : "") : gitErrorTail(e) };
+        }
+    }
+
+    // After the checkouts moved (plain or agent rebase): abort anything left half-way, force-push with lease where the
+    // env allows it and the branch is on GitHub (PR checks restart; tasks stacked on this branch get queued for their
+    // own rebase), and re-sync dependencies when a lockfile moved. Returns the per-repo report lines.
+    private async finishRebase(task: TaskRow, env: EnvRow, base: string, repos: string[], headsBefore: Map<string, string>): Promise<string[]> {
+        const rules = rulesOf(this.configDirOf(env));
+        const lines: string[] = [];
+        let pushed = false;
+        for (const repo of repos) {
+            const cwd = this.checkoutOf(task, env, repo);
+            // A rebase left half-way is never pushed: abort it so the checkout is usable, and say so.
+            const inProgress = await this.git(cwd, ["rev-parse", "--git-path", "rebase-merge"], env).then((p) => existsSync(join(cwd, p.trim())), () => false);
+            if (inProgress) {
+                await this.git(cwd, ["rebase", "--abort"], env).catch(() => "");
+                lines.push(`❌ ${repoLabel(repo)}: the rebase was left unfinished — aborted, branch unchanged`);
+                continue;
+            }
+            const upToDate = await this.git(cwd, ["merge-base", "--is-ancestor", `origin/${base}`, "HEAD"], env).then(() => true, () => false);
+            if (!upToDate) {
+                lines.push(`⚠️ ${repoLabel(repo)}: not rebased (still behind origin/${base})`);
+                continue;
+            }
+            const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch!], env).catch(() => "");
+            if (!remote.trim()) {
+                lines.push(`✅ ${repoLabel(repo)}: on origin/${base} now; the branch is not on GitHub yet, nothing to push`);
+                continue;
+            }
+            if (!rules.allowPush) {
+                lines.push(`✅ ${repoLabel(repo)}: on origin/${base} now; this env forbids agent pushes — push it yourself: \`git push --force-with-lease origin ${task.branch}\``);
+                continue;
+            }
+            try {
+                await this.git(cwd, ["push", "--force-with-lease", "origin", task.branch!], env);
+                this.resetPrState(task.id, repo);
+                pushed = true;
+                lines.push(`✅ ${repoLabel(repo)}: force-pushed (with lease); PR checks restart`);
+            } catch (e) {
+                lines.push(`❌ ${repoLabel(repo)}: rebased, but the push failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
+            }
+        }
+        const resync = await this.resyncAfterHistoryChange(task, env, headsBefore);
+        if (resync) lines.push(resync);
+        if (pushed) {
+            this.pollPrSoon(task.id);
+            this.onBranchRewritten(env, task.branch!);
+        }
+        return lines;
+    }
+
+    // ---------- stacked tasks: keep children on their parent's rewritten branch ----------
+
+    // Tasks whose base is this branch (stacked on it) need a rebase after its history was force-pushed: queued here,
+    // started at once when idle, otherwise by the scheduler tick once their current run is over.
+    private readonly pendingRebase = new Set<string>();
+    private onBranchRewritten(env: EnvRow, branch: string): void {
+        const children = this.db
+            .prepare(`SELECT id FROM tasks WHERE env_id = ? AND base_branch = ? AND stage != 'done' AND branch IS NOT NULL AND worktree_path IS NOT NULL`)
+            .all(env.id, branch) as Array<{ id: string }>;
+        for (const c of children) this.pendingRebase.add(c.id);
+        if (children.length) this.processPendingRebases();
+    }
+
+    private processPendingRebases(): void {
+        for (const id of [...this.pendingRebase]) {
+            const task = this.getTask(id);
+            if (!task) {
+                this.pendingRebase.delete(id);
+                continue;
+            }
+            if (task.status === "running" || this.instructing.has(id)) continue;
+            this.pendingRebase.delete(id);
+            void this.startRebase(id, { auto: true }).catch((e) => {
+                const msg = String((e as Error).message ?? e);
+                if (/already up to date/.test(msg)) return;
+                this.addMessage(id, "agent", `🔀 Auto-rebase onto origin/${task.base_branch ?? ""} not started: ${msg}`);
+                this.emitTask(id);
+            });
+        }
     }
 
     // After a rebase / reset moved a checkout: if a dependency manifest or lockfile changed between the old and new HEAD,

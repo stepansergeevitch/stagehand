@@ -828,7 +828,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {task.status !== "running" && currentIdx > 0 && <button onClick={() => setReturning((v) => !v)} title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)">{returning ? "Cancel return" : "Return to a stage…"}</button>}
                 {task.status !== "running" && task.branch && task.worktree_path && (
                     <button
-                        title="The task's agent rebases the branch onto the latest base, resolves conflicts and re-runs the fast checks; if the branch is on GitHub and this env allows pushes, Stagehand then force-pushes it with lease and the PR checks restart"
+                        title="A plain git rebase of this task's own commits onto the latest base first (seconds); the task's agent takes over only where that conflicts. If the branch is on GitHub and this env allows pushes, Stagehand then force-pushes it with lease, the PR checks restart, and tasks stacked on this branch are rebased in turn"
                         onClick={startRebase}
                     >
                         Rebase onto latest base
