@@ -1189,6 +1189,38 @@ export class Engine extends EventEmitter {
         return stdout.trim();
     }
 
+    // Pushes the task branch after integrating the remote first (the user's rule: "it should pull --rebase first"):
+    // fetch; when the remote has commits this checkout lacks, either every one of them is already here by content —
+    // the local history was rewritten (a rebase onto a newer base, a folded fix) and the push is forced with lease —
+    // or they are genuinely new and are rebased under the local commits with `git pull --rebase` (aborted and reported
+    // on conflict). A plain push otherwise. Returns a one-line note of what happened. Seen on INV-130 (2026-09-18):
+    // the frontend checkout had been rebased onto newer dev, the remote still held the 7 old commits, and the plain
+    // push was rejected as non-fast-forward.
+    private async pushBranch(cwd: string, env: EnvRow, branch: string): Promise<string> {
+        await this.git(cwd, ["fetch", "origin", branch], env).catch(() => "");
+        const remote = (await this.git(cwd, ["rev-parse", "-q", "--verify", `origin/${branch}`], env).catch(() => "")).trim();
+        if (remote) {
+            const remoteOnly = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${branch}`], env).catch(() => "0")) || 0;
+            if (remoteOnly > 0) {
+                const unique = (await this.git(cwd, ["cherry", "HEAD", `origin/${branch}`], env).catch(() => "+ unknown")).split("\n").filter((l) => l.startsWith("+")).length;
+                if (unique === 0) {
+                    await this.git(cwd, ["push", `--force-with-lease=${branch}:${remote}`, "-u", "origin", branch], env);
+                    return `force-pushed with lease — the ${remoteOnly} remote commit(s) were already here by content (history rewritten locally)`;
+                }
+                try {
+                    await this.git(cwd, ["pull", "--rebase", "origin", branch], env);
+                } catch (e) {
+                    await this.git(cwd, ["rebase", "--abort"], env).catch(() => "");
+                    throw new Error(`the remote has ${remoteOnly} commit(s) not here and rebasing onto them conflicted — pull and resolve by hand (${gitErrorTail(e)})`);
+                }
+                await this.git(cwd, ["push", "-u", "origin", branch], env);
+                return `pulled ${remoteOnly} remote commit(s) with --rebase, then pushed`;
+            }
+        }
+        await this.git(cwd, ["push", "-u", "origin", branch], env);
+        return "pushed";
+    }
+
     private async gh(cwd: string, args: string[], env: EnvRow): Promise<string> {
         const { stdout } = await execFileAsync("gh", args, { cwd, env: { ...process.env, ...parseEnvVars(env.env_vars) }, maxBuffer: 4 * 1024 * 1024 });
         return stdout.trim();
@@ -1419,7 +1451,8 @@ export class Engine extends EventEmitter {
         }
         this.setTaskStatus(taskId, "running", `PR Creation Review · pushing ${repoLabel(repo)} (${task.branch})`);
         try {
-            await this.git(cwd, ["push", "-u", "origin", task.branch], env);
+            const how = await this.pushBranch(cwd, env, task.branch);
+            if (how !== "pushed") this.addAgentNote(taskId, `${repoLabel(repo)}: ${how}`);
         } catch (e) {
             this.setTaskStatus(taskId, "failed", `${repoLabel(repo)}: push failed — ${gitErrorTail(e)}`);
             return null;
@@ -1858,7 +1891,8 @@ export class Engine extends EventEmitter {
                 const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch], env).catch(() => "");
                 const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `origin/${this.baseBranchOf(task, env)}..HEAD`], env).catch(() => "");
                 if (!ahead) continue;
-                await this.git(cwd, ["push", "-u", "origin", task.branch], env);
+                const how = await this.pushBranch(cwd, env, task.branch);
+                if (how !== "pushed") this.addAgentNote(taskId, `${repoLabel(repo)}: ${how}`);
                 this.resetPrState(taskId, repo);
             }
         } catch (e) {
