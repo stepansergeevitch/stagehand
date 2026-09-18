@@ -2946,6 +2946,14 @@ export class Engine extends EventEmitter {
         }
 
         if (def.contract && def.outputFile) {
+            // A PR fix resumes the task session: an agent that "remembers" fixing CI may reply DONE without touching
+            // anything, and the stale pr-fix.json from the previous fix then validates as if it were this run's
+            // (INV-131, 2026-09-18: attempt 3 for a Query-budget failure returned attempt 2's migration summary).
+            // Each fix must write its own output.
+            if (def.stage === "pr_fix" && !this.outputWrittenDuringRun(taskId, def.outputFile, runId)) {
+                this.retryContract(taskId, def, opts, `${def.outputFile} was not written by this run — it still describes the previous fix. This run is about the check(s) named in the instructions above: make the fix, commit it, then write ${def.outputFile} fresh with what you did.`, finish);
+                return;
+            }
             const validation = this.validateOutput(taskId, def);
             if (!validation.ok) {
                 this.retryContract(taskId, def, opts, validation.error, finish);
