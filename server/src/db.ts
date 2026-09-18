@@ -316,7 +316,11 @@ export interface MessageRow {
     created_at: string;
     // JSON MessageAnchor when the message belongs to a diff-line thread; NULL for plain chat.
     anchor: string | null;
+    // NULL for chat; "instruction" = the human told the agent to do something (Chat → Do), "instruction_result" = its report.
+    kind: MessageKind | null;
 }
+
+export type MessageKind = "instruction" | "instruction_result";
 
 // A diff line a chat message is attached to: the file, which side of the diff, the line number there and the line's
 // text (lines move as the branch evolves; the text is what the UI matches on to place the thread later).
@@ -638,6 +642,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["services.error", `ALTER TABLE services ADD COLUMN error TEXT`],
     // A chat message tied to one diff line (path/side/line/snippet as JSON) — a question asked from Code changes.
     ["messages.anchor", `ALTER TABLE messages ADD COLUMN anchor TEXT`],
+    // "instruction" / "instruction_result": a Chat message that told the agent to do something, and its report.
+    ["messages.kind", `ALTER TABLE messages ADD COLUMN kind TEXT`],
 ];
 
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>

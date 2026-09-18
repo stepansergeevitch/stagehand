@@ -1210,6 +1210,16 @@ app.post("/api/tasks/:id/messages", async (c) => {
     }
 });
 
+// Chat → Do: the agent carries the text out in the task's session/worktree; the report lands in Chat when it finishes.
+app.post("/api/tasks/:id/instructions", async (c) => {
+    const body = json(z.object({ text: z.string().min(1) }), await c.req.json());
+    try {
+        return c.json(await engine.instruct(c.req.param("id"), body.text));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/account", async (c) => {
     const body = json(z.object({ accountId: z.string() }), await c.req.json());
     engine.setAccount(c.req.param("id"), body.accountId);

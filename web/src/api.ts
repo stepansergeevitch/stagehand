@@ -140,7 +140,8 @@ export interface Service {
 }
 // The diff line a chat message hangs on (asked from Code changes); stored as JSON on the message.
 export interface MessageAnchor { path: string; side: "new" | "old"; line: number; snippet: string }
-export interface Message { id: string; task_id: string; role: "user" | "agent"; text: string; created_at: string; anchor?: string | null }
+export type MessageKind = "instruction" | "instruction_result";
+export interface Message { id: string; task_id: string; role: "user" | "agent"; text: string; created_at: string; anchor?: string | null; kind?: MessageKind | null }
 export const anchorOf = (m: Pick<Message, "anchor">): MessageAnchor | null => {
     try {
         const v: unknown = m.anchor ? JSON.parse(m.anchor) : null;
@@ -406,6 +407,8 @@ export const api = {
     answerQuestions: (id: string, roundId: string, answers: Record<string, string>) => post<Task>(`/api/tasks/${id}/questions/${roundId}/answer`, { answers }),
     // With an anchor the question is about one diff line; the reply carries the same anchor (a thread under that line).
     sendMessage: (id: string, text: string, anchor?: MessageAnchor) => post<Message>(`/api/tasks/${id}/messages`, { text, ...(anchor ? { anchor } : {}) }),
+    // Chat → Do: returns the human's message at once; the agent's report arrives as a later message when the run ends.
+    instruct: (id: string, text: string) => post<Message>(`/api/tasks/${id}/instructions`, { text }),
 };
 
 // A CircleCI job gated behind a manual "Approve" click (deploy/db-reset gates) sits pending forever until a human

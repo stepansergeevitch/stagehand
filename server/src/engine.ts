@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageAnchor, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
+import { accountBrowserReady, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, openInProfile, QA_CHROME_FLAGS, setChromeTabUrl } from "./chrome-profiles.js";
@@ -410,6 +410,8 @@ const describeRepoLayout = (env: EnvRow, worktree: string | null): string => {
 
 export class Engine extends EventEmitter {
     private readonly active = new Map<string, ClaudeRun>();
+    // Ad-hoc instruction runs (Chat → Do), keyed by task: no `runs` row, so Stop finds them here.
+    private readonly instructing = new Map<string, ClaudeRun>();
     private timer: NodeJS.Timeout | null = null;
 
     constructor(
@@ -732,6 +734,12 @@ export class Engine extends EventEmitter {
     // ---------- control ----------
 
     stop(taskId: string): void {
+        const adhoc = this.instructing.get(taskId);
+        if (adhoc) {
+            // The instruction run restores the task's previous status itself when it exits.
+            adhoc.kill();
+            return;
+        }
         const run = this.latestRun(taskId);
         if (run) this.active.get(run.id)?.kill();
         this.setTaskStatus(taskId, "stopped", "stopped by user");
@@ -2034,11 +2042,11 @@ export class Engine extends EventEmitter {
         return this.db.prepare(`SELECT * FROM messages WHERE task_id = ? ORDER BY created_at`).all(taskId) as MessageRow[];
     }
 
-    private addMessage(taskId: string, role: "user" | "agent", text: string, anchor: MessageAnchor | null = null): MessageRow {
+    private addMessage(taskId: string, role: "user" | "agent", text: string, anchor: MessageAnchor | null = null, kind: MessageKind | null = null): MessageRow {
         const id = randomUUID();
         this.db
-            .prepare(`INSERT INTO messages (id, task_id, role, text, created_at, anchor) VALUES (?, ?, ?, ?, ?, ?)`)
-            .run(id, taskId, role, text, now(), anchor ? JSON.stringify(anchor) : null);
+            .prepare(`INSERT INTO messages (id, task_id, role, text, created_at, anchor, kind) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+            .run(id, taskId, role, text, now(), anchor ? JSON.stringify(anchor) : null, kind);
         const row = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id) as MessageRow;
         this.emit("message", row);
         return row;
@@ -2092,6 +2100,83 @@ export class Engine extends EventEmitter {
         const reply = outcome.result?.result?.trim() || (outcome.exitCode !== 0 ? `(could not answer: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
         return this.addMessage(taskId, "agent", reply, anchor);
     }
+
+    // Chat → Do: free-text instructions the agent carries out now, in the task's own session (so it has the task's whole
+    // history) and worktree. Unlike a chat question this run may change code — it runs with the environment's guard
+    // hook and rules, so commit/push/PR policy still holds — and unlike a stage it has no output contract: the agent's
+    // plain-text report lands in Chat when it finishes, and the task's stage/status are restored afterward. Returns as
+    // soon as the run has started (the human's message is already in Chat); Stop kills it like any other run.
+    async instruct(taskId: string, text: string): Promise<MessageRow> {
+        const instructions = text.trim();
+        if (!instructions) throw new Error("write what the agent should do first");
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run owns this session right now — instruct it once it's idle");
+        const env = this.env(task.env_id);
+        const cwd = task.worktree_path ?? env.path;
+        if (!existsSync(cwd)) throw new Error("no worktree yet — the task has not started");
+        const cd = this.configDirOf(env);
+        const usable = this.usableAccounts(cd.path);
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
+        const message = this.addMessage(taskId, "user", instructions, null, "instruction");
+        const prevStatus = task.status;
+        const prevLine = task.status_line;
+        const rules = rulesOf(cd);
+        const taskDir = this.taskDir(taskId);
+        const prompt = renderPrompt("instruct.md", {
+            instructions,
+            worktree: cwd,
+            branch: task.branch ?? "(no branch yet)",
+            taskDir,
+            repoLayout: describeRepoLayout(this.layoutOf(task, env), task.worktree_path),
+            commitRule: rules.allowCommit
+                ? `Commits are allowed; every message must match \`${rules.commitPattern}\` — ${rules.commitHint}${rules.commitForbid.length ? ` Never include ${rules.commitForbid.map((f) => `\`${f}\``).join(", ")}.` : ""}`
+                : "Commits are NOT allowed in this environment: leave changes uncommitted (staging is fine) and say so; the human commits.",
+            pushRule: rules.allowPush ? "Pushing is allowed here only when the instruction explicitly asks for it." : "Pushing is NOT allowed in this environment; never push.",
+            taskNotes: task.notes?.trim() ? `\nThe human's standing notes on this task (they still apply): ${task.notes.trim()}` : "",
+        });
+        const rulesMat = materializeRules(rules, env, task.worktree_path, this.cfg.dataDir);
+        mkdirSync(join(taskDir, "instructions"), { recursive: true });
+        const label = `Instruction · ${instructions.replace(/\s+/g, " ").slice(0, 60)}${instructions.length > 60 ? "…" : ""}`;
+        this.setTaskStatus(taskId, "running", `${label} · starting`);
+        const run = startClaude({
+            prompt,
+            cwd,
+            configDir: cd.path,
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
+            settingsPath: rulesMat.settingsPath,
+            appendSystemPrompt: rulesMat.systemPrompt,
+            resume: task.session_id,
+            maxTurns: Engine.INSTRUCT_MAX_TURNS,
+            addDirs: [taskDir],
+            eventLogPath: join(taskDir, "instructions", `${message.id}.ndjson`),
+            ...(task.model ? { model: task.model } : {}),
+        });
+        this.instructing.set(taskId, run);
+        run.on("activity", (ev: ActivityEvent) => {
+            if (ev.kind === "tool_use" || ev.kind === "text") {
+                this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`${label} · ${ev.summary}`, now(), taskId);
+                this.emit("activity", { taskId, runId: message.id, event: ev });
+                this.emitTask(taskId);
+            }
+        });
+        run.on("rate_limit", (info: RateLimitInfo) => this.recordRateLimit(acc.id, info));
+        void run.done.then((outcome: RunOutcome) => {
+            this.instructing.delete(taskId);
+            if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "instruct", stage: null }, outcome.result);
+            const killed = outcome.exitCode !== 0 && !outcome.result;
+            const reply =
+                outcome.result?.result?.trim() ||
+                (killed ? "(stopped before it finished — the worktree may hold partial changes; check Code changes)" : outcome.exitCode !== 0 ? `(did not finish: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
+            this.setTaskStatus(taskId, prevStatus, prevLine ?? "instruction finished — see Chat");
+            this.addMessage(taskId, "agent", reply, null, "instruction_result");
+            this.emitTask(taskId);
+        });
+        return message;
+    }
+
+    private static readonly INSTRUCT_MAX_TURNS = 120;
 
     // ---------- git history edits (Code changes tab: Remove / Change message / force-push) ----------
 
