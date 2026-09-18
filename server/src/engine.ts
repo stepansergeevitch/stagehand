@@ -2568,10 +2568,14 @@ export class Engine extends EventEmitter {
         const behind: string[] = [];
         const fastForwarded: string[] = [];
         const repos: string[] = [];
+        // Each checkout's HEAD before anything moves: a rebase that changes a lockfile leaves node_modules / .venv stale
+        // (setup only ran at worktree creation), so the env's setup command is re-run afterwards when one did.
+        const headsBefore = new Map<string, string>();
         for (const repo of allRepos) {
             const cwd = this.checkoutOf(task, env, repo);
             const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
             if (dirty.trim()) throw new Error(`${repoLabel(repo)} has uncommitted changes — commit or discard them first`);
+            headsBefore.set(repo, (await this.git(cwd, ["rev-parse", "HEAD"], env).catch(() => "")).trim());
             await this.git(cwd, ["fetch", "origin", base], env);
             const n = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${base}`], env).catch(() => "0")) || 0;
             if (n === 0) continue;
@@ -2592,7 +2596,8 @@ export class Engine extends EventEmitter {
         }
         if (repos.length === 0) {
             if (fastForwarded.length === 0) throw new Error(`already up to date with origin/${base}`);
-            this.addMessage(taskId, "agent", `🔀 Rebase onto origin/${base}:\n\n${fastForwarded.map((l) => `✅ ${l}`).join("\n")}\n\nNothing to replay — no agent run needed.`);
+            const resync = await this.resyncAfterHistoryChange(task, env, headsBefore);
+            this.addMessage(taskId, "agent", `🔀 Rebase onto origin/${base}:\n\n${fastForwarded.map((l) => `✅ ${l}`).join("\n")}${resync ? `\n${resync}` : ""}\n\nNothing to replay — no agent run needed.`);
             this.emitTask(taskId);
             return;
         }
@@ -2659,11 +2664,37 @@ export class Engine extends EventEmitter {
                     lines.push(`❌ ${repoLabel(repo)}: rebased, but the push failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
                 }
             }
+            const resync = await this.resyncAfterHistoryChange(task, env, headsBefore);
+            if (resync) lines.push(resync);
             this.setTaskStatus(taskId, prevStatus, prevLine ?? "rebase finished — see Chat");
             this.addMessage(taskId, "agent", `🔀 Rebase onto origin/${base}:\n\n${reply}\n\n${lines.join("\n")}`);
             if (pushed) this.pollPrSoon(taskId);
             this.emitTask(taskId);
         });
+    }
+
+    // After a rebase / reset moved a checkout: if a dependency manifest or lockfile changed between the old and new HEAD,
+    // run the env's setup command again (it is idempotent — the DualEntry one compares the lockfile sha and runs
+    // `npm ci` only when it moved) so node_modules / .venv match the code the checkout now holds. Otherwise the FE/BE
+    // start with "Can't resolve '<package>'" (INV-131 after being moved onto INV-130's frontend, 2026-09-18).
+    private async resyncAfterHistoryChange(task: TaskRow, env: EnvRow, headsBefore: Map<string, string>): Promise<string | null> {
+        if (!env.setup_command || !task.worktree_path) return null;
+        const manifests = ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "pyproject.toml", "poetry.lock", "uv.lock", "requirements.txt"];
+        const changed: string[] = [];
+        for (const [repo, before] of headsBefore) {
+            if (!before) continue;
+            const cwd = this.checkoutOf(task, env, repo);
+            const files = (await this.git(cwd, ["diff", "--name-only", before, "HEAD"], env).catch(() => "")).split("\n").filter((f) => manifests.includes(f.split("/").pop() ?? ""));
+            if (files.length) changed.push(`${repoLabel(repo)}: ${files.join(", ")}`);
+        }
+        if (changed.length === 0) return null;
+        try {
+            const out = await runWorktreeSetup(task.worktree_path, env.path, env.setup_command, parseEnvVars(env.env_vars));
+            console.error(`[setup] ${task.ticket_id} (after rebase) ${task.worktree_path}\n${out.slice(-1500)}`);
+            return `🔧 dependencies re-synced (setup command re-run: ${changed.join("; ")} changed)`;
+        } catch (e) {
+            return `❌ dependencies NOT re-synced (${changed.join("; ")} changed; setup command failed: ${String((e as Error).message ?? e).slice(0, 160)}) — run the env's setup command in the worktree by hand`;
+        }
     }
 
     // "Fix with agent" on a BE/FE that failed to start: the task's own agent (its session, full context of the branch)
