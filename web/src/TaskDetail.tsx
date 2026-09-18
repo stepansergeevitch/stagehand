@@ -1194,6 +1194,16 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
             {!editing && (
                 <>
                     <div className="kv"><b>Title</b><span>{entry.title}</span><b>Base</b><code>{pr?.base}</code></div>
+                    {entry.stackedOn && (
+                        <div className="review-box" style={{ marginTop: 6 }}>
+                            <b>Stacked PR.</b> Base <code>{pr?.base}</code> is open as <a href={entry.stackedOn.url} target="_blank" rel="noreferrer">#{entry.stackedOn.number} {entry.stackedOn.title} ↗</a> — that one merges first; GitHub retargets this PR to the trunk afterwards and the task follows. The body will open with a "Stacked on #{entry.stackedOn.number}" line.
+                        </div>
+                    )}
+                    {!entry.stackedOn && entry.stackNote && (
+                        <div className="blocked-box" style={{ marginTop: 6 }}>
+                            <b>Base has no PR.</b> {entry.stackNote}
+                        </div>
+                    )}
                     <Markdown source={entry.body} />
                 </>
             )}

@@ -230,7 +230,7 @@ export interface TaskDetail {
     // dev-server skew window (see `tickets`).
     prStates?: PrState[];
 }
-export interface PrDraftEntry { repo: string; title: string; body: string }
+export interface PrDraftEntry { repo: string; title: string; body: string; stackedOn?: { number: number; url: string; title: string } | null; stackNote?: string | null }
 // `legacy`: pr.json predates per-repo drafts and was fanned out to every repository — redraft before trusting it.
 export interface PrDraft { base: string; drafts: PrDraftEntry[]; legacy?: boolean }
 export interface PrState {

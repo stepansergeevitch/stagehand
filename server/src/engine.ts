@@ -1239,6 +1239,44 @@ export class Engine extends EventEmitter {
         return draft?.drafts.length ? draft.drafts.map((d) => d.repo) : this.prRepos(env);
     }
 
+    // The open PR whose head is `branch` in this repository — the parent of a stacked PR — or null.
+    private async openPrForBranch(cwd: string, env: EnvRow, branch: string): Promise<{ number: number; url: string; title: string } | null> {
+        const out = await this.gh(cwd, ["pr", "list", "--head", branch, "--state", "open", "--json", "number,url,title", "--limit", "1"], env).catch(() => "[]");
+        const list = JSON.parse(out || "[]") as Array<{ number: number; url: string; title: string }>;
+        return list[0] ?? null;
+    }
+
+    // A draft whose base is not the env's trunk is a stacked PR. Record on each draft the parent branch's open PR
+    // (so the reviewer sees "stacked on #n" and the body says so on creation), or a note when that branch has no PR
+    // yet — the human then opens the parent's PR first or changes the base. Runs when the draft lands and whenever
+    // the base is edited; PR creation re-checks live.
+    private async annotateStackedDrafts(taskId: string): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) return;
+        const env = this.env(task.env_id);
+        const p = join(this.taskDir(taskId), "pr.json");
+        if (!existsSync(p)) return;
+        const draft = this.readPrDraft(taskId);
+        if (!draft) return;
+        const base = draft.base?.trim() || this.baseBranchOf(task, env);
+        const stacked = base !== env.base_branch;
+        const drafts = [];
+        for (const entry of draft.drafts) {
+            const cwd = this.checkoutOf(task, env, entry.repo);
+            const parent = stacked && existsSync(cwd) ? await this.openPrForBranch(cwd, env, base) : null;
+            const stackNote = stacked && !parent ? `base branch \`${base}\` has no open pull request yet — open the parent task's PR first (this one is stacked on it), or change the base to \`${env.base_branch}\`` : null;
+            drafts.push({ ...entry, stackedOn: parent, stackNote });
+        }
+        writeFileSync(p, JSON.stringify({ base, drafts }, null, 2));
+        this.emitTask(taskId);
+    }
+
+    // The line a stacked PR's body opens with, so GitHub readers know what to merge first and what the diff is against.
+    private stackedBodyPrefix(parent: { number: number; title: string } | null, base: string, trunk: string): string {
+        if (parent) return `> **Stacked on #${parent.number}** — ${parent.title}. Merge that first; this diff is relative to \`${base}\`.\n\n`;
+        return base !== trunk ? `> Targets \`${base}\` (not \`${trunk}\`); this diff is relative to that branch.\n\n` : "";
+    }
+
     // The human edits one repository's drafted PR (title / markdown body) or the shared base before approving it.
     setPrDraft(taskId: string, patch: { repo?: string | undefined; title?: string | undefined; body?: string | undefined; base?: string | undefined }): PrDraft {
         const task = this.getTask(taskId);
@@ -1259,6 +1297,8 @@ export class Engine extends EventEmitter {
         if (patch.title !== undefined || patch.body !== undefined) this.db.prepare(`UPDATE pr_state SET approved_at = NULL, updated_at = ? WHERE task_id = ? AND repo = ? AND number IS NULL`).run(now(), taskId, repo);
         this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
         this.emitTask(taskId);
+        // A changed base may now point at a branch with (or without) an open PR: refresh the stacked-PR annotation.
+        if (patch.base !== undefined) void this.annotateStackedDrafts(taskId);
         return next;
     }
 
@@ -1394,7 +1434,12 @@ export class Engine extends EventEmitter {
             return `pushed \`${task.branch}\` — this env forbids agent PR creation: open the PR yourself (draft below); Stagehand picks it up by branch`;
         }
         try {
-            const url = await this.gh(cwd, ["pr", "create", "--base", draft?.base || this.baseBranchOf(task, env), "--head", task.branch, "--title", entry.title, "--body", entry.body, ...(env.pr_draft ? ["--draft"] : [])], env);
+            // A PR against a non-trunk base is stacked: say what it sits on (checked live — the parent PR may have been
+            // opened after the draft landed) so reviewers merge the parent first and read the diff against the right branch.
+            const prBase = draft?.base || this.baseBranchOf(task, env);
+            const parent = prBase !== env.base_branch ? await this.openPrForBranch(cwd, env, prBase) : null;
+            const body = this.stackedBodyPrefix(parent, prBase, env.base_branch) + entry.body;
+            const url = await this.gh(cwd, ["pr", "create", "--base", prBase, "--head", task.branch, "--title", entry.title, "--body", body, ...(env.pr_draft ? ["--draft"] : [])], env);
             const number = Number(url.split("/").pop());
             this.upsertPrRow(taskId, repo, { number: Number.isFinite(number) ? number : null, url, pushed_at: now(), state: "OPEN" });
             return `PR #${Number.isFinite(number) ? number : "?"} created`;
@@ -3109,6 +3154,7 @@ export class Engine extends EventEmitter {
         }
         if (def.kind === "wait") {
             this.setTaskStatus(taskId, "waiting_user", `${def.label} · needs you`);
+            if (def.stage === "pr_creation_review") void this.annotateStackedDrafts(taskId);
             return;
         }
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
