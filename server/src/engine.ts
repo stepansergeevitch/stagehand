@@ -2691,7 +2691,17 @@ export class Engine extends EventEmitter {
         try {
             const out = await runWorktreeSetup(task.worktree_path, env.path, env.setup_command, parseEnvVars(env.env_vars));
             console.error(`[setup] ${task.ticket_id} (after rebase) ${task.worktree_path}\n${out.slice(-1500)}`);
-            return `🔧 dependencies re-synced (setup command re-run: ${changed.join("; ")} changed)`;
+            // Build caches compiled against the old dependency tree must go too: Next's Turbopack dev cache (.next)
+            // built before an `npm ci` crashed the dev server with "turbo-tasks: an internal panic occurred outside
+            // the per-task panic boundary" once the FE was restarted on the new node_modules (INV-131, 2026-09-18).
+            for (const repo of headsBefore.keys()) {
+                const cwd = this.checkoutOf(task, env, repo);
+                for (const cache of [".next", join("node_modules", ".cache")]) {
+                    const p = join(cwd, cache);
+                    if (existsSync(p)) rmSync(p, { recursive: true, force: true });
+                }
+            }
+            return `🔧 dependencies re-synced (setup command re-run: ${changed.join("; ")} changed; build caches cleared)`;
         } catch (e) {
             return `❌ dependencies NOT re-synced (${changed.join("; ")} changed; setup command failed: ${String((e as Error).message ?? e).slice(0, 160)}) — run the env's setup command in the worktree by hand`;
         }
