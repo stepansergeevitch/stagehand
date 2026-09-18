@@ -201,7 +201,9 @@ export interface DiffHunk { header: string; lines: DiffLine[] }
 // `collapsed`: a generated or very large file whose hunks were left out of the response — fetch it alone (`file`) to see them.
 export interface DiffFile { path: string; status: "added" | "modified" | "deleted" | "renamed"; additions: number; deletions: number; hunks: DiffHunk[]; binary: boolean; collapsed?: boolean }
 export interface DiffGroup { label: string; shas: string[]; files: DiffFile[] }
-export interface DiffResponse { base: string; filtered: boolean; groups: DiffGroup[]; files: DiffFile[] }
+// baseDrift: sub-repos ("" = the single repo) whose origin/<base> is no longer an ancestor of HEAD — the base was
+// rewritten under the branch, so "all changes" would show the base's own commits; absent for session diffs.
+export interface DiffResponse { base: string; filtered: boolean; baseDrift?: string[]; groups: DiffGroup[]; files: DiffFile[] }
 export interface BranchCommit { sha: string; short: string; subject: string; author: string; at: string; repo: string }
 export interface LineComment { path: string; line: number; side: "new" | "old"; snippet: string; text: string }
 export interface MyTicket { id: string; title: string; priority: number | null; priorityLabel: string; status: string; url: string | null; group: string }

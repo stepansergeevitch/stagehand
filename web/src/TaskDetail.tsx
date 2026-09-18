@@ -631,6 +631,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const steps = STAGE_ORDER.filter((s, i) => i <= currentIdx && !skipped.has(s) && s !== "pr_creation_review" && !PR_STAGES.has(s) && (stepHasContent(s) || s === task.stage));
     const stepKey = (s: Stage): Stage => s;
     // Jump to the Pull request tab, optionally focusing one repository (from the header's "show more" or a Work pointer).
+    // "Rebase onto latest base" — from the header button and from the Code changes base-drift banner.
+    const startRebase = () => {
+        const base = task.base_branch ?? env?.base_branch ?? "the base branch";
+        if (confirm(`Rebase ${task.branch} onto the latest origin/${base}?\n\nThe agent resolves conflicts and re-runs checks. If the branch is on GitHub and this env allows pushes, Stagehand force-pushes it afterwards (with lease).`)) void onAction(() => api.rebase(task.id));
+    };
     const [prFocusRepo, setPrFocusRepo] = useState<string | null>(null);
     const openPrTab = (repo?: string) => {
         setPrFocusRepo(repo ?? null);
@@ -824,10 +829,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {task.status !== "running" && task.branch && task.worktree_path && (
                     <button
                         title="The task's agent rebases the branch onto the latest base, resolves conflicts and re-runs the fast checks; if the branch is on GitHub and this env allows pushes, Stagehand then force-pushes it with lease and the PR checks restart"
-                        onClick={() => {
-                            const base = task.base_branch ?? env?.base_branch ?? "the base branch";
-                            if (confirm(`Rebase ${task.branch} onto the latest origin/${base}?\n\nThe agent resolves conflicts and re-runs checks. If the branch is on GitHub and this env allows pushes, Stagehand force-pushes it afterwards (with lease).`)) void onAction(() => api.rebase(task.id));
-                        }}
+                        onClick={startRebase}
                     >
                         Rebase onto latest base
                     </button>
@@ -1046,6 +1048,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             threads={(detail.messages ?? []).filter((m) => m.anchor)}
                             canAsk={task.status !== "running"}
                             onAsk={(anchor, text) => onAction(() => api.sendMessage(task.id, text, anchor))}
+                            onRebase={task.branch ? startRebase : undefined}
                         />
                     </Card>
                 ) : <div className="empty">No branch yet.</div>

@@ -248,6 +248,25 @@ export const worktreeDiff = async (env: RepoLayout, worktree: string, vars: Vars
     return all;
 };
 
+// Checkouts whose base branch was rewritten under them: origin/<base> exists but is no longer an ancestor of HEAD
+// (the base was rebased and force-pushed — a stacked branch's parent, typically). The merge-base then falls back to
+// an older fork point and the diff/commit list shows the base's own commits as if this branch had made them; the
+// cure is a rebase onto the current base, which the UI offers instead of the misleading diff.
+export const baseDrift = async (env: RepoLayout, worktree: string, vars: Vars = {}): Promise<string[]> => {
+    const subs = envRepos(env);
+    const drifted: string[] = [];
+    for (const dir of subs.length === 0 ? [""] : subs) {
+        const checkout = dir ? join(worktree, dir) : worktree;
+        if (!existsSync(checkout)) continue;
+        const ref = `origin/${env.base_branch}`;
+        const exists = await git(checkout, ["rev-parse", "-q", "--verify", ref], vars).then(() => true, () => false);
+        if (!exists) continue;
+        const ancestor = await git(checkout, ["merge-base", "--is-ancestor", ref, "HEAD"], vars).then(() => true, () => false);
+        if (!ancestor) drifted.push(dir);
+    }
+    return drifted;
+};
+
 // ---------- per-commit view of the same changes ----------
 
 export interface BranchCommit {

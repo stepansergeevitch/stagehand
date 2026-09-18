@@ -1003,13 +1003,16 @@ app.get("/api/tasks/:id/diff", async (c) => {
     const scope = c.req.query("scope");
     const only = c.req.query("file") ?? null;
     const shape = (g: DiffGroup): DiffGroup => ({ ...g, files: collapseLargeFiles(only ? g.files.filter((f) => f.path === only) : g.files, only) });
+    // Sub-repos whose base was rewritten under the branch (empty = none): the "all changes" diff would then show the
+    // base's own commits as this task's, so the UI leads with a rebase instead.
+    const baseDrift = await engine.baseDrift(task.id);
     const groups = scope === "uncommitted" ? await engine.diffFiltered(task.id, { uncommitted: true }) : shas.length ? await engine.diffFiltered(task.id, { shas }) : null;
     if (groups) {
         const shaped = groups.map(shape);
-        return c.json({ base: env.base_branch, filtered: true, groups: shaped, files: shaped.flatMap((g) => g.files) });
+        return c.json({ base: env.base_branch, filtered: true, baseDrift, groups: shaped, files: shaped.flatMap((g) => g.files) });
     }
     const all = shape({ label: `all changes vs origin/${env.base_branch}`, shas: [], files: await engine.diff(task.id) });
-    return c.json({ base: env.base_branch, filtered: false, groups: [all], files: all.files });
+    return c.json({ base: env.base_branch, filtered: false, baseDrift, groups: [all], files: all.files });
 });
 
 app.get("/api/tasks/:id/commits", async (c) => {

@@ -9,7 +9,7 @@ import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/a
 import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, openInProfile, QA_CHROME_FLAGS, setChromeTabUrl } from "./chrome-profiles.js";
 import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stampTaskOnUsage } from "./usage.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
-import { branchCommits, commitsDiff, createWorktree, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
+import { baseDrift, branchCommits, commitsDiff, createWorktree, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -1007,6 +1007,14 @@ export class Engine extends EventEmitter {
         if (!task?.worktree_path) return [];
         const env = this.env(task.env_id);
         return worktreeDiff(this.layoutOf(task, env), task.worktree_path, parseEnvVars(env.env_vars));
+    }
+
+    // Sub-repos ("" for a single-repo env) whose base branch was rewritten under this branch — see git.baseDrift.
+    async baseDrift(taskId: string): Promise<string[]> {
+        const task = this.getTask(taskId);
+        if (!task?.worktree_path) return [];
+        const env = this.env(task.env_id);
+        return baseDrift(this.layoutOf(task, env), task.worktree_path, parseEnvVars(env.env_vars));
     }
 
     // The same changes narrowed to a set of commits, or to what is not committed yet.

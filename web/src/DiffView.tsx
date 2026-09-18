@@ -431,6 +431,7 @@ export const DiffView = ({
     repos = [],
     taskBusy = false,
     onError = () => undefined,
+    onRebase,
 }: {
     // A task's diff (with the commit manager) …
     taskId?: string;
@@ -450,6 +451,8 @@ export const DiffView = ({
     // A stage/agent run already owns the worktree — disables Change message / Remove / force-push until it's done.
     taskBusy?: boolean;
     onError?: (m: string) => void;
+    // "Rebase onto latest base" — offered in place of the diff when the base branch was rewritten under this one.
+    onRebase?: () => void;
 }) => {
     const src = useMemo(() => source ?? taskSource(taskId ?? ""), [source, taskId]);
     const [diff, setDiff] = useState<DiffResponse | null>(null);
@@ -507,11 +510,19 @@ export const DiffView = ({
     const groups = diff.groups.map((g) => ({ ...g, files: g.files.filter((f) => inRepo(f.path, repo)) })).filter((g) => g.files.length > 0);
     const adds = files.reduce((n, f) => n + f.additions, 0);
     const dels = files.reduce((n, f) => n + f.deletions, 0);
+    const drifted = (diff.baseDrift ?? []).includes(repo);
     return (
         <>
             {tabs}
             {commitPanel}
             <div className="diff">
+                {drifted && (
+                    <div className="blocked-box base-drift">
+                        <b>Base branch rewritten.</b> <span className="mono">origin/{diff.base}</span> was rebased or force-pushed since this branch was last based on it, so what you see below includes the base's own commits, not just this task's.
+                        {onRebase && !taskBusy && <> <button className="tiny" onClick={onRebase}>Rebase onto latest base</button></>}
+                        {onRebase && taskBusy && <span className="hint"> Rebase once the current run finishes.</span>}
+                    </div>
+                )}
                 <div className="diff-summary mono">
                     {picker}
                     {files.length} file{files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>

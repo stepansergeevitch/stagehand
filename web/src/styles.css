@@ -561,6 +561,8 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .chat-msg.user { background: var(--accent-soft); align-self: flex-end; }
 .chat-msg-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 2px; }
 .chat-msg .markdown { max-width: none; font-size: 13px; }
+.diff > .base-drift { margin: 0 0 10px; }
+.base-drift button.tiny { margin-left: 6px; }
 .chat-msg.instruction { border-left: 3px solid var(--accent); }
 .chat-msg.instruction_result { border-left: 3px solid var(--ok); }
 .chat-mode { display: inline-flex; gap: 0; margin: 8px 0 6px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
