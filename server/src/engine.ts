@@ -1841,7 +1841,10 @@ export class Engine extends EventEmitter {
             }
             this.setTaskStatus(taskId, status, text);
         };
-        if (all("merged")) return set("done", "done", `merged · ${rows.map((r) => r.url).filter(Boolean).join(" ")}`);
+        if (all("merged")) {
+            if (cur.stage !== "done") this.onParentMerged(cur, env);
+            return set("done", "done", `merged · ${rows.map((r) => r.url).filter(Boolean).join(" ")}`);
+        }
         if (kinds.has("failed")) return set("pr_waiting", "blocked", `PR Waiting · ${line} — click Fix CI on the failing PR, or fix it yourself`);
         if (kinds.has("none") || kinds.has("manual") || kinds.has("pending")) return set("pr_waiting", "idle", `PR Waiting · ${line}`);
         if (summaries.every((s) => s.kind === "closed" || s.kind === "merged")) return set("pr_waiting", "stopped", `PR closed without merge · ${line}`);
@@ -2928,6 +2931,23 @@ export class Engine extends EventEmitter {
             .prepare(`SELECT id FROM tasks WHERE env_id = ? AND base_branch = ? AND stage != 'done' AND branch IS NOT NULL AND worktree_path IS NOT NULL`)
             .all(env.id, branch) as Array<{ id: string }>;
         for (const c of children) this.pendingRebase.set(c.id, `the base branch \`${branch}\` was rewritten`);
+        if (children.length) this.processPendingRebases();
+    }
+
+    // A task's PR(s) merged: every task stacked on its branch (base_branch = that branch) now belongs on the trunk. A
+    // child WITH a PR gets the same from GitHub's retarget (pollPr) — this covers children that have no PR yet, whose
+    // base branch is about to disappear from origin (INV-132 on INV-131, 2026-09-20).
+    private onParentMerged(parent: TaskRow, env: EnvRow): void {
+        if (!parent.branch) return;
+        const children = this.db
+            .prepare(`SELECT * FROM tasks WHERE env_id = ? AND base_branch = ? AND stage != 'done'`)
+            .all(env.id, parent.branch) as TaskRow[];
+        for (const child of children) {
+            this.db.prepare(`UPDATE tasks SET base_branch = NULL, updated_at = ? WHERE id = ?`).run(now(), child.id);
+            this.addAgentNote(child.id, `${parent.ticket_id}'s branch \`${parent.branch}\` merged into \`${env.base_branch}\` — the task now compares against \`${env.base_branch}\`; rebasing the branch onto it`);
+            this.emitTask(child.id);
+            if (child.branch && child.worktree_path) this.pendingRebase.set(child.id, `${parent.ticket_id} merged into \`${env.base_branch}\``);
+        }
         if (children.length) this.processPendingRebases();
     }
 
