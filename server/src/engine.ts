@@ -2069,6 +2069,13 @@ export class Engine extends EventEmitter {
         if (trimmed) this.addMessage(taskId, "agent", trimmed);
     }
 
+    // A note from the service layer (a BE/FE restarted on its own after its pane vanished) — same Chat timeline.
+    serviceNotice(taskId: string, text: string): void {
+        if (!this.getTask(taskId)) return;
+        this.addAgentNote(taskId, text);
+        this.emitTask(taskId);
+    }
+
     // Asks the task's agent a question in its own session (full context: everything it has done on this task so far).
     // Same constraint as the terminal: a headless stage run and an ad-hoc chat turn cannot share the session at once.
     // With an anchor, the question is about one line of the task's diff (asked from Code changes): the prompt names the

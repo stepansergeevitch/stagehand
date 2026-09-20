@@ -40,6 +40,7 @@ migrateAccountsToConfigDirs(db, { mainConfigDir: cfg.mainConfigDir, scratchAccou
 const services = new Services(db, cfg);
 services.startWatch();
 const engine = new Engine(db, cfg, services);
+services.onNotice = (taskId, text) => engine.serviceNotice(taskId, text);
 const sessions = new Sessions(db, cfg, engine);
 
 const app = new Hono();

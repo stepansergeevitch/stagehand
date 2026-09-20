@@ -84,8 +84,14 @@ export class Services {
         if (listening) return { ...row, running: true, state: "running" };
         const kind = row.kind.toUpperCase();
         let error: string | null = null;
-        if (!(await sessionExists(row.tmux))) error = `its tmux session ${row.tmux} is gone — the host or tmux server restarted, or it was killed by hand`;
-        else {
+        if (!(await sessionExists(row.tmux))) {
+            // Not a defect in the app: the pane itself vanished (tmux/host restart, killed by hand, memory pressure).
+            // Start it again ourselves — the user's ask (2026-09-20): "this sometimes happens to BE/FE servers locally …
+            // can we handle this automatically?" — within a budget, so a pane that keeps dying still surfaces as failed.
+            const recovered = await this.recoverVanished(row);
+            if (typeof recovered !== "string") return { ...recovered, running: false, state: "starting" };
+            error = recovered;
+        } else {
             const exited = currentRunLog(row).map((l) => exitMarker(row.kind).exec(l)).find((m) => m);
             if (exited) error = `the ${kind} command exited (status ${exited[1]}) without leaving anything listening on port ${row.port}`;
             else if (Date.now() - Date.parse(row.started_at) > START_TIMEOUT_MS[row.kind]) error = `nothing is listening on port ${row.port} after ${Math.round(START_TIMEOUT_MS[row.kind] / 60_000)} min`;
@@ -112,12 +118,46 @@ export class Services {
         }
     }
 
-    // Records failures even when nobody is looking at the task page (the UI polls only while it is open).
+    // Records failures (and recovers vanished panes) even when nobody is looking at the task page. BE rows first: a
+    // vanished FE is restarted with its BE's URL, which must be the live one.
     startWatch(intervalMs = 15_000): void {
         setInterval(() => {
-            const rows = this.db.prepare(`SELECT * FROM services WHERE stopped_at IS NULL AND failed_at IS NULL`).all() as ServiceRow[];
-            for (const r of rows) void this.probe(r).catch(() => undefined);
+            const rows = this.db.prepare(`SELECT * FROM services WHERE stopped_at IS NULL AND failed_at IS NULL ORDER BY CASE kind WHEN 'be' THEN 0 ELSE 1 END`).all() as ServiceRow[];
+            void (async () => {
+                for (const r of rows) await this.probe(r).catch(() => undefined);
+            })();
         }, intervalMs).unref();
+    }
+
+    // Called with a one-line notice for the task's Chat when a service was restarted (or given up on) on its own.
+    onNotice: ((taskId: string, text: string) => void) | null = null;
+
+    private static readonly AUTO_RESTART_MAX = 3;
+    private static readonly AUTO_RESTART_WINDOW_MS = 60 * 60_000;
+
+    // The pane of `row` is gone. Within the budget (AUTO_RESTART_MAX starts per task+kind per hour), close the row and
+    // start the same service again on the same port; returns the new row — or the error text to record on the old row
+    // when the budget is spent or the start itself fails.
+    private async recoverVanished(row: ServiceRow): Promise<ServiceRow | string> {
+        const gone = `its tmux session ${row.tmux} is gone — the host or tmux server restarted, or it was killed by hand`;
+        const since = new Date(Date.now() - Services.AUTO_RESTART_WINDOW_MS).toISOString();
+        const recent = (this.db.prepare(`SELECT COUNT(*) AS n FROM services WHERE task_id = ? AND kind = ? AND auto_restart = 1 AND started_at > ?`).get(row.task_id, row.kind, since) as { n: number }).n;
+        if (recent >= Services.AUTO_RESTART_MAX) return `${gone}; restarted automatically ${recent} times in the last hour and it keeps vanishing`;
+        const task = this.db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(row.task_id) as TaskRow | undefined;
+        const env = task ? (this.db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow | undefined) : undefined;
+        if (!task || !env) return gone;
+        // Close the vanished row first so start() allocates a fresh one (pickPort keeps the port); reopen it if the
+        // start fails so the failure is recorded on a visible row.
+        this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), row.id);
+        try {
+            const fresh = await this.start(task, env, row.kind);
+            this.db.prepare(`UPDATE services SET auto_restart = 1 WHERE id = ?`).run(fresh.id);
+            this.onNotice?.(row.task_id, `♻️ The ${row.kind.toUpperCase()}'s tmux session ${row.tmux} had vanished (host/tmux restart, or killed by hand) — restarted it on port ${fresh.port} (${recent + 1}/${Services.AUTO_RESTART_MAX} automatic restarts this hour).`);
+            return { ...fresh, auto_restart: 1 };
+        } catch (e) {
+            this.db.prepare(`UPDATE services SET stopped_at = NULL WHERE id = ?`).run(row.id);
+            return `${gone}; the automatic restart failed: ${String((e as Error).message ?? e).slice(0, 200)}`;
+        }
     }
 
     private async pickPort(kind: ServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
@@ -148,8 +188,11 @@ export class Services {
         if (!template) throw new Error(`env "${env.name}" has no ${kind.toUpperCase()} command configured`);
         const existing = this.get(task.id, kind);
         if (existing) {
-            // A live, healthy (or still starting) row is reused; a failed one is torn down and started over.
+            // A live, healthy (or still starting) row is reused; a failed one is torn down and started over. The probe
+            // may itself have replaced a vanished row with a fresh start — then that fresh row is the one to return.
             const probed = await this.probe(existing);
+            const current = this.get(task.id, kind);
+            if (current && current.id !== existing.id) return current;
             if (probed.state !== "failed" && (await sessionExists(existing.tmux))) return existing;
             await killSession(existing.tmux);
             this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), existing.id);

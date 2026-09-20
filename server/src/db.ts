@@ -640,6 +640,9 @@ const MIGRATIONS: Array<[string, string]> = [
     // until it is stopped or restarted, so the human sees why and can hand it to the agent.
     ["services.failed_at", `ALTER TABLE services ADD COLUMN failed_at TEXT`],
     ["services.error", `ALTER TABLE services ADD COLUMN error TEXT`],
+    // Rows Stagehand started on its own after the previous start's tmux session vanished (host/tmux restart, killed by
+    // hand) — counted per task+kind to cap the automatic restarts.
+    ["services.auto_restart", `ALTER TABLE services ADD COLUMN auto_restart INTEGER NOT NULL DEFAULT 0`],
     // A chat message tied to one diff line (path/side/line/snippet as JSON) — a question asked from Code changes.
     ["messages.anchor", `ALTER TABLE messages ADD COLUMN anchor TEXT`],
     // "instruction" / "instruction_result": a Chat message that told the agent to do something, and its report.
@@ -701,6 +704,8 @@ export interface ServiceRow {
     stopped_at: string | null;
     failed_at: string | null;
     error: string | null;
+    // 1 when Stagehand started this row itself after the previous one's tmux session vanished (see Services.probe).
+    auto_restart: number;
 }
 
 export const openDb = (dataDir: string): DB => {
