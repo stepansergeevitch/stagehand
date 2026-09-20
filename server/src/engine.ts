@@ -759,7 +759,12 @@ export class Engine extends EventEmitter {
             return;
         }
         const last = this.latestRun(taskId);
-        if (last && last.stage === task.stage && this.completeFromDisk(taskId, last.id, task.stage)) return;
+        // Only an output file the failed run itself wrote can complete the stage from disk: an older one belongs to a
+        // previous attempt (INV-132's Manual QA, 2026-09-20 — the first attempt's after.json, 2 scenarios blocked, was
+        // taken as the result of a later run that died on a network error, and the task went blocked without a run).
+        const outputFile = STAGE_DEFS[task.stage]?.outputFile;
+        const fresh = !outputFile || (last ? this.outputWrittenDuringRun(taskId, outputFile, last.id) : false);
+        if (last && last.stage === task.stage && fresh && this.completeFromDisk(taskId, last.id, task.stage)) return;
         this.dispatch(taskId, task.stage, { notes: "Previous attempt did not complete. Continue from the current state of the task directory." });
     }
 
