@@ -200,6 +200,13 @@ export class Services {
 
         const be = kind === "fe" ? this.get(task.id, "be") : undefined;
         if (kind === "fe" && (!be || be.failed_at)) throw new Error(be ? "the BE failed to start — fix or restart it first; the FE command is linked to its URL" : "start the BE first — the FE command is linked to its URL");
+        // The FE command needs the BE live from its first second (DualEntry's runs `openapi-ts` against the BE's
+        // /api/openapi.json before `next dev`): an FE started while the BE still boots dies with "fetch failed"
+        // (INV-132, 2026-09-20). Wait for the BE to listen, within its own start budget.
+        if (kind === "fe" && be && !(await portListening(be.port))) {
+            const r = await this.waitUntilUp(be);
+            if (!r.ok) throw new Error(`the BE is not up (${r.error}) — the FE command needs its URL live`);
+        }
 
         const port = await this.pickPort(kind, kind === "be" ? env.be_port : env.fe_port, task);
         const urlTemplate = (kind === "be" ? env.be_url_template : env.fe_url_template) ?? "http://localhost:{{port}}";
