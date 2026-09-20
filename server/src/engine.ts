@@ -1778,7 +1778,12 @@ export class Engine extends EventEmitter {
         const knownBase = this.baseBranchOf(task, env);
         if (pr.state === "OPEN" && pr.baseRefName && pr.baseRefName !== knownBase) {
             this.db.prepare(`UPDATE tasks SET base_branch = ?, updated_at = ? WHERE id = ?`).run(pr.baseRefName === env.base_branch ? null : pr.baseRefName, now(), task.id);
-            this.addAgentNote(task.id, `${repoLabel(repo)}: GitHub moved PR #${number}'s base from \`${knownBase}\` to \`${pr.baseRefName}\` (the branch it was stacked on was merged) — the task now compares against \`${pr.baseRefName}\``);
+            this.addAgentNote(task.id, `${repoLabel(repo)}: GitHub moved PR #${number}'s base from \`${knownBase}\` to \`${pr.baseRefName}\` (the branch it was stacked on was merged) — the task now compares against \`${pr.baseRefName}\`; rebasing the branch onto it so the PR stops carrying the merged parent's commits`);
+            // The branch still carries the merged parent's commits (by content already on the new base, or as a squash):
+            // rebase onto the new base now — plain first, agent on conflict — and force-push, before anything else pushes
+            // this branch (INV-131, 2026-09-20: a pr_fix push after the retarget replayed the stale history onto the remote).
+            this.pendingRebase.set(task.id, `GitHub moved PR #${number}'s base to \`${pr.baseRefName}\` after the parent branch merged`);
+            this.processPendingRebases();
         }
         this.upsertPrRow(task.id, repo, { url: pr.url, checks_json: JSON.stringify(pr.statusCheckRollup ?? []), review_decision: pr.reviewDecision ?? null, merged_at: pr.mergedAt ?? null, state: pr.state ?? null });
         return true;
@@ -2744,7 +2749,7 @@ export class Engine extends EventEmitter {
     // base with `--onto`, so a base that was rewritten under the branch (a stacked parent force-pushed) replays only
     // this task's work. The agent is brought in only for a checkout where that conflicts — the user's rule (2026-09-18):
     // "agentic rebase takes a lot of time. Let's do agentic only if simple git rebase is not clean".
-    async startRebase(taskId: string, opts: { auto?: boolean } = {}): Promise<void> {
+    async startRebase(taskId: string, opts: { auto?: string } = {}): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
@@ -2785,7 +2790,7 @@ export class Engine extends EventEmitter {
             behind.push(`${repoLabel(repo)}: ${n} commit(s)`);
             repos.push(repo);
         }
-        const header = opts.auto ? `🔀 Auto-rebase onto origin/${base} (the base branch was rewritten):` : `🔀 Rebase onto origin/${base}:`;
+        const header = opts.auto ? `🔀 Auto-rebase onto origin/${base} (${opts.auto}):` : `🔀 Rebase onto origin/${base}:`;
         if (repos.length === 0) {
             if (fastForwarded.length === 0) throw new Error(`already up to date with origin/${base}`);
             const resync = await this.resyncAfterHistoryChange(task, env, headsBefore);
@@ -2916,17 +2921,18 @@ export class Engine extends EventEmitter {
 
     // Tasks whose base is this branch (stacked on it) need a rebase after its history was force-pushed: queued here,
     // started at once when idle, otherwise by the scheduler tick once their current run is over.
-    private readonly pendingRebase = new Set<string>();
+    // task id → why (shown in the Chat header of the rebase it triggers)
+    private readonly pendingRebase = new Map<string, string>();
     private onBranchRewritten(env: EnvRow, branch: string): void {
         const children = this.db
             .prepare(`SELECT id FROM tasks WHERE env_id = ? AND base_branch = ? AND stage != 'done' AND branch IS NOT NULL AND worktree_path IS NOT NULL`)
             .all(env.id, branch) as Array<{ id: string }>;
-        for (const c of children) this.pendingRebase.add(c.id);
+        for (const c of children) this.pendingRebase.set(c.id, `the base branch \`${branch}\` was rewritten`);
         if (children.length) this.processPendingRebases();
     }
 
     private processPendingRebases(): void {
-        for (const id of [...this.pendingRebase]) {
+        for (const [id, reason] of [...this.pendingRebase]) {
             const task = this.getTask(id);
             if (!task) {
                 this.pendingRebase.delete(id);
@@ -2934,7 +2940,7 @@ export class Engine extends EventEmitter {
             }
             if (task.status === "running" || this.instructing.has(id)) continue;
             this.pendingRebase.delete(id);
-            void this.startRebase(id, { auto: true }).catch((e) => {
+            void this.startRebase(id, { auto: reason }).catch((e) => {
                 const msg = String((e as Error).message ?? e);
                 if (/already up to date/.test(msg)) return;
                 this.addMessage(id, "agent", `🔀 Auto-rebase onto origin/${task.base_branch ?? ""} not started: ${msg}`);
