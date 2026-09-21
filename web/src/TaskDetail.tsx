@@ -643,10 +643,14 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const stepKey = (s: Stage): Stage => s;
     // Jump to the Pull request tab, optionally focusing one repository (from the header's "show more" or a Work pointer).
     // "Rebase onto latest base" — from the header button and from the Code changes base-drift banner.
-    const startRebase = () => {
+    // Every repository by default; `repos` narrows it to the ticked ones (multi-repo envs).
+    const startRebase = (repos?: string[]) => {
         const base = baseLabel(task, env) ?? env?.base_branch ?? "the base branch";
-        if (confirm(`Rebase ${task.branch} onto the latest origin/${base}?\n\nThe agent resolves conflicts and re-runs checks. If the branch is on GitHub and this env allows pushes, Stagehand force-pushes it afterwards (with lease).`)) void onAction(() => api.rebase(task.id));
+        const scope = repos?.length ? ` (${repos.map(repoName).join(", ")} only)` : "";
+        if (confirm(`Rebase ${task.branch}${scope} onto the latest base (${base})?\n\nA plain git rebase first; the agent resolves conflicts and re-runs checks only where needed. If the branch is on GitHub and this env allows pushes, Stagehand force-pushes it afterwards (with lease).`)) void onAction(() => api.rebase(task.id, repos));
     };
+    const envRepoList = envRepos(env);
+    const [rebasePick, setRebasePick] = useState<string[]>([]);
     const [prFocusRepo, setPrFocusRepo] = useState<string | null>(null);
     const openPrTab = (repo?: string) => {
         setPrFocusRepo(repo ?? null);
@@ -838,12 +842,27 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {terminal ? <button onClick={onCloseTerminal}>Close terminal</button> : <button disabled={task.status === "running"} onClick={onOpenTerminal}>Open terminal</button>}
                 {task.status !== "running" && currentIdx > 0 && <button onClick={() => setReturning((v) => !v)} title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)">{returning ? "Cancel return" : "Return to a stage…"}</button>}
                 {task.status !== "running" && task.branch && task.worktree_path && (
-                    <button
-                        title="A plain git rebase of this task's own commits onto the latest base first (seconds); the task's agent takes over only where that conflicts. If the branch is on GitHub and this env allows pushes, Stagehand then force-pushes it with lease, the PR checks restart, and tasks stacked on this branch are rebased in turn"
-                        onClick={startRebase}
-                    >
-                        Rebase onto latest base
-                    </button>
+                    <span className="rebase-group">
+                        <button
+                            title="Every repository: a plain git rebase of this task's own commits onto the latest base first (seconds); the task's agent takes over only where that conflicts. If the branch is on GitHub and this env allows pushes, Stagehand then force-pushes it with lease, the PR checks restart, and tasks stacked on this branch are rebased in turn"
+                            onClick={() => startRebase()}
+                        >
+                            Rebase onto latest base
+                        </button>
+                        {envRepoList.length > 1 && (
+                            <details className="rebase-pick">
+                                <summary title="Rebase only some repositories">▾</summary>
+                                <div className="rebase-pick-menu">
+                                    {envRepoList.map((r) => (
+                                        <label key={r} className="inline">
+                                            <input type="checkbox" checked={rebasePick.includes(r)} onChange={(e) => setRebasePick((p) => (e.target.checked ? [...p, r] : p.filter((x) => x !== r)))} /> {repoName(r)}
+                                        </label>
+                                    ))}
+                                    <button className="tiny" disabled={rebasePick.length === 0} onClick={() => startRebase(rebasePick)}>Rebase {rebasePick.length ? rebasePick.map(repoName).join(" + ") : "selected"}</button>
+                                </div>
+                            </details>
+                        )}
+                    </span>
                 )}
                 {task.status !== "running" && task.worktree_path && (
                     <button

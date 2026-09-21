@@ -568,6 +568,14 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .branch-picker input { width: 100%; font-family: var(--mono); }
 .branch-picker-hint { font-size: 11px; }
 .branch-line { display: flex; gap: 6px; align-items: baseline; margin-bottom: 2px; }
+/* Rebase button + repository picker (multi-repo envs) */
+.rebase-group { display: inline-flex; align-items: stretch; position: relative; }
+.rebase-group > button { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.rebase-pick { position: relative; }
+.rebase-pick > summary { list-style: none; cursor: pointer; padding: 0 8px; border: 1px solid var(--line); border-left: 0; border-radius: 0 6px 6px 0; height: 100%; display: flex; align-items: center; font-size: 12px; background: var(--panel); }
+.rebase-pick > summary::-webkit-details-marker { display: none; }
+.rebase-pick-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; min-width: 180px; box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+.rebase-pick-menu label.inline { white-space: nowrap; }
 /* task list: multi-select for bulk delete */
 .row { grid-template-columns: 14px 18px 1fr auto auto; }
 .row .pick { width: 14px; height: 14px; margin: 0; align-self: center; }

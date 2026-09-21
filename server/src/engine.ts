@@ -2780,7 +2780,8 @@ export class Engine extends EventEmitter {
     // base with `--onto`, so a base that was rewritten under the branch (a stacked parent force-pushed) replays only
     // this task's work. The agent is brought in only for a checkout where that conflicts — the user's rule (2026-09-18):
     // "agentic rebase takes a lot of time. Let's do agentic only if simple git rebase is not clean".
-    async startRebase(taskId: string, opts: { auto?: string } = {}): Promise<void> {
+    // `repos`: only these repository directories (default: every repository of the task).
+    async startRebase(taskId: string, opts: { auto?: string; repos?: string[] } = {}): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
@@ -2793,7 +2794,9 @@ export class Engine extends EventEmitter {
         const usable = this.usableAccounts(cd.path);
         const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
-        const allRepos = this.prRepos(env).filter((r) => existsSync(this.checkoutOf(task, env, r)));
+        const wanted = opts.repos?.length ? new Set(opts.repos) : null;
+        const allRepos = this.prRepos(env).filter((r) => existsSync(this.checkoutOf(task, env, r)) && (!wanted || wanted.has(r)));
+        if (wanted && allRepos.length === 0) throw new Error(`none of the requested repositories (${[...wanted].map(repoLabel).join(", ")}) has a checkout in this task`);
         const behind: string[] = [];
         const fastForwarded: string[] = [];
         const repos: string[] = [];
