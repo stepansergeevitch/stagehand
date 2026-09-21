@@ -1812,7 +1812,7 @@ export class Engine extends EventEmitter {
             // The branch still carries the merged parent's commits (by content already on the new base, or as a squash):
             // rebase onto the new base now — plain first, agent on conflict — and force-push, before anything else pushes
             // this branch (INV-131, 2026-09-20: a pr_fix push after the retarget replayed the stale history onto the remote).
-            this.pendingRebase.set(task.id, `GitHub moved PR #${number}'s base to \`${pr.baseRefName}\` after the parent branch merged`);
+            this.queueRebase(task.id, `GitHub moved PR #${number}'s base to \`${pr.baseRefName}\` after the parent branch merged`, [repo]);
             this.processPendingRebases();
         }
         this.upsertPrRow(task.id, repo, { url: pr.url, checks_json: JSON.stringify(pr.statusCheckRollup ?? []), review_decision: pr.reviewDecision ?? null, merged_at: pr.mergedAt ?? null, state: pr.state ?? null });
@@ -1862,6 +1862,9 @@ export class Engine extends EventEmitter {
         const line = summaries.map((s) => `${repoPrefix(s.repo, repos)}${s.text}`).join(" · ");
         const kinds = new Set(summaries.map((s) => s.kind));
         const all = (k: string) => summaries.every((s) => s.kind === k);
+        // A repository whose PR merged releases the children stacked on it in that repository right away — the other
+        // repositories' PRs may stay open for days (INV-132, 2026-09-21: backend merged, frontend still in review).
+        for (const s of summaries) if (s.kind === "merged") this.onParentRepoMerged(cur, env, s.repo);
         // Only re-announce a blocked/idle line when it actually changed, so a still-red PR does not re-notify every poll.
         const set = (stage: Stage, status: TaskStatus, text: string): void => {
             if (cur.stage !== stage) this.setStage(taskId, stage);
@@ -3105,8 +3108,19 @@ export class Engine extends EventEmitter {
 
     // Tasks whose base is this branch (stacked on it) need a rebase after its history was force-pushed: queued here,
     // started at once when idle, otherwise by the scheduler tick once their current run is over.
-    // task id → why (shown in the Chat header of the rebase it triggers)
-    private readonly pendingRebase = new Map<string, string>();
+    // task id → why (shown in the Chat header of the rebase it triggers) and which repositories (undefined = all).
+    private readonly pendingRebase = new Map<string, { reason: string; repos?: string[] | undefined }>();
+    // Queue a rebase for some repositories of a task; a second request for the same task widens the set (any request
+    // without a repo list means every repository).
+    private queueRebase(taskId: string, reason: string, repos?: string[]): void {
+        const cur = this.pendingRebase.get(taskId);
+        if (!cur) {
+            this.pendingRebase.set(taskId, { reason, repos: repos ? [...repos] : undefined });
+            return;
+        }
+        const all = !cur.repos || !repos;
+        this.pendingRebase.set(taskId, { reason: cur.reason === reason ? reason : `${cur.reason}; ${reason}`, repos: all ? undefined : [...new Set([...cur.repos!, ...repos!])] });
+    }
     // Tasks of `env` with at least one repository stacked on `branch` (base_branch may be a per-repo map).
     private childrenOf(env: EnvRow, branch: string): TaskRow[] {
         const candidates = this.db.prepare(`SELECT * FROM tasks WHERE env_id = ? AND base_branch IS NOT NULL AND stage != 'done'`).all(env.id) as TaskRow[];
@@ -3115,7 +3129,24 @@ export class Engine extends EventEmitter {
 
     private onBranchRewritten(env: EnvRow, branch: string): void {
         const children = this.childrenOf(env, branch).filter((t) => t.branch && t.worktree_path);
-        for (const c of children) this.pendingRebase.set(c.id, `the base branch \`${branch}\` was rewritten`);
+        for (const c of children) this.queueRebase(c.id, `the base branch \`${branch}\` was rewritten`, this.basedOn(c, env, branch));
+        if (children.length) this.processPendingRebases();
+    }
+
+    // One repository's PR of a parent merged (a multi-repo parent's PRs merge one at a time): every child stacked on
+    // the parent's branch IN THAT REPOSITORY moves that repository to the trunk and rebases only that checkout; its
+    // other repositories keep waiting for their own PR. Idempotent — a child already moved is not stacked any more.
+    private onParentRepoMerged(parent: TaskRow, env: EnvRow, repo: string): void {
+        if (!parent.branch) return;
+        const children = this.childrenOf(env, parent.branch).filter((c) => this.basedOn(c, env, parent.branch!).includes(repo));
+        for (const child of children) {
+            const bases = { ...this.baseBranchesOf(child, env), [repo]: env.base_branch };
+            this.db.prepare(`UPDATE tasks SET base_branch = ?, updated_at = ? WHERE id = ?`).run(normalizeBaseBranch(bases, this.prRepos(env), env.base_branch), now(), child.id);
+            const where = repo ? ` (${repoLabel(repo)})` : "";
+            this.addAgentNote(child.id, `${parent.ticket_id}'s branch \`${parent.branch}\` merged into \`${env.base_branch}\`${where} — the task now compares against \`${env.base_branch}\` there; rebasing that checkout onto it`);
+            this.emitTask(child.id);
+            if (child.branch && child.worktree_path) this.queueRebase(child.id, `${parent.ticket_id}${where} merged into \`${env.base_branch}\``, [repo]);
+        }
         if (children.length) this.processPendingRebases();
     }
 
@@ -3132,13 +3163,13 @@ export class Engine extends EventEmitter {
             this.db.prepare(`UPDATE tasks SET base_branch = ?, updated_at = ? WHERE id = ?`).run(normalizeBaseBranch(bases, this.prRepos(env), env.base_branch), now(), child.id);
             this.addAgentNote(child.id, `${parent.ticket_id}'s branch \`${parent.branch}\` merged into \`${env.base_branch}\` — the task now compares against \`${env.base_branch}\`; rebasing the branch onto it`);
             this.emitTask(child.id);
-            if (child.branch && child.worktree_path) this.pendingRebase.set(child.id, `${parent.ticket_id} merged into \`${env.base_branch}\``);
+            if (child.branch && child.worktree_path) this.queueRebase(child.id, `${parent.ticket_id} merged into \`${env.base_branch}\``, this.basedOn(child, env, parent.branch!));
         }
         if (children.length) this.processPendingRebases();
     }
 
     private processPendingRebases(): void {
-        for (const [id, reason] of [...this.pendingRebase]) {
+        for (const [id, { reason, repos }] of [...this.pendingRebase]) {
             const task = this.getTask(id);
             if (!task) {
                 this.pendingRebase.delete(id);
@@ -3146,7 +3177,7 @@ export class Engine extends EventEmitter {
             }
             if (task.status === "running" || this.instructing.has(id)) continue;
             this.pendingRebase.delete(id);
-            void this.startRebase(id, { auto: reason }).catch((e) => {
+            void this.startRebase(id, { auto: reason, ...(repos ? { repos } : {}) }).catch((e) => {
                 const msg = String((e as Error).message ?? e);
                 if (/already up to date/.test(msg)) return;
                 this.addMessage(id, "agent", `🔀 Auto-rebase onto the latest base (${this.baseBranchLabel(task, this.env(task.env_id))}) not started: ${msg}`);
