@@ -492,6 +492,17 @@ const PrRepoRow = ({ detail, repo, repos, onAction, onOpenInTab }: { detail: Tas
                     <button className="tiny" title="Push this repository's branch and open its PR now (uses the approved draft; needs the env to allow pushes / PR creation, or a PR opened by hand is picked up by branch)" onClick={() => onAction(() => api.createApprovedPrs(task.id))}>Push & open now</button>
                 )}
             </div>
+            {/* This repository's branch and the base it targets, right under its PR line (grouped per repository). */}
+            {task.branch && (() => {
+                const bases = parseBaseBranch(task.base_branch);
+                const base = typeof bases === "string" ? bases : bases?.[repo];
+                return (
+                    <div className="branch-line field-hint">
+                        <code className="small">⎇ {task.branch}</code>
+                        {base && <code className="small" title="base branch (stacked PR) — the branch this repository diffs against and its PR targets"> → {base}</code>}
+                    </div>
+                );
+            })()}
             {row?.url && !row.merged_at && live.length > 0 && (
                 <div className="widget-checks">
                     <ChecksList checks={live.slice(0, HEADER_CHECKS_LIMIT)} compact />
@@ -537,18 +548,6 @@ const PrWidget = ({ detail, onAction, onOpenInTab }: { detail: TaskDetail; onAct
             {repos.map((repo) => <PrRepoRow key={repo} detail={detail} repo={repo} repos={repos} onAction={onAction} onOpenInTab={onOpenInTab} />)}
             {repos.length > 0 && (
                 <div className="field-hint">
-                    {/* One branch line per repository: each repo can target its own base (stacked per repo). */}
-                    {task.branch && repos.map((repo) => {
-                        const bases = parseBaseBranch(task.base_branch);
-                        const base = typeof bases === "string" ? bases : bases?.[repo];
-                        return (
-                            <div key={repo} className="branch-line">
-                                {repos.length > 1 && <RepoChip repo={repo} repos={repos} />}
-                                <code className="small">⎇ {task.branch}</code>
-                                {base && <code className="small" title="base branch (stacked PR) — the branch this repository diffs against and its PR targets"> → {base}</code>}
-                            </div>
-                        );
-                    })}
                     {lastPoll ? `last poll ${new Date(lastPoll).toLocaleTimeString()} · ` : ""}polls every 2 min
                 </div>
             )}
@@ -1338,6 +1337,16 @@ const PrPanel = ({ detail, onAction, focusRepo }: { detail: TaskDetail; onAction
                 </div>
             )}
             <Card title={<><RepoChip repo={repo} repos={repos} /> Pull request</>} badge={<span className={`chip ${o.cls}`}>{o.text}</span>}>
+                {task.branch && (() => {
+                    const bases = parseBaseBranch(task.base_branch);
+                    const base = typeof bases === "string" ? bases : bases?.[repo];
+                    return (
+                        <div className="branch-line field-hint">
+                            <code className="small">⎇ {task.branch}</code>
+                            {base && <code className="small" title="base branch — the branch this repository's PR targets"> → {base}</code>}
+                        </div>
+                    );
+                })()}
                 {!row?.url && <p className="quiet">{row?.approved_at ? "Approved; not on GitHub yet — see the status line for what is left to do by hand." : "Not created yet."}</p>}
                 {row?.url && (
                     <div className="kv">
