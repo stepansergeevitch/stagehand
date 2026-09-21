@@ -20,6 +20,10 @@ export const QaScenario = z.object({
     kind: z.enum(["browser", "api"]).default("browser"),
     url: z.string(),
     persona: z.string().default("default user"),
+    // Reset steps (`shell:` / `sql:` only) the orchestrator runs BEFORE the seeds of every pass: delete this scenario's
+    // fixture set by natural key (documents first, then master data) so a partial earlier pass never leaves records
+    // that make a seed or step collide. Required whenever a seed creates records.
+    teardown: z.array(z.string()).default([]),
     // Data the journey needs, as concrete steps the runner performs itself before the first step (UI actions, API calls
     // with payloads, SQL, or a repo script) — never a request for a human to prepare something. Empty = nothing to seed.
     seed: z.array(z.string()).default([]),

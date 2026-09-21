@@ -21,6 +21,7 @@ import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderTi
 import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { applyApprovedStepFixes } from "./qa-fixes.js";
+import { fillQaVars, newQaPassId, qaContractProblems, type QaVars } from "./qa-vars.js";
 import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
 
 // A comment anchored to one line of the review diff. `line` is the new-file line for add/context lines, the old-file line for deletions.
@@ -2461,7 +2462,9 @@ export class Engine extends EventEmitter {
                       `4. If a page shows a connection error, retry once after 5 seconds, then record \`blocked\` with the error.`,
                   ].join("\n")
                 : `1. Every scenario below is an **API scenario**: this pass needs no browser — do NOT load or call any \`mcp__claude-in-chrome__*\` tool. The backend answers at \`${beUrl || "(see the BE log for its port)"}\`, the frontend at \`${appUrl}\`; the commands below already carry the right host and port.`;
-            const fill = (s: string): string => s.replace(/\{\{beUrl\}\}/g, beUrl).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{appUrl\}\}/g, appUrl);
+            const qaVars: QaVars = { beUrl, feUrl: fe?.url ?? "", appUrl, qaPass: opts.extraVars?.["qaPass"] ?? "" };
+            const fill = (s: string): string => fillQaVars(s, qaVars);
+            vars["qaPass"] = qaVars.qaPass;
             const logs = [be ? `BE log: ${be.log_path}` : null, fe ? `FE log: ${fe.log_path}` : null].filter(Boolean).join("; ");
             vars["qaSetup"] = env.qa_script
                 ? `0. Bring the app up first by running this from the worktree with Bash: \`${env.qa_script}\`. If it exits non-zero, write every scenario as \`blocked\` with the script's last lines as the blocker and stop.`
@@ -2480,16 +2483,17 @@ export class Engine extends EventEmitter {
                                           const shell = /^\s*(shell|sql)\s*:/i.test(x);
                                           if (!shell) afterUi = afterUi || /^\s*ui\s*:/i.test(x);
                                           const tag = shell ? (afterUi ? "run it yourself: ONE Bash call, exact command, after the ui steps" : "run by the orchestrator — see the seed report") : "do this yourself";
-                                          return `- seed ${i + 1} (${tag}): ${x}`;
+                                          return `- seed ${i + 1} (${tag}): ${fill(x)}`;
                                       })
                                       .join("\n");
                               })()}\n`
                             : "Seed: nothing beyond a logged-in user.\n") +
+                        ((s.teardown ?? []).length ? `Teardown: ${(s.teardown ?? []).length} step(s) already run by the orchestrator before the seeds — this scenario's fixture set was reset; anything left is not from this pass.\n` : "") +
                         s.steps
                             .map((st, i) =>
                                 (s.kind ?? "browser") === "api"
-                                    ? `${i + 1}. run:\n\`\`\`bash\n${fill(st.action)}\n\`\`\`\n   → **assert:** ${st.assert}`
-                                    : `${i + 1}. ${st.action} → **assert:** ${st.assert}${st.shot ? " **[shot]**" : ""}`,
+                                    ? `${i + 1}. run:\n\`\`\`bash\n${fill(st.action)}\n\`\`\`\n   → **assert:** ${fill(st.assert)}`
+                                    : `${i + 1}. ${fill(st.action)} → **assert:** ${fill(st.assert)}${st.shot ? " **[shot]**" : ""}`,
                             )
                             .join("\n"),
                 )
@@ -2527,10 +2531,13 @@ export class Engine extends EventEmitter {
             return;
         }
         if (def.chrome && !opts.seedsDone) {
-            // Seed steps written as commands are run here, without an agent; only `ui:` steps reach the QA runner.
-            this.setTaskStatus(taskId, "running", `${def.label} · seeding data`);
-            void this.runShellSeeds(task, env, def)
-                .then((report) => this.dispatch(taskId, stage, { ...opts, seedsDone: true, extraVars: { ...(opts.extraVars ?? {}), seedReport: report } }))
+            // One pass id for this QA run, shared by the seeds run here and the scenario text the runner gets, so a
+            // `{{qaPass}}` in a seed and in an assert resolve to the same value.
+            const qaPass = opts.extraVars?.["qaPass"] ?? newQaPassId(def.stage === "qa_baseline" ? "qa_baseline" : "manual_qa");
+            // Teardown, then seed steps written as commands are run here, without an agent; only `ui:` steps reach the QA runner.
+            this.setTaskStatus(taskId, "running", `${def.label} · resetting and seeding data`);
+            void this.runShellSeeds(task, env, def, qaPass)
+                .then((report) => this.dispatch(taskId, stage, { ...opts, seedsDone: true, extraVars: { ...(opts.extraVars ?? {}), seedReport: report, qaPass } }))
                 .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · seeding failed: ${String((e as Error).message ?? e).slice(0, 160)}`));
             return;
         }
@@ -2712,13 +2719,49 @@ export class Engine extends EventEmitter {
 
     // Executes every `shell:` seed step of every scenario from the worktree (env vars applied, 120 s each) and returns a
     // report for the prompt; failures are reported per step, never thrown. Output is kept in <taskDir>/qa/seed-<pass>.log.
-    private async runShellSeeds(task: TaskRow, env: EnvRow, def: StageDef): Promise<string> {
+    // Executes, per scenario, every `teardown` step and then every leading `shell:` seed step (placeholders resolved:
+    // {{beUrl}}/{{appUrl}}/{{qaPass}}), from the worktree, 120 s each; failures are reported per step, never thrown.
+    // Output is kept in <taskDir>/qa/seed-<pass>.log. Teardown first is the rule (user, 2026-09-21): "seeding should
+    // first try to delete old records and only then create them".
+    private async runShellSeeds(task: TaskRow, env: EnvRow, def: StageDef, qaPass: string): Promise<string> {
         const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
         const pass = def.stage === "qa_baseline" ? "before" : "after";
         const logPath = join(this.taskDir(task.id), "qa", `seed-${pass}.log`);
-        const lines: string[] = [];
+        const be = this.services.get(task.id, "be");
+        const fe = this.services.get(task.id, "fe");
+        const qaVars: QaVars = { beUrl: be?.url ?? "", feUrl: fe?.url ?? "", appUrl: this.appUrlFor(task, env), qaPass };
+        const lines: string[] = [`(pass id: ${qaPass} — every {{qaPass}} in seeds, steps and asserts reads as this)`];
         const log: string[] = [];
+        const runOne = (label: string, cmd: string): void => {
+            log.push(`### ${label}\n$ ${cmd}`);
+            try {
+                const out = execFileSync("bash", loginShellArgs(cmd), {
+                    cwd: task.worktree_path ?? env.path,
+                    env: loginShellEnv(parseEnvVars(env.env_vars)),
+                    timeout: 120_000,
+                    maxBuffer: 4 * 1024 * 1024,
+                    stdio: ["ignore", "pipe", "pipe"],
+                }).toString();
+                log.push(out.trim() || "(no output)");
+                lines.push(`${label}: OK${out.trim() ? ` — ${out.trim().split("\n").slice(-1)[0]!.slice(0, 120)}` : ""}`);
+            } catch (e) {
+                const err = e as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+                const tail = String(err.stderr ?? err.stdout ?? err.message ?? e).trim().split("\n").slice(-3).join(" ").slice(0, 300);
+                log.push(`FAILED: ${tail}`);
+                lines.push(`${label}: FAILED — ${tail}`);
+            }
+        };
         for (const s of design?.qa ?? []) {
+            // Reset this scenario's fixture set before creating it again: a partial earlier pass must not leave records
+            // that make a seed or a step collide (a teardown that finds nothing to delete is fine).
+            (s.teardown ?? []).forEach((step, i) => {
+                const m = /^\s*(shell|sql)\s*:\s*/i.exec(step);
+                if (!m) {
+                    lines.push(`${s.id} teardown ${i + 1}: skipped (not a shell command)`);
+                    return;
+                }
+                runOne(`${s.id} teardown ${i + 1}`, fillQaVars(step.slice(m[0].length), qaVars));
+            });
             // Shell steps that come after a ui step depend on what the ui step creates; the runner executes those itself.
             let afterUi = false;
             (s.seed ?? []).forEach((step, i) => {
@@ -2732,28 +2775,11 @@ export class Engine extends EventEmitter {
                     lines.push(`${s.id} seed ${i + 1}: run it yourself after the ui steps — ONE Bash call with the exact command from the scenario's seed list`);
                     return;
                 }
-                const cmd = step.slice(m[0].length);
-                log.push(`### ${s.id} seed ${i + 1}\n$ ${cmd}`);
-                try {
-                    const out = execFileSync("bash", loginShellArgs(cmd), {
-                        cwd: task.worktree_path ?? env.path,
-                        env: loginShellEnv(parseEnvVars(env.env_vars)),
-                        timeout: 120_000,
-                        maxBuffer: 4 * 1024 * 1024,
-                        stdio: ["ignore", "pipe", "pipe"],
-                    }).toString();
-                    log.push(out.trim() || "(no output)");
-                    lines.push(`${s.id} seed ${i + 1}: OK${out.trim() ? ` — ${out.trim().split("\n").slice(-1)[0]!.slice(0, 120)}` : ""}`);
-                } catch (e) {
-                    const err = e as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
-                    const tail = String(err.stderr ?? err.stdout ?? err.message ?? e).trim().split("\n").slice(-3).join(" ").slice(0, 300);
-                    log.push(`FAILED: ${tail}`);
-                    lines.push(`${s.id} seed ${i + 1}: FAILED — ${tail}`);
-                }
+                runOne(`${s.id} seed ${i + 1}`, fillQaVars(step.slice(m[0].length), qaVars));
             });
         }
         writeFileSync(logPath, `${log.join("\n\n")}\n`);
-        return lines.length ? lines.join("\n") : "(no seed steps in the design)";
+        return lines.length > 1 ? lines.join("\n") : "(no seed steps in the design)";
     }
 
     private async bringUpServices(task: TaskRow, env: EnvRow): Promise<boolean> {
@@ -3467,6 +3493,8 @@ export class Engine extends EventEmitter {
             if (md) return { ok: false, error: md };
             const seeds = this.seedDryRunProblems(taskId, parsed.data as DesignResult);
             if (seeds) return { ok: false, error: seeds };
+            const contract = qaContractProblems((parsed.data as DesignResult).qa ?? []);
+            if (contract) return { ok: false, error: contract };
         }
         if (def.stage === "pr_creation_review") {
             const task = this.getTask(taskId);
