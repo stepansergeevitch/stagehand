@@ -161,17 +161,12 @@ export class Services {
     }
 
     private async pickPort(kind: ServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
-        if (fixed) {
-            // Apps whose port is pinned (Auth0 callback, hard-coded bundle URL) can only run for one task at a time.
-            const holder = this.db
-                .prepare(`SELECT s.task_id, t.ticket_id FROM services s JOIN tasks t ON t.id = s.task_id WHERE s.port = ? AND s.stopped_at IS NULL AND s.task_id != ?`)
-                .get(fixed, task.id) as { task_id: string; ticket_id: string } | undefined;
-            if (holder) throw new Error(`port ${fixed} is held by task ${holder.ticket_id}'s ${kind.toUpperCase()} — stop it first`);
-            if (!(await portFree(fixed))) throw new Error(`port ${fixed} is in use by a process outside Stagehand — free it first`);
-            return fixed;
-        }
-        const [lo, hi] = PORT_RANGE[kind];
         const taken = new Set((this.db.prepare(`SELECT port FROM services WHERE stopped_at IS NULL`).all() as Array<{ port: number }>).map((r) => r.port));
+        // A pinned port is a preference, not a requirement: when another task, the user's own dev server or anything
+        // else holds it, the service takes a free port from the range like every other one (user, 2026-09-21:
+        // "it doesn't matter inside or outside - just pick a free port" — PRODUCT-10501 sat blocked on Core's 7777).
+        if (fixed && !taken.has(fixed) && (await portFree(fixed))) return fixed;
+        const [lo, hi] = PORT_RANGE[kind];
         // A restart keeps the port the service had: the FE was started with the BE's URL baked in (and a QA run has the
         // app's URL in its prompt), so a BE coming back on another port would orphan both.
         const last = this.db.prepare(`SELECT port FROM services WHERE task_id = ? AND kind = ? AND stopped_at IS NOT NULL ORDER BY stopped_at DESC LIMIT 1`).get(task.id, kind) as { port: number } | undefined;
