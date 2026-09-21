@@ -462,6 +462,38 @@ const MergeControls = ({ task, row, onAction }: { task: TaskDetail["task"]; row:
     );
 };
 
+// The repository's branch and the base it diffs against / its PR targets, editable in place: one repository's base
+// can be moved (e.g. onto the trunk once the parent's PR for that repository merged) at any stage, PR draft or not.
+// The stored value is a plain branch (every repository) or a per-repo map; editing one repository keeps the others.
+const BaseLine = ({ task, repo, repos, onAction }: { task: TaskDetail["task"]; repo: string; repos: string[]; onAction: Props["onAction"] }) => {
+    const [editing, setEditing] = useState(false);
+    const [value, setValue] = useState("");
+    const bases = parseBaseBranch(task.base_branch);
+    const base = typeof bases === "string" ? bases : bases?.[repo];
+    const save = () => {
+        const next: Record<string, string> = typeof bases === "string" ? Object.fromEntries(repos.map((r) => [r, bases])) : { ...(bases ?? {}) };
+        if (value.trim()) next[repo] = value.trim();
+        else delete next[repo];
+        void onAction(() => api.patchTask(task.id, { baseBranch: Object.keys(next).length ? next : null })).then(() => setEditing(false));
+    };
+    return (
+        <div className="branch-line field-hint">
+            <code className="small">⎇ {task.branch}</code>
+            {!editing && <code className="small" title="base branch — the branch this repository diffs against and its PR targets (the env default when none is set)"> → {base ?? "env default"}</code>}
+            {!editing && task.status !== "running" && (
+                <button className="tiny" title="Change this repository's base branch (then use Rebase onto latest base on the Code changes tab)" onClick={() => { setValue(base ?? ""); setEditing(true); }}>change</button>
+            )}
+            {editing && (
+                <>
+                    <BranchPicker envId={task.env_id} repo={repo} value={value} onChange={setValue} placeholder="env default" style={{ maxWidth: 260 }} />
+                    <button className="tiny" onClick={save}>Save</button>
+                    <button className="tiny" onClick={() => setEditing(false)}>×</button>
+                </>
+            )}
+        </div>
+    );
+};
+
 // One repository's PR in the header widget: repo chip, state, number, checks summary, merge controls.
 // The header stays compact even when a PR has a long checks list: show at most this many, then a "show N more" that
 // jumps to the full per-repo view on the Pull request tab.
@@ -493,16 +525,7 @@ const PrRepoRow = ({ detail, repo, repos, onAction, onOpenInTab }: { detail: Tas
                 )}
             </div>
             {/* This repository's branch and the base it targets, right under its PR line (grouped per repository). */}
-            {task.branch && (() => {
-                const bases = parseBaseBranch(task.base_branch);
-                const base = typeof bases === "string" ? bases : bases?.[repo];
-                return (
-                    <div className="branch-line field-hint">
-                        <code className="small">⎇ {task.branch}</code>
-                        {base && <code className="small" title="base branch (stacked PR) — the branch this repository diffs against and its PR targets"> → {base}</code>}
-                    </div>
-                );
-            })()}
+            {task.branch && <BaseLine task={task} repo={repo} repos={repos} onAction={onAction} />}
             {row?.url && !row.merged_at && live.length > 0 && (
                 <div className="widget-checks">
                     <ChecksList checks={live.slice(0, HEADER_CHECKS_LIMIT)} compact />
