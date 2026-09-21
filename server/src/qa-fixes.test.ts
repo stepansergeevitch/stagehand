@@ -13,6 +13,12 @@ describe("parseStepFixAnswer", () => {
             command: "curl -sS http://localhost:18000/x",
         });
     });
+    it("strips any apply/use/run label up to the first colon and keeps a shell: prefix after it", () => {
+        expect(parseStepFixAnswer("S1 teardown 1 — no teardown clears the fixture", "apply corrected teardown: cd backend && poetry run python manage.py shell -c \"x\"")?.command).toBe('cd backend && poetry run python manage.py shell -c "x"');
+        expect(parseStepFixAnswer("S2 teardown 1", "Apply this teardown before seeding S2 (run once, org id 6248): PGPASSWORD=p psql -c \"DELETE FROM t\"")?.command).toBe('PGPASSWORD=p psql -c "DELETE FROM t"');
+        expect(parseStepFixAnswer("S1 teardown 1", "apply corrected command: shell: cd backend && ./x")?.command).toBe("shell: cd backend && ./x");
+        expect(parseStepFixAnswer("S1 seed 1", "psql -c 'a:b'")?.command).toBe("psql -c 'a:b'");
+    });
     it("skips a 'keep as written' answer and questions without a step reference", () => {
         expect(parseStepFixAnswer("S2 seed 1 is wrong", "keep the seed as written")).toBeNull();
         expect(parseStepFixAnswer("Is a list UI in scope?", "yes")).toBeNull();

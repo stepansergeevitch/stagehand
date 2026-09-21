@@ -15,7 +15,11 @@ export interface StepFixQuestion {
 }
 
 const REF = /\bS(\d+)\s+(step|seed|teardown)\s+(\d+)\b/i;
-const PREFIX = /^\s*(apply|use)\s+(the\s+)?corrected\s+(command|step|seed)(\s+below)?\s*:\s*/i;
+// The option label before the command: "apply corrected command:", "apply this teardown before seeding S1 (run once):",
+// "use the corrected seed below:" … — everything up to the first colon when the answer starts with apply/use/run.
+// A command itself never starts with those words; a "shell:"/"sql:" prefix after the label is kept (INV-136,
+// 2026-09-21: "apply corrected teardown: cd backend …" was written into design.json label included → "command not found: corrected").
+const PREFIX = /^\s*(apply|use|run)\b[^:\n]{0,200}:\s*/i;
 
 export const parseStepFixAnswer = (text: string, answer: string | undefined): { scenario: string; kind: "step" | "seed" | "teardown"; index: number; command: string } | null => {
     const m = REF.exec(text);
