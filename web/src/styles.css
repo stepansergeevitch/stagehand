@@ -589,6 +589,7 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .rebase-pick-menu label.inline { white-space: nowrap; }
 /* task list: multi-select for bulk delete */
 .row { grid-template-columns: 14px 18px 1fr auto auto; }
+.row .status { grid-column: 3; }
 .row .pick { width: 14px; height: 14px; margin: 0; align-self: center; }
 .row.picked { background: var(--warn-soft); }
 .bulk-bar { display: flex; gap: 8px; align-items: center; font-size: 12px; }
