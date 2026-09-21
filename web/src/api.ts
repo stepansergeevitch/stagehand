@@ -415,6 +415,9 @@ export const api = {
     createApprovedPrs: (id: string) => post<{ ok: true; done: string[]; task: Task; prStates: PrState[] }>(`/api/tasks/${id}/pr/create`),
     mergePr: (id: string, body: { repo: string; method: MergeMethod; deleteBranch: boolean }) => post<{ ok: true; result: string; task: Task }>(`/api/tasks/${id}/pr/merge`, body),
     fixComments: (id: string, repo: string, commentIds: number[]) => post<{ started: true }>(`/api/tasks/${id}/fix-comments`, { repo, commentIds }),
+    // Batched PR jobs in one agent run (rebase first, then failing CI, picked comments, instructions).
+    prJobs: (id: string, spec: { rebase?: { repos?: string[] } | null; fixCi?: { repos?: string[] } | null; comments?: Array<{ repo: string; ids: number[] }>; instructions?: string }) =>
+        post<{ started: boolean; note: string }>(`/api/tasks/${id}/pr-jobs`, spec),
     fetchTicket: (id: string) => post<Ticket>(`/api/tasks/${id}/fetch-ticket`),
     openApp: (id: string) => post<{ opened: string; profile: string }>(`/api/tasks/${id}/open-app`),
     pin: (id: string) => post<Task>(`/api/tasks/${id}/pin`),

@@ -2794,39 +2794,7 @@ export class Engine extends EventEmitter {
         const usable = this.usableAccounts(cd.path);
         const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
-        const wanted = opts.repos?.length ? new Set(opts.repos) : null;
-        const allRepos = this.prRepos(env).filter((r) => existsSync(this.checkoutOf(task, env, r)) && (!wanted || wanted.has(r)));
-        if (wanted && allRepos.length === 0) throw new Error(`none of the requested repositories (${[...wanted].map(repoLabel).join(", ")}) has a checkout in this task`);
-        const behind: string[] = [];
-        const fastForwarded: string[] = [];
-        const repos: string[] = [];
-        // Each checkout's HEAD before anything moves: a rebase that changes a lockfile leaves node_modules / .venv stale
-        // (setup only ran at worktree creation), so the env's setup command is re-run afterwards when one did.
-        const headsBefore = new Map<string, string>();
-        for (const repo of allRepos) {
-            const base = this.baseBranchOf(task, env, repo);
-            const cwd = this.checkoutOf(task, env, repo);
-            const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
-            if (dirty.trim()) throw new Error(`${repoLabel(repo)} has uncommitted changes — commit or discard them first`);
-            headsBefore.set(repo, (await this.git(cwd, ["rev-parse", "HEAD"], env).catch(() => "")).trim());
-            await this.git(cwd, ["fetch", "origin", base], env);
-            const n = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${base}`], env).catch(() => "0")) || 0;
-            if (n === 0) continue;
-            // Commits of this checkout's own: on neither the base nor the env's trunk (a stacked task forked from a
-            // newer trunk than its parent carries trunk commits its parent lacks — those are not "its own").
-            await this.git(cwd, ["fetch", "origin", env.base_branch], env).catch(() => "");
-            const own = Number(await this.git(cwd, ["rev-list", "--count", "HEAD", `^origin/${base}`, `^origin/${env.base_branch}`], env).catch(() => "0")) || 0;
-            // A checkout with nothing of its own (a multi-repo task that only touched the other repository) has no
-            // history to replay: move it to the base outright, so a stacked task's untouched repository matches its
-            // parent. Nothing is lost — every commit here is on the base or the trunk.
-            if (own === 0) {
-                await this.git(cwd, ["reset", "--hard", `origin/${base}`], env);
-                fastForwarded.push(`${repoLabel(repo)}: moved to origin/${base} (no commits of its own)`);
-                continue;
-            }
-            behind.push(`${repoLabel(repo)}: ${n} commit(s)`);
-            repos.push(repo);
-        }
+        const { repos, behind, fastForwarded, headsBefore, plain, conflicted } = await this.rebasePlainPass(task, env, opts.repos);
         const header = opts.auto ? `🔀 Auto-rebase onto origin/${base} (${opts.auto}):` : `🔀 Rebase onto origin/${base}:`;
         if (repos.length === 0) {
             if (fastForwarded.length === 0) throw new Error(`already up to date with origin/${base}`);
@@ -2834,19 +2802,6 @@ export class Engine extends EventEmitter {
             this.addMessage(taskId, "agent", `${header}\n\n${fastForwarded.map((l) => `✅ ${l}`).join("\n")}${resync ? `\n${resync}` : ""}\n\nNothing to replay — no agent run needed.`);
             this.emitTask(taskId);
             return;
-        }
-        // Mechanical pass per checkout; the ones that conflict go to the agent.
-        const plain: string[] = fastForwarded.map((l) => `✅ ${l}`);
-        const conflicted: string[] = [];
-        for (const repo of repos) {
-            const cwd = this.checkoutOf(task, env, repo);
-            const repoBase = this.baseBranchOf(task, env, repo);
-            const r = await this.plainRebase(cwd, env, repoBase, headsBefore.get(repo) ?? "");
-            if (r.ok) plain.push(`✅ ${repoLabel(repo)}: plain rebase onto origin/${repoBase}, no conflicts (${r.replayed} commit(s) replayed)`);
-            else {
-                conflicted.push(repo);
-                plain.push(`⚠️ ${repoLabel(repo)}: plain rebase conflicted in ${r.conflict} — handed to the agent`);
-            }
         }
         if (conflicted.length === 0) {
             const lines = await this.finishRebase(task, env, repos, headsBefore);
@@ -2888,6 +2843,169 @@ export class Engine extends EventEmitter {
             this.addMessage(taskId, "agent", `${header}\n\n${plain.join("\n")}\n\n${reply}\n\n${lines.join("\n")}`);
             this.emitTask(taskId);
         });
+    }
+
+    // Preflight + mechanical pass shared by "Rebase onto latest base" and the batched PR jobs: refuses dirty checkouts,
+    // fetches each repository's base, resets checkouts with no commits of their own, and plain-rebases the rest;
+    // `conflicted` names the checkouts left for the agent (restored to where they were).
+    private async rebasePlainPass(task: TaskRow, env: EnvRow, only?: string[]): Promise<{ allRepos: string[]; repos: string[]; behind: string[]; fastForwarded: string[]; headsBefore: Map<string, string>; plain: string[]; conflicted: string[] }> {
+        const wanted = only?.length ? new Set(only) : null;
+        const allRepos = this.prRepos(env).filter((r) => existsSync(this.checkoutOf(task, env, r)) && (!wanted || wanted.has(r)));
+        if (wanted && allRepos.length === 0) throw new Error(`none of the requested repositories (${[...wanted].map(repoLabel).join(", ")}) has a checkout in this task`);
+        const behind: string[] = [];
+        const fastForwarded: string[] = [];
+        const repos: string[] = [];
+        // Each checkout's HEAD before anything moves: a rebase that changes a lockfile leaves node_modules / .venv stale
+        // (setup only ran at worktree creation), so the env's setup command is re-run afterwards when one did.
+        const headsBefore = new Map<string, string>();
+        for (const repo of allRepos) {
+            const base = this.baseBranchOf(task, env, repo);
+            const cwd = this.checkoutOf(task, env, repo);
+            const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
+            if (dirty.trim()) throw new Error(`${repoLabel(repo)} has uncommitted changes — commit or discard them first`);
+            headsBefore.set(repo, (await this.git(cwd, ["rev-parse", "HEAD"], env).catch(() => "")).trim());
+            await this.git(cwd, ["fetch", "origin", base], env);
+            const n = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${base}`], env).catch(() => "0")) || 0;
+            if (n === 0) continue;
+            // Commits of this checkout's own: on neither the base nor the env's trunk (a stacked task forked from a
+            // newer trunk than its parent carries trunk commits its parent lacks — those are not "its own").
+            await this.git(cwd, ["fetch", "origin", env.base_branch], env).catch(() => "");
+            const own = Number(await this.git(cwd, ["rev-list", "--count", "HEAD", `^origin/${base}`, `^origin/${env.base_branch}`], env).catch(() => "0")) || 0;
+            // A checkout with nothing of its own (a multi-repo task that only touched the other repository) has no
+            // history to replay: move it to the base outright, so a stacked task's untouched repository matches its
+            // parent. Nothing is lost — every commit here is on the base or the trunk.
+            if (own === 0) {
+                await this.git(cwd, ["reset", "--hard", `origin/${base}`], env);
+                fastForwarded.push(`${repoLabel(repo)}: moved to origin/${base} (no commits of its own)`);
+                continue;
+            }
+            behind.push(`${repoLabel(repo)}: ${n} commit(s)`);
+            repos.push(repo);
+        }
+        // Mechanical pass per checkout; the ones that conflict go to the agent.
+        const plain: string[] = fastForwarded.map((l) => `✅ ${l}`);
+        const conflicted: string[] = [];
+        for (const repo of repos) {
+            const cwd = this.checkoutOf(task, env, repo);
+            const repoBase = this.baseBranchOf(task, env, repo);
+            const r = await this.plainRebase(cwd, env, repoBase, headsBefore.get(repo) ?? "");
+            if (r.ok) plain.push(`✅ ${repoLabel(repo)}: plain rebase onto origin/${repoBase}, no conflicts (${r.replayed} commit(s) replayed)`);
+            else {
+                conflicted.push(repo);
+                plain.push(`⚠️ ${repoLabel(repo)}: plain rebase conflicted in ${r.conflict} — handed to the agent`);
+            }
+        }
+        return { allRepos, repos, behind, fastForwarded, headsBefore, plain, conflicted };
+    }
+
+    // What a Fix-CI job tells the agent about one repository's PR: the failing checks and how to read their logs.
+    private async ciFailureText(task: TaskRow, env: EnvRow, repo: string): Promise<{ text: string; count: number }> {
+        const row = this.prRow(task.id, repo);
+        if (!row?.number) return { text: "", count: 0 };
+        const cwd = this.checkoutOf(task, env, repo);
+        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(row.number), "--json", "statusCheckRollup"], env)) as {
+            statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string; detailsUrl?: string; targetUrl?: string }>;
+        };
+        const failed = (pr.statusCheckRollup ?? []).filter((c) => !isApprovalGateCheck(c) && isFailedCheck(c));
+        if (!failed.length) return { text: "", count: 0 };
+        const names = failed.map((c) => `${c.name ?? c.context ?? "check"}${c.detailsUrl ?? c.targetUrl ? ` (${c.detailsUrl ?? c.targetUrl})` : ""}`).join(", ");
+        return {
+            count: failed.length,
+            text: `${repoScopeNote(repo)}Failing checks on PR #${row.number}: ${names}. Read their logs with \`gh pr checks ${row.number}\` and \`gh run view --log-failed <run-id>\` (run inside that repository), find the cause in this branch's changes, and fix it at the source.`,
+        };
+    }
+
+    // What an address-comments job tells the agent: the picked comments of one repository's PR, one line each.
+    private async commentsText(task: TaskRow, repo: string, commentIds: number[]): Promise<{ text: string; count: number }> {
+        const row = this.prRow(task.id, repo);
+        if (!row?.number || !commentIds.length) return { text: "", count: 0 };
+        const comments = await this.prComments(task.id, repo);
+        if (!comments) throw new Error(`could not fetch PR comments for ${repoLabel(repo)} — re-poll and try again`);
+        const wanted = new Set(commentIds);
+        const picked = [...comments.human, ...comments.automation].filter((c) => wanted.has(c.id));
+        if (!picked.length) return { text: "", count: 0 };
+        const describe = (c: PrComment): string =>
+            c.kind === "line"
+                ? `- \`${c.path}:${c.line ?? "?"}\`${c.outdated ? " (outdated diff position)" : ""} — ${c.author}: ${c.body.trim()}`
+                : c.kind === "review"
+                  ? `- Review by ${c.author}${c.state !== "COMMENTED" ? ` (${c.state.toLowerCase().replace("_", " ")})` : ""}: ${c.body.trim() || "(no body text)"}`
+                  : `- ${c.author}: ${c.body.trim()}`;
+        return { count: picked.length, text: `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (not necessarily a CI failure):\n${picked.map(describe).join("\n")}` };
+    }
+
+    // Batched PR jobs — the user's ask (2026-09-21): "batch jobs for agent after PR creation - e.g. rebase onto latest
+    // base, address comments, fix CI and custom instructions in the same run to save time". One pr_fix run does every
+    // job the human ticked, in order: the rebase's mechanical pass runs here first (only conflicts reach the agent);
+    // failing checks, picked comments and free-text instructions become numbered sections of the run's brief. The
+    // usual pr_fix cycle follows — the agent commits, the human reviews the diff, one push (force-with-lease when the
+    // rebase rewrote history). Returns a note when nothing needed an agent at all.
+    async startPrJobs(
+        taskId: string,
+        spec: { rebase?: { repos?: string[] | undefined } | null | undefined; fixCi?: { repos?: string[] | undefined } | null | undefined; comments?: Array<{ repo: string; ids: number[] }> | undefined; instructions?: string | undefined },
+    ): Promise<{ started: boolean; note: string }> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        if (!task.branch || !task.worktree_path) throw new Error("the task has no branch/worktree yet");
+        const env = this.env(task.env_id);
+        const jobs: string[] = [];
+        const summary: string[] = [];
+        let headsBefore: Map<string, string> | null = null;
+        let rebasedRepos: string[] = [];
+        if (spec.rebase) {
+            const pass = await this.rebasePlainPass(task, env, spec.rebase.repos);
+            headsBefore = pass.headsBefore;
+            rebasedRepos = pass.repos.filter((r) => !pass.conflicted.includes(r));
+            const done = pass.plain.filter((l) => l.startsWith("✅"));
+            if (pass.conflicted.length) {
+                const bases = pass.conflicted.map((r) => `${repoLabel(r)}: origin/${this.baseBranchOf(task, env, r)}`).join("; ");
+                jobs.push(
+                    `Rebase onto the latest base. Stagehand already tried a plain \`git rebase --onto\` of this branch's own commits: ${done.length ? `it went through in ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}; ` : ""}it CONFLICTED in ${pass.conflicted.map(repoLabel).join(", ")} and was aborted there (those checkouts are exactly as they were). In each of those repositories run \`git fetch origin <base>\` and \`git rebase origin/<base>\` (${bases}), resolve the conflicts in the spirit of this task's change (keep this task's behaviour, take the base's changes for everything else; drop a commit of this branch that the base now already provides, e.g. a duplicate merge migration), \`git add\` + \`git rebase --continue\` until done — never \`--abort\` and leave it, never \`-i\`. Do the rebase BEFORE the other jobs so they are made on top of the rebased history.`,
+                );
+                summary.push(`rebase (conflicts in ${pass.conflicted.map(repoLabel).join(", ")})`);
+            } else if (pass.repos.length || pass.fastForwarded.length) {
+                summary.push("rebase (done mechanically)");
+            }
+            if (done.length) this.addMessage(taskId, "agent", `🔀 Rebase (batched): ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}${pass.conflicted.length ? ` — conflicts in ${pass.conflicted.map(repoLabel).join(", ")} go to the agent` : ""}`);
+        }
+        if (spec.fixCi) {
+            const repos = spec.fixCi.repos?.length ? spec.fixCi.repos : this.prRepos(env);
+            for (const repo of repos) {
+                const ci = await this.ciFailureText(task, env, repo);
+                if (ci.count) {
+                    jobs.push(ci.text);
+                    summary.push(`fix CI (${repoLabel(repo)}: ${ci.count} failing)`);
+                }
+            }
+        }
+        for (const c of spec.comments ?? []) {
+            const t = await this.commentsText(task, c.repo, c.ids);
+            if (t.count) {
+                jobs.push(t.text);
+                summary.push(`${t.count} comment(s) on ${repoLabel(c.repo)}`);
+            }
+        }
+        if (spec.instructions?.trim()) {
+            jobs.push(`Instructions from the human (do exactly this, nothing more):\n\n${spec.instructions.trim()}`);
+            summary.push("instructions");
+        }
+        if (jobs.length === 0) {
+            // Only a clean mechanical rebase (or nothing at all): no agent needed — finish it the way the Rebase button does.
+            if (headsBefore && rebasedRepos.length) {
+                const lines = await this.finishRebase(task, env, rebasedRepos, headsBefore);
+                this.addMessage(taskId, "agent", `🔀 Batched jobs: only the rebase was needed and it went through mechanically.\n${lines.join("\n")}`);
+                this.emitTask(taskId);
+                return { started: false, note: "rebased mechanically; nothing else to do — no agent run" };
+            }
+            throw new Error("nothing to do: no failing checks, no comments picked, no instructions, and the branch is up to date");
+        }
+        const failureOutput =
+            `This run batches ${jobs.length} job(s) the human ticked — do them in this order, commit as you go (one commit per job is fine), then write pr_fix.json covering all of them:\n\n` +
+            jobs.map((j, i) => `### Job ${i + 1} of ${jobs.length}\n\n${j}`).join("\n\n");
+        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
+        this.setStage(taskId, "pr_fix");
+        this.dispatch(taskId, "pr_fix", { attempt: rounds.n + 1, extraVars: { failureOutput } });
+        return { started: true, note: summary.join(" · ") };
     }
 
     // `git rebase --onto origin/<base> <parent of the oldest own commit>`: replays exactly this checkout's own commits

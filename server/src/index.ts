@@ -1182,6 +1182,24 @@ app.post("/api/tasks/:id/rebase", async (c) => {
     }
 });
 
+// Batched PR jobs in one agent run: rebase (mechanical first), fix failing CI, address picked comments, instructions.
+app.post("/api/tasks/:id/pr-jobs", async (c) => {
+    const body = json(
+        z.object({
+            rebase: z.object({ repos: z.array(z.string()).optional() }).nullable().optional(),
+            fixCi: z.object({ repos: z.array(z.string()).optional() }).nullable().optional(),
+            comments: z.array(z.object({ repo: z.string(), ids: z.array(z.number().int()) })).optional(),
+            instructions: z.string().optional(),
+        }),
+        await c.req.json(),
+    );
+    try {
+        return c.json(await engine.startPrJobs(c.req.param("id"), body));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/fix-ci", async (c) => {
     const body = json(z.object({ repo: z.string().optional() }), await c.req.json().catch(() => ({})));
     try {

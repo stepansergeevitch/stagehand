@@ -1,4 +1,4 @@
-Something on the open PR for ticket {{ticketId}} (worktree {{worktree}}, branch `{{branch}}`) needs a code fix — a failing CI check, or PR review comments the human picked out, described below. Diagnose and fix it at the source. This is fix round {{attempt}}; a human reviews your diff before anything reaches GitHub.
+Something on the open PR for ticket {{ticketId}} (worktree {{worktree}}, branch `{{branch}}`) needs work — a failing CI check, PR review comments the human picked out, a rebase whose plain replay conflicted, or instructions from the human; possibly several of these batched as numbered jobs, described below. Do them in the order given, and fix causes at the source. This is fix round {{attempt}}; a human reviews your diff before anything reaches GitHub.
 
 ## What to address
 

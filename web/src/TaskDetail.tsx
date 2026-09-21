@@ -1329,6 +1329,109 @@ const PrDraftTabs = ({ detail, onAction, focusRepo }: { detail: TaskDetail; onAc
     );
 };
 
+// Batched PR jobs: tick what the agent should do in ONE run — rebase onto the latest base (mechanical first), fix the
+// failing checks, address picked PR comments, follow free-text instructions — then review the diff once and push once.
+const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: string[]; onAction: Props["onAction"] }) => {
+    const { task } = detail;
+    const [rebase, setRebase] = useState(false);
+    const [rebaseRepos, setRebaseRepos] = useState<string[]>(repos);
+    const [fixCi, setFixCi] = useState(false);
+    const [instructions, setInstructions] = useState("");
+    const [comments, setComments] = useState<Record<string, PrComments | null>>({});
+    const [picked, setPicked] = useState<Set<string>>(() => new Set());
+    const [busy, setBusy] = useState(false);
+    const [note, setNote] = useState<string | null>(null);
+    const failing = repos.map((r) => ({ repo: r, n: parseChecks(prStateOf(detail, r)?.checks_json).filter((c) => !isApprovalGateCheck(c) && checkOutcome(c) === "fail").length })).filter((x) => x.n > 0);
+    const withPr = repos.filter((r) => prStateOf(detail, r)?.number);
+    useEffect(() => {
+        let alive = true;
+        for (const r of withPr) void api.prComments(task.id, r).then((c) => alive && setComments((m) => ({ ...m, [r]: c }))).catch(() => undefined);
+        return () => { alive = false; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [task.id, withPr.join(",")]);
+    const commentKey = (repo: string, id: number) => `${repo}:${id}`;
+    const allComments = withPr.flatMap((r) => [...(comments[r]?.human ?? []), ...(comments[r]?.automation ?? [])].filter((c) => !(c.kind === "line" && c.resolved)).map((c) => ({ repo: r, c })));
+    const jobs = (rebase ? 1 : 0) + (fixCi && failing.length ? 1 : 0) + (picked.size ? 1 : 0) + (instructions.trim() ? 1 : 0);
+    const run = async () => {
+        setBusy(true);
+        setNote(null);
+        const byRepo = new Map<string, number[]>();
+        for (const key of picked) {
+            const [repo = "", id = ""] = key.split(":");
+            byRepo.set(repo, [...(byRepo.get(repo) ?? []), Number(id)]);
+        }
+        try {
+            await onAction(async () => {
+                const r = await api.prJobs(task.id, {
+                    rebase: rebase ? { repos: rebaseRepos.length === repos.length ? undefined : rebaseRepos } : null,
+                    fixCi: fixCi ? {} : null,
+                    comments: [...byRepo].map(([repo, ids]) => ({ repo, ids })),
+                    ...(instructions.trim() ? { instructions: instructions.trim() } : {}),
+                });
+                setNote(r.started ? `started: ${r.note}` : r.note);
+                if (r.started) {
+                    setPicked(new Set());
+                    setInstructions("");
+                }
+            });
+        } finally {
+            setBusy(false);
+        }
+    };
+    const idle = task.status !== "running";
+    return (
+        <Card title="Batch jobs for the agent" badge={jobs ? <span className="chip accent">{jobs} job{jobs === 1 ? "" : "s"}</span> : undefined}>
+            <p className="field-hint">Tick what to do in one agent session; it commits as it goes, you review the diff once, then one push. The rebase runs mechanically first — only conflicts reach the agent.</p>
+            <div className="pr-jobs">
+                <label className="inline">
+                    <input type="checkbox" checked={rebase} onChange={(e) => setRebase(e.target.checked)} /> Rebase onto latest base
+                    {rebase && repos.length > 1 && (
+                        <span className="pr-jobs-sub">
+                            {repos.map((r) => (
+                                <label key={r} className="inline">
+                                    <input type="checkbox" checked={rebaseRepos.includes(r)} onChange={(e) => setRebaseRepos((p) => (e.target.checked ? [...p, r] : p.filter((x) => x !== r)))} /> {repoName(r)}
+                                </label>
+                            ))}
+                        </span>
+                    )}
+                </label>
+                <label className="inline" title={failing.length ? failing.map((f) => `${repoName(f.repo)}: ${f.n} failing`).join(" · ") : "no failing checks right now"}>
+                    <input type="checkbox" checked={fixCi} disabled={!failing.length} onChange={(e) => setFixCi(e.target.checked)} /> Fix failing CI
+                    {failing.length > 0 && <span className="chip bad">{failing.map((f) => `${repos.length > 1 ? `${repoName(f.repo)} ` : ""}${f.n}`).join(" · ")}</span>}
+                </label>
+                <div className="pr-jobs-comments">
+                    <span>Address PR comments{allComments.length ? ` (${picked.size}/${allComments.length} picked)` : withPr.length ? " — none open" : " — no PR yet"}</span>
+                    {allComments.length > 0 && (
+                        <>
+                            <button className="tiny" onClick={() => setPicked(new Set(allComments.map((x) => commentKey(x.repo, x.c.id))))}>all</button>
+                            <button className="tiny" onClick={() => setPicked(new Set())}>none</button>
+                        </>
+                    )}
+                    {allComments.map(({ repo, c }) => {
+                        const key = commentKey(repo, c.id);
+                        const text = c.kind === "line" ? `${c.path}:${c.line ?? "?"} — ${c.body}` : c.kind === "review" ? `review (${c.state.toLowerCase()}): ${c.body || "(no text)"}` : c.body;
+                        return (
+                            <label key={key} className="inline pr-jobs-comment" title={text}>
+                                <input type="checkbox" checked={picked.has(key)} onChange={(e) => setPicked((p) => { const n = new Set(p); if (e.target.checked) n.add(key); else n.delete(key); return n; })} />
+                                {repos.length > 1 && <RepoChip repo={repo} repos={repos} />}
+                                <b>{c.author}</b> <span className="pr-jobs-comment-text">{text.slice(0, 140)}{text.length > 140 ? "…" : ""}</span>
+                            </label>
+                        );
+                    })}
+                </div>
+                <label>Custom instructions (optional)
+                    <textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Anything else the agent should do in the same run…" rows={3} />
+                </label>
+                <div className="pr-jobs-actions">
+                    <button className="primary" disabled={!idle || busy || jobs === 0} onClick={() => void run()}>{busy ? "Starting…" : `Run ${jobs || ""} job${jobs === 1 ? "" : "s"} in one session`}</button>
+                    {!idle && <span className="field-hint">a run is in progress</span>}
+                    {note && <span className="field-hint">{note}</span>}
+                </div>
+            </div>
+        </Card>
+    );
+};
+
 // Details for the PR stages, one card per repository: checks, review, merge — everything the poller stored.
 // Details for the PR stages: one tab per repository (not stacked cards), each with its own checks, review, merge state.
 const PrPanel = ({ detail, onAction, focusRepo }: { detail: TaskDetail; onAction: Props["onAction"]; focusRepo?: string | null }) => {
@@ -1355,6 +1458,7 @@ const PrPanel = ({ detail, onAction, focusRepo }: { detail: TaskDetail; onAction
                     })}
                 </div>
             )}
+            <PrJobsCard detail={detail} repos={repos} onAction={onAction} />
             <Card title={<><RepoChip repo={repo} repos={repos} /> Pull request</>} badge={<span className={`chip ${o.cls}`}>{o.text}</span>}>
                 {task.branch && (() => {
                     const bases = parseBaseBranch(task.base_branch);
