@@ -3592,7 +3592,59 @@ export class Engine extends EventEmitter {
         return designMdProblems(readFileSync(p, "utf8"), { repos });
     }
 
+    // Verification-command failures in a row per task; reset when it passes.
+    private readonly checkFailures = new Map<string, number>();
+    private static readonly MAX_CHECK_ATTEMPTS = 2;
+
     private afterStage(taskId: string, def: StageDef, data: unknown): void {
+        const task = this.getTask(taskId)!;
+        const env = this.env(task.env_id);
+        if ((def.stage === "implementation" || def.stage === "pr_fix") && env.check_command?.trim() && task.worktree_path) {
+            void this.verifyThenContinue(taskId, def, data, env);
+            return;
+        }
+        this.afterStageChecked(taskId, def, data);
+    }
+
+    // The env's verification command runs from the worktree after every implementation / PR-fix run — what tests and a
+    // dev server never exercise. INV-131, 2026-09-21: a 31-character index name passed pytest, runserver_plus (no system
+    // checks) and CI (`makemigrations --check` only), merged, then failed `migrate` on production with models.E034;
+    // `manage.py check --database default` reports it in seconds. A failure goes back to the same stage with the output.
+    private async verifyThenContinue(taskId: string, def: StageDef, data: unknown, env: EnvRow): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task?.worktree_path || !env.check_command) return;
+        this.setTaskStatus(taskId, "running", `${def.label} · running the env's verification command`);
+        let out = "";
+        let ok = true;
+        try {
+            out = await runWorktreeSetup(task.worktree_path, env.path, env.check_command, parseEnvVars(env.env_vars));
+        } catch (e) {
+            ok = false;
+            const err = e as { stdout?: string; stderr?: string; message?: string };
+            out = `${err.stdout ?? ""}\n${err.stderr ?? ""}`.trim() || String(err.message ?? e);
+        }
+        if (ok) {
+            this.checkFailures.delete(taskId);
+            this.afterStageChecked(taskId, def, data);
+            return;
+        }
+        const n = (this.checkFailures.get(taskId) ?? 0) + 1;
+        this.checkFailures.set(taskId, n);
+        const tail = out.split("\n").slice(-40).join("\n").slice(-3000);
+        this.addMessage(taskId, "agent", `❌ The env's verification command failed after ${def.label} (attempt ${n}/${Engine.MAX_CHECK_ATTEMPTS}):\n\n\`\`\`\n${tail}\n\`\`\``);
+        if (n <= Engine.MAX_CHECK_ATTEMPTS) {
+            this.dispatch(taskId, def.stage, {
+                notes:
+                    `## The environment's verification command failed (attempt ${n} of ${Engine.MAX_CHECK_ATTEMPTS})\n\nStagehand ran this from the worktree after your run:\n\n\`\`\`\n${env.check_command}\n\`\`\`\n\nIt exited non-zero:\n\n\`\`\`\n${tail}\n\`\`\`\n\n` +
+                    `Fix the cause at the source (a model or migration problem, a failing system check, a missing dependency), run the command yourself until it passes, commit, then rewrite your output file and reply DONE.`,
+            });
+            return;
+        }
+        this.checkFailures.delete(taskId);
+        this.setTaskStatus(taskId, "blocked", `${def.label} · the env's verification command still fails after ${Engine.MAX_CHECK_ATTEMPTS} fix attempts — fix it in the worktree, then Retry`);
+    }
+
+    private afterStageChecked(taskId: string, def: StageDef, data: unknown): void {
         const task = this.getTask(taskId)!;
         if (def.stage === "implementation") this.addAgentNote(taskId, (data as ImplResult).notes);
         if (def.stage === "pr_fix") this.addAgentNote(taskId, `CI fix: ${(data as PrFixResult).summary}`);

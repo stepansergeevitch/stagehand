@@ -13,6 +13,7 @@ This is the IMPLEMENTATION stage for ticket {{ticketId}} in the worktree {{workt
 - Unit TDD: for each entry in `testPlan`, write the tests first (red), then the implementation (green). Add tests if you find gaps; never drop a planned case.
 - Use the repo's own commands, as documented in its CLAUDE.md / Makefile / pyproject, for tests, coverage and type-checking (whatever CLAUDE.md prescribes, e.g. `uv run pytest`, `npm test`, `uv run basedpyright --level error`). Run the targeted tests after each slice.
 - Coverage on NEW lines must exceed 90% (e.g. `pytest --cov=<touched modules> --cov-report=term-missing <paths>`); add tests until it does.
+- In a Django repository, after any model or migration change, also run `manage.py check --database default` and `manage.py makemigrations --check --dry-run` from the backend and make both pass: plain `manage.py check`, pytest and the dev server skip the database-dependent checks (an index name over 30 characters passes all of them, then fails `migrate` in production). If the environment defines a verification command, Stagehand runs it after you finish and sends a failure back to you.
 - Gates before you finish: all targeted tests green AND the repo's type-checker/linter clean. Fix at the source — no `# type: ignore`, `# pyright: ignore`, `cast`, or baseline entries.
 - {{commitRule}} Never touch `{{baseBranch}}`, never rewrite history. Never push from this stage.
 - Never put the ticket id in source code or comments. Never post to GitHub.

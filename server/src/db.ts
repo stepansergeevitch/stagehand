@@ -146,6 +146,9 @@ export interface EnvRow {
     rules: string | null;
     // Runs from the worktree before it is removed by "Clean up" (drop a per-task database, free caches, …); {{worktree}} / {{envPath}} placeholders.
     cleanup_command: string | null;
+    // Runs from the worktree after every implementation / PR-fix run; non-zero = the run goes back to the agent with the
+    // output (e.g. Django `check --database default` + `makemigrations --check`, which tests and a dev server never run).
+    check_command: string | null;
     // JSON {"<repo dir or .>": "<template path relative to that repo>"} — per-repository PR template overrides; a repo not listed is auto-detected.
     pr_templates: string | null;
     // Open every PR this env creates as a GitHub draft (0/1). The human marks it ready for review themselves.
@@ -668,6 +671,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["tasks.notes", `ALTER TABLE tasks ADD COLUMN notes TEXT`],
     ["tasks.extra_tickets", `ALTER TABLE tasks ADD COLUMN extra_tickets TEXT`],
     ["envs.cleanup_command", `ALTER TABLE envs ADD COLUMN cleanup_command TEXT`],
+    ["envs.check_command", `ALTER TABLE envs ADD COLUMN check_command TEXT`],
     ["window_calibration.anchor_u", `ALTER TABLE window_calibration ADD COLUMN anchor_u REAL`],
     ["window_calibration.anchor_resets", `ALTER TABLE window_calibration ADD COLUMN anchor_resets INTEGER`],
     ["window_calibration.anchor_cost", `ALTER TABLE window_calibration ADD COLUMN anchor_cost REAL NOT NULL DEFAULT 0`],
