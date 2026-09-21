@@ -7,6 +7,8 @@ import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer as createHttpsServer } from "node:https";
 import { join, normalize } from "node:path";
+import { promisify } from "node:util";
+const execFileAsync = promisify(execFile);
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { loadConfig, saveConfig } from "./config.js";
@@ -735,6 +737,28 @@ app.get("/api/usage", (c) => {
 
 app.get("/api/tasks", (c) => c.json(engine.listTasks(c.req.query("env"))));
 
+// Remote branch names of one repository of an env (`repo` = sub-repo dir, "" or omitted for a single repo), for the
+// base-branch pickers. `git ls-remote --heads` against the env's own checkout, cached a minute per repo.
+const branchCache = new Map<string, { at: number; names: string[] }>();
+app.get("/api/envs/:id/branches", async (c) => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
+    if (!env) return c.json({ error: "not found" }, 404);
+    const repo = c.req.query("repo") ?? "";
+    const cwd = repo ? join(env.path, repo) : env.path;
+    const hit = branchCache.get(cwd);
+    if (hit && Date.now() - hit.at < 60_000) return c.json({ branches: hit.names });
+    try {
+        const { stdout } = await execFileAsync("git", ["-C", cwd, "ls-remote", "--heads", "origin"], { env: { ...process.env, ...parseEnvVars(env.env_vars) }, maxBuffer: 8 * 1024 * 1024, timeout: 30_000 });
+        const names = stdout.split("\n").map((l) => l.split("\t")[1] ?? "").filter((r) => r.startsWith("refs/heads/")).map((r) => r.slice("refs/heads/".length));
+        // Trunk first, then the rest alphabetically.
+        names.sort((a, b) => (a === env.base_branch ? -1 : b === env.base_branch ? 1 : a.localeCompare(b)));
+        branchCache.set(cwd, { at: Date.now(), names });
+        return c.json({ branches: names });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e).slice(0, 200) }, 400);
+    }
+});
+
 // `tickets` + mode "each": one task per ticket; mode "batch": one task covering all of them (one branch, one PR per repo).
 app.post("/api/tasks", async (c) => {
     const body = json(
@@ -746,8 +770,9 @@ app.post("/api/tasks", async (c) => {
             accountId: z.string().optional(),
             model: z.string().optional(),
             notes: z.string().optional(),
-            // Branch the work starts from and the PR targets; omitted = the env's base_branch. Another task's branch = a stacked PR.
-            baseBranch: z.string().trim().min(1).optional(),
+            // Branch the work starts from and the PR targets; omitted = the env's base_branch. Another task's branch = a
+            // stacked PR. A multi-repo env may give one branch per repository directory ({"backend": "…", "frontend": "…"}).
+            baseBranch: z.union([z.string().trim().min(1), z.record(z.string())]).optional(),
         }),
         await c.req.json(),
     );
@@ -790,7 +815,7 @@ app.patch("/api/tasks/:id", async (c) => {
         z.object({
             notes: z.string().nullable().optional(),
             labels: z.array(z.object({ text: z.string().min(1).max(60), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) })).max(20).optional(),
-            baseBranch: z.string().nullable().optional(),
+            baseBranch: z.union([z.string(), z.record(z.string())]).nullable().optional(),
         }),
         await c.req.json(),
     );
@@ -998,8 +1023,9 @@ app.post("/api/tasks/:id/pr-comments/:commentId/resolve", async (c) => {
 app.get("/api/tasks/:id/diff", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
-    const envRow = db.prepare(`SELECT base_branch FROM envs WHERE id = ?`).get(task.env_id) as { base_branch: string };
-    const env = { base_branch: task.base_branch?.trim() || envRow.base_branch };
+    const envRow = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
+    // One name, or "backend: x, frontend: y" when the repositories of a stacked task target different bases.
+    const env = { base_branch: engine.baseBranchLabel(task, envRow) };
     const shas = (c.req.query("commits") ?? "").split(",").map((s) => s.trim()).filter((s) => /^[0-9a-f]{7,40}$/i.test(s));
     const scope = c.req.query("scope");
     const only = c.req.query("file") ?? null;

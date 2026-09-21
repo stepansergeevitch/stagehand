@@ -233,7 +233,7 @@ export interface TaskDetail {
     // dev-server skew window (see `tickets`).
     prStates?: PrState[];
 }
-export interface PrDraftEntry { repo: string; title: string; body: string; stackedOn?: { number: number; url: string; title: string } | null; stackNote?: string | null }
+export interface PrDraftEntry { repo: string; title: string; body: string; base?: string; stackedOn?: { number: number; url: string; title: string } | null; stackNote?: string | null }
 // `legacy`: pr.json predates per-repo drafts and was fanned out to every repository — redraft before trusting it.
 export interface PrDraft { base: string; drafts: PrDraftEntry[]; legacy?: boolean }
 export interface PrState {
@@ -247,6 +247,36 @@ export const repoName = (repo: string): string => repo || "repo";
 export const REPO_COLORS = ["accent", "wait", "ok", "warn"] as const;
 export const repoColorClass = (repo: string, repos: string[]): string => REPO_COLORS[Math.max(0, repos.indexOf(repo)) % REPO_COLORS.length]!;
 // The env's sub-repository directories ([] for a single-repo project); env.repos is a JSON array like ["backend","frontend"].
+// tasks.base_branch as stored: null, one branch for every repository, or a JSON map {repoDir: branch} for a multi-repo
+// env whose repositories start from different branches.
+export const parseBaseBranch = (raw: string | null | undefined): string | Record<string, string> | null => {
+    const t = raw?.trim();
+    if (!t) return null;
+    if (!t.startsWith("{")) return t;
+    try {
+        const o = JSON.parse(t) as unknown;
+        return o && typeof o === "object" && !Array.isArray(o) ? (o as Record<string, string>) : null;
+    } catch {
+        return null;
+    }
+};
+// The base of each repository of the env ("" = the single repo), env default filled in.
+export const taskBases = (task: Pick<Task, "base_branch">, env: Pick<Env, "repos" | "base_branch"> | undefined): Record<string, string> => {
+    const repos = envRepos(env);
+    const keys = repos.length ? repos : [""];
+    const b = parseBaseBranch(task.base_branch);
+    const fallback = env?.base_branch ?? "";
+    return Object.fromEntries(keys.map((k) => [k, typeof b === "string" ? b : (b?.[k]?.trim() || fallback)]));
+};
+// "dev", or "backend: x · frontend: dev" when repositories differ; null when every repo is on the env default.
+export const baseLabel = (task: Pick<Task, "base_branch">, env: Pick<Env, "repos" | "base_branch"> | undefined): string | null => {
+    const bases = taskBases(task, env);
+    const values = Object.values(bases);
+    if (env && values.every((v) => v === env.base_branch)) return null;
+    const distinct = [...new Set(values)];
+    return distinct.length <= 1 ? (distinct[0] ?? null) : Object.entries(bases).map(([r, b]) => `${r || "repo"}: ${b}`).join(" · ");
+};
+
 export const envRepos = (env: Pick<Env, "repos"> | undefined): string[] => {
     try {
         const v: unknown = env?.repos ? JSON.parse(env.repos) : [];
@@ -340,9 +370,11 @@ export const api = {
     tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
     // mode "each": one task per ticket; "batch": one task covering every ticket.
-    createTasks: (body: { envId: string; tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string }) => post<{ tasks: Task[] }>("/api/tasks", body),
+    createTasks: (body: { envId: string; tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string | Record<string, string> }) => post<{ tasks: Task[] }>("/api/tasks", body),
+    // Remote branch names of one repository of an env ("" = the single repo), for the base-branch pickers.
+    branches: (envId: string, repo = "") => fetch(`/api/envs/${envId}/branches?repo=${encodeURIComponent(repo)}`).then((r) => j<{ branches: string[] }>(r)),
     labelSuggestions: () => fetch("/api/labels").then((r) => j<Array<TaskLabel & { count: number }>>(r)),
-    patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[]; baseBranch?: string | null }) =>
+    patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[]; baseBranch?: string | Record<string, string> | null }) =>
         fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Task>(r)),
     returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[]; skipQa?: boolean }) => post<Task>(`/api/tasks/${id}/return`, body),
     patchPrDraft: (id: string, body: { repo: string; title?: string; body?: string; base?: string }) =>

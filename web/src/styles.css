@@ -563,6 +563,17 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .chat-msg .markdown { max-width: none; font-size: 13px; }
 .diff > .base-drift { margin: 0 0 10px; }
 .base-drift button.tiny { margin-left: 6px; }
+/* base-branch picker (input + datalist) */
+.branch-picker { display: inline-flex; flex-direction: column; gap: 2px; width: 100%; }
+.branch-picker input { width: 100%; font-family: var(--mono); }
+.branch-picker-hint { font-size: 11px; }
+.branch-line { display: flex; gap: 6px; align-items: baseline; margin-bottom: 2px; }
+/* task list: multi-select for bulk delete */
+.row { grid-template-columns: 14px 18px 1fr auto auto; }
+.row .pick { width: 14px; height: 14px; margin: 0; align-self: center; }
+.row.picked { background: var(--warn-soft); }
+.bulk-bar { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.bulk-bar button.tiny.danger { color: var(--bad); border-color: var(--bad); }
 .chat-msg.instruction { border-left: 3px solid var(--accent); }
 .chat-msg.instruction_result { border-left: 3px solid var(--ok); }
 .chat-mode { display: inline-flex; gap: 0; margin: 8px 0 6px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }

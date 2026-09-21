@@ -8,7 +8,7 @@ Worktree: `{{worktree}}` (every command below runs there; in a multi-repository 
 
 ## What is known
 
-- Base branch: `{{baseBranch}}` — the branch this task's PR targets. Behind by: {{behind}}.
+- Base branch: `{{baseBranch}}` — the branch this task's PR targets (a multi-repository task may name a different base per repository, as `repo: branch`; every `origin/{{baseBranch}}` below then means that repository's own base). Behind by: {{behind}}.
 - The task's accepted design is in `{{taskDir}}/design.md` (its Contract section says what must stay true) — the guide for resolving a conflict in favour of this task's intent versus what landed on the base.
 
 ## Steps

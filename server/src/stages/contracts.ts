@@ -80,6 +80,9 @@ export const PrDraftEntry = z.object({
     repo: z.string().default(""),
     title: z.string().min(1),
     body: z.string(),
+    // This repository's PR base when it differs from the draft's shared `base` (a multi-repo task whose repos are
+    // stacked on different branches); filled by the orchestrator from the task's per-repo base.
+    base: z.string().optional(),
     // Filled by the orchestrator, not the agent: when the draft's base is not the env's trunk, the open PR whose head
     // is that base (this PR is stacked on it), or a note when the base has no PR yet.
     stackedOn: z.object({ number: z.number().int(), url: z.string(), title: z.string() }).nullable().optional(),

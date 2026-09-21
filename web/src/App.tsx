@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LabelChips } from "./Labels";
-import { accountOrderOf, accountUsableWith, api, labelsOf, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
+import { BranchPicker } from "./BranchPicker";
+import { accountOrderOf, accountUsableWith, api, envRepos, labelsOf, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
 import { TASK_TABS, TaskDetailView, type Tab as TaskTab } from "./TaskDetail";
 import { EnvPage } from "./EnvPage";
 import { ConfigDirPage } from "./ConfigDirPage";
@@ -37,8 +38,9 @@ const PAGES: readonly Page[] = ["dashboard", "tasks", "sessions", "analytics", "
 const parseHash = (hash: string): Route => {
     const [head = "", a = "", b = ""] = hash.replace(/^#\/?/, "").split("/");
     const r: Route = { page: "dashboard", selected: null, taskTab: "work", envId: null, dirId: null };
-    if (head === "tasks") {
-        r.page = "tasks";
+    if (head === "tasks" || head === "dashboard") {
+        // A task opened from the Dashboard stays on the Dashboard page: #/dashboard/<taskId>/<tab>.
+        r.page = head;
         if (a) r.selected = decodeURIComponent(a);
         if (b && (TASK_TABS as readonly string[]).includes(b)) r.taskTab = b as TaskTab;
     } else if (head === "env" && a) {
@@ -51,7 +53,7 @@ const parseHash = (hash: string): Route => {
     return r;
 };
 const buildHash = (page: Page, selected: string | null, taskTab: TaskTab, envId: string, dirId: string | null): string => {
-    if (page === "tasks") return selected ? `#/tasks/${encodeURIComponent(selected)}/${taskTab}` : "#/tasks";
+    if (page === "tasks" || page === "dashboard") return selected ? `#/${page}/${encodeURIComponent(selected)}/${taskTab}` : `#/${page}`;
     if (page === "env") return `#/env/${encodeURIComponent(envId)}`;
     if (page === "dir" && dirId) return `#/dir/${encodeURIComponent(dirId)}`;
     return `#/${page}`;
@@ -162,6 +164,8 @@ export const App = () => {
     const [terminal, setTerminal] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [moreOpen, setMoreOpen] = useState(false);
+    // Tasks ticked in the list for a bulk delete.
+    const [picked, setPicked] = useState<Set<string>>(() => new Set());
     const [page, setPage] = useState<Page>(initial.page);
     const navActive: Page = page === "env" ? "envs" : page === "dir" ? "dirs" : page;
 
@@ -270,6 +274,53 @@ export const App = () => {
     const env = envs.find((e) => e.id === envId);
     const dir = dirId ? configDirs.find((d) => d.id === dirId) : undefined;
 
+    // The selected task's detail view — the same on the Tasks page and when a task is opened from the Dashboard.
+    const taskDetailView = detail && (
+        <ErrorBoundary key={detail.task.id} label="Task view">
+            <TaskDetailView
+                detail={detail}
+                accounts={accountsFor(envs.find((e) => e.id === detail.task.env_id), accounts, configDirs)}
+                env={envs.find((e) => e.id === detail.task.env_id)}
+                onError={setError}
+                feed={feed[detail.task.id] ?? []}
+                terminal={terminal}
+                onAction={run}
+                tab={taskTab}
+                setTab={setTaskTab}
+                onOpenTerminal={async () => {
+                    const r = await api.terminal(detail.task.id);
+                    setTerminal(r.terminal);
+                }}
+                onCloseTerminal={() => setTerminal(null)}
+            />
+        </ErrorBoundary>
+    );
+
+    // Bulk delete of the ticked tasks: same cleanup as a single Delete; tasks whose commits exist nowhere else are
+    // refused first and offered a second, forced pass.
+    const deletePicked = async () => {
+        const ids = [...picked].filter((id) => tasks.some((t) => t.id === id));
+        if (ids.length === 0) return;
+        const names = ids.map((id) => tasks.find((t) => t.id === id)?.ticket_id ?? id);
+        if (!confirm(`Delete ${ids.length} task${ids.length === 1 ? "" : "s"} (${names.join(", ")})? Each is cleaned up (BE/FE, Chrome tabs, worktree, local branch) and then removed. PRs stay on GitHub.`)) return;
+        const refused: Array<{ id: string; name: string; msg: string }> = [];
+        for (const id of ids) {
+            try {
+                await api.deleteTask(id);
+            } catch (e) {
+                const msg = String((e as Error).message ?? e);
+                if (/nowhere else/.test(msg)) refused.push({ id, name: tasks.find((t) => t.id === id)?.ticket_id ?? id, msg });
+                else setError(msg);
+            }
+        }
+        if (refused.length && confirm(`${refused.map((r) => `${r.name}: ${r.msg}`).join("\n\n")}\n\nDiscard their work and delete anyway?`)) {
+            for (const r of refused) await api.deleteTask(r.id, false, true).catch((e: Error) => setError(e.message));
+        }
+        setPicked(new Set());
+        if (selected && ids.includes(selected)) setSelected(null);
+        await reload();
+    };
+
     return (
         <div className="app">
             <header className={`topbar ${moreOpen ? "more-open" : ""}`}>
@@ -281,7 +332,7 @@ export const App = () => {
             <div className="body">
                 <nav className="sidebar" aria-label="Sections">
                     {NAV.map((n) => (
-                        <button key={n.id} className={navActive === n.id ? "active" : ""} title={n.hint} onClick={() => setPage(n.id)}>
+                        <button key={n.id} className={navActive === n.id ? "active" : ""} title={n.hint} onClick={() => { if (n.id === "dashboard") setSelected(null); setPage(n.id); }}>
                             {n.label}
                             {n.id === "dashboard" && attention > 0 && <span className="count alert">{attention}</span>}
                             {n.id === "tasks" && visible.length > 0 && <span className="count">{visible.length}</span>}
@@ -293,8 +344,10 @@ export const App = () => {
                 {page === "dashboard" && (
                     <div className="main page">
                         <main className="detail">
+                            {selected && <button className="back" onClick={() => setSelected(null)}>← dashboard</button>}
                             {error && <div className="blocked-box">{error}</div>}
-                            <ErrorBoundary label="Dashboard"><Dashboard envs={envs} tasks={tasks} readiness={readiness} onOpen={(t) => { setEnvId(t.env_id); setSelected(t.id); setPage("tasks"); }} /></ErrorBoundary>
+                            {/* A task opened from the Dashboard shows here, in place; back returns to the cards. */}
+                            {selected ? (taskDetailView ?? <div className="empty">Loading…</div>) : <ErrorBoundary label="Dashboard"><Dashboard envs={envs} tasks={tasks} readiness={readiness} onOpen={(t) => { setEnvId(t.env_id); setSelected(t.id); }} /></ErrorBoundary>}
                         </main>
                     </div>
                 )}
@@ -364,6 +417,13 @@ export const App = () => {
                                 <span className="icon">+</span>
                                 <span className="name">New task</span>
                             </button>
+                            {picked.size > 0 && (
+                                <div className="bulk-bar">
+                                    <span>{picked.size} selected</span>
+                                    <button className="tiny danger" onClick={() => void deletePicked()}>Delete selected</button>
+                                    <button className="tiny" onClick={() => setPicked(new Set())}>Clear</button>
+                                </div>
+                            )}
                         </div>
                         {visible.length === 0 && <div className="empty">No tasks in this env yet.</div>}
                         {grouped.map(([g, list]) => (
@@ -372,7 +432,15 @@ export const App = () => {
                                 {list.map((t) => {
                                     const [glyph, cls] = ICON[g];
                                     return (
-                                        <div key={t.id} className={`row ${selected === t.id ? "selected" : ""}`} onClick={() => setSelected(t.id)}>
+                                        <div key={t.id} className={`row ${selected === t.id ? "selected" : ""} ${picked.has(t.id) ? "picked" : ""}`} onClick={() => setSelected(t.id)}>
+                                            <input
+                                                type="checkbox"
+                                                className="pick"
+                                                title="Select for bulk delete"
+                                                checked={picked.has(t.id)}
+                                                onClick={(e) => e.stopPropagation()}
+                                                onChange={(e) => setPicked((p) => { const n = new Set(p); if (e.target.checked) n.add(t.id); else n.delete(t.id); return n; })}
+                                            />
                                             <span className={`icon ${cls}`}>{glyph}</span>
                                             <span className="name">{taskLabel(t)}<small>{t.title ?? ""}</small></span>
                                             <span className="age">{age(t.updated_at)}</span>
@@ -388,26 +456,7 @@ export const App = () => {
                         {selected && <button className="back" onClick={() => setSelected(null)}>← tasks</button>}
                         {error && <div className="blocked-box">{error}</div>}
                         {!detail && <div className="empty">Select a task, or add one.</div>}
-                        {detail && (
-                            <ErrorBoundary key={detail.task.id} label="Task view">
-                            <TaskDetailView
-                                detail={detail}
-                                accounts={accountsFor(envs.find((e) => e.id === detail.task.env_id), accounts, configDirs)}
-                                env={envs.find((e) => e.id === detail.task.env_id)}
-                                onError={setError}
-                                feed={feed[detail.task.id] ?? []}
-                                terminal={terminal}
-                                onAction={run}
-                                tab={taskTab}
-                                setTab={setTaskTab}
-                                onOpenTerminal={async () => {
-                                    const r = await api.terminal(detail.task.id);
-                                    setTerminal(r.terminal);
-                                }}
-                                onCloseTerminal={() => setTerminal(null)}
-                            />
-                            </ErrorBoundary>
-                        )}
+                        {taskDetailView}
                     </main>
                 </div>}
             </div>
@@ -527,12 +576,20 @@ const TicketPicker = ({ groups, selected, onToggle }: { groups: Array<[string, M
 
 const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
     accounts: Account[]; env: Env; settings: Settings | null; readiness: Readiness | undefined;
-    onSubmit: (body: { tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string }) => Promise<void>;
+    onSubmit: (body: { tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string | Record<string, string> }) => Promise<void>;
 }) => {
     const [ticket, setTicket] = useState("");
     const [mode, setMode] = useState<"each" | "batch">("each");
     const [notes, setNotes] = useState("");
-    const [base, setBase] = useState("");
+    // One base branch per repository ("" = the single repo); empty = the env default.
+    const repoKeys = useMemo(() => { const r = envRepos(env); return r.length ? r : [""]; }, [env]);
+    const [bases, setBases] = useState<Record<string, string>>({});
+    const baseBranch = ((): string | Record<string, string> | undefined => {
+        const given: Record<string, string> = Object.fromEntries(repoKeys.map((k) => [k, (bases[k] ?? "").trim()] as const).filter(([, v]) => v && v !== env.base_branch));
+        const values: string[] = [...new Set(Object.values(given))];
+        if (values.length === 0) return undefined;
+        return repoKeys.length === 1 || (values.length === 1 && Object.keys(given).length === repoKeys.length) ? values[0] : given;
+    })();
     const [acc, setAcc] = useState(accountOrderOf(env).find((id) => accounts.some((a) => a.id === id)) ?? accounts[0]?.id ?? "");
     const [model, setModel] = useState(settings?.defaultModel ?? "");
     const [mine, setMine] = useState<{ tickets: MyTicket[]; error?: string } | null>(null);
@@ -575,10 +632,12 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                 </label>
             )}
             <label>Extra instructions for the agents (optional; every stage sees them) <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Constraints, where the code lives, what to skip, how to test…" style={{ minHeight: 60 }} /></label>
-            <label>Base branch
-                <input value={base} onChange={(e) => setBase(e.target.value)} placeholder={env.base_branch} />
-                <span className="field-hint">The branch the work starts from and the PR targets — default {env.base_branch}. For a stacked PR, another task's branch; when that branch's PR merges and GitHub retargets this PR, the task follows.</span>
-            </label>
+            {repoKeys.map((repo) => (
+                <label key={repo}>Base branch{repo ? ` · ${repo}` : ""}
+                    <BranchPicker envId={env.id} repo={repo} value={bases[repo] ?? ""} onChange={(v) => setBases((b) => ({ ...b, [repo]: v }))} placeholder={env.base_branch} />
+                </label>
+            ))}
+            <span className="field-hint">The branch the work starts from and the PR targets — default {env.base_branch}. For a stacked PR, another task's branch{repoKeys.length > 1 ? " (per repository: a parent that touched only one repo leaves the other on the default)" : ""}; when that branch's PR merges, the task is rebased onto the new base automatically.</span>
             <label>AI account
                 <select value={acc} onChange={(e) => setAcc(e.target.value)}>
                     {accounts.length === 0 && <option value="">— no account can run in this environment's config dir —</option>}
@@ -595,7 +654,7 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                 </select>
                 <span className="field-hint">Applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet.</span>
             </label>
-            <button className="primary" disabled={list.length === 0 || bad.length > 0 || accounts.length === 0} onClick={() => onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}), ...(base.trim() && base.trim() !== env.base_branch ? { baseBranch: base.trim() } : {}) })}>
+            <button className="primary" disabled={list.length === 0 || bad.length > 0 || accounts.length === 0} onClick={() => onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}), ...(baseBranch ? { baseBranch } : {}) })}>
                 {list.length > 1 ? (mode === "each" ? `Start ${list.length} tasks` : `Start 1 task for ${list.length} tickets`) : "Start task"}
             </button>
         </>

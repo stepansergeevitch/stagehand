@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LabelEditor } from "./Labels";
-import { api, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseChecks, pendingQuestions, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
+import { BranchPicker } from "./BranchPicker";
+import { api, baseLabel, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseBaseBranch, parseChecks, pendingQuestions, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
 import { Chat } from "./Chat";
@@ -536,7 +537,18 @@ const PrWidget = ({ detail, onAction, onOpenInTab }: { detail: TaskDetail; onAct
             {repos.map((repo) => <PrRepoRow key={repo} detail={detail} repo={repo} repos={repos} onAction={onAction} onOpenInTab={onOpenInTab} />)}
             {repos.length > 0 && (
                 <div className="field-hint">
-                    {task.branch && <code className="small">⎇ {task.branch}</code>}{task.base_branch && <code className="small" title="base branch (stacked PR) — the branch this task diffs against and its PR targets"> → {task.base_branch}</code>}{task.branch ? " · " : ""}
+                    {/* One branch line per repository: each repo can target its own base (stacked per repo). */}
+                    {task.branch && repos.map((repo) => {
+                        const bases = parseBaseBranch(task.base_branch);
+                        const base = typeof bases === "string" ? bases : bases?.[repo];
+                        return (
+                            <div key={repo} className="branch-line">
+                                {repos.length > 1 && <RepoChip repo={repo} repos={repos} />}
+                                <code className="small">⎇ {task.branch}</code>
+                                {base && <code className="small" title="base branch (stacked PR) — the branch this repository diffs against and its PR targets"> → {base}</code>}
+                            </div>
+                        );
+                    })}
                     {lastPoll ? `last poll ${new Date(lastPoll).toLocaleTimeString()} · ` : ""}polls every 2 min
                 </div>
             )}
@@ -633,7 +645,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     // Jump to the Pull request tab, optionally focusing one repository (from the header's "show more" or a Work pointer).
     // "Rebase onto latest base" — from the header button and from the Code changes base-drift banner.
     const startRebase = () => {
-        const base = task.base_branch ?? env?.base_branch ?? "the base branch";
+        const base = baseLabel(task, env) ?? env?.base_branch ?? "the base branch";
         if (confirm(`Rebase ${task.branch} onto the latest origin/${base}?\n\nThe agent resolves conflicts and re-runs checks. If the branch is on GitHub and this env allows pushes, Stagehand force-pushes it afterwards (with lease).`)) void onAction(() => api.rebase(task.id));
     };
     const [prFocusRepo, setPrFocusRepo] = useState<string | null>(null);
@@ -1169,7 +1181,8 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
     const [editing, setEditing] = useState(false);
     const [title, setTitle] = useState(entry.title);
     const [body, setBody] = useState(entry.body);
-    const [base, setBase] = useState(pr?.base ?? "");
+    // This repository's PR base: the entry's own (a per-repo stack) or the draft's shared one.
+    const [base, setBase] = useState(entry.base ?? pr?.base ?? "");
     const [saving, setSaving] = useState(false);
     const [notes, setNotes] = useState("");
     const [changes, setChanges] = useState(false);
@@ -1177,9 +1190,9 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
         if (!editing) {
             setTitle(entry.title);
             setBody(entry.body);
-            setBase(pr?.base ?? "");
+            setBase(entry.base ?? pr?.base ?? "");
         }
-    }, [entry.title, entry.body, pr?.base, editing]);
+    }, [entry.title, entry.body, entry.base, pr?.base, editing]);
     const dirty = title !== entry.title || body !== entry.body || base !== (pr?.base ?? "");
     const o = prOutcome(row);
     return (
@@ -1213,7 +1226,7 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
             {editing && (
                 <div className="pr-editor">
                     <label>Title <input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
-                    <label>Base branch (shared by every repository) <input value={base} onChange={(e) => setBase(e.target.value)} style={{ maxWidth: 220 }} /></label>
+                    <label>Base branch{repos.length > 1 ? ` for ${repoName(entry.repo)}` : ""} <BranchPicker envId={task.env_id} repo={entry.repo} value={base} onChange={setBase} style={{ maxWidth: 320 }} /></label>
                     <div className="pr-editor-panes">
                         <div className="pr-editor-pane">
                             <div className="pr-editor-head">Markdown</div>

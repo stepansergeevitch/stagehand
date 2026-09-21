@@ -190,6 +190,58 @@ export const accountOrderOf = (env: Pick<EnvRow, "account_order" | "default_acco
     return env.default_account_id ? [env.default_account_id] : [];
 };
 
+// tasks.base_branch: NULL (the env's base branch in every repository), one branch name (every repository starts from
+// and targets it — a task stacked on another task's branch), or a JSON object {"<repo dir>": "<branch>"} for a
+// multi-repo env whose repositories start from different branches (stacked on a parent that touched only one repo).
+export type BaseBranches = Record<string, string>;
+
+export const parseBaseBranch = (raw: string | null | undefined): string | BaseBranches | null => {
+    const t = raw?.trim();
+    if (!t) return null;
+    if (!t.startsWith("{")) return t;
+    try {
+        const o = JSON.parse(t) as unknown;
+        if (!o || typeof o !== "object" || Array.isArray(o)) return null;
+        const out: BaseBranches = {};
+        for (const [k, v] of Object.entries(o as Record<string, unknown>)) if (typeof v === "string" && v.trim()) out[k] = v.trim();
+        return Object.keys(out).length ? out : null;
+    } catch {
+        return null;
+    }
+};
+
+// The base of one repository ("" = the single repository) given the stored value and the env default.
+export const baseBranchFor = (raw: string | null | undefined, repo: string, envBase: string): string => {
+    const b = parseBaseBranch(raw);
+    if (!b) return envBase;
+    if (typeof b === "string") return b;
+    return b[repo]?.trim() || envBase;
+};
+
+// What to store for a human-given base (a string for every repo, or a per-repo map): entries equal to the env default
+// are dropped, one shared value collapses to a plain string, nothing left = NULL.
+// A branch name as typed or pasted by a human: the UI's "⎇ " prefix, "origin/" and surrounding whitespace are not part of it
+// (INV-134, 2026-09-21: a base pasted from the task header as "⎇ stepanb/…" failed worktree creation).
+export const cleanBranchName = (s: string): string => s.trim().replace(/^⎇\s*/, "").replace(/^origin\//, "").trim();
+
+export const normalizeBaseBranch = (given: string | BaseBranches | null | undefined, repos: string[], envBase: string): string | null => {
+    if (given == null) return null;
+    if (typeof given === "string") {
+        const t = cleanBranchName(given);
+        return t && t !== envBase ? t : null;
+    }
+    const keys = repos.length ? repos : [""];
+    const map: BaseBranches = {};
+    for (const k of keys) {
+        const v = cleanBranchName(given[k] ?? "");
+        if (v && v !== envBase) map[k] = v;
+    }
+    const values = [...new Set(Object.values(map))];
+    if (values.length === 0) return null;
+    if (values.length === 1 && Object.keys(map).length === keys.length) return values[0]!;
+    return JSON.stringify(map);
+};
+
 export const parseEnvVars = (text: string | null): Record<string, string> => {
     const out: Record<string, string> = {};
     for (const raw of (text ?? "").split("\n")) {

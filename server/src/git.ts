@@ -28,7 +28,11 @@ export interface RepoLayout {
     path: string;
     base_branch: string;
     repos: string | null;
+    // Per-repository base for a multi-repo layout ("" for a single repo); a missing entry falls back to base_branch.
+    base_branches?: Record<string, string> | null;
 }
+
+export const baseOf = (env: RepoLayout, dir: string): string => env.base_branches?.[dir]?.trim() || env.base_branch;
 
 export const envRepos = (env: Pick<RepoLayout, "repos">): string[] => {
     if (!env.repos) return [];
@@ -87,12 +91,12 @@ const createOne = async (repoPath: string, baseBranch: string, branch: string, t
 export const createWorktree = async (env: RepoLayout, branch: string, vars: Vars = {}): Promise<WorktreeResult> => {
     const root = worktreePathFor(env.path, branch);
     const subs = envRepos(env);
-    if (subs.length === 0) return createOne(env.path, env.base_branch, branch, root, vars);
+    if (subs.length === 0) return createOne(env.path, baseOf(env, ""), branch, root, vars);
     mkdirSync(root, { recursive: true });
     let reused = false;
     let existingCommits = 0;
     for (const dir of subs) {
-        const r = await createOne(join(env.path, dir), env.base_branch, branch, join(root, dir), vars);
+        const r = await createOne(join(env.path, dir), baseOf(env, dir), branch, join(root, dir), vars);
         reused = reused || r.reused;
         existingCommits += r.existingCommits;
     }
@@ -239,11 +243,11 @@ const diffOne = async (checkout: string, baseBranch: string, prefix: string, var
 
 export const worktreeDiff = async (env: RepoLayout, worktree: string, vars: Vars = {}): Promise<DiffFile[]> => {
     const subs = envRepos(env);
-    if (subs.length === 0) return diffOne(worktree, env.base_branch, "", vars);
+    if (subs.length === 0) return diffOne(worktree, baseOf(env, ""), "", vars);
     const all: DiffFile[] = [];
     for (const dir of subs) {
         if (!existsSync(join(worktree, dir))) continue;
-        all.push(...(await diffOne(join(worktree, dir), env.base_branch, `${dir}/`, vars)));
+        all.push(...(await diffOne(join(worktree, dir), baseOf(env, dir), `${dir}/`, vars)));
     }
     return all;
 };
@@ -258,7 +262,7 @@ export const baseDrift = async (env: RepoLayout, worktree: string, vars: Vars = 
     for (const dir of subs.length === 0 ? [""] : subs) {
         const checkout = dir ? join(worktree, dir) : worktree;
         if (!existsSync(checkout)) continue;
-        const ref = `origin/${env.base_branch}`;
+        const ref = `origin/${baseOf(env, dir)}`;
         const exists = await git(checkout, ["rev-parse", "-q", "--verify", ref], vars).then(() => true, () => false);
         if (!exists) continue;
         const ancestor = await git(checkout, ["merge-base", "--is-ancestor", ref, "HEAD"], vars).then(() => true, () => false);
@@ -291,7 +295,7 @@ export const branchCommits = async (env: RepoLayout, worktree: string, vars: Var
     const commits: BranchCommit[] = [];
     let uncommitted = false;
     for (const { checkout, repo } of checkoutsOf(env, worktree)) {
-        const raw = await git(checkout, ["log", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI", `origin/${env.base_branch}..HEAD`], vars).catch(() => "");
+        const raw = await git(checkout, ["log", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI", `origin/${baseOf(env, repo)}..HEAD`], vars).catch(() => "");
         for (const line of raw.split("\n").filter(Boolean)) {
             const [sha = "", short = "", subject = "", author = "", at = ""] = line.split("\x1f");
             commits.push({ sha, short, subject, author, at, repo });
@@ -333,9 +337,9 @@ const uncommittedDiff = async (env: RepoLayout, worktree: string, vars: Vars): P
 export const commitsDiff = async (env: RepoLayout, worktree: string, shas: string[], vars: Vars = {}): Promise<DiffGroup[]> => {
     const wanted = new Set(shas);
     const groups: DiffGroup[] = [];
-    for (const { checkout, prefix } of checkoutsOf(env, worktree)) {
+    for (const { checkout, prefix, repo } of checkoutsOf(env, worktree)) {
         // Oldest first, so runs are in history order.
-        const ordered = (await git(checkout, ["log", "--reverse", "--format=%H", `origin/${env.base_branch}..HEAD`], vars).catch(() => "")).split("\n").filter(Boolean);
+        const ordered = (await git(checkout, ["log", "--reverse", "--format=%H", `origin/${baseOf(env, repo)}..HEAD`], vars).catch(() => "")).split("\n").filter(Boolean);
         let run: string[] = [];
         const flush = async (): Promise<void> => {
             if (run.length === 0) return;
