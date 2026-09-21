@@ -20,6 +20,7 @@ import type { ServiceKind } from "./db.js";
 import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
 import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
+import { applyApprovedStepFixes } from "./qa-fixes.js";
 import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
 
 // A comment anchored to one line of the review diff. `line` is the new-file line for add/context lines, the old-file line for deletions.
@@ -3424,6 +3425,14 @@ export class Engine extends EventEmitter {
         const stored = JSON.parse(row.questions) as QuestionsFile & { resume?: { notes: string | null; attempt: number; extraVars: Record<string, string> } };
         this.db.prepare(`UPDATE questions SET answers = ?, answered_at = ? WHERE id = ?`).run(JSON.stringify(answers), now(), row.id);
         this.addMessage(taskId, "user", stored.questions.map((q) => `**${q.id}** ${q.text}\n→ ${answers[q.id]?.trim() || "(no answer — decide yourself)"}`).join("\n\n"));
+        // A corrected scenario step/seed the human approved is written into design.json here (deterministic), so a
+        // fresh QA session runs it instead of re-deriving the defect and asking again.
+        try {
+            const applied = applyApprovedStepFixes(join(this.taskDir(taskId), "design.json"), stored.questions, answers);
+            if (applied.length) this.addAgentNote(taskId, `🛠 Applied to design.json from your answers:\n${applied.map((a) => `- ${a}`).join("\n")}`);
+        } catch (e) {
+            console.warn(`[stagehand] applying approved step fixes for ${task.ticket_id}: ${String((e as Error).message ?? e)}`);
+        }
         const answerNotes = renderAnswers(stored.questions, answers);
         const prior = stored.resume?.notes?.trim();
         this.setStage(taskId, row.stage);
