@@ -160,8 +160,20 @@ export class Services {
         }
     }
 
+    // Ports picked by a start() that has not inserted its row yet: two tasks starting within the same tick otherwise
+    // both pass the "not taken, free" test for the same port (PRODUCT-10501/10502, 2026-09-21: both BEs on 18005, both
+    // FEs on 13005, 10 ms apart). Reserved here by pickPort, released by start() once the row exists (or on failure).
+    private readonly reserving = new Set<number>();
+
     private async pickPort(kind: ServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
+        const port = await this.choosePort(kind, fixed, task);
+        this.reserving.add(port);
+        return port;
+    }
+
+    private async choosePort(kind: ServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
         const taken = new Set((this.db.prepare(`SELECT port FROM services WHERE stopped_at IS NULL`).all() as Array<{ port: number }>).map((r) => r.port));
+        for (const p of this.reserving) taken.add(p);
         // A pinned port is a preference, not a requirement: when another task, the user's own dev server or anything
         // else holds it, the service takes a free port from the range like every other one (user, 2026-09-21:
         // "it doesn't matter inside or outside - just pick a free port" — PRODUCT-10501 sat blocked on Core's 7777).
@@ -204,6 +216,16 @@ export class Services {
         }
 
         const port = await this.pickPort(kind, kind === "be" ? env.be_port : env.fe_port, task);
+        try {
+            return await this.launch(task, env, kind, port, be);
+        } finally {
+            this.reserving.delete(port);
+        }
+    }
+
+    private async launch(task: TaskRow, env: EnvRow, kind: ServiceKind, port: number, be: ServiceRow | undefined): Promise<ServiceRow> {
+        const template = kind === "be" ? env.be_command : env.fe_command;
+        if (!template) throw new Error(`env "${env.name}" has no ${kind.toUpperCase()} command configured`);
         const urlTemplate = (kind === "be" ? env.be_url_template : env.fe_url_template) ?? "http://localhost:{{port}}";
         const url = render(urlTemplate, { port: String(port) });
         const vars: Record<string, string> = {
