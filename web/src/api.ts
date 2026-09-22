@@ -124,7 +124,8 @@ export interface Settings {
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
     notifications: Notifications;
     desktopNotifier: string;
-    prompter: PrompterSettings;
+    // Absent from a server older than this UI.
+    prompter?: PrompterSettings;
 }
 export interface PrompterSession { id: string; claude_session_id: string; model: string | null; account_id: string | null; created_at: string; last_at: string; pinged_at: string; closed_at: string | null; turns: number }
 export interface PrompterMessage { id: string; session_id: string; role: "user" | "assistant" | "system"; text: string; path: string | null; created_at: string }

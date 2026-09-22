@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type PrompterStatus, type Settings, type Task, type TaskManager } from "./api";
+import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager } from "./api";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
 export type ManageTab = "envs" | "dirs" | "accounts" | "integrations";
@@ -309,7 +309,8 @@ const NotificationsCard = ({ settings, onChanged, onError }: { settings: Setting
 // Prompter: the assistant in the bottom-right corner of the app. Runs on a token account in its own config dir with its
 // own MemPalace (~/.stagehand/prompter); this card picks the account and model, the idle timeout, and seeds the palace.
 const PrompterCard = ({ settings, accounts, onChanged, onError }: { settings: Settings; accounts: Account[]; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
-    const p = settings.prompter;
+    // A server older than this UI (between a deploy and its restart) has no prompter settings yet.
+    const p: PrompterSettings = settings.prompter ?? { accountId: null, model: "fable", idleMinutes: 240, farewell: true, maxTurns: 40, seedFrom: "", seedWings: [] };
     const [status, setStatus] = useState<PrompterStatus | null>(null);
     const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
     const [idle, setIdle] = useState(String(p.idleMinutes));

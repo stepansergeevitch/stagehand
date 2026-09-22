@@ -48,7 +48,7 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
                 /* gone — start fresh */
             }
         }
-        const s = await api.prompterCreate(model || settings?.prompter.model || null);
+        const s = await api.prompterCreate(model || settings?.prompter?.model || null);
         storage.set(SESSION_KEY, s.id);
         setSession(s);
         setMessages([]);
