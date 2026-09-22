@@ -16,7 +16,9 @@ shift
 FORCE=0; KEEP=0
 for a in "$@"; do case "$a" in --force) FORCE=1 ;; --keep) KEEP=1 ;; *) echo "unknown option $a" >&2; exit 2 ;; esac; done
 
-REPO="$(cd "$(dirname "$0")/.." && git rev-parse --show-toplevel)"
+# The main checkout — the one that owns .git — even when this copy of the script runs from a worktree (its
+# --show-toplevel would be the worktree itself, and the release would "land" onto the branch and remove it).
+REPO="$(dirname "$(cd "$(dirname "$0")/.." && git rev-parse --path-format=absolute --git-common-dir)")"
 DB="${STAGEHAND_HOME:-$HOME/.stagehand}/stagehand.sqlite"
 TMUX_SESSION="${STAGEHAND_TMUX:-stagehand-server}"
 START_CMD="cd $REPO/server && npx tsx src/index.ts 2>&1 | tee ${STAGEHAND_HOME:-$HOME/.stagehand}/server.log"
@@ -35,6 +37,8 @@ fi
 # 2. rebase + fast-forward
 WT="$(git -C "$REPO" worktree list --porcelain | awk -v b="refs/heads/$BRANCH" '$1=="worktree"{p=$2} $1=="branch"&&$2==b{print p}')"
 [ -n "$WT" ] || { echo "release: no worktree checks out branch $BRANCH (git worktree list)" >&2; exit 2; }
+[ "$WT" != "$REPO" ] || { echo "release: $BRANCH is checked out in the main checkout itself ($REPO) — land from a worktree" >&2; exit 2; }
+[ "$(git -C "$REPO" rev-parse --abbrev-ref HEAD)" = "main" ] || { echo "release: the main checkout is on $(git -C "$REPO" rev-parse --abbrev-ref HEAD), not main" >&2; exit 2; }
 if [ -n "$(git -C "$WT" status --porcelain)" ]; then echo "release: $WT has uncommitted changes — commit them first" >&2; exit 2; fi
 say "rebasing $BRANCH onto main"
 git -C "$WT" rebase main >/dev/null || { git -C "$WT" rebase --abort; echo "release: rebase of $BRANCH onto main conflicts — resolve in $WT, then run again" >&2; exit 4; }

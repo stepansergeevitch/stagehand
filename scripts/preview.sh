@@ -12,7 +12,8 @@ API_PORT="${STAGEHAND_PREVIEW_PORT:-4757}"
 WEB_PORT="${STAGEHAND_PREVIEW_WEB_PORT:-5174}"
 S_SERVER=stagehand-preview-server
 S_WEB=stagehand-preview-web
-REPO="$(cd "$(dirname "$0")/.." && git rev-parse --show-toplevel)"
+# The main checkout (owner of .git), where the shared node_modules live — also when this copy runs from a worktree.
+REPO="$(dirname "$(cd "$(dirname "$0")/.." && git rev-parse --path-format=absolute --git-common-dir)")"
 
 stop() {
     tmux kill-session -t "$S_SERVER" 2>/dev/null || true
