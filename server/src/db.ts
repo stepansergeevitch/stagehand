@@ -152,6 +152,9 @@ export interface EnvRow {
     // JSON array of EnvComponent: optional per-task services next to the BE/FE (a queue worker, a scheduler), started
     // on demand by the human or the agents, or automatically (autoStart / a QA scenario's `services`).
     components: string | null;
+    // 1 = a task's BE/FE stay up between QA baseline → implementation → Manual QA → User Review instead of being stopped
+    // after every QA pass (a Next dev server compiles for minutes on every cold start); stopped when the task is done or cleaned up.
+    keep_services: number;
     // JSON {"<repo dir or .>": "<template path relative to that repo>"} — per-repository PR template overrides; a repo not listed is auto-detected.
     pr_templates: string | null;
     // Open every PR this env creates as a GitHub draft (0/1). The human marks it ready for review themselves.
@@ -699,6 +702,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.cleanup_command", `ALTER TABLE envs ADD COLUMN cleanup_command TEXT`],
     ["envs.check_command", `ALTER TABLE envs ADD COLUMN check_command TEXT`],
     ["envs.components", `ALTER TABLE envs ADD COLUMN components TEXT`],
+    ["envs.keep_services", `ALTER TABLE envs ADD COLUMN keep_services INTEGER NOT NULL DEFAULT 0`],
     ["window_calibration.anchor_u", `ALTER TABLE window_calibration ADD COLUMN anchor_u REAL`],
     ["window_calibration.anchor_resets", `ALTER TABLE window_calibration ADD COLUMN anchor_resets INTEGER`],
     ["window_calibration.anchor_cost", `ALTER TABLE window_calibration ADD COLUMN anchor_cost REAL NOT NULL DEFAULT 0`],

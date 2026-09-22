@@ -579,6 +579,7 @@ app.post("/api/envs", async (c) => {
             cleanupCommand: z.string().optional(),
             checkCommand: z.string().optional(),
             components: ComponentList.optional(),
+            keepServices: z.boolean().optional(),
             prDraft: z.boolean().optional(),
         }),
         await c.req.json(),
@@ -591,8 +592,8 @@ app.post("/api/envs", async (c) => {
     const configDirId = body.configDirId ?? (configDirsAll().find((d) => d.path === join(body.path, ".claude")) ?? configDirsAll()[0])?.id ?? null;
     const order = body.accountOrder ?? (body.defaultAccountId ? [body.defaultAccountId] : []);
     db.prepare(
-        `INSERT INTO envs (id, name, path, base_branch, default_account_id, account_order, config_dir_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, cleanup_command, check_command, components, pr_draft, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO envs (id, name, path, base_branch, default_account_id, account_order, config_dir_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, cleanup_command, check_command, components, keep_services, pr_draft, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
         id,
         body.name,
@@ -617,6 +618,7 @@ app.post("/api/envs", async (c) => {
         body.cleanupCommand ?? null,
         body.checkCommand ?? null,
         componentsJson(body.components) ?? null,
+        body.keepServices ? 1 : 0,
         body.prDraft ? 1 : 0,
         now(),
     );
@@ -650,6 +652,7 @@ app.patch("/api/envs/:id", async (c) => {
             cleanupCommand: z.string().nullable().optional(),
             checkCommand: z.string().nullable().optional(),
             components: ComponentList.optional(),
+            keepServices: z.boolean().optional(),
             // Per-repository PR template overrides: {"backend": ".github/pull_request_template.md"}; null/"" removes one.
             prTemplates: z.record(z.string().nullable()).optional(),
             prDraft: z.boolean().optional(),
@@ -683,7 +686,7 @@ app.patch("/api/envs/:id", async (c) => {
         return Object.keys(merged).length ? JSON.stringify(merged) : null;
     })();
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, check_command = ?, components = ?, pr_templates = ?, pr_draft = ?, depends_on_env_id = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, check_command = ?, components = ?, keep_services = ?, pr_templates = ?, pr_draft = ?, depends_on_env_id = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         order[0] ?? null,
@@ -709,6 +712,7 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.cleanupCommand, env.cleanup_command),
         pick(body.checkCommand, env.check_command),
         body.components === undefined ? env.components : componentsJson(body.components),
+        body.keepServices === undefined ? env.keep_services : body.keepServices ? 1 : 0,
         prTemplates,
         body.prDraft === undefined ? env.pr_draft : body.prDraft ? 1 : 0,
         pick(body.dependsOnEnvId, env.depends_on_env_id),

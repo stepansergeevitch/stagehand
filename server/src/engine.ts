@@ -1876,7 +1876,11 @@ export class Engine extends EventEmitter {
             this.setTaskStatus(taskId, status, text);
         };
         if (all("merged")) {
-            if (cur.stage !== "done") this.onParentMerged(cur, env);
+            if (cur.stage !== "done") {
+                this.onParentMerged(cur, env);
+                // Nothing needs the task's BE/FE (or components) once its PRs are merged — also the end of "keep services".
+                void this.services.stopAll(cur.id).catch((e: unknown) => console.warn(`[stagehand] stop services of merged ${cur.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+            }
             return set("done", "done", `merged · ${rows.map((r) => r.url).filter(Boolean).join(" ")}`);
         }
         if (kinds.has("failed")) return set("pr_waiting", "blocked", `PR Waiting · ${line} — click Fix CI on the failing PR, or fix it yourself`);
@@ -2462,7 +2466,7 @@ export class Engine extends EventEmitter {
             vars["browserSetup"] = firstBrowser
                 ? [
                       `1. ${vars["chromeSelect"]} Then load the browser tools in ONE ToolSearch call: \`select:mcp__claude-in-chrome__tabs_context_mcp,mcp__claude-in-chrome__tabs_create_mcp,mcp__claude-in-chrome__navigate,mcp__claude-in-chrome__javascript_tool,mcp__claude-in-chrome__read_page,mcp__claude-in-chrome__find,mcp__claude-in-chrome__form_input,mcp__claude-in-chrome__computer,mcp__claude-in-chrome__get_page_text,mcp__claude-in-chrome__read_network_requests,mcp__claude-in-chrome__browser_batch\`. If \`tabs_context_mcp\` errors with "extension is not connected", wait 5 seconds and call it once more before giving up (blocker: "browser extension not connected").`,
-                      `2. Call \`tabs_context_mcp\` first, then \`tabs_create_mcp\` — do not reuse existing tabs. **Work in that one tab for the whole run and never create another**: a new tab becomes the window's active tab, the tab you were driving drops into the background, and Chrome throttles background documents — a dropdown or popover opens there but never renders its options, which looks like an app bug and is not one. Stagehand re-activates your app tab every few seconds; a second app tab defeats that. If a popover still opens empty, run \`mcp__claude-in-chrome__javascript_tool\` with \`document.visibilityState\` — \`hidden\` means the tab is in the background: record the scenario \`blocked\` with the blocker \`app tab hidden in Chrome\`, not as an application defect. **Do not call \`resize_window\` to change the viewport**: it does not resize the window, it applies a page zoom (75 %) that Chrome remembers for the origin, and every screenshot then shows a shrunken page in the top-left corner with grey filler. After the first page load, run \`mcp__claude-in-chrome__javascript_tool\` once with \`({ zoom: Math.round(outerWidth / innerWidth * 100), ow: outerWidth, oh: outerHeight, w: innerWidth, h: innerHeight })\` — \`zoom\` is the page zoom in percent (\`devicePixelRatio\` is NOT a zoom signal: it is 2 on a Retina display at 100 %). If \`zoom\` is outside 95–105, fix it yourself, re-running the same check after each step: (1) \`mcp__claude-in-chrome__resize_window\` with exactly \`ow\` × \`oh\` — the tool zooms relative to the window's real size, so asking for the real size restores 100 %; (2) if still off, \`mcp__claude-in-chrome__computer\` with \`action: "key"\`, \`text: "cmd+0"\` on the app tab. Only if it is still off after both, add the blocker "page zoom is <zoom>% in the QA Chrome profile and could not be reset — press ⌘0 on the app tab" and continue. A zoom you corrected is not a blocker and is not mentioned in the output.`,
+                      `2. Call \`tabs_context_mcp\` once, then \`tabs_create_mcp\` — do not reuse existing tabs. **Work in that one tab for the whole run and never create another** (a second tab drops yours into the background, where Chrome stops rendering popovers — that looks like an app bug and is not one; if a popover opens empty, check \`document.visibilityState\` with \`javascript_tool\`: \`hidden\` = record \`blocked\` with blocker \`app tab hidden in Chrome\`). Never call \`resize_window\` to change the viewport (it zooms the page instead). After the first page load run \`javascript_tool\` once with \`({ zoom: Math.round(outerWidth / innerWidth * 100), ow: outerWidth, oh: outerHeight })\`; if \`zoom\` is outside 95–105: \`resize_window\` with exactly \`ow\` × \`oh\`, then if still off \`computer\` \`action: "key"\`, \`text: "cmd+0"\`; only if both fail add the blocker "page zoom is <zoom>% in the QA Chrome profile and could not be reset — press ⌘0 on the app tab" and continue (\`devicePixelRatio\` is not a zoom signal; a zoom you corrected is not mentioned in the output).`,
                       `3. The app base URL is \`${appUrl}\`; every browser scenario URL below is relative to it. Navigate to \`${appUrl}${firstBrowser.url}\`. If the page redirects to Auth0 (\`*.auth0.com\`), or shows a splash/"Sign in"/welcome page instead of the application, wait 5 seconds and re-read once (silent auth may still be completing); if it is still a login page, the app needs a login that you must NOT perform: write the output file with every browser scenario \`blocked\`, \`blockers: ["login required in the automation Chrome window"]\`, and stop (API scenarios still run).\n   **Login callback on the wrong port:** if the tab ends up on a URL like \`https://localhost:3000/?code=…&state=…\` (a different port than \`${appUrl}\`, usually an error page), the login itself succeeded; navigate the SAME tab to \`${appUrl}/?code=…&state=…\` with the identical query string (call \`tabs_context_mcp\` to read the exact URL). The app then completes the login and shows the requested page; continue normally.`,
                       `4. If a page shows a connection error, retry once after 5 seconds, then record \`blocked\` with the error.`,
                   ].join("\n")
@@ -2817,8 +2821,27 @@ export class Engine extends EventEmitter {
             const r = await this.services.waitUntilUp(row);
             if (!r.ok) throw new Error(`${c.label} (optional component "${c.key}") did not come up: ${r.error} — see its log in the App widget`);
         }
+        await this.prewarmScenarioUrls(task, env);
         this.emitTask(task.id);
         return true;
+    }
+
+    // A dev server (Next, CRA) compiles a route on its first request — 20–60 s the QA runner would otherwise spend
+    // waiting on its first navigation to every page. Request every browser scenario's start URL once, in parallel,
+    // before the runner starts; failures are irrelevant here (the runner sees the real page).
+    private async prewarmScenarioUrls(task: TaskRow, env: EnvRow): Promise<void> {
+        const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
+        const appUrl = this.appUrlFor(task, env).replace(/\/+$/, "");
+        const urls = [...new Set((design?.qa ?? []).filter((s) => (s.kind ?? "browser") === "browser").map((s) => s.url).filter((u): u is string => typeof u === "string" && u.startsWith("/")))];
+        if (!appUrl || urls.length === 0) return;
+        this.setTaskStatus(task.id, "running", `${STAGE_DEFS[task.stage]?.label ?? task.stage} · warming ${urls.length} page(s)`);
+        const started = Date.now();
+        await Promise.all(
+            urls.map((u) =>
+                execFileAsync("curl", ["-sk", "-o", "/dev/null", "--max-time", "120", `${appUrl}${u.replace(/:[a-zA-Z_]+/g, "1")}`]).catch(() => undefined),
+            ),
+        );
+        console.log(`[stagehand] ${task.ticket_id}: warmed ${urls.length} page(s) in ${Math.round((Date.now() - started) / 1000)} s`);
     }
 
     // The env's optional components a QA pass needs: the auto-started ones plus those the design's scenarios declare.
@@ -3926,6 +3949,8 @@ export class Engine extends EventEmitter {
     // the next browser stage brings it back up on demand, and the task page's Start button does too. Same-stage retries
     // and human-blocked states (log in, "fix it then Retry") return before reaching this, so the app stays up for them.
     private stopServicesAfterQa(task: TaskRow): void {
+        // The env may prefer warm servers across the stages (envs.keep_services): then only done / cleanup stop them.
+        if (this.env(task.env_id).keep_services) return;
         void this.services.stopAll(task.id).catch((e: unknown) => console.warn(`[stagehand] stop BE/FE after QA ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
     }
 }
