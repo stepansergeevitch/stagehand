@@ -10,18 +10,29 @@
 # Never pushes. Prints what it did; exits non-zero at the first step that fails, with main untouched when the rebase fails.
 set -euo pipefail
 
+# Run from a private copy: the rebase below rewrites this very file in the worktree while bash still reads it. The
+# repository root is resolved first (the copy's own location says nothing) and handed over in the environment: the
+# main checkout — the one that owns .git — even when this copy of the script lives in a worktree (its --show-toplevel
+# would be the worktree itself, and the release would "land" onto the branch and remove it).
+if [ -z "${RELEASE_SH_COPY:-}" ]; then
+    RELEASE_SH_REPO="$(dirname "$(cd "$(dirname "$0")/.." && git rev-parse --path-format=absolute --git-common-dir)")"
+    copy="$(mktemp -t release.sh)"
+    cp "$0" "$copy"
+    RELEASE_SH_COPY=1 RELEASE_SH_REPO="$RELEASE_SH_REPO" exec bash "$copy" "$@"
+fi
+
 BRANCH="${1:-}"
 [ -n "$BRANCH" ] || { echo "usage: release.sh <branch> [--force] [--keep]" >&2; exit 2; }
 shift
 FORCE=0; KEEP=0
 for a in "$@"; do case "$a" in --force) FORCE=1 ;; --keep) KEEP=1 ;; *) echo "unknown option $a" >&2; exit 2 ;; esac; done
 
-# The main checkout — the one that owns .git — even when this copy of the script runs from a worktree (its
-# --show-toplevel would be the worktree itself, and the release would "land" onto the branch and remove it).
-REPO="$(dirname "$(cd "$(dirname "$0")/.." && git rev-parse --path-format=absolute --git-common-dir)")"
+REPO="${RELEASE_SH_REPO:?}"
+[ -d "$REPO/.git" ] || { echo "release: $REPO is not the main checkout" >&2; exit 2; }
 DB="${STAGEHAND_HOME:-$HOME/.stagehand}/stagehand.sqlite"
 TMUX_SESSION="${STAGEHAND_TMUX:-stagehand-server}"
-START_CMD="cd $REPO/server && npx tsx src/index.ts 2>&1 | tee ${STAGEHAND_HOME:-$HOME/.stagehand}/server.log"
+# The pane runs scripts/serve.sh, a loop that starts the server again after every exit; a restart is then just Ctrl-C.
+START_CMD="cd $REPO && scripts/serve.sh"
 API="http://127.0.0.1:${STAGEHAND_API_PORT:-4747}"
 
 say() { echo "release: $*"; }
@@ -72,7 +83,9 @@ fi
 # performed inline (2026-09-22: the server was stopped and never started again). Output goes to a log.
 say "restarting the server in tmux $TMUX_SESSION (detached; a caller that runs under the server ends here — the API answers again in ~10 s)"
 LOG="${STAGEHAND_HOME:-$HOME/.stagehand}/release.log"
-RESTART="tmux send-keys -t '$TMUX_SESSION' C-c; sleep 2; tmux send-keys -t '$TMUX_SESSION' \"$START_CMD\" Enter; for i in \$(seq 1 60); do sleep 1; curl -sf '$API/api/health' >/dev/null && { echo \"\$(date '+%H:%M:%S') release: server up @ $after\"; exit 0; }; done; echo \"\$(date '+%H:%M:%S') release: the server did not answer within 60 s — tmux attach -t $TMUX_SESSION\"; exit 6"
+# Ctrl-C ends the current server; serve.sh (when the pane runs it) starts the next one by itself. A pane without the
+# loop (older setup, or the loop was stopped) gets the start command.
+RESTART="cd /; tmux send-keys -t '$TMUX_SESSION' C-c; sleep 3; pgrep -f 'scripts/serve.sh' >/dev/null || tmux send-keys -t '$TMUX_SESSION' \"$START_CMD\" Enter; for i in \$(seq 1 60); do sleep 1; curl -sf '$API/api/health' >/dev/null && { echo \"\$(date '+%H:%M:%S') release: server up @ $after\"; exit 0; }; done; echo \"\$(date '+%H:%M:%S') release: the server did not answer within 60 s — tmux attach -t $TMUX_SESSION\"; exit 6"
 perl -MPOSIX -e 'POSIX::setsid(); open(STDIN, "<", "/dev/null"); open(STDOUT, ">>", $ARGV[0]); open(STDERR, ">&", STDOUT); exec("sh", "-c", $ARGV[1]) or die "exec: $!";' "$LOG" "$RESTART" &
 disown 2>/dev/null || true
 # When this process survives the restart (a human's terminal), report the outcome here as well.

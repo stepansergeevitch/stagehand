@@ -16,7 +16,8 @@
             "Bash(npx *)",
             "Bash(scripts/*)",
             "Bash(bash scripts/*)",
-            "Bash(tmux *)",
+            "Bash(tmux ls*)",
+            "Bash(tmux capture-pane*)",
             "Bash(ls *)",
             "Bash(cat *)",
             "Bash(jq *)",
@@ -30,7 +31,9 @@
         "deny": [
             "Bash(git push*)",
             "Bash(git * --force*)",
-            "Bash(rm -rf /*)"
+            "Bash(rm -rf /*)",
+            "Bash(tmux send-keys*)",
+            "Bash(tmux kill*)"
         ]
     }
 }

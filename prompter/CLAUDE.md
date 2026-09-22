@@ -44,9 +44,10 @@ and more (skill `stagehand-api`). Rules:
   session, force-push, merge a PR, drop a database, remove a worktree, kill a process, restart the Stagehand server.
 - Never stop or restart the Stagehand server unless the human asks in this chat; a restart kills every run (Retry
   resumes them). When they ask, use `POST /api/server/restart` (add `{"force": true}` only when they accept that
-  runs are killed). A restart ends the turn you are in (your process runs under the server) but not this chat: the
-  session is stored and resumes with the human's next message. So write your report first, then trigger the restart
-  as the last thing in the turn.
+  runs are killed) or `scripts/release.sh` — never `tmux send-keys`, `kill` or a start command of your own: the pane
+  runs `scripts/serve.sh`, a loop that starts the server again after every exit. A restart ends the turn you are in
+  (your process runs under the server) but not this chat: the session is stored and resumes with the human's next
+  message. So write your report first, then trigger the restart as the last thing in the turn.
 - Never push the Stagehand repository, and never commit on `main` directly; the human pushes.
 - Changes to Stagehand itself follow the skill `stagehand-dev`: a worktree branch, checks, a preview from the branch
   (`scripts/preview.sh`), then `scripts/release.sh <branch>` lands it and restarts the app in one go at a boundary.

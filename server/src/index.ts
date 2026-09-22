@@ -950,8 +950,10 @@ app.post("/api/server/restart", async (c) => {
     const busy = (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status IN ('running', 'queued')`).get() as { n: number }).n;
     if ((running || busy) && !body.force) return c.json({ error: `not a boundary: ${running} run(s) running, ${busy} task(s) running or queued — pass force to restart anyway (runs are killed; Retry resumes them)` }, 409);
     const session = cfg.server.tmuxSession;
-    const command = cfg.server.startCommand ?? `cd ${join(REPO_ROOT, "server")} && npx tsx src/index.ts 2>&1 | tee ${join(cfg.dataDir, "server.log")}`;
-    const script = `sleep 1; tmux send-keys -t ${JSON.stringify(session)} C-c; sleep 2; tmux send-keys -t ${JSON.stringify(session)} ${JSON.stringify(command)} Enter`;
+    // The pane normally runs scripts/serve.sh, which starts the server again after Ctrl-C by itself; a pane without
+    // that loop gets the start command.
+    const command = cfg.server.startCommand ?? `cd ${REPO_ROOT} && scripts/serve.sh`;
+    const script = `cd /; sleep 1; tmux send-keys -t ${JSON.stringify(session)} C-c; sleep 3; pgrep -f 'scripts/serve.sh' >/dev/null || tmux send-keys -t ${JSON.stringify(session)} ${JSON.stringify(command)} Enter`;
     const child = spawn("sh", ["-c", script], { detached: true, stdio: "ignore" });
     child.unref();
     console.log(`[stagehand] restart requested${body.force ? " (forced)" : ""} — tmux ${session}`);
