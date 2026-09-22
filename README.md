@@ -82,6 +82,15 @@ State lives in `~/.stagehand/` (`config.json`, `stagehand.sqlite`, `tasks/`, `ru
 also serves the built UI (`cd web && npx vite build`) — for checking on tasks from a phone. Set `notifications.baseUrl`
 so pushed notifications link there.
 
+## Prompter — the assistant in the app
+
+The button in the bottom-right corner opens Prompter: a headless Claude session per chat window, on a token account,
+with its own config dir and its own MemPalace under `~/.stagehand/prompter/` (identity, skills and MCP setup come from
+this repository's `prompter/` folder and are re-synced at every start). Every message carries a description of the
+page you are on (the URL hash is the single source of truth for that — see `web/src/routes.ts`), it searches and files
+its palace, and it acts through the local API. Configure it on the AI accounts page (account, model, idle timeout) and
+seed its palace there once (`scripts/seed-prompter-palace.py`). A server restart does not end a chat.
+
 ## Development
 
 ```bash
@@ -89,8 +98,16 @@ npm run typecheck    # both workspaces
 npm test             # vitest (server)
 ```
 
-The server is not run in watch mode on purpose: a restart kills in-flight Claude runs (they can be retried), so restart
-at a stage boundary.
+Work on a branch in a worktree, never in the live checkout (the dev UI hot-reloads it and the server runs it):
+
+```bash
+git worktree add .claude/worktrees/my-change -b my-change
+scripts/preview.sh .claude/worktrees/my-change   # the branch's server on :4757 (no scheduler, no runs) + UI on :5174
+scripts/release.sh my-change                     # at a boundary: rebase, fast-forward main, build, restart, clean up
+```
+
+`release.sh` refuses while a run is in flight (`--force` kills them; Retry resumes them), because a restart kills
+in-flight Claude runs. `POST /api/server/restart` does the restart part from inside the app.
 
 ## License
 
