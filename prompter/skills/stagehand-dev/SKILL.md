@@ -48,9 +48,13 @@ scripts/release.sh <name>          # or: scripts/release.sh <name> --force   (on
 ```
 
 `release.sh` refuses unless no run is running and no task is running/queued (a boundary). It rebases the branch onto
-main, fast-forwards main, runs `npm install` when the lockfile changed, builds the web bundle, restarts the live server
-in its tmux pane, waits for `/api/health`, stops the preview and removes the worktree and branch. Your own chat
-survives the restart: say "landing and restarting now; we continue when it is back", run it, then report the result
-(the script prints `release: main <old> → <new>` and `server up`).
+main, fast-forwards main, runs `npm install` when the lockfile changed, builds the web bundle, stops the preview,
+removes the worktree and branch, and then restarts the live server from a detached process.
+
+**Your process runs under the server.** The restart ends the turn you are in the moment the server stops; the
+detached restart still completes (log: `~/.stagehand/release.log`). So: write your report BEFORE running the script
+("Landing <branch>: main gets <n> commit(s) — <what changed>. Restarting now; ask me again in ~15 seconds if you
+want confirmation."), then run `scripts/release.sh <name>` as the last command of the turn. The chat itself survives:
+the human's next message continues this session.
 
 Never `git push`, never commit on main directly, never force-push, never rewrite main's history.

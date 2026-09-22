@@ -3,8 +3,8 @@
 #   1. boundary check — no run running, no task running/queued (skip with --force: runs are killed, Retry resumes them)
 #   2. rebase the branch onto main (in its worktree), fast-forward main to it (main's uncommitted files are stashed around it)
 #   3. npm install when the lockfile changed, build the web bundle
-#   4. restart the live server in its tmux pane, wait for /api/health
-#   5. stop the preview and remove the worktree + branch (keep them with --keep)
+#   4. stop the preview and remove the worktree + branch (keep them with --keep)
+#   5. restart the live server in its tmux pane from a detached process (the caller may die with the server), wait for /api/health
 #
 #   scripts/release.sh <branch> [--force] [--keep]
 # Never pushes. Prints what it did; exits non-zero at the first step that fails, with main untouched when the rebase fails.
@@ -61,18 +61,20 @@ fi
 say "building the web bundle"
 (cd "$REPO/web" && npx vite build >/dev/null 2>&1) || { echo "release: web build failed — main is at $after; fix and run scripts/release.sh again or restart by hand" >&2; exit 5; }
 
-# 4. restart
-say "restarting the server in tmux $TMUX_SESSION"
-tmux send-keys -t "$TMUX_SESSION" C-c
-sleep 2
-tmux send-keys -t "$TMUX_SESSION" "$START_CMD" Enter
-for i in $(seq 1 60); do sleep 1; curl -sf "$API/api/health" >/dev/null && break; done
-curl -sf "$API/api/health" >/dev/null || { echo "release: the server did not answer within 60 s — tmux attach -t $TMUX_SESSION" >&2; exit 6; }
-say "server up @ $after"
-
-# 5. cleanup
+# 4. cleanup — before the restart, because the caller may not survive it (see below)
 "$REPO/scripts/preview.sh" stop >/dev/null 2>&1 || true
 if [ "$KEEP" = "0" ]; then
     git -C "$REPO" worktree remove --force "$WT" && git -C "$REPO" branch -D "$BRANCH" >/dev/null && say "worktree and branch $BRANCH removed"
 fi
+
+# 5. restart — from a detached process in its own session. Whoever runs this script may be a child of the server
+# (Prompter's turn, an agent run): the Ctrl-C that stops the server would kill that caller, and with it a restart
+# performed inline (2026-09-22: the server was stopped and never started again). Output goes to a log.
+say "restarting the server in tmux $TMUX_SESSION (detached; a caller that runs under the server ends here — the API answers again in ~10 s)"
+LOG="${STAGEHAND_HOME:-$HOME/.stagehand}/release.log"
+RESTART="tmux send-keys -t '$TMUX_SESSION' C-c; sleep 2; tmux send-keys -t '$TMUX_SESSION' \"$START_CMD\" Enter; for i in \$(seq 1 60); do sleep 1; curl -sf '$API/api/health' >/dev/null && { echo \"\$(date '+%H:%M:%S') release: server up @ $after\"; exit 0; }; done; echo \"\$(date '+%H:%M:%S') release: the server did not answer within 60 s — tmux attach -t $TMUX_SESSION\"; exit 6"
+perl -MPOSIX -e 'POSIX::setsid(); open(STDIN, "<", "/dev/null"); open(STDOUT, ">>", $ARGV[0]); open(STDERR, ">&", STDOUT); exec("sh", "-c", $ARGV[1]) or die "exec: $!";' "$LOG" "$RESTART" &
+disown 2>/dev/null || true
+# When this process survives the restart (a human's terminal), report the outcome here as well.
+for i in $(seq 1 60); do sleep 1; curl -sf "$API/api/health" >/dev/null 2>&1 && { say "server up @ $after"; break; }; done
 say "done"

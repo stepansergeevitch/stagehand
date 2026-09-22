@@ -330,10 +330,17 @@ export const checkOutcome = (c: PrCheck): "pass" | "fail" | "pending" | "cancell
     return "pending";
 };
 
+// A dead or restarting backend answers through the dev proxy with an HTML/text page: say so instead of surfacing the
+// browser's JSON parse error (Safari: "The string did not match the expected pattern").
 const j = async <T,>(res: Response): Promise<T> => {
-    const body = (await res.json()) as T & { error?: string };
-    if (!res.ok) throw new Error(body.error ?? res.statusText);
-    return body;
+    let body: (T & { error?: string }) | null = null;
+    try {
+        body = (await res.json()) as T & { error?: string };
+    } catch {
+        throw new Error(res.ok ? "the server sent no JSON" : `the server is not reachable (HTTP ${res.status}) — it may be restarting; try again in a few seconds`);
+    }
+    if (!res.ok) throw new Error(body?.error ?? res.statusText);
+    return body as T;
 };
 const diffQuery = (filter?: { shas: string[] } | { uncommitted: true }, file?: string): string => {
     const q = new URLSearchParams();
