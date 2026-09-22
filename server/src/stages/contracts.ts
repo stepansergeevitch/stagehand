@@ -27,6 +27,9 @@ export const QaScenario = z.object({
     // Keys of the environment's optional components (a queue worker, a scheduler) this journey needs running — the
     // orchestrator starts them before the seeds of every pass. Only keys the environment defines are accepted.
     services: z.array(z.string()).default([]),
+    // false: the journey cannot exist before the change (a new page, endpoint or control) — the baseline pass skips
+    // the scenario and records it as a failure by construction instead of driving a surface that is not there.
+    baseline: z.boolean().default(true),
     // Data the journey needs, as concrete steps the runner performs itself before the first step (UI actions, API calls
     // with payloads, SQL, or a repo script) — never a request for a human to prepare something. Empty = nothing to seed.
     seed: z.array(z.string()).default([]),

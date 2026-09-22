@@ -251,6 +251,8 @@ const MAX_AUTO_QA_RETURNS = 2;
 // see renderUnblockHint. Capped independently of MAX_AUTO_QA_RETURNS since it is a different kind of retry (same
 // stage re-running itself, not a return to Implementation).
 const MAX_UNBLOCK_ATTEMPTS = 2;
+// Jev's sorting of a blocked QA scenario (classifyQaBlockers): what a retry can and cannot fix.
+type BlockerKind = "bridge_or_auth" | "seed_or_design_defect" | "environment" | "app_bug" | "other";
 // A stage whose output file fails its contract is re-run with the validation error as notes; outside the fresh-session
 // QA stages each retry resumes the same session, so it is cheap. After this many attempts the task fails for the human.
 const MAX_CONTRACT_ATTEMPTS = 5;
@@ -2450,12 +2452,15 @@ export class Engine extends EventEmitter {
             maxTurns: String(def.maxTurns ?? 100),
             seedHints: env.qa_seed_hints?.trim() ? env.qa_seed_hints.trim() : "(none configured for this environment — inspect the repo's configs/ and models to find the local database and API)",
             seedReport: "(no shell seeds were run)",
+            resumeHint: "",
             components: this.describeComponents(task, env, def.stage),
             ...(opts.extraVars ?? {}),
         };
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
             const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
-            const scenarios: QaScenario[] = design?.qa ?? [];
+            // A resumed pass (after the human's answers, or an unblock retry) drives only the scenarios still open.
+            const resumeOnly = opts.extraVars?.["resumeOnly"];
+            const scenarios: QaScenario[] = this.qaScenariosForPass(design, def.stage).filter((s) => !resumeOnly || resumeOnly.split(",").includes(s.id));
             vars["pass"] = def.stage === "qa_baseline" ? "before" : "after";
             vars["passHint"] =
                 def.stage === "qa_baseline"
@@ -2554,12 +2559,24 @@ export class Engine extends EventEmitter {
             return;
         }
         if (def.chrome && !opts.seedsDone) {
+            const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
+            const forPass = this.qaScenariosForPass(design, stage);
+            // Nothing to observe before the change (every scenario is `baseline: false`): record the pass as failures
+            // by construction and go straight to Implementation instead of driving surfaces that do not exist yet.
+            if (stage === "qa_baseline" && (design?.qa ?? []).length > 0 && forPass.length === 0) {
+                this.writeBaselineSkips(taskId, design!, []);
+                this.addAgentNote(taskId, "QA baseline skipped: every scenario is marked `baseline: false` (its journey does not exist before the change) — recorded as failures by construction.");
+                this.advance(taskId, "implementation");
+                return;
+            }
             // One pass id for this QA run, shared by the seeds run here and the scenario text the runner gets, so a
             // `{{qaPass}}` in a seed and in an assert resolve to the same value.
             const qaPass = opts.extraVars?.["qaPass"] ?? newQaPassId(def.stage === "qa_baseline" ? "qa_baseline" : "manual_qa");
+            const resumeOnly = opts.extraVars?.["resumeOnly"]?.split(",").filter(Boolean);
+            const only = new Set(forPass.map((s) => s.id).filter((id) => !resumeOnly || resumeOnly.includes(id)));
             // Teardown, then seed steps written as commands are run here, without an agent; only `ui:` steps reach the QA runner.
             this.setTaskStatus(taskId, "running", `${def.label} · resetting and seeding data`);
-            void this.runShellSeeds(task, env, def, qaPass)
+            void this.runShellSeeds(task, env, def, qaPass, { only })
                 .then((report) => this.dispatch(taskId, stage, { ...opts, seedsDone: true, extraVars: { ...(opts.extraVars ?? {}), seedReport: report, qaPass } }))
                 .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · seeding failed: ${String((e as Error).message ?? e).slice(0, 160)}`));
             return;
@@ -2890,6 +2907,51 @@ export class Engine extends EventEmitter {
             ),
         );
         console.log(`[stagehand] ${task.ticket_id}: warmed ${urls.length} page(s) in ${Math.round((Date.now() - started) / 1000)} s`);
+    }
+
+    // The scenarios a pass drives: the baseline pass leaves out `baseline: false` ones (their journey does not exist yet).
+    private qaScenariosForPass(design: DesignResult | null, stage: Stage): QaScenario[] {
+        const all = design?.qa ?? [];
+        return stage === "qa_baseline" ? all.filter((s) => s.baseline !== false) : all;
+    }
+
+    // Records the `baseline: false` scenarios in qa/before.json as failures by construction, next to whatever the
+    // baseline pass observed for the others (`observed`), so the QA tab shows a before-state for every scenario.
+    private writeBaselineSkips(taskId: string, design: DesignResult, observed: QaPassResult["scenarios"]): QaPassResult {
+        const skipped = (design.qa ?? []).filter((s) => s.baseline === false && !observed.some((o) => o.id === s.id)).map((s) => ({
+            id: s.id,
+            outcome: "fail" as const,
+            observation: "not run before the change: the journey does not exist yet (design: baseline false)",
+            shots: [],
+            log: "",
+        }));
+        const merged: QaPassResult = { pass: "before", scenarios: [...observed, ...skipped].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true })), blockers: [] };
+        const dir = join(this.taskDir(taskId), "qa");
+        mkdirSync(dir, { recursive: true });
+        const path = join(dir, "before.json");
+        let existing: Partial<QaPassResult> = {};
+        try {
+            existing = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Partial<QaPassResult>) : {};
+        } catch {
+            existing = {};
+        }
+        writeFileSync(path, JSON.stringify({ ...existing, ...merged, blockers: existing.blockers ?? [] }, null, 2));
+        return { ...merged, blockers: existing.blockers ?? [] };
+    }
+
+    // A QA pass that stops half-way (the runner asked the human, or an unblock retry) resumes from the scenarios already
+    // recorded: those go to qa/<pass>.partial.json and the next run gets `resumeOnly` (ids still to drive) plus a hint
+    // to copy the recorded results verbatim into its output. Seeds run only for the resumed scenarios.
+    private resumeVars(taskId: string, pass: "before" | "after", recorded: QaPassResult["scenarios"], remaining: string[]): Record<string, string> {
+        const dir = join(this.taskDir(taskId), "qa");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, `${pass}.partial.json`), JSON.stringify({ pass, scenarios: recorded }, null, 2));
+        return {
+            resumeOnly: remaining.join(","),
+            resumeHint: recorded.length
+                ? `## Resumed pass — ${recorded.map((s) => s.id).join(", ")} already recorded\n\nThese scenarios were completed by the previous attempt and are NOT listed below; do not run them again. Copy these entries verbatim into your output file next to the ones you run now:\n\n\`\`\`json\n${JSON.stringify(recorded, null, 2)}\n\`\`\``
+                : "",
+        };
     }
 
     // The env's optional components a QA pass needs: the auto-started ones plus those the design's scenarios declare.
@@ -3613,10 +3675,28 @@ export class Engine extends EventEmitter {
         const answerNotes = renderAnswers(stored.questions, answers);
         const prior = stored.resume?.notes?.trim();
         this.setStage(taskId, row.stage);
+        let extraVars: Record<string, string> = stored.resume?.extraVars ?? {};
+        // A QA runner that asked mid-pass left qa/<pass>.partial.json with the scenarios it finished: resume from there.
+        if (row.stage === "qa_baseline" || row.stage === "manual_qa") {
+            const pass = row.stage === "qa_baseline" ? "before" : "after";
+            const partialPath = join(this.taskDir(taskId), "qa", `${pass}.partial.json`);
+            try {
+                const partial = existsSync(partialPath) ? QaPassResult.partial().safeParse(JSON.parse(readFileSync(partialPath, "utf8"))) : null;
+                const recorded = (partial?.success ? partial.data.scenarios ?? [] : []).filter((s) => s.outcome === "pass" || s.outcome === "fail");
+                if (recorded.length) {
+                    const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+                    const remaining = this.qaScenariosForPass(design, row.stage).map((s) => s.id).filter((id) => !recorded.some((r) => r.id === id));
+                    extraVars = { ...extraVars, ...this.resumeVars(taskId, pass, recorded, remaining) };
+                    delete extraVars["seedReport"];
+                }
+            } catch (e) {
+                console.warn(`[stagehand] partial QA results of ${task.ticket_id} ignored: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            }
+        }
         this.dispatch(taskId, row.stage, {
             notes: prior ? `${answerNotes}\n\n---\n\n${prior}` : answerNotes,
             attempt: stored.resume?.attempt ?? 1,
-            ...(stored.resume?.extraVars && Object.keys(stored.resume.extraVars).length ? { extraVars: stored.resume.extraVars } : {}),
+            ...(Object.keys(extraVars).length ? { extraVars } : {}),
         });
     }
 
@@ -3639,6 +3719,24 @@ export class Engine extends EventEmitter {
         }
         const parsed = def.contract!.safeParse(raw);
         if (!parsed.success) return { ok: false, error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") };
+        // A resumed QA pass: scenarios the previous attempt recorded (qa/<pass>.partial.json) that the runner did not
+        // copy into its output are merged in here, so nothing recorded is lost or driven twice.
+        if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
+            const qa = parsed.data as QaPassResult;
+            const partialPath = join(this.taskDir(taskId), "qa", `${qa.pass}.partial.json`);
+            if (existsSync(partialPath)) {
+                try {
+                    const partial = QaPassResult.partial().safeParse(JSON.parse(readFileSync(partialPath, "utf8")));
+                    const missing = (partial.success ? partial.data.scenarios ?? [] : []).filter((s) => (s.outcome === "pass" || s.outcome === "fail") && !qa.scenarios.some((o) => o.id === s.id));
+                    if (missing.length) {
+                        qa.scenarios = [...qa.scenarios, ...missing].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+                        writeFileSync(path, JSON.stringify(qa, null, 2));
+                    }
+                } catch (e) {
+                    console.warn(`[stagehand] partial QA results not merged for ${taskId}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                }
+            }
+        }
         if (def.stage === "design_proposal") {
             const md = this.designMdProblems(taskId);
             if (md) return { ok: false, error: md };
@@ -3752,16 +3850,67 @@ export class Engine extends EventEmitter {
             void this.verifyThenContinue(taskId, def, data, env);
             return;
         }
-        if (def.stage === "manual_qa" && jevEnabled(this.cfg)) {
-            void this.gradeQaWithJev(taskId, env, QaPassResult.parse(data))
+        if ((def.stage === "manual_qa" || def.stage === "qa_baseline") && jevEnabled(this.cfg)) {
+            const parsedQa = QaPassResult.parse(data);
+            void (def.stage === "manual_qa" ? this.gradeQaWithJev(taskId, env, parsedQa) : Promise.resolve(parsedQa))
                 .catch((e: unknown) => {
                     console.warn(`[stagehand] jev grading ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`);
-                    return QaPassResult.parse(data);
+                    return parsedQa;
                 })
-                .then((graded) => this.afterStageChecked(taskId, def, graded));
+                .then(async (qa) => {
+                    await this.classifyQaBlockers(taskId, env, qa).catch((e: unknown) => console.warn(`[stagehand] jev blocker sorting ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+                    this.afterStageChecked(taskId, def, qa);
+                });
             return;
         }
         this.afterStageChecked(taskId, def, data);
+    }
+
+    // Jev's verdict per blocked scenario of the pass just finished (task id → scenario id → kind), read once by afterStageChecked.
+    private readonly blockerVerdicts = new Map<string, Record<string, BlockerKind>>();
+
+    // Sorts every blocked scenario before the automatic unblock retry spends a full pass on it: a seed/design defect
+    // or an environment problem goes to the human at once, an application error counts as a failure, only
+    // bridge/auth (self-healing) and the undecidable rest keep the retry.
+    private async classifyQaBlockers(taskId: string, env: EnvRow, qa: QaPassResult): Promise<void> {
+        const blocked = qa.scenarios.filter((s) => s.outcome === "blocked");
+        if (blocked.length === 0 || !jevEnabled(this.cfg)) return;
+        const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+        const verdicts: Record<string, BlockerKind> = {};
+        const lines: string[] = [];
+        for (const s of blocked) {
+            const spec = design?.qa.find((d) => d.id === s.id);
+            try {
+                const r = await jevAsk(
+                    this.cfg,
+                    { scenario: { id: s.id, title: spec?.title ?? "", kind: spec?.kind ?? "browser", seed: spec?.seed ?? [], steps: (spec?.steps ?? []).map((st) => st.action) }, runner: { observation: s.observation, log: (s.log ?? "").slice(-1200), blockers: qa.blockers } },
+                    {
+                        kind: {
+                            type: "choice",
+                            instructions: "Why could this scenario not be exercised",
+                            criteria: {
+                                bridge_or_auth: "The browser extension was not connected, or the app required a login",
+                                seed_or_design_defect: "A seed, teardown or step is wrong as written: wrong path, host, field, model, import, value, or data that collides because the teardown is incomplete",
+                                environment: "The backend, frontend, worker, database or a dependency was down, unreachable, unmigrated or misconfigured — not the code under test",
+                                app_bug: "The application answered with an error (a 500, an exception, a crash, a broken page) while the step was correct and the environment healthy",
+                                other: "None of the above, or the observation does not say enough",
+                            },
+                        },
+                    },
+                    { db: this.db, ctx: { accountId: null, envId: env.id, taskId, runId: null, stage: qa.pass === "before" ? "qa_baseline" : "manual_qa" } },
+                );
+                const a = r.answers.kind;
+                const kind = (a.confidence >= 0.5 ? a.choice : "other") as BlockerKind;
+                verdicts[s.id] = kind;
+                lines.push(`${s.id} ${kind} (${Math.round((a.probabilities[a.choice] ?? 0) * 100)}%)`);
+            } catch (e) {
+                console.warn(`[stagehand] jev blocker ${taskId} ${s.id}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            }
+        }
+        if (Object.keys(verdicts).length) {
+            this.blockerVerdicts.set(taskId, verdicts);
+            this.addMessage(taskId, "agent", `🧭 Jev sorted the blocked scenarios: ${lines.join(" · ")}`);
+        }
     }
 
     // Jev grades every Manual QA scenario the runner marked pass or fail: 0–100 = how sure it is that every expected
@@ -3928,7 +4077,23 @@ export class Engine extends EventEmitter {
             return;
         }
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
-            const qa = QaPassResult.parse(data);
+            let qa = QaPassResult.parse(data);
+            const taskDirQa = this.taskDir(taskId);
+            // The pass consumed its partial results (a resumed pass); a leftover would resume the next pass wrongly.
+            const partialPath = join(taskDirQa, "qa", `${qa.pass}.partial.json`);
+            if (existsSync(partialPath)) rmSync(partialPath, { force: true });
+            // Baseline: the `baseline: false` scenarios the pass did not drive are recorded as failures by construction.
+            if (def.stage === "qa_baseline") {
+                const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+                if (design && (design.qa ?? []).some((s) => s.baseline === false)) qa = this.writeBaselineSkips(taskId, design, qa.scenarios);
+            }
+            // Jev's sorting of the blocked scenarios (classifyQaBlockers): an application error is a failure, not a block.
+            const verdicts = this.blockerVerdicts.get(taskId) ?? {};
+            this.blockerVerdicts.delete(taskId);
+            if (qa.scenarios.some((s) => s.outcome === "blocked" && verdicts[s.id] === "app_bug")) {
+                qa = { ...qa, scenarios: qa.scenarios.map((s) => (s.outcome === "blocked" && verdicts[s.id] === "app_bug" ? { ...s, outcome: "fail" as const, observation: `application error (Jev: not an environment or seed problem) — ${s.observation}` } : s)) };
+                writeFileSync(join(taskDirQa, "qa", `${qa.pass}.json`), JSON.stringify(qa, null, 2));
+            }
             // The Chrome bridge attaches unreliably on a fresh process (~1 in 3 misses); a bridge-level block is retried, a real block is not.
             const bridgeMiss = qa.blockers.some((b) => /extension|not connected/i.test(b)) && qa.scenarios.every((s) => s.outcome === "blocked");
             const attempt = this.latestRun(taskId)?.attempt ?? 1;
@@ -3966,6 +4131,16 @@ export class Engine extends EventEmitter {
                 const prefix = `${pass}-blocked-attempt`;
                 const priorAttempts = attemptFiles(taskDir, prefix).length;
                 const reason = qa.blockers[0] ?? blocked[0]!.observation;
+                // Jev says a seed/design defect or an environment problem: a retry would only repeat it — go to the human now.
+                const forHuman = blocked.filter((s) => verdicts[s.id] === "seed_or_design_defect" || verdicts[s.id] === "environment");
+                if (forHuman.length) {
+                    this.setTaskStatus(
+                        taskId,
+                        "blocked",
+                        `${def.label} · ${forHuman.map((s) => `${s.id}: ${verdicts[s.id] === "environment" ? "environment problem" : "seed or step wrong as written"}`).join("; ")} — ${reason} — fix it (design.json, or the environment), then Retry`,
+                    );
+                    return;
+                }
                 if (priorAttempts < MAX_UNBLOCK_ATTEMPTS) {
                     const attemptNum = priorAttempts + 1;
                     const passPath = join(taskDir, "qa", `${pass}.json`);
@@ -3980,7 +4155,9 @@ export class Engine extends EventEmitter {
                         "running",
                         `${def.label} · ${blocked.length}/${qa.scenarios.length} scenario(s) blocked — ${reason} — attempting to unblock and retry (${attemptNum}/${MAX_UNBLOCK_ATTEMPTS})`,
                     );
-                    this.dispatch(taskId, def.stage, { extraVars: { unblockHint } });
+                    // Only the blocked scenarios run again; pass/fail results of this attempt carry over.
+                    const recorded = qa.scenarios.filter((s) => s.outcome === "pass" || s.outcome === "fail");
+                    this.dispatch(taskId, def.stage, { extraVars: { unblockHint, ...this.resumeVars(taskId, pass, recorded, blocked.map((s) => s.id)) } });
                     return;
                 }
                 this.setTaskStatus(
