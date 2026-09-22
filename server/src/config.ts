@@ -115,20 +115,32 @@ const defaults = (): Config => ({
     publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },
 });
 
+// A preview instance (scripts/preview.sh): a second server started from a worktree branch on its own port, sharing
+// the data dir with the live server, for testing a change before it lands. It runs no scheduler, pollers, reaper or
+// public listener, starts no runs, and never writes config.json.
+export const PREVIEW = process.env["STAGEHAND_PREVIEW"] === "1";
+const PREVIEW_PORT = Number(process.env["STAGEHAND_PORT"] ?? 4757);
+
 export const saveConfig = (cfg: Config): void => {
+    if (PREVIEW) {
+        console.warn("[stagehand] preview instance: config.json not written");
+        return;
+    }
     writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 4));
 };
+
+const previewOverrides = (cfg: Config): Config => (PREVIEW ? { ...cfg, port: PREVIEW_PORT, publicAccess: { ...cfg.publicAccess, enabled: false } } : cfg);
 
 export const loadConfig = (): Config => {
     mkdirSync(STAGEHAND_HOME, { recursive: true });
     if (!existsSync(CONFIG_PATH)) {
         const cfg = defaults();
-        writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 4));
-        return cfg;
+        if (!PREVIEW) writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 4));
+        return previewOverrides(cfg);
     }
     const parsed = ConfigSchema.safeParse({ ...defaults(), ...JSON.parse(readFileSync(CONFIG_PATH, "utf8")) });
     if (!parsed.success) throw new Error(`Invalid ${CONFIG_PATH}: ${parsed.error.message}`);
     mkdirSync(parsed.data.accountsDir, { recursive: true });
     mkdirSync(join(parsed.data.dataDir, "runs"), { recursive: true });
-    return parsed.data;
+    return previewOverrides(parsed.data);
 };

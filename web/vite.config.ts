@@ -8,6 +8,9 @@ import react from "@vitejs/plugin-react";
 const cert = process.env["STAGEHAND_DEV_TLS_CERT"];
 const key = process.env["STAGEHAND_DEV_TLS_KEY"];
 const https = cert && key ? { cert: readFileSync(cert), key: readFileSync(key) } : undefined;
+// A preview UI of a worktree branch (scripts/preview.sh) runs on other ports and talks to the preview server.
+const webPort = Number(process.env["STAGEHAND_WEB_PORT"] ?? 5173);
+const apiPort = Number(process.env["STAGEHAND_API_PORT"] ?? 4747);
 
 export default defineConfig({
     plugins: [react()],
@@ -15,11 +18,12 @@ export default defineConfig({
         // Bind the IPv4 loopback explicitly: with the default ("localhost") Node picks ::1 first on macOS and Vite
         // listens on IPv6 only, which Safari 26 (IPv4 first, no fallback) reports as "can't open the page".
         host: "127.0.0.1",
-        port: 5173,
+        port: webPort,
+        strictPort: true,
         ...(https ? { https } : {}),
         proxy: {
-            "/api": { target: "http://localhost:4747", changeOrigin: true },
-            "/ws": { target: "ws://localhost:4747", ws: true },
+            "/api": { target: `http://localhost:${apiPort}`, changeOrigin: true },
+            "/ws": { target: `ws://localhost:${apiPort}`, ws: true },
         },
     },
 });

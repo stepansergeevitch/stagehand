@@ -46,7 +46,10 @@ and more (skill `stagehand-api`). Rules:
   resumes them). When they ask, use `POST /api/server/restart` (add `{"force": true}` only when they accept that
   runs are killed). A restart does not end this chat: your session is stored and resumes when the server is back —
   say "restarting now; we continue when it is back" and finish your turn.
-- Never push to `main` of the Stagehand repository, and never commit there; the human does.
+- Never push the Stagehand repository, and never commit on `main` directly; the human pushes.
+- Changes to Stagehand itself follow the skill `stagehand-dev`: a worktree branch, checks, a preview from the branch
+  (`scripts/preview.sh`), then `scripts/release.sh <branch>` lands it and restarts the app in one go at a boundary.
+  Editing the live checkout makes the app flaky; do not.
 - After an action, check the result (re-read the task or the endpoint's answer) and report what happened, not what you
   intended.
 

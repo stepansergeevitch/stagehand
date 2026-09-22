@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Config } from "./config.js";
+import { PREVIEW, type Config } from "./config.js";
 import { accountBrowserReady, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, componentsOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvComponent, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
@@ -2617,6 +2617,11 @@ export class Engine extends EventEmitter {
     dispatch(taskId: string, stage: Stage, opts: DispatchOpts = {}): void {
         const task = this.getTask(taskId);
         if (!task) return;
+        // A preview instance shares the data dir with the live server; only the live one starts runs.
+        if (PREVIEW) {
+            console.log(`[stagehand] preview instance: ${task.ticket_id} ${stage} not dispatched — use the live app`);
+            return;
+        }
         const def = STAGE_DEFS[stage];
         if (!def.prompt) return;
         // A continuation of an earlier dispatch (BE/FE brought up, seeds run, Chrome checked) must not start the run

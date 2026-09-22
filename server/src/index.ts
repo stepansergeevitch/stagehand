@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { loadConfig, saveConfig } from "./config.js";
+import { loadConfig, PREVIEW, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
 import { mimeOf } from "./tickets.js";
@@ -44,7 +44,7 @@ const cfg = loadConfig();
 const db = openDb(cfg.dataDir);
 migrateAccountsToConfigDirs(db, { mainConfigDir: cfg.mainConfigDir, scratchAccountsDir: cfg.accountsDir });
 const services = new Services(db, cfg);
-services.startWatch();
+if (!PREVIEW) services.startWatch();
 const engine = new Engine(db, cfg, services);
 services.onNotice = (taskId, text) => engine.serviceNotice(taskId, text);
 const sessions = new Sessions(db, cfg, engine);
@@ -1684,10 +1684,15 @@ const server = serve({ fetch: app.fetch, port: cfg.port, hostname: "127.0.0.1" }
     console.log(`stagehand server on http://127.0.0.1:${info.port}`);
 });
 injectWebSocket(server);
-startPublicListener();
-engine.startScheduler();
-prompter.startReaper();
-void resumeTokenSetups();
+if (PREVIEW) {
+    // scripts/preview.sh: a second instance from a worktree branch — API + UI for testing, nothing that acts on its own.
+    console.log("[stagehand] PREVIEW instance: no scheduler, no pollers, no public listener, no runs started");
+} else {
+    startPublicListener();
+    engine.startScheduler();
+    prompter.startReaper();
+    void resumeTokenSetups();
+}
 
 process.on("SIGINT", () => {
     engine.stopScheduler();

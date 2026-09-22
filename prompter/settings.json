@@ -21,6 +21,11 @@
             "Bash(rg *)",
             "Bash(fd *)",
             "mcp__mempalace__*"
+        ],
+        "deny": [
+            "Bash(git push*)",
+            "Bash(git * --force*)",
+            "Bash(rm -rf /*)"
         ]
     }
 }
