@@ -19,6 +19,10 @@ describe("parseStepFixAnswer", () => {
         expect(parseStepFixAnswer("S1 teardown 1", "apply corrected command: shell: cd backend && ./x")?.command).toBe("shell: cd backend && ./x");
         expect(parseStepFixAnswer("S1 seed 1", "psql -c 'a:b'")?.command).toBe("psql -c 'a:b'");
     });
+    it("ignores an option that only refers to a command shown elsewhere", () => {
+        expect(parseStepFixAnswer("S4 step 2 is wrong", "apply the corrected 2 command above")).toBeNull();
+        expect(parseStepFixAnswer("S4 step 2 is wrong", "Apply corrected command (see context)")).toBeNull();
+    });
     it("skips a 'keep as written' answer and questions without a step reference", () => {
         expect(parseStepFixAnswer("S2 seed 1 is wrong", "keep the seed as written")).toBeNull();
         expect(parseStepFixAnswer("Is a list UI in scope?", "yes")).toBeNull();

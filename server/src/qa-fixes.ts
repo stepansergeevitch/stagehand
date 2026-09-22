@@ -28,6 +28,9 @@ export const parseStepFixAnswer = (text: string, answer: string | undefined): { 
     if (!raw || /^keep\b/i.test(raw) || /^(no|skip)\b/i.test(raw)) return null;
     const command = raw.replace(PREFIX, "").trim();
     if (!command) return null;
+    // An option that only points at a command ("apply the corrected N command above") carries no command to apply:
+    // writing that text into design.json turned INV-133's S4 steps into placeholders (2026-09-22). Nothing to apply.
+    if (/^(apply|use|run)\b/i.test(command) && !/[|/$"'`=]/.test(command)) return null;
     return { scenario: `S${m[1]}`, kind: m[2]!.toLowerCase() as "step" | "seed" | "teardown", index: Number(m[3]) - 1, command };
 };
 
