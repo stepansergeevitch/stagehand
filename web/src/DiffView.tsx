@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { anchorOf, api, repoColorClass, repoName, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type LineComment, type Message, type MessageAnchor } from "./api";
 import { Markdown } from "./Markdown";
 import { storage } from "./storage";
+import type { CodeScope } from "./routes";
 
 // A file belongs to a repository when its path is exactly that repo's directory or starts with "<repo>/".
 const inRepo = (path: string, repo: string): boolean => !repo || path === repo || path.startsWith(`${repo}/`);
 
 // Which slice of the branch the diff shows: everything vs the base (default, the only view that takes line comments),
 // only what is uncommitted, or a hand-picked set of commits.
-export type DiffFilter = { kind: "all" } | { kind: "uncommitted" } | { kind: "commits"; shas: string[] };
+export type DiffFilter = CodeScope;
 
 // Where the diff comes from: a task's worktree (the default) or a Sessions-page session's checkout.
 export interface DiffSource {
@@ -444,9 +445,15 @@ export const DiffView = ({
     taskBusy = false,
     onError = () => undefined,
     onRebase,
+    view,
+    onView,
 }: {
     // A task's diff (with the commit manager) …
     taskId?: string;
+    // Which repository and which changes are shown. With `onView` the view is controlled (routed by the caller);
+    // without it the component keeps the choice itself (a Sessions-page diff).
+    view?: { repo?: string; filter?: DiffFilter };
+    onView?: (v: { repo: string; filter: DiffFilter }) => void;
     // … or any other checkout's (a Sessions-page session); one of the two is required.
     source?: DiffSource;
     refreshKey: string;
@@ -469,14 +476,27 @@ export const DiffView = ({
     const src = useMemo(() => source ?? taskSource(taskId ?? ""), [source, taskId]);
     const [diff, setDiff] = useState<DiffResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const [filter, setFilter] = useState<DiffFilter>({ kind: "all" });
+    const [localFilter, setLocalFilter] = useState<DiffFilter>({ kind: "all" });
     const [branch, setBranch] = useState<{ commits: BranchCommit[]; uncommitted: boolean }>({ commits: [], uncommitted: false });
-    const [activeRepo, setActiveRepo] = useState(repos[0] ?? "");
-    const repo = repos.includes(activeRepo) ? activeRepo : (repos[0] ?? "");
+    const [localRepo, setLocalRepo] = useState(repos[0] ?? "");
+    const controlled = !!onView;
+    const filter: DiffFilter = controlled ? (view?.filter ?? { kind: "all" }) : localFilter;
+    const wantRepo = controlled ? (view?.repo ?? "") : localRepo;
+    const repo = repos.includes(wantRepo) ? wantRepo : (repos[0] ?? "");
+    const setFilter = (f: DiffFilter): void => (controlled ? onView!({ repo, filter: f }) : setLocalFilter(f));
+    // Switching repository always starts from that repository's full diff.
+    const setActiveRepo = (r: string): void => {
+        if (controlled) onView!({ repo: r, filter: { kind: "all" } });
+        else {
+            setLocalRepo(r);
+            setLocalFilter({ kind: "all" });
+        }
+    };
     const scope = taskId ?? source;
     useEffect(() => {
-        setFilter({ kind: "all" });
-        setActiveRepo(repos[0] ?? "");
+        if (controlled) return;
+        setLocalFilter({ kind: "all" });
+        setLocalRepo(repos[0] ?? "");
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [scope]);
     useEffect(() => {
@@ -543,7 +563,7 @@ export const DiffView = ({
     const tabs = repos.length > 1 && (
         <div className="subtabs pr-repo-tabs">
             {repos.map((r) => (
-                <button key={r} className={`${r === repo ? "active" : ""} repo-${repoColorClass(r, repos)}`} onClick={() => { setActiveRepo(r); setFilter({ kind: "all" }); }}>{repoName(r)}</button>
+                <button key={r} className={`${r === repo ? "active" : ""} repo-${repoColorClass(r, repos)}`} onClick={() => setActiveRepo(r)}>{repoName(r)}</button>
             ))}
         </div>
     );

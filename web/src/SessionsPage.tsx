@@ -6,10 +6,14 @@ import { LazyTerminal } from "./LazyTerminal";
 // Free-form claude sessions: pick an environment (its config dir, env vars and checkout) and an AI account, optionally
 // a fresh worktree on a branch, and get an interactive `claude` in a terminal — plus the same diff view tasks have,
 // for whatever the session changes. Sessions live in tmux, so closing the page keeps them; Open resumes the conversation.
-export const SessionsPage = ({ envs, accounts, configDirs, settings, onError }: { envs: Env[]; accounts: Account[]; configDirs: ConfigDir[]; settings: Settings | null; onError: (m: string) => void }) => {
+export const SessionsPage = ({ envs, accounts, configDirs, settings, session, view, onNavigate, onError }: {
+    envs: Env[]; accounts: Account[]; configDirs: ConfigDir[]; settings: Settings | null;
+    // The open session and its sub-view are routed (#/sessions/<id>/<terminal|changes>).
+    session: string | null; view: "terminal" | "changes"; onNavigate: (session: string | null, view?: "terminal" | "changes") => void;
+    onError: (m: string) => void;
+}) => {
     const [sessions, setSessions] = useState<Session[]>([]);
-    const [active, setActive] = useState<string | null>(null);
-    const [view, setView] = useState<"terminal" | "changes">("terminal");
+    const active = session;
     const [creating, setCreating] = useState(false);
     const [busy, setBusy] = useState<string | null>(null);
     const [refreshKey, setRefreshKey] = useState(0);
@@ -54,8 +58,7 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, onError }: 
                     onCreate={async (body) => {
                         await act("create", async () => {
                             const s = await api.createSession(body);
-                            setActive(s.id);
-                            setView("terminal");
+                            onNavigate(s.id, "terminal");
                         });
                         setCreating(false);
                     }}
@@ -70,9 +73,9 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, onError }: 
                     settings={settings}
                     selected={s.id === active}
                     busy={busy}
-                    onOpen={() => act(`open:${s.id}`, async () => { await api.openSession(s.id); setActive(s.id); setView("terminal"); })}
-                    onChanges={() => { setActive(s.id); setView("changes"); setRefreshKey((k) => k + 1); }}
-                    onClose={() => act(`close:${s.id}`, async () => { await api.closeSession(s.id); if (active === s.id && view === "terminal") setActive(null); })}
+                    onOpen={() => act(`open:${s.id}`, async () => { await api.openSession(s.id); onNavigate(s.id, "terminal"); })}
+                    onChanges={() => { onNavigate(s.id, "changes"); setRefreshKey((k) => k + 1); }}
+                    onClose={() => act(`close:${s.id}`, async () => { await api.closeSession(s.id); if (active === s.id && view === "terminal") onNavigate(null); })}
                     onRename={(name) => act(`rename:${s.id}`, () => api.renameSession(s.id, name))}
                     onDelete={(removeWorktree) =>
                         act(`delete:${s.id}`, async () => {
@@ -83,7 +86,7 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, onError }: 
                                 if (/push or discard/.test(msg) && confirm(`${msg}\n\nDiscard them and delete anyway?`)) await api.deleteSession(s.id, removeWorktree, true);
                                 else throw e;
                             }
-                            if (active === s.id) setActive(null);
+                            if (active === s.id) onNavigate(null);
                         })
                     }
                 />
@@ -96,8 +99,8 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, onError }: 
                         {current.branch && <span className="chip accent">{current.branch}</span>}
                     </h2>
                     <div className="subtabs">
-                        <button className={view === "terminal" ? "active" : ""} onClick={() => setView("terminal")}>Terminal</button>
-                        <button className={view === "changes" ? "active" : ""} onClick={() => { setView("changes"); setRefreshKey((k) => k + 1); }}>Changes</button>
+                        <button className={view === "terminal" ? "active" : ""} onClick={() => onNavigate(current.id, "terminal")}>Terminal</button>
+                        <button className={view === "changes" ? "active" : ""} onClick={() => { onNavigate(current.id, "changes"); setRefreshKey((k) => k + 1); }}>Changes</button>
                     </div>
                     {view === "terminal" && (current.alive ? <LazyTerminal key={current.tmux} session={current.tmux} /> : <div className="empty">The pane is closed — Open starts claude again, resuming this conversation.</div>)}
                     {view === "changes" && (

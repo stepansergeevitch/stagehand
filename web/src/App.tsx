@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LabelChips } from "./Labels";
 import { BranchPicker } from "./BranchPicker";
 import { accountOrderOf, accountUsableWith, api, envRepos, labelsOf, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
-import { TASK_TABS, TaskDetailView, type Tab as TaskTab } from "./TaskDetail";
+import { TaskDetailView } from "./TaskDetail";
+import { formatRoute, navigate, taskRoute, useRoute, type Page, type TaskView } from "./routes";
 import { EnvPage } from "./EnvPage";
 import { ConfigDirPage } from "./ConfigDirPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
@@ -13,53 +14,20 @@ import { storage } from "./storage";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { LazyTerminal } from "./LazyTerminal";
 
-type Page = "dashboard" | "tasks" | "sessions" | "analytics" | "env" | "dir" | ManageTab;
+// Where the user is lives in the URL hash only (see routes.ts): reloads, back/forward, pasted links and anything that
+// reads the path see the same screen.
 const NAV: { id: Page; label: string; hint: string }[] = [
     { id: "dashboard", label: "Dashboard", hint: "Tasks needing your attention, per environment" },
     { id: "tasks", label: "Tasks", hint: "Tasks in the selected environment" },
     { id: "sessions", label: "Sessions", hint: "Free-form claude sessions in an environment, with the account and worktree of your choice" },
     { id: "analytics", label: "Analytics", hint: "Token and cost usage by environment, task, account" },
     { id: "envs", label: "Environments", hint: "Repositories, services, which config dir and account they use" },
-    { id: "dirs", label: "Config dirs", hint: "Claude config dirs: skills, hooks, rules, Chrome" },
+    { id: "config-dirs", label: "Config dirs", hint: "Claude config dirs: skills, hooks, rules, Chrome" },
     { id: "accounts", label: "AI accounts", hint: "Provider logins (tokens), usage, failover" },
     { id: "integrations", label: "Integrations", hint: "External services, each tagged with its type: task managers (ClickUp, Linear), notifications, decision model (Jev)" },
 ];
-
-// Where the user is, as a URL hash: #/dashboard, #/tasks, #/tasks/<taskId>/<tab>, #/sessions, #/analytics, #/envs,
-// #/env/<envId>, #/dirs, #/dir/<dirId>, #/accounts, #/integrations (old #/managers links still resolve). Reloads and
-// back/forward restore it.
-interface Route {
-    page: Page;
-    selected: string | null;
-    taskTab: TaskTab;
-    envId: string | null;
-    dirId: string | null;
-}
-const PAGES: readonly Page[] = ["dashboard", "tasks", "sessions", "analytics", "envs", "dirs", "accounts", "integrations"];
-const parseHash = (hash: string): Route => {
-    const [head = "", a = "", b = ""] = hash.replace(/^#\/?/, "").split("/");
-    const r: Route = { page: "dashboard", selected: null, taskTab: "work", envId: null, dirId: null };
-    if (head === "tasks" || head === "dashboard") {
-        // A task opened from the Dashboard stays on the Dashboard page: #/dashboard/<taskId>/<tab>.
-        r.page = head;
-        if (a) r.selected = decodeURIComponent(a);
-        if (b && (TASK_TABS as readonly string[]).includes(b)) r.taskTab = b as TaskTab;
-    } else if (head === "env" && a) {
-        r.page = "env";
-        r.envId = decodeURIComponent(a);
-    } else if (head === "dir" && a) {
-        r.page = "dir";
-        r.dirId = decodeURIComponent(a);
-    } else if (head === "managers") r.page = "integrations";
-    else if ((PAGES as readonly string[]).includes(head)) r.page = head as Page;
-    return r;
-};
-const buildHash = (page: Page, selected: string | null, taskTab: TaskTab, envId: string, dirId: string | null): string => {
-    if (page === "tasks" || page === "dashboard") return selected ? `#/${page}/${encodeURIComponent(selected)}/${taskTab}` : `#/${page}`;
-    if (page === "env") return `#/env/${encodeURIComponent(envId)}`;
-    if (page === "dir" && dirId) return `#/dir/${encodeURIComponent(dirId)}`;
-    return `#/${page}`;
-};
+// The list pages ManagePage renders, by route page.
+const MANAGE_TAB: Partial<Record<Page, ManageTab>> = { envs: "envs", "config-dirs": "dirs", accounts: "accounts", integrations: "integrations" };
 
 // Accounts that can drive runs in this env: any with a token, or a legacy login living in the env's config dir.
 const accountsFor = (env: Env | undefined, accounts: Account[], dirs: ConfigDir[]): Account[] => {
@@ -141,57 +109,48 @@ const Gauge = ({ a, onRefresh }: { a: Account; onRefresh: () => void }) => {
 };
 
 export const App = () => {
-    const [initial] = useState(() => parseHash(location.hash));
+    const route = useRoute();
+    const page = route.page;
+    // The open task and its view come from the route: the Dashboard keeps a task in place, Tasks opens it beside the list.
+    const selected = (route.page === "tasks" || route.page === "dashboard") && route.task ? route.task : null;
+    const taskView: TaskView = ((route.page === "tasks" || route.page === "dashboard") && route.view) || { tab: "work" };
+    const creating = route.page === "tasks" && !!route.create;
     const [accounts, setAccounts] = useState<Account[]>([]);
     const [configDirs, setConfigDirs] = useState<ConfigDir[]>([]);
-    const [dirId, setDirId] = useState<string | null>(initial.dirId);
     const [envs, setEnvs] = useState<Env[]>([]);
     const [tasks, setTasks] = useState<Task[]>([]);
-    const [envId, setEnvId] = useState<string>(() => initial.envId ?? storage.get("stagehand.env") ?? "");
-    const [selected, setSelectedRaw] = useState<string | null>(initial.selected);
-    const [taskTab, setTaskTab] = useState<TaskTab>(initial.taskTab);
-    // Opening a different task starts on its Work tab; a hash-driven change keeps the tab it names.
-    const setSelected = useCallback((id: string | null) => {
-        setSelectedRaw(id);
-        setTaskTab("work");
-    }, []);
+    // The environment whose tasks the list shows: the route's, else the open task's, else the one used last.
+    const [rememberedEnv, setRememberedEnv] = useState<string>(() => storage.get("stagehand.env") ?? "");
+    const routeEnv = route.page === "tasks" ? route.env : undefined;
+    const selectedTaskEnv = selected ? tasks.find((t) => t.id === selected)?.env_id : undefined;
+    const envId = routeEnv ?? selectedTaskEnv ?? rememberedEnv;
     const [detail, setDetail] = useState<TaskDetail | null>(null);
     const [feed, setFeed] = useState<Record<string, string[]>>({});
-    const [modal, setModal] = useState<"task" | "env" | "account" | null>(null);
+    const [modal, setModal] = useState<"env" | "account" | null>(null);
     const [settings, setSettings] = useState<Settings | null>(null);
     const [readiness, setReadiness] = useState<Readiness[]>([]);
     useEffect(() => {
         void api.settings().then(setSettings).catch(() => undefined);
-    }, [modal]);
+    }, [modal, creating]);
     const [terminal, setTerminal] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [moreOpen, setMoreOpen] = useState(false);
     // Tasks ticked in the list for a bulk delete.
     const [picked, setPicked] = useState<Set<string>>(() => new Set());
-    const [page, setPage] = useState<Page>(initial.page);
-    const navActive: Page = page === "env" ? "envs" : page === "dir" ? "dirs" : page;
 
-    // State → hash (so a reload lands here) and hash → state (back/forward, pasted links).
+    // An old-shaped link (#/env/<id>, #/dir/<id>, #/managers, a task without a tab) is rewritten to its current form once.
     useEffect(() => {
-        const h = buildHash(page, selected, taskTab, envId, dirId);
-        if (location.hash !== h) history.pushState(null, "", h);
-    }, [page, selected, taskTab, envId, dirId]);
+        const h = formatRoute(route);
+        if (location.hash !== h) navigate(route, { replace: true });
+    }, [route]);
     useEffect(() => {
-        const apply = () => {
-            const r = parseHash(location.hash);
-            setPage(r.page);
-            setSelectedRaw(r.selected);
-            setTaskTab(r.taskTab);
-            if (r.envId) setEnvId(r.envId);
-            if (r.dirId) setDirId(r.dirId);
-        };
-        window.addEventListener("popstate", apply);
-        window.addEventListener("hashchange", apply);
-        return () => {
-            window.removeEventListener("popstate", apply);
-            window.removeEventListener("hashchange", apply);
-        };
-    }, []);
+        if (!envId) return;
+        storage.set("stagehand.env", envId);
+        setRememberedEnv(envId);
+    }, [envId]);
+    // Back to the list the task was opened from.
+    const closeTask = useCallback(() => navigate(route.page === "dashboard" ? { page: "dashboard" } : { page: "tasks", ...(envId ? { env: envId } : {}) }), [route.page, envId]);
+    const listRoute = useCallback((env?: string) => ({ page: "tasks" as const, ...(env ?? envId ? { env: env ?? envId } : {}) }), [envId]);
 
     const reload = useCallback(async () => {
         const [a, e, t, d, s, r] = await Promise.all([api.accounts(), api.envs(), api.tasks(), api.configDirs(), api.settings().catch(() => null), api.readiness().catch(() => [] as Readiness[])]);
@@ -201,18 +160,16 @@ export const App = () => {
         setConfigDirs(d);
         setReadiness(r);
         if (s) setSettings(s);
-        if (!envId && e[0]) setEnvId(e[0].id);
+        if (!envId && e[0]) setRememberedEnv(e[0].id);
     }, [envId]);
 
     const loadDetail = useCallback(async (id: string) => setDetail(await api.task(id)), []);
 
-    // A task from another env must not stay open after switching env — but a task named by the URL wins over the remembered env.
+    // A task named by the URL that no longer exists (deleted) sends the view back to its list.
     useEffect(() => {
         if (!selected || !tasks.length) return;
-        const t = tasks.find((x) => x.id === selected);
-        if (!t) setSelected(null);
-        else if (t.env_id !== envId) setEnvId(t.env_id);
-    }, [selected, tasks, envId, setSelected]);
+        if (!tasks.some((x) => x.id === selected)) closeTask();
+    }, [selected, tasks, closeTask]);
     useEffect(() => {
         if (page !== "tasks") void reload();
     }, [page, reload]);
@@ -220,10 +177,6 @@ export const App = () => {
     useEffect(() => {
         void reload();
     }, [reload]);
-
-    useEffect(() => {
-        storage.set("stagehand.env", envId);
-    }, [envId]);
 
     useEffect(() => {
         const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -274,7 +227,9 @@ export const App = () => {
     };
 
     const env = envs.find((e) => e.id === envId);
-    const dir = dirId ? configDirs.find((d) => d.id === dirId) : undefined;
+    // The environment / config dir whose own page is open (#/envs/<id>, #/config-dirs/<id>); the list otherwise.
+    const envPage = route.page === "envs" && route.env ? envs.find((e) => e.id === route.env) : undefined;
+    const dir = route.page === "config-dirs" && route.dir ? configDirs.find((d) => d.id === route.dir) : undefined;
 
     // The selected task's detail view — the same on the Tasks page and when a task is opened from the Dashboard.
     const taskDetailView = detail && (
@@ -287,8 +242,8 @@ export const App = () => {
                 feed={feed[detail.task.id] ?? []}
                 terminal={terminal}
                 onAction={run}
-                tab={taskTab}
-                setTab={setTaskTab}
+                view={taskView}
+                onView={(v) => navigate(taskRoute(route, detail.task.id, v))}
                 onOpenTerminal={async () => {
                     const r = await api.terminal(detail.task.id);
                     setTerminal(r.terminal);
@@ -319,7 +274,7 @@ export const App = () => {
             for (const r of refused) await api.deleteTask(r.id, false, true).catch((e: Error) => setError(e.message));
         }
         setPicked(new Set());
-        if (selected && ids.includes(selected)) setSelected(null);
+        if (selected && ids.includes(selected)) closeTask();
         await reload();
     };
 
@@ -334,7 +289,7 @@ export const App = () => {
             <div className="body">
                 <nav className="sidebar" aria-label="Sections">
                     {NAV.map((n) => (
-                        <button key={n.id} className={navActive === n.id ? "active" : ""} title={n.hint} onClick={() => { if (n.id === "dashboard") setSelected(null); setPage(n.id); }}>
+                        <button key={n.id} className={page === n.id ? "active" : ""} title={n.hint} onClick={() => navigate(n.id === "tasks" ? listRoute() : { page: n.id })}>
                             {n.label}
                             {n.id === "dashboard" && attention > 0 && <span className="count alert">{attention}</span>}
                             {n.id === "tasks" && visible.length > 0 && <span className="count">{visible.length}</span>}
@@ -346,10 +301,10 @@ export const App = () => {
                 {page === "dashboard" && (
                     <div className="main page">
                         <main className="detail">
-                            {selected && <button className="back" onClick={() => setSelected(null)}>← dashboard</button>}
+                            {selected && <button className="back" onClick={closeTask}>← dashboard</button>}
                             {error && <div className="blocked-box">{error}</div>}
                             {/* A task opened from the Dashboard shows here, in place; back returns to the cards. */}
-                            {selected ? (taskDetailView ?? <div className="empty">Loading…</div>) : <ErrorBoundary label="Dashboard"><Dashboard envs={envs} tasks={tasks} readiness={readiness} onOpen={(t) => { setEnvId(t.env_id); setSelected(t.id); }} /></ErrorBoundary>}
+                            {selected ? (taskDetailView ?? <div className="empty">Loading…</div>) : <ErrorBoundary label="Dashboard"><Dashboard envs={envs} tasks={tasks} readiness={readiness} onOpen={(t) => navigate({ page: "dashboard", task: t.id })} /></ErrorBoundary>}
                         </main>
                     </div>
                 )}
@@ -357,7 +312,7 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <ErrorBoundary label="Analytics"><Analytics onError={setError} /></ErrorBoundary>
+                            <ErrorBoundary label="Analytics"><Analytics days={route.page === "analytics" ? route.days : undefined} onDays={(d) => navigate({ page: "analytics", days: d })} onError={setError} /></ErrorBoundary>
                         </main>
                     </div>
                 )}
@@ -365,39 +320,50 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <ErrorBoundary label="Sessions"><SessionsPage envs={envs} accounts={accounts} configDirs={configDirs} settings={settings} onError={setError} /></ErrorBoundary>
+                            <ErrorBoundary label="Sessions">
+                                <SessionsPage
+                                    envs={envs}
+                                    accounts={accounts}
+                                    configDirs={configDirs}
+                                    settings={settings}
+                                    session={route.page === "sessions" ? route.session ?? null : null}
+                                    view={route.page === "sessions" ? route.view ?? "terminal" : "terminal"}
+                                    onNavigate={(session, view) => navigate({ page: "sessions", ...(session ? { session, view: view ?? "terminal" } : {}) })}
+                                    onError={setError}
+                                />
+                            </ErrorBoundary>
                         </main>
                     </div>
                 )}
-                {page === "env" && env && (
+                {page === "envs" && envPage && (
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <EnvPage key={env.id} env={env} envs={envs} accounts={accounts} configDirs={configDirs} onBack={() => setPage("envs")} onOpenDir={(id) => { setDirId(id); setPage("dir"); }} onChanged={reload} onError={setError} />
+                            <EnvPage key={envPage.id} env={envPage} envs={envs} accounts={accounts} configDirs={configDirs} onBack={() => navigate({ page: "envs" })} onOpenDir={(id) => navigate({ page: "config-dirs", dir: id })} onChanged={reload} onError={setError} />
                         </main>
                     </div>
                 )}
-                {page === "dir" && dir && (
+                {page === "config-dirs" && dir && (
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <ConfigDirPage key={dir.id} dir={dir} onBack={() => setPage("dirs")} onChanged={reload} onError={setError} />
+                            <ConfigDirPage key={dir.id} dir={dir} onBack={() => navigate({ page: "config-dirs" })} onChanged={reload} onError={setError} />
                         </main>
                     </div>
                 )}
-                {(page === "envs" || page === "dirs" || page === "accounts" || page === "integrations") && (
+                {MANAGE_TAB[page] && !envPage && !dir && (
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
                             <ManagePage
-                                tab={page}
+                                tab={MANAGE_TAB[page]!}
                                 envs={envs}
                                 configDirs={configDirs}
                                 accounts={accounts}
                                 tasks={tasks}
                                 settings={settings}
-                                onConfigureEnv={(id) => { setEnvId(id); setPage("env"); }}
-                                onOpenDir={(id) => { setDirId(id); setPage("dir"); }}
+                                onConfigureEnv={(id) => navigate({ page: "envs", env: id })}
+                                onOpenDir={(id) => navigate({ page: "config-dirs", dir: id })}
                                 onAddEnv={() => setModal("env")}
                                 onAddAccount={() => setModal("account")}
                                 onChanged={reload}
@@ -410,12 +376,12 @@ export const App = () => {
                 {page === "tasks" && <div className={`main ${selected ? "has-selection" : ""}`}>
                     <aside className="list">
                         <div className="list-head">
-                            <select value={envId} onChange={(e) => { setSelected(null); setEnvId(e.target.value); }} title="Environment">
+                            <select value={envId} onChange={(e) => navigate(listRoute(e.target.value))} title="Environment">
                                 {envs.map((e) => (
                                     <option key={e.id} value={e.id}>{e.name} ({e.base_branch})</option>
                                 ))}
                             </select>
-                            <button className="new-task" disabled={!env} onClick={() => setModal("task")}>
+                            <button className="new-task" disabled={!env} onClick={() => navigate({ ...listRoute(), create: true })}>
                                 <span className="icon">+</span>
                                 <span className="name">New task</span>
                             </button>
@@ -434,7 +400,7 @@ export const App = () => {
                                 {list.map((t) => {
                                     const [glyph, cls] = ICON[g];
                                     return (
-                                        <div key={t.id} className={`row ${selected === t.id ? "selected" : ""} ${picked.has(t.id) ? "picked" : ""}`} onClick={() => setSelected(t.id)}>
+                                        <div key={t.id} className={`row ${selected === t.id ? "selected" : ""} ${picked.has(t.id) ? "picked" : ""}`} onClick={() => navigate(taskRoute(route, t.id))}>
                                             <input
                                                 type="checkbox"
                                                 className="pick"
@@ -455,16 +421,16 @@ export const App = () => {
                         ))}
                     </aside>
                     <main className="detail">
-                        {selected && <button className="back" onClick={() => setSelected(null)}>← tasks</button>}
+                        {selected && <button className="back" onClick={closeTask}>← tasks</button>}
                         {error && <div className="blocked-box">{error}</div>}
                         {!detail && <div className="empty">Select a task, or add one.</div>}
                         {taskDetailView}
                     </main>
                 </div>}
             </div>
-            {modal === "task" && env && (
-                <Modal title={`New task in ${env.name}`} onClose={() => setModal(null)}>
-                    <TaskForm accounts={accountsFor(env, accounts, configDirs)} env={env} settings={settings} readiness={readiness.find((r) => r.envId === env.id)} onSubmit={async (body) => { await run(() => api.createTasks({ envId: env.id, ...body })); setModal(null); }} />
+            {creating && env && (
+                <Modal title={`New task in ${env.name}`} onClose={() => navigate(listRoute())}>
+                    <TaskForm accounts={accountsFor(env, accounts, configDirs)} env={env} settings={settings} readiness={readiness.find((r) => r.envId === env.id)} onSubmit={async (body) => { await run(() => api.createTasks({ envId: env.id, ...body })); navigate(listRoute()); }} />
                 </Modal>
             )}
             {modal === "env" && (

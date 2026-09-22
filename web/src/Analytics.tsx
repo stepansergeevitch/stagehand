@@ -56,8 +56,10 @@ const Breakdown = ({ title, rows, total, labelOf, limit, windows }: { title: str
     );
 };
 
-export const Analytics = ({ onError }: { onError: (m: string) => void }) => {
-    const [days, setDays] = useState(() => Number(storage.get("stagehand.usageDays") ?? "7"));
+// The period is routed (#/analytics?days=<n>); without one, the period used last.
+export const Analytics = ({ days: routedDays, onDays, onError }: { days?: number; onDays: (days: number) => void; onError: (m: string) => void }) => {
+    const days = routedDays ?? Number(storage.get("stagehand.usageDays") ?? "7");
+    const setDays = onDays;
     const [report, setReport] = useState<UsageReport | null>(null);
     useEffect(() => {
         storage.set("stagehand.usageDays", String(days));

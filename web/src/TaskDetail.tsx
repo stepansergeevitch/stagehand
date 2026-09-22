@@ -4,6 +4,7 @@ import { BranchPicker } from "./BranchPicker";
 import { api, baseLabel, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseBaseBranch, parseChecks, pendingQuestions, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
+import type { TaskTab, TaskView } from "./routes";
 import { Chat } from "./Chat";
 import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
@@ -110,9 +111,10 @@ interface Props {
     feed: string[];
     terminal: string | null;
     onAction: (fn: () => Promise<unknown>) => Promise<void>;
-    // The open tab is routed (part of the URL hash) so a reload lands on the same view.
-    tab: Tab;
-    setTab: (t: Tab) => void;
+    // What the task view shows (tab, step, section, repository, diff scope) is routed — part of the URL hash — so a
+    // reload lands on the same view and a link names it; every view change goes through onView.
+    view: TaskView;
+    onView: (v: TaskView) => void;
     onOpenTerminal: () => Promise<void>;
     onCloseTerminal: () => void;
 }
@@ -364,8 +366,7 @@ const statusChip = (s: string) => {
     return <span className={`chip ${cls}`}>{s.replace("_", " ")}</span>;
 };
 
-export type Tab = "work" | "runs" | "design" | "code" | "pr" | "comments" | "chat" | "ticket" | "cost";
-export const TASK_TABS: readonly Tab[] = ["work", "runs", "design", "code", "pr", "comments", "chat", "ticket", "cost"];
+export type Tab = TaskTab;
 
 const elapsed = (fromIso: string | undefined, toIso?: string | undefined): string => {
     if (!fromIso) return "";
@@ -578,8 +579,10 @@ const PrWidget = ({ detail, onAction, onOpenInTab }: { detail: TaskDetail; onAct
     );
 };
 
-export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal, onAction, tab, setTab, onOpenTerminal, onCloseTerminal }: Props) => {
+export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal, onAction, view, onView, onOpenTerminal, onCloseTerminal }: Props) => {
     const { task, runs, design, impl, qaBefore, qaAfter, pr, prFix, research } = detail;
+    const tab = view.tab;
+    const setTab = (t: Tab) => onView({ tab: t });
     const tickets = detail.tickets ?? [];
     const qaHistory = detail.qaHistory ?? [];
     const has = (p: string) => detail.artifacts.some((a) => a.path === p);
@@ -599,19 +602,16 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     // Waiting on answers to the agent's questions is not a review: the review box stays hidden until they are sent.
     const asking = pendingQuestions(detail);
     const waiting = task.status === "waiting_user" && !asking;
-    const [step, setStep] = useState<Stage>(task.stage);
-    useEffect(() => {
-        setStep(task.stage);
-    }, [task.id]);
-    useEffect(() => setStep(task.stage), [task.stage]);
     // GitHub PR comments (humans + automation), loaded when a tab needs them; line comments are also shown inline in the diff.
-    const [commentsTab, setCommentsTab] = useState<"user" | "pr" | "automation">("user");
+    const commentsTab: "user" | "pr" | "automation" = view.tab === "comments" ? view.sub ?? "user" : "user";
+    const setCommentsTab = (sub: typeof commentsTab) => onView({ tab: "comments", sub, ...(view.tab === "comments" && view.repo ? { repo: view.repo } : {}) });
     const [selectedComments, setSelectedComments] = useState<Set<number>>(new Set());
     const toggleComment = (id: number) => setSelectedComments((s) => { const next = new Set(s); next.has(id) ? next.delete(id) : next.add(id); return next; });
     useEffect(() => setSelectedComments(new Set()), [task.id]);
     // Which repository's PR the comments tab looks at (multi-repo tasks have one PR per repository).
     const prdRepos = (detail.prStates ?? []).filter((r) => r.number).map((r) => r.repo);
-    const [ghRepoRaw, setGhRepo] = useState<string | null>(null);
+    const ghRepoRaw = view.tab === "comments" ? view.repo ?? null : null;
+    const setGhRepo = (repo: string) => onView({ tab: "comments", sub: commentsTab, repo });
     const ghRepo = ghRepoRaw !== null && prdRepos.includes(ghRepoRaw) ? ghRepoRaw : (prdRepos[0] ?? null);
     const ghRow = ghRepo !== null ? prStateOf(detail, ghRepo) : undefined;
     const [gh, setGh] = useState<PrComments | null>(null);
@@ -664,6 +664,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     // PR stages (draft review through merge) live on their own top-level tab now, not as a Work step.
     const steps = STAGE_ORDER.filter((s, i) => i <= currentIdx && !skipped.has(s) && s !== "pr_creation_review" && !PR_STAGES.has(s) && (stepHasContent(s) || s === task.stage));
     const stepKey = (s: Stage): Stage => s;
+    // The Work step shown: the routed one when it is a step of this task, else the current stage.
+    const step: Stage = view.tab === "work" && view.step && steps.includes(view.step) ? view.step : task.stage;
+    const setStep = (s: Stage) => onView({ tab: "work", step: s });
     // Jump to the Pull request tab, optionally focusing one repository (from the header's "show more" or a Work pointer).
     // "Rebase onto latest base" — from the header button and from the Code changes base-drift banner.
     // Every repository by default; `repos` narrows it to the ticked ones (multi-repo envs).
@@ -674,11 +677,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     };
     const envRepoList = envRepos(env);
     const [rebasePick, setRebasePick] = useState<string[]>([]);
-    const [prFocusRepo, setPrFocusRepo] = useState<string | null>(null);
-    const openPrTab = (repo?: string) => {
-        setPrFocusRepo(repo ?? null);
-        setTab("pr");
-    };
+    const prFocusRepo = view.tab === "pr" ? view.repo ?? null : null;
+    const setPrFocusRepo = (repo: string) => onView({ tab: "pr", repo });
+    const openPrTab = (repo?: string) => onView({ tab: "pr", ...(repo ? { repo } : {}) });
 
     const reviewBox = waiting && (
         <div className="review-box">
@@ -1076,7 +1077,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 design ? (
                     <Card title="Design proposal" badge={<><span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>{(design.affectedRepos ?? []).map((r) => <span key={r} className="chip">{r}</span>)}</>}>
                         {task.stage === "design_proposal" && reviewBox}
-                        <DesignSections design={design} md={designMd} />
+                        <DesignSections design={design} md={designMd} section={view.tab === "design" ? view.section : undefined} onSection={(s) => onView({ tab: "design", section: s })} />
                     </Card>
                 ) : <div className="empty">No design proposal yet.</div>
             )}
@@ -1091,6 +1092,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         <DiffView
                             taskId={task.id}
                             refreshKey={task.updated_at}
+                            view={{ ...(view.tab === "code" && view.repo ? { repo: view.repo } : {}), ...(view.tab === "code" && view.scope ? { filter: view.scope } : {}) }}
+                            onView={(v) => onView({ tab: "code", ...(v.repo ? { repo: v.repo } : {}), ...(v.filter.kind !== "all" ? { scope: v.filter } : {}) })}
                             comments={comments}
                             prior={prior}
                             canComment={canComment}
@@ -1110,12 +1113,12 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {tab === "pr" && (
                 <>
                     {task.stage === "pr_creation_review" ? (
-                        <PrDraftTabs detail={detail} onAction={onAction} focusRepo={prFocusRepo} />
+                        <PrDraftTabs detail={detail} onAction={onAction} focusRepo={prFocusRepo} onFocusRepo={setPrFocusRepo} />
                     ) : (
                         <>
                             {task.stage === "pr_fix" && reviewBox}
                             {task.stage === "pr_fix" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
-                            <PrPanel detail={detail} onAction={onAction} focusRepo={prFocusRepo} />
+                            <PrPanel detail={detail} onAction={onAction} focusRepo={prFocusRepo} onFocusRepo={setPrFocusRepo} />
                             {/* A repository whose draft was never approved (the task moved on when another repository's PR opened): still reviewable here. */}
                             {(pr?.drafts ?? []).some((d) => !prStateOf(detail, d.repo)?.number) && (
                                 <>
@@ -1311,12 +1314,14 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
 };
 
 // PR Creation Review: one tab per repository; each draft is edited and approved on its own.
-const PrDraftTabs = ({ detail, onAction, focusRepo }: { detail: TaskDetail; onAction: Props["onAction"]; focusRepo?: string | null }) => {
+const PrDraftTabs = ({ detail, onAction, focusRepo, onFocusRepo }: { detail: TaskDetail; onAction: Props["onAction"]; focusRepo?: string | null; onFocusRepo?: (repo: string) => void }) => {
     const { task, pr } = detail;
     const drafts = pr?.drafts ?? [];
     const repos = drafts.map((d) => d.repo);
-    const [active, setActive] = useState(() => Math.max(0, repos.indexOf(focusRepo ?? "")));
-    useEffect(() => setActive(0), [task.id]);
+    // The open repository is routed (focusRepo); without a router, the first one.
+    const [localActive, setLocalActive] = useState(0);
+    const active = onFocusRepo ? Math.max(0, repos.indexOf(focusRepo ?? "")) : localActive;
+    const setActive = (i: number) => (onFocusRepo ? onFocusRepo(repos[i] ?? "") : setLocalActive(i));
     if (drafts.length === 0) return <div className="empty">no draft yet</div>;
     const approvedCount = drafts.filter((d) => prStateOf(detail, d.repo)?.approved_at).length;
     const cur = drafts[Math.min(active, drafts.length - 1)]!;
@@ -1457,10 +1462,12 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
 
 // Details for the PR stages, one card per repository: checks, review, merge — everything the poller stored.
 // Details for the PR stages: one tab per repository (not stacked cards), each with its own checks, review, merge state.
-const PrPanel = ({ detail, onAction, focusRepo }: { detail: TaskDetail; onAction: Props["onAction"]; focusRepo?: string | null }) => {
+const PrPanel = ({ detail, onAction, focusRepo, onFocusRepo }: { detail: TaskDetail; onAction: Props["onAction"]; focusRepo?: string | null; onFocusRepo?: (repo: string) => void }) => {
     const { task } = detail;
     const repos = prRepos(detail);
-    const [active, setActive] = useState(() => Math.max(0, repos.indexOf(focusRepo ?? "")));
+    const [localActive, setLocalActive] = useState(0);
+    const active = onFocusRepo ? Math.max(0, repos.indexOf(focusRepo ?? "")) : localActive;
+    const setActive = (i: number) => (onFocusRepo ? onFocusRepo(repos[i] ?? "") : setLocalActive(i));
     if (repos.length === 0) return <Card title="Pull request"><p>{task.status_line ?? "No pull request yet."}</p></Card>;
     const repo = repos[Math.min(active, repos.length - 1)]!;
     const row = prStateOf(detail, repo);
@@ -1561,7 +1568,7 @@ const QaScenarios = ({ design }: { design: NonNullable<TaskDetail["design"]> }) 
     </>
 );
 
-const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design"]>; md: string | null }) => {
+const DesignSections = ({ design, md, section, onSection }: { design: NonNullable<TaskDetail["design"]>; md: string | null; section?: string; onSection: (title: string) => void }) => {
     const parsed = useMemo(() => (md ? splitSections(md) : { intro: "", sections: [] }), [md]);
     // Structured data attaches to the matching markdown section; sections without a markdown twin still get a tab.
     type Part = { key: string; title: string; md?: string; extra?: React.ReactNode };
@@ -1585,16 +1592,16 @@ const DesignSections = ({ design, md }: { design: NonNullable<TaskDetail["design
     attach(/qa/i, "QA scenarios", <QaScenarios design={design} />, true);
     // Open on the one-screen Decision; proposals from before that section open on the explanation (Root cause / Approach),
     // older ones still on Proposed changes.
-    const [active, setActive] = useState(() => {
-        const first = [/^decision/i, /^(root cause|approach)/i, /^proposed changes/i].map((re) => parts.findIndex((p) => re.test(p.title))).find((i) => i >= 0);
-        return first ?? 0;
-    });
+    // The routed section when it exists; else the default opening section.
+    const routed = section ? parts.findIndex((p) => p.key === section) : -1;
+    const first = [/^decision/i, /^(root cause|approach)/i, /^proposed changes/i].map((re) => parts.findIndex((p) => re.test(p.title))).find((i) => i >= 0);
+    const active = routed >= 0 ? routed : (first ?? 0);
     const cur = parts[Math.min(active, parts.length - 1)];
     return (
         <>
             {parsed.intro && <Markdown source={parsed.intro} />}
             <div className="subtabs">
-                {parts.map((p, i) => <button key={p.key} className={i === active ? "active" : ""} onClick={() => setActive(i)}>{p.title}</button>)}
+                {parts.map((p, i) => <button key={p.key} className={i === active ? "active" : ""} onClick={() => onSection(p.key)}>{p.title}</button>)}
             </div>
             {cur && (
                 <div className="design-section">
