@@ -206,6 +206,9 @@ export interface Run {
     num_turns: number | null; last_event: string | null; attempt: number;
     // The --model the run started with; null = the account's default (absent from a server older than this UI).
     model?: string | null;
+    // A QA pass split into parallel runs: which scenarios this run drove ("S2", "api", "S1+S3"), and its pass group.
+    shard?: string | null;
+    group_id?: string | null;
 }
 export interface QaStep { action: string; assert: string; shot: boolean }
 export interface QaScenario { id: string; kind?: "browser" | "api"; title: string; url: string; persona: string; seed?: string[]; steps: QaStep[] }

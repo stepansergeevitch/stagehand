@@ -1063,7 +1063,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         {runs.length === 0 && <div className="empty">none yet</div>}
                         {[...runs].reverse().map((r) => (
                             <div className="run" key={r.id}>
-                                <span>{STAGE_LABEL[r.stage]} <small style={{ color: "var(--ink-3)" }}>#{r.attempt}</small></span>
+                                <span>{STAGE_LABEL[r.stage]} <small style={{ color: "var(--ink-3)" }}>#{r.attempt}</small>{r.shard && <span className="chip" title="one shard of a QA pass that ran its scenarios in parallel">{r.shard}</span>}</span>
                                 {statusChip(r.status)}
                                 <span className={r.error ? "err" : ""}>{r.error ?? r.last_event ?? ""}</span>
                                 <span className="mono" style={{ color: "var(--ink-3)" }}>{r.model ? `${r.model} · ` : ""}{r.num_turns ? `${r.num_turns} turns` : ""}{r.cost_usd ? ` · $${r.cost_usd.toFixed(2)}` : ""}</span>

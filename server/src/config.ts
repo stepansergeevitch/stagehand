@@ -13,6 +13,8 @@ const ConfigSchema = z.object({
     // Accounts that clone their QA Chrome profile per run (accounts.chrome_clone_qa): how many cloned Chrome windows may run at once.
     maxChromeClonesPerAccount: z.number().int().default(3),
     preflightUtilizationLimit: z.number().default(0.9),
+    // QA passes run their scenarios in parallel shards (qa-shards.ts): at most this many runs per pass; 0 = one run.
+    qaShards: z.number().int().default(4),
     clickupToken: z.string().nullable().default(null),
     clickupTeamId: z.string().nullable().default(null),
     // Resolved once from GET /user with the token above and cached here.
@@ -130,6 +132,7 @@ const defaults = (): Config => ({
     maxConcurrentRunsPerAccount: 2,
     maxChromeClonesPerAccount: 3,
     preflightUtilizationLimit: 0.9,
+    qaShards: 4,
     clickupToken: null,
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
     clickupUserId: null,

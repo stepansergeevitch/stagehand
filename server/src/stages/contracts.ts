@@ -30,6 +30,9 @@ export const QaScenario = z.object({
     // false: the journey cannot exist before the change (a new page, endpoint or control) — the baseline pass skips
     // the scenario and records it as a failure by construction instead of driving a surface that is not there.
     baseline: z.boolean().default(true),
+    // true: the scenario cannot run beside the others (it changes a global setting, restarts a component, or asserts
+    // on counts that other scenarios' fixtures would move) — it runs alone after the parallel shards of the pass.
+    exclusive: z.boolean().default(false),
     // Data the journey needs, as concrete steps the runner performs itself before the first step (UI actions, API calls
     // with payloads, SQL, or a repo script) — never a request for a human to prepare something. Empty = nothing to seed.
     seed: z.array(z.string()).default([]),

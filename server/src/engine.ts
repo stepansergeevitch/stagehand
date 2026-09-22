@@ -23,6 +23,7 @@ import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { applyApprovedStepFixes } from "./qa-fixes.js";
 import { fillQaVars, newQaPassId, qaContractProblems, type QaVars } from "./qa-vars.js";
+import { mergeQuestions, mergeScenarios, planQaShards, shardFiles, type QaShard } from "./qa-shards.js";
 import { jevAsk, jevEnabled } from "./jev.js";
 import { djangoBatchCommand, djangoBatchEnv, parseBatchOutput, planSeedUnits, type SeedItem } from "./seed-batch.js";
 import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
@@ -144,11 +145,11 @@ const renderReviewNotes = (round: number, notes: string | undefined, comments: L
 };
 
 // The block every stage prompt carries: how to hand a decision to the human without guessing or stopping silently.
-const askHumanBlock = (taskDir: string): string =>
+const askHumanBlock = (taskDir: string, file = "questions.json"): string =>
     [
         "## Asking the human (any stage)",
         "",
-        "When only the human can decide something — an ambiguous requirement, two valid approaches with different scope or cost, a conflict between the ticket and the code, credentials or data you genuinely cannot create — do not guess and do not stop silently. Write `" + `${taskDir}/questions.json` + "`:",
+        "When only the human can decide something — an ambiguous requirement, two valid approaches with different scope or cost, a conflict between the ticket and the code, credentials or data you genuinely cannot create — do not guess and do not stop silently. Write `" + `${taskDir}/${file}` + "`:",
         "",
         "```json",
         '{ "questions": [ { "id": "q1", "text": "<one clear question>", "context": "<why it matters, ≤ 40 words>", "options": ["<option A>", "<option B>"] } ] }',
@@ -180,7 +181,33 @@ interface DispatchOpts {
     cloneFailed?: boolean;
     // PR Fix: what started the round — failing checks or picked comments — for config.operationModels.
     operation?: "pr_fix_ci" | "pr_fix_comments";
+    // QA stages: this dispatch is one shard of a pass split into parallel runs (qa-shards.ts).
+    shard?: QaShard;
 }
+
+// One QA pass running as several shards: what is still to start, what runs, what each finished shard reported.
+type ShardResult =
+    | { kind: "ok"; scenarios: QaPassResult["scenarios"]; blockers: string[] }
+    | { kind: "asked"; questions: QuestionsFile; recorded: QaPassResult["scenarios"] }
+    | { kind: "failed"; error: string }
+    | { kind: "rate_limited"; resetsAt: number | null }
+    | { kind: "stopped" };
+interface QaGroup {
+    id: string;
+    taskId: string;
+    stage: Stage;
+    // The pass dispatch's options (seeds done, pass id, seed report, notes, attempt), the base of every shard's dispatch.
+    opts: DispatchOpts;
+    allIds: string[];
+    pending: QaShard[];
+    // Shard ids whose dispatch is between "started" and "run row inserted" (an async gate: clone copy, Chrome probe).
+    starting: Set<string>;
+    running: Map<string, QaShard>;
+    results: Map<string, ShardResult>;
+}
+
+// A scenario result the next attempt keeps instead of driving the scenario again: a verdict, or a hand-off to the human.
+const isRecorded = (s: { outcome: string }): boolean => s.outcome === "pass" || s.outcome === "fail" || s.outcome === "needs_human";
 
 // Runs that are not pipeline stages, each with its own model setting (config.operationModels).
 type OperationKind = "pr_fix_ci" | "pr_fix_comments" | "chat" | "instruct" | "rebase" | "fix_service" | "git_edit";
@@ -466,7 +493,9 @@ export class Engine extends EventEmitter {
         const stale = this.db.prepare(`SELECT * FROM runs WHERE status = 'running'`).all() as RunRow[];
         for (const run of stale) {
             // The claude child may have finished its work before the restart; if the stage's output already validates, complete it from disk.
-            if (await this.completeFromDisk(run.task_id, run.id, run.stage)) continue;
+            // A shard of a parallel QA pass never completes on its own: the shards that finished are in qa/<pass>.partial.json
+            // and Retry drives the rest.
+            if (!run.group_id && (await this.completeFromDisk(run.task_id, run.id, run.stage))) continue;
             this.db.prepare(`UPDATE runs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?`).run("server restarted mid-run", now(), run.id);
             this.setTaskStatus(run.task_id, "failed", "run interrupted by server restart — retry to resume");
         }
@@ -552,6 +581,8 @@ export class Engine extends EventEmitter {
                 notes: "You were interrupted (rate limit or queue). Continue from the current state of the task directory; do not redo finished work.",
             });
         }
+        // Shards of a QA pass that waited for capacity (a clone slot, a run slot) get another go.
+        for (const g of this.qaGroups.values()) this.pumpGroup(g);
     }
 
     // ---------- queries ----------
@@ -775,10 +806,16 @@ export class Engine extends EventEmitter {
     // A clone whose task stopped while parked, or was moved by the human, is ended (a run's own end releases its clone directly).
     private async reapClones(): Promise<void> {
         for (const taskId of [...this.clones.keys()]) {
-            const t = this.getTask(taskId);
+            // The key is the task id, or `<task id>:<shard id>` for a shard of a parallel QA pass.
+            const t = this.getTask(taskId.split(":")[0]!);
             // "queued" is written by parkQueued straight into the row (not part of TaskStatus).
             if (!t || !["running", "queued"].includes(t.status as string)) await this.releaseClone(taskId);
         }
+    }
+
+    // The clone map key of a dispatch: one copy per task, or one per shard of a parallel QA pass.
+    private cloneKey(taskId: string, shard: QaShard | undefined): string {
+        return shard ? `${taskId}:${shard.id}` : taskId;
     }
 
     // AI accounts page: one full copy → launch → bridge round trip on the account's profile, then cleanup.
@@ -863,9 +900,15 @@ export class Engine extends EventEmitter {
             adhoc.kill();
             return;
         }
-        const run = this.latestRun(taskId);
-        if (run) this.active.get(run.id)?.kill();
+        this.killTaskRuns(taskId);
         this.setTaskStatus(taskId, "stopped", "stopped by user");
+    }
+
+    // Every run of the task that is still going (a parallel QA pass has several), and the shards still waiting to start.
+    private killTaskRuns(taskId: string): void {
+        for (const g of [...this.qaGroups.values()]) if (g.taskId === taskId) this.qaGroups.delete(g.id);
+        const running = this.db.prepare(`SELECT id FROM runs WHERE task_id = ? AND status = 'running'`).all(taskId) as Array<{ id: string }>;
+        for (const r of running) this.active.get(r.id)?.kill();
     }
 
     retry(taskId: string): void {
@@ -886,8 +929,14 @@ export class Engine extends EventEmitter {
         // taken as the result of a later run that died on a network error, and the task went blocked without a run).
         const outputFile = STAGE_DEFS[task.stage]?.outputFile;
         const fresh = !outputFile || (last ? this.outputWrittenDuringRun(taskId, outputFile, last.id) : false);
-        const resume = (): void => this.dispatch(taskId, task.stage, { notes: "Previous attempt did not complete. Continue from the current state of the task directory." });
-        if (last && last.stage === task.stage && fresh) {
+        const resume = (): void => {
+            // A QA pass that stopped half-way (a restart, a Stop, a shard that died) keeps what its runs recorded in
+            // qa/<pass>.partial.json; only the scenarios without a verdict are driven again.
+            const extraVars = task.stage === "qa_baseline" || task.stage === "manual_qa" ? this.resumeFromPartial(taskId, task.stage) : null;
+            this.dispatch(taskId, task.stage, { notes: "Previous attempt did not complete. Continue from the current state of the task directory.", ...(extraVars ? { extraVars } : {}) });
+        };
+        // A shard of a parallel pass is never completed from disk: the pass file, if any, belongs to an earlier pass.
+        if (last && last.stage === task.stage && fresh && !last.group_id) {
             void this.completeFromDisk(taskId, last.id, task.stage).then((done) => {
                 if (!done) resume();
             });
@@ -1109,6 +1158,8 @@ export class Engine extends EventEmitter {
             const p = join(this.taskDir(taskId), def.outputFile);
             if (existsSync(p)) renameSync(p, `${p}.prev-${Date.now()}`);
         }
+        // A re-run from scratch: nothing of an earlier pass is resumed (partial results, shard outputs).
+        if (stage === "qa_baseline" || stage === "manual_qa") this.clearPassFiles(taskId, stage === "qa_baseline" ? "before" : "after");
         this.setStage(taskId, stage);
         this.dispatch(taskId, stage, { notes: "This stage is being re-run on request. Do the work again from scratch for this stage; earlier stages' outputs in the task directory are still valid." });
     }
@@ -1120,8 +1171,7 @@ export class Engine extends EventEmitter {
     async deleteTask(taskId: string, removeWorktree: boolean, force = false): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) return;
-        const run = this.latestRun(taskId);
-        if (run) this.active.get(run.id)?.kill();
+        this.killTaskRuns(taskId);
         await this.doCleanup(task, force, { removeWorktree });
         rmSync(this.taskDir(taskId), { recursive: true, force: true });
         stampTaskOnUsage(this.db, taskId);
@@ -2584,10 +2634,24 @@ export class Engine extends EventEmitter {
         };
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
             const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
-            // A resumed pass (after the human's answers, or an unblock retry) drives only the scenarios still open.
+            // A resumed pass (after the human's answers, or an unblock retry) drives only the scenarios still open;
+            // a shard of a parallel pass only its own.
             const resumeOnly = opts.extraVars?.["resumeOnly"];
-            const scenarios: QaScenario[] = this.qaScenariosForPass(design, def.stage).filter((s) => !resumeOnly || resumeOnly.split(",").includes(s.id));
-            vars["pass"] = def.stage === "qa_baseline" ? "before" : "after";
+            const shard = opts.shard;
+            const scenarios: QaScenario[] = this.qaScenariosForPass(design, def.stage)
+                .filter((s) => !resumeOnly || resumeOnly.split(",").includes(s.id))
+                .filter((s) => !shard || shard.scenarios.includes(s.id));
+            const pass = def.stage === "qa_baseline" ? "before" : "after";
+            const files = shardFiles(pass, shard);
+            vars["pass"] = pass;
+            vars["outputFile"] = files.output;
+            vars["partialFile"] = files.partial;
+            vars["askHuman"] = askHumanBlock(taskDir, files.questions);
+            vars["shardNote"] = shard
+                ? `**This run is shard \`${shard.id}\` of the pass: it drives only ${scenarios.map((s) => s.id).join(", ")}.** The other scenarios of the pass run at the same time in other runners${shard.browser ? " and other browser windows" : ""}; every scenario's records carry its own id, so never read, change or delete records that belong to another scenario, never restart the BE/FE or a component, and write only your own output file named in the contract below.`
+                : "";
+            // Shards resume nothing themselves: the group merges what the others recorded.
+            if (shard) vars["resumeHint"] = "";
             vars["passHint"] =
                 def.stage === "qa_baseline"
                     ? " — the change is NOT implemented yet; expect asserts about new behaviour to fail. Record what the app does today."
@@ -2596,7 +2660,7 @@ export class Engine extends EventEmitter {
             const fe = this.services.get(task.id, "fe");
             const appUrl = this.appUrlFor(task, env);
             vars["appUrl"] = appUrl;
-            vars["chromeSelect"] = this.chromeSelectStep(this.browserAccounts(env).find((a) => a.id === task.account_id) ?? this.browserAccounts(env)[0] ?? null, this.clones.get(task.id));
+            vars["chromeSelect"] = this.chromeSelectStep(this.browserAccounts(env).find((a) => a.id === task.account_id) ?? this.browserAccounts(env)[0] ?? null, this.clones.get(this.cloneKey(task.id, shard)));
             const firstBrowser = scenarios.find((s) => (s.kind ?? "browser") === "browser");
             vars["firstUrl"] = firstBrowser?.url ?? "/";
             const beUrl = be?.url ?? "";
@@ -2684,9 +2748,17 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         const cd = this.configDirOf(env);
         // Services and seeds apply to every QA pass; the Chrome machinery only when a scenario actually drives a browser.
-        const chromeNeeded = def.chrome === true && this.qaNeedsBrowser(taskId);
+        const chromeNeeded = def.chrome === true && (opts.shard ? opts.shard.browser : this.qaNeedsBrowser(taskId));
+        // A shard of a parallel QA pass: a gate that blocks the task records the shard as failed (the group decides
+        // what happens once every shard is in), a capacity gate puts it back in the group's queue.
+        const shard = opts.shard;
+        const cloneKey = this.cloneKey(taskId, shard);
+        const blockOrAbort = (line: string, result?: ShardResult): void => {
+            if (shard) this.shardAbort(shard, result ?? { kind: "failed", error: `${shard.id}: ${line}` });
+            else this.setTaskStatus(taskId, "blocked", line);
+        };
         if (chromeNeeded && !cd.chrome_capable) {
-            this.setTaskStatus(taskId, "blocked", `${def.label} · config dir ${cd.name} has no Chrome connection — probe it on the Config dirs page, then retry`);
+            blockOrAbort(`${def.label} · config dir ${cd.name} has no Chrome connection — probe it on the Config dirs page, then retry`);
             return;
         }
         if (def.chrome && !opts.seedsDone) {
@@ -2712,9 +2784,12 @@ export class Engine extends EventEmitter {
                 .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · seeding failed: ${String((e as Error).message ?? e).slice(0, 160)}`));
             return;
         }
+        // Seeds are in: a pass with more than one shard runs as a group of parallel runs from here (qa-shards.ts).
+        const planned = opts.cloneReady || opts.cloneFailed || opts.chromeVerified || opts.chromeFlagsVerified;
+        if (def.chrome && !shard && !planned && this.cfg.qaShards > 0 && this.startShards(task, env, def, stage, opts)) return;
         const picked = this.pickAccount(task, def, env, cd);
         if (!picked) {
-            this.setTaskStatus(taskId, "blocked", `no AI account can run in config dir ${cd.name} — set up a token on the AI accounts page`);
+            blockOrAbort(`no AI account can run in config dir ${cd.name} — set up a token on the AI accounts page`);
             return;
         }
         // Browser stages run under an account's browser login (no token), in that account's browser dir with the env's
@@ -2726,7 +2801,8 @@ export class Engine extends EventEmitter {
             const chrome = this.chromeContext(env, cd, task);
             if (!chrome.ok) {
                 // Every Chrome-ready account is at its cap: park with a resume time rather than blocking (the list was already tried).
-                if (chrome.exhausted) this.queueRateLimited(task, chrome.exhausted.account, chrome.exhausted.resetsAt, `${def.label} · ${chrome.reason}`, { failover: false });
+                if (shard) this.shardAbort(shard, chrome.exhausted ? { kind: "rate_limited", resetsAt: chrome.exhausted.resetsAt } : { kind: "failed", error: `${shard.id}: ${chrome.reason}` });
+                else if (chrome.exhausted) this.queueRateLimited(task, chrome.exhausted.account, chrome.exhausted.resetsAt, `${def.label} · ${chrome.reason}`, { failover: false });
                 else this.setTaskStatus(taskId, "blocked", `${def.label} · ${chrome.reason}`);
                 return;
             }
@@ -2734,22 +2810,26 @@ export class Engine extends EventEmitter {
             // started with the QA flags — no shared-profile queue, no launch-flag check; the bridge confirmation is
             // part of preparing the copy. A failed copy falls back to the shared profile for this dispatch.
             const cloneSource = opts.cloneFailed ? null : this.cloneSourceFor(chrome.account);
-            if (cloneSource && !(opts.cloneReady && this.clones.has(taskId))) {
+            if (cloneSource && !(opts.cloneReady && this.clones.has(cloneKey))) {
                 if (this.clonesOf(chrome.account.id) >= this.cfg.maxChromeClonesPerAccount) {
+                    if (shard) {
+                        this.shardDefer(shard);
+                        return;
+                    }
                     this.setTaskStatus(taskId, "idle", `queued · ${chrome.account.name} already runs ${this.cfg.maxChromeClonesPerAccount} cloned Chrome window(s) (maxChromeClonesPerAccount in config.json)`);
                     this.parkQueued(taskId, stage, opts);
                     return;
                 }
-                this.setTaskStatus(taskId, "running", `${def.label} · copying Chrome profile "${chromeBrowserLabel(cloneSource)}" for this run`);
+                this.setTaskStatus(taskId, "running", `${def.label}${shard ? ` · ${shard.id}` : ""} · copying Chrome profile "${chromeBrowserLabel(cloneSource)}" for this run`);
                 void this.prepareClone(task, chrome.account, cloneSource, chrome.configDir, this.appUrlFor(task, env))
                     .then((clone) => {
-                        // A parallel dispatch of the same task may have prepared its own copy first: one copy per task.
-                        if (this.clones.has(taskId)) void quitClone(clone);
-                        else this.clones.set(taskId, { ...clone, accountId: chrome.account.id });
+                        // A parallel dispatch of the same task (shard) may have prepared its own copy first: one copy per key.
+                        if (this.clones.has(cloneKey)) void quitClone(clone);
+                        else this.clones.set(cloneKey, { ...clone, accountId: chrome.account.id });
                         this.dispatch(taskId, stage, { ...opts, cloneReady: true, chromeVerified: true, chromeFlagsVerified: true });
                     })
                     .catch((e: unknown) => {
-                        this.addAgentNote(taskId, `No cloned Chrome profile for this run (${String((e as Error).message ?? e).slice(0, 200)}) — running in the shared QA profile instead.`);
+                        this.addAgentNote(taskId, `No cloned Chrome profile for this run${shard ? ` (shard ${shard.id})` : ""} (${String((e as Error).message ?? e).slice(0, 200)}) — running in the shared QA profile instead.`);
                         this.dispatch(taskId, stage, { ...opts, cloneFailed: true });
                     });
                 return;
@@ -2759,6 +2839,10 @@ export class Engine extends EventEmitter {
             // fail and would then wrongly mark the account as not Chrome-capable (seen on INV-63 vs INV-130, 2026-09-17).
             const chromeBusy = cloneSource ? null : this.runningBrowserRun(chrome.account.id, taskId);
             if (chromeBusy) {
+                if (shard) {
+                    this.shardDefer(shard);
+                    return;
+                }
                 this.setTaskStatus(taskId, "idle", `queued · ${chrome.account.name}'s Chrome is busy with ${chromeBusy.ticket_id} (${STAGE_DEFS[chromeBusy.stage]?.label ?? chromeBusy.stage}) — browser stages run one at a time per account`);
                 this.parkQueued(taskId, stage, opts);
                 return;
@@ -2775,13 +2859,9 @@ export class Engine extends EventEmitter {
                             this.dispatch(taskId, stage, { ...opts, chromeFlagsVerified: true });
                             return;
                         }
-                        this.setTaskStatus(
-                            taskId,
-                            "blocked",
-                            `${def.label} · Chrome is running without ${QA_CHROME_FLAGS.join(" ")}, so its pages freeze whenever another window covers the QA window (pickers open empty) — click Relaunch Chrome for QA (quits and reopens Chrome with the flags; tabs restore), which retries this stage`,
-                        );
+                        blockOrAbort(`${def.label} · Chrome is running without ${QA_CHROME_FLAGS.join(" ")}, so its pages freeze whenever another window covers the QA window (pickers open empty) — click Relaunch Chrome for QA (quits and reopens Chrome with the flags; tabs restore), which retries this stage`);
                     })
-                    .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · could not inspect Chrome's launch flags: ${String((e as Error).message ?? e).slice(0, 160)}`));
+                    .catch((e: unknown) => blockOrAbort(`${def.label} · could not inspect Chrome's launch flags: ${String((e as Error).message ?? e).slice(0, 160)}`));
                 return;
             }
             // The account's chrome_capable flag is only as fresh as the last manual Probe Chrome — it can go stale (the
@@ -2797,13 +2877,9 @@ export class Engine extends EventEmitter {
                         }
                         // Only the capability flag drops; the device id / profile stay so a relaunch can reopen that profile.
                         this.db.prepare(`UPDATE accounts SET chrome_capable = 0 WHERE id = ?`).run(chrome.account.id);
-                        this.setTaskStatus(
-                            taskId,
-                            "blocked",
-                            `${def.label} · Chrome extension is not connected for ${chrome.account.name} (checked ${chrome.configDir}) — open Chrome, confirm the extension is installed and signed into this account, then AI accounts → Probe Chrome`,
-                        );
+                        blockOrAbort(`${def.label} · Chrome extension is not connected for ${chrome.account.name} (checked ${chrome.configDir}) — open Chrome, confirm the extension is installed and signed into this account, then AI accounts → Probe Chrome`);
                     })
-                    .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · Chrome check failed: ${String((e as Error).message ?? e).slice(0, 160)}`));
+                    .catch((e: unknown) => blockOrAbort(`${def.label} · Chrome check failed: ${String((e as Error).message ?? e).slice(0, 160)}`));
                 return;
             }
             account = chrome.account;
@@ -2813,19 +2889,28 @@ export class Engine extends EventEmitter {
         }
         const util = this.utilization(account.id);
         if (util && util.utilization >= this.cfg.preflightUtilizationLimit) {
-            this.queueRateLimited(task, account, util.resetsAt, `pre-flight: ${account.name} at ${Math.round(util.utilization * 100)}% of 5h window`);
+            if (shard) this.shardAbort(shard, { kind: "rate_limited", resetsAt: util.resetsAt });
+            else this.queueRateLimited(task, account, util.resetsAt, `pre-flight: ${account.name} at ${Math.round(util.utilization * 100)}% of 5h window`);
             return;
         }
         // Headless stages run side by side up to the configured number per account (the only shared thing is the
         // account's rate-limit window). Browser stages are different: one account = one Chrome profile = one
         // extension bridge, so two of them at once would drive the same browser — they run one at a time per account.
-        const browserBusy = chromeNeeded && !this.clones.has(taskId) ? this.runningBrowserRun(account.id, taskId) : null;
+        const browserBusy = chromeNeeded && !this.clones.has(cloneKey) ? this.runningBrowserRun(account.id, taskId) : null;
         if (browserBusy) {
+            if (shard) {
+                this.shardDefer(shard);
+                return;
+            }
             this.setTaskStatus(taskId, "idle", `queued · ${account.name}'s Chrome is busy with ${browserBusy.ticket_id} (${STAGE_DEFS[browserBusy.stage]?.label ?? browserBusy.stage}) — browser stages run one at a time per account`);
             this.parkQueued(taskId, stage, opts);
             return;
         }
         if (this.runningCount(account.id) >= this.cfg.maxConcurrentRunsPerAccount) {
+            if (shard) {
+                this.shardDefer(shard);
+                return;
+            }
             this.setTaskStatus(taskId, "idle", `queued · ${account.name} already has ${this.cfg.maxConcurrentRunsPerAccount} run(s) going (maxConcurrentRunsPerAccount in config.json)`);
             this.parkQueued(taskId, stage, opts);
             return;
@@ -2834,10 +2919,12 @@ export class Engine extends EventEmitter {
 
         // Two top-level dispatches of one task (a Retry click plus an automatic re-dispatch, two clicks) prepare in
         // parallel for up to a minute (BE/FE, seeds, Chrome copy, probe); only the first to get here starts a run
-        // (PRODUCT-10502, 2026-09-22: two Manual QA sessions drove two cloned Chromes at once).
-        const already = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND status = 'running'`).get(taskId) as { n: number };
+        // (PRODUCT-10502, 2026-09-22: two Manual QA sessions drove two cloned Chromes at once). The shards of one
+        // parallel QA pass are the exception: they run beside each other.
+        const already = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND status = 'running' AND (group_id IS NULL OR group_id != ?)`).get(taskId, shard?.group ?? "") as { n: number };
         if (already.n > 0) {
-            console.log(`[stagehand] ${task.ticket_id}: ${def.label} already has a run going — duplicate dispatch dropped`);
+            console.log(`[stagehand] ${task.ticket_id}: ${def.label}${shard ? ` (shard ${shard.id})` : ""} already has a run going — duplicate dispatch dropped`);
+            if (shard) this.shardAbort(shard, { kind: "failed", error: `${shard.id}: another run of this task was already going` });
             return;
         }
         const runId = randomUUID();
@@ -2852,11 +2939,13 @@ export class Engine extends EventEmitter {
 
         this.db
             .prepare(
-                `INSERT INTO runs (id, task_id, stage, kind, status, account_id, started_at, attempt, model)
-                 VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)`,
+                `INSERT INTO runs (id, task_id, stage, kind, status, account_id, started_at, attempt, model, shard, group_id)
+                 VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)`,
             )
-            .run(runId, taskId, stage, fresh ? "fresh-session" : "task-session", account.id, now(), attempt, explicitModel);
-        this.setTaskStatus(taskId, "running", `${def.label} · starting`);
+            .run(runId, taskId, stage, fresh ? "fresh-session" : "task-session", account.id, now(), attempt, explicitModel, shard?.id ?? null, shard?.group ?? null);
+        if (shard) this.shardStarted(shard, runId);
+        const label = shard ? `${def.label} · ${shard.id}` : def.label;
+        this.setTaskStatus(taskId, "running", `${label} · starting`);
 
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path, this.cfg.dataDir);
         const run = startClaude({
@@ -2878,7 +2967,7 @@ export class Engine extends EventEmitter {
         // While a browser run drives the app, keep the tab it drives in the foreground of its window (see
         // activateChromeTab): the runner works in whatever tab it created, and a later tabs_create leaves an empty
         // new tab active in front of it — from then on every popover opens into a throttled, hidden document.
-        const tabKeeper = chromeNeeded ? this.startTabKeeper(task, env) : null;
+        const tabKeeper = chromeNeeded ? this.startTabKeeper(task, env, cloneKey) : null;
 
         run.on("activity", (ev: ActivityEvent) => {
             // A run without --model tells us what this account's default really is.
@@ -2888,7 +2977,7 @@ export class Engine extends EventEmitter {
             }
             if (ev.kind === "tool_use" || ev.kind === "text") {
                 this.db.prepare(`UPDATE runs SET last_event = ? WHERE id = ?`).run(ev.summary, runId);
-                this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`${def.label} · ${ev.summary}`, now(), taskId);
+                this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`${label} · ${ev.summary}`, now(), taskId);
                 this.emit("activity", { taskId, runId, event: ev });
                 this.emitTask(taskId);
             }
@@ -2899,15 +2988,242 @@ export class Engine extends EventEmitter {
             if (tabKeeper) clearInterval(tabKeeper);
             this.active.delete(runId);
             // The copy served this run only; a retry or unblock makes a fresh one.
-            void this.releaseClone(taskId);
-            void this.onRunClosed(taskId, runId, def, account, outcome, opts).catch((e: unknown) => console.warn(`[stagehand] onRunClosed ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+            void this.releaseClone(cloneKey);
+            void (shard ? this.onShardClosed(taskId, runId, def, account, outcome, shard) : this.onRunClosed(taskId, runId, def, account, outcome, opts)).catch((e: unknown) => console.warn(`[stagehand] onRunClosed ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         });
+    }
+
+    // ---------- parallel QA passes (qa-shards.ts) ----------
+
+    private readonly qaGroups = new Map<string, QaGroup>();
+
+    // Splits the pass into shards and starts them; false when the plan is one shard (the pass runs as one run, as before).
+    private startShards(task: TaskRow, env: EnvRow, def: StageDef, stage: Stage, opts: DispatchOpts): boolean {
+        const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
+        const resumeOnly = opts.extraVars?.["resumeOnly"]?.split(",").filter(Boolean);
+        const scenarios = this.qaScenariosForPass(design, stage).filter((s) => !resumeOnly || resumeOnly.includes(s.id));
+        const account = this.browserAccounts(env).find((a) => a.id === task.account_id) ?? this.browserAccounts(env)[0] ?? null;
+        const cloneMode = !!(account && this.cloneSourceFor(account));
+        const groupId = randomUUID();
+        const shards = planQaShards(groupId, scenarios, { cloneMode, maxBrowser: cloneMode ? this.cfg.maxChromeClonesPerAccount : 1, maxShards: this.cfg.qaShards });
+        if (shards.length <= 1) return false;
+        // One group per task at a time: a Retry after a Stop must not leave the old one waiting for shards that never come.
+        for (const g of [...this.qaGroups.values()]) if (g.taskId === task.id) this.qaGroups.delete(g.id);
+        const g: QaGroup = { id: groupId, taskId: task.id, stage, opts, allIds: scenarios.map((s) => s.id), pending: shards, starting: new Set(), running: new Map(), results: new Map() };
+        this.qaGroups.set(groupId, g);
+        this.addAgentNote(task.id, `${def.label} runs as ${shards.length} parallel shards: ${shards.map((s) => `${s.id} (${s.scenarios.join(", ")}${s.browser ? "" : ", no browser"}${s.phase === "solo" ? ", alone after the others" : ""})`).join(" · ")}`);
+        this.pumpGroup(g);
+        return true;
+    }
+
+    // Starts every pending shard whose phase is due — parallel shards at once, the solo shard once nothing else of the
+    // group is going — and completes the group when nothing is left. A shard a capacity gate defers goes back to
+    // `pending` (shardDefer) and is tried again on the next tick or when a run of the group ends.
+    private pumpGroup(g: QaGroup): void {
+        if (!this.qaGroups.has(g.id)) return;
+        const task = this.getTask(g.taskId);
+        if (!task || task.status === "stopped" || task.stage !== g.stage) {
+            this.qaGroups.delete(g.id);
+            return;
+        }
+        const idle = g.running.size === 0 && g.starting.size === 0;
+        const parallelLeft = g.pending.some((s) => s.phase === "parallel");
+        const due = g.pending.filter((s) => s.phase === "parallel" || (idle && !parallelLeft));
+        for (const shard of due) {
+            // A dispatch above may have re-entered this pump (an abort, a deferral) and taken this shard already.
+            if (!g.pending.includes(shard)) continue;
+            g.pending = g.pending.filter((s) => s !== shard);
+            g.starting.add(shard.id);
+            this.dispatch(g.taskId, g.stage, { ...g.opts, shard });
+        }
+        if (g.running.size === 0 && g.starting.size === 0 && g.pending.length === 0) void this.completeGroup(g).catch((e: unknown) => console.warn(`[stagehand] completeGroup ${g.taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+    }
+
+    private shardDefer(shard: QaShard): void {
+        const g = this.qaGroups.get(shard.group);
+        if (!g) return;
+        g.starting.delete(shard.id);
+        if (!g.pending.some((s) => s.id === shard.id)) g.pending.push(shard);
+    }
+
+    private shardStarted(shard: QaShard, runId: string): void {
+        const g = this.qaGroups.get(shard.group);
+        if (!g) return;
+        g.starting.delete(shard.id);
+        g.running.set(runId, shard);
+    }
+
+    // A gate that would block the task ends this shard instead; the group decides once every shard is in.
+    private shardAbort(shard: QaShard, result: ShardResult): void {
+        const g = this.qaGroups.get(shard.group);
+        if (!g) return;
+        g.starting.delete(shard.id);
+        g.results.set(shard.id, result);
+        console.log(`[stagehand] shard ${shard.id} of ${g.taskId} ended before its run: ${result.kind === "failed" ? result.error : result.kind}`);
+        // Never re-enter the pump from inside a dispatch it started (the loop there is still handing out shards).
+        setTimeout(() => this.pumpGroup(g), 0);
+    }
+
+    private parseShardOutput(taskId: string, file: string): { ok: true; data: QaPassResult } | { ok: false; error: string } {
+        const path = join(this.taskDir(taskId), file);
+        if (!existsSync(path)) return { ok: false, error: `${file} was not written` };
+        let raw: unknown;
+        try {
+            raw = JSON.parse(readFileSync(path, "utf8"));
+        } catch (e) {
+            return { ok: false, error: `${file} is not valid JSON: ${String(e)}` };
+        }
+        const parsed = QaPassResult.safeParse(raw);
+        return parsed.success ? { ok: true, data: parsed.data } : { ok: false, error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") };
+    }
+
+    // One shard's run ended: its run row is closed like any run, its result goes to the group, the group moves on.
+    private async onShardClosed(taskId: string, runId: string, def: StageDef, account: AccountRow, outcome: RunOutcome, shard: QaShard): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) return;
+        const g = this.qaGroups.get(shard.group);
+        g?.running.delete(runId);
+        if (task.status === "stopped") {
+            this.db.prepare(`UPDATE runs SET status = 'stopped', finished_at = ? WHERE id = ?`).run(now(), runId);
+            if (g) g.results.set(shard.id, { kind: "stopped" });
+            return;
+        }
+        const finish = (status: RunRow["status"], error?: string, resultJson?: string): void => {
+            this.db
+                .prepare(`UPDATE runs SET status = ?, finished_at = ?, error = ?, result_json = ?, cost_usd = ?, num_turns = ? WHERE id = ?`)
+                .run(status, now(), error ?? null, resultJson ?? null, outcome.result?.total_cost_usd ?? null, outcome.result?.num_turns ?? null, runId);
+            if (outcome.result) recordUsage(this.db, { accountId: account.id, envId: task.env_id, taskId, runId, kind: "stage", stage: def.stage }, outcome.result);
+            calibrateWindows(this.db, account.id, outcome.firstRateLimit, outcome.lastRateLimit, outcome.result?.total_cost_usd);
+        };
+        const pass = def.stage === "qa_baseline" ? "before" : "after";
+        const files = shardFiles(pass, shard);
+        let result: ShardResult;
+        const limited = outcome.lastRateLimit && outcome.lastRateLimit.status !== "allowed";
+        if (limited && outcome.lastRateLimit?.resetsAt) {
+            finish("rate_limited", "rate limited");
+            result = { kind: "rate_limited", resetsAt: outcome.lastRateLimit.resetsAt };
+        } else {
+            const asked = this.questionsAskedDuringRun(taskId, runId, files.questions);
+            const written = this.outputWrittenDuringRun(taskId, files.output, runId);
+            const parsed = written ? this.parseShardOutput(taskId, files.output) : null;
+            if (asked && !parsed?.ok) {
+                finish("blocked", `asked the human ${asked.questions.length} question(s)`);
+                // What the shard finished before asking (its own partial file) counts; the questions file is consumed.
+                const partialPath = join(this.taskDir(taskId), files.partial);
+                let recorded: QaPassResult["scenarios"] = [];
+                try {
+                    const p = existsSync(partialPath) ? QaPassResult.partial().safeParse(JSON.parse(readFileSync(partialPath, "utf8"))) : null;
+                    recorded = (p?.success ? p.data.scenarios ?? [] : []).filter(isRecorded);
+                } catch {
+                    /* nothing recorded */
+                }
+                const q = join(this.taskDir(taskId), files.questions);
+                if (existsSync(q)) renameSync(q, `${q}.asked-${Date.now()}`);
+                result = { kind: "asked", questions: asked, recorded };
+            } else if (parsed?.ok) {
+                const bridgeMiss = parsed.data.blockers.some((b) => /extension|not connected/i.test(b)) && parsed.data.scenarios.every((s) => s.outcome === "blocked");
+                if (bridgeMiss) {
+                    finish("failed", "browser extension not connected (bridge miss)");
+                    result = { kind: "failed", error: `${shard.id}: the browser extension did not connect (${parsed.data.blockers.join("; ").slice(0, 120)})` };
+                } else {
+                    finish("done", outcome.result && !outcome.result.is_error && (outcome.exitCode ?? 1) === 0 ? undefined : `ended with ${outcome.result?.subtype ?? `exit ${outcome.exitCode}`} after writing the output`, JSON.stringify(parsed.data));
+                    this.mergeIntoPartial(taskId, pass, parsed.data.scenarios);
+                    result = { kind: "ok", scenarios: parsed.data.scenarios, blockers: parsed.data.blockers };
+                }
+            } else if (written && parsed && !parsed.ok) {
+                finish("failed", `contract: ${parsed.error}`);
+                result = { kind: "failed", error: `${shard.id}: output contract — ${parsed.error}` };
+            } else {
+                const stderrTail = outcome.stderr.trim().split("\n").slice(-3).join(" ").trim();
+                const err =
+                    outcome.result?.result?.trim() ||
+                    (outcome.result?.subtype === "error_max_turns"
+                        ? `stopped at the ${outcome.result.num_turns ?? "?"}-turn cap before writing ${files.output}`
+                        : outcome.result
+                          ? `ended with ${outcome.result.subtype}`
+                          : stderrTail || `exit ${outcome.exitCode}`);
+                finish("failed", err);
+                result = { kind: "failed", error: `${shard.id}: ${err.slice(0, 300)}` };
+            }
+        }
+        if (!g) return;
+        g.results.set(shard.id, result);
+        this.pumpGroup(g);
+    }
+
+    // Every shard is in: the pass is complete when every scenario has a result; otherwise what was recorded is kept in
+    // qa/<pass>.partial.json and the rest goes on — to the human (questions), to a rate-limit wait, or to another attempt.
+    private async completeGroup(g: QaGroup): Promise<void> {
+        this.qaGroups.delete(g.id);
+        const task = this.getTask(g.taskId);
+        if (!task || task.status === "stopped" || task.stage !== g.stage) return;
+        const taskId = g.taskId;
+        const def = STAGE_DEFS[g.stage];
+        const pass = g.stage === "qa_baseline" ? "before" : "after";
+        const recorded: QaPassResult["scenarios"] = [];
+        const blockers: string[] = [];
+        const asked: Array<{ shard: string; questions: AgentQuestion[] }> = [];
+        const failures: string[] = [];
+        let rateLimit: number | null = null;
+        for (const [id, r] of g.results) {
+            if (r.kind === "stopped") return;
+            if (r.kind === "ok") {
+                recorded.push(...r.scenarios);
+                blockers.push(...r.blockers);
+            } else if (r.kind === "asked") {
+                asked.push({ shard: id, questions: r.questions.questions });
+                recorded.push(...r.recorded);
+            } else if (r.kind === "failed") failures.push(r.error);
+            else if (r.kind === "rate_limited") rateLimit = r.resetsAt ?? rateLimit;
+        }
+        const all = mergeScenarios(this.readPartial(taskId, pass), recorded);
+        const remaining = g.allIds.filter((id) => !all.some((s) => s.id === id));
+        if (remaining.length === 0 && asked.length === 0) {
+            const qa: QaPassResult = { pass, scenarios: all, blockers: [...new Set(blockers)] };
+            writeFileSync(join(this.taskDir(taskId), def.outputFile!), JSON.stringify(qa, null, 2));
+            const validation = await this.validateOutput(taskId, def);
+            if (!validation.ok) {
+                this.setTaskStatus(taskId, "failed", `${def.label} · merged pass file does not validate: ${validation.error.slice(0, 160)}`);
+                return;
+            }
+            this.afterStage(taskId, def, validation.data);
+            return;
+        }
+        // Not finished: keep the results, drop what the next dispatch must redo (seeds for the remaining scenarios).
+        const { shard: _shard, seedsDone: _seeds, servicesReady: _services, ...base } = g.opts;
+        const extraVars = { ...(base.extraVars ?? {}), ...this.resumeVars(taskId, pass, all, remaining) };
+        delete extraVars["seedReport"];
+        if (asked.length) {
+            const questions = mergeQuestions(asked).slice(0, 10);
+            this.parkOnQuestions(taskId, null, def, { questions }, { ...base, extraVars });
+            return;
+        }
+        if (rateLimit !== null) {
+            const env = this.env(task.env_id);
+            const account = this.pickAccount(task, def, env, this.configDirOf(env));
+            this.queuedOpts.set(`${taskId}:${g.stage}`, { ...base, extraVars });
+            if (account) this.queueRateLimited(task, account, rateLimit, `${def.label} · rate limited with ${remaining.length} scenario(s) left`, { failover: false });
+            else this.setTaskStatus(taskId, "failed", `${def.label} · rate limited with ${remaining.length} scenario(s) left and no account to resume on — Retry later`);
+            return;
+        }
+        const attempt = base.attempt ?? 1;
+        if (attempt < MAX_CONTRACT_ATTEMPTS) {
+            this.setTaskStatus(taskId, "running", `${def.label} · ${failures.length} shard(s) ended without a result — driving the remaining ${remaining.length} scenario(s) again (${attempt + 1}/${MAX_CONTRACT_ATTEMPTS})`);
+            this.dispatch(taskId, g.stage, {
+                ...base,
+                attempt: attempt + 1,
+                notes: `## Earlier runs of this pass ended without a usable result — attempt ${attempt + 1} of ${MAX_CONTRACT_ATTEMPTS}\n\n${failures.map((f) => `- ${f}`).join("\n")}\n\nDrive the scenarios listed below and write the output file exactly as the contract says.`,
+                extraVars,
+            });
+            return;
+        }
+        this.setTaskStatus(taskId, "failed", `${def.label} · runs kept ending without a result: ${failures.join("; ").slice(0, 200)}`);
     }
 
     private static readonly TAB_KEEPER_MS = 5_000;
     // Every few seconds, make the newest tab on the task's app origin the active tab of its Chrome window. Cheap
     // (one osascript), never brings Chrome to the front, no-op when the tab is already active or does not exist yet.
-    private startTabKeeper(task: TaskRow, env: EnvRow): NodeJS.Timeout | null {
+    private startTabKeeper(task: TaskRow, env: EnvRow, cloneKey: string): NodeJS.Timeout | null {
         let origin: string;
         try {
             origin = new URL(this.appUrlFor(task, env)).origin;
@@ -2917,7 +3233,7 @@ export class Engine extends EventEmitter {
         const picked = this.qaBrowser(task, env);
         const kind = "browser" in picked ? (picked.browser.browser ?? "Google") : "Google";
         // A cloned Chrome is a separate process AppleScript cannot address; its tabs are reached over its CDP port.
-        const clone = this.clones.get(task.id);
+        const clone = this.clones.get(cloneKey);
         const timer = setInterval(() => void (clone ? activateCloneTab(clone.cdpPort, `${origin}/`) : activateChromeTab(`${origin}/`, kind)), Engine.TAB_KEEPER_MS);
         timer.unref();
         return timer;
@@ -3112,12 +3428,57 @@ export class Engine extends EventEmitter {
         const dir = join(this.taskDir(taskId), "qa");
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, `${pass}.partial.json`), JSON.stringify({ pass, scenarios: recorded }, null, 2));
+        return this.resumeHintVars(recorded, remaining);
+    }
+
+    private resumeHintVars(recorded: QaPassResult["scenarios"], remaining: string[]): Record<string, string> {
         return {
             resumeOnly: remaining.join(","),
             resumeHint: recorded.length
                 ? `## Resumed pass — ${recorded.map((s) => s.id).join(", ")} already recorded\n\nThese scenarios were completed by the previous attempt and are NOT listed below; do not run them again. Copy these entries verbatim into your output file next to the ones you run now:\n\n\`\`\`json\n${JSON.stringify(recorded, null, 2)}\n\`\`\``
                 : "",
         };
+    }
+
+    // What qa/<pass>.partial.json holds: the scenarios earlier runs of this pass recorded (verdicts and hand-offs).
+    private readPartial(taskId: string, pass: "before" | "after"): QaPassResult["scenarios"] {
+        const p = join(this.taskDir(taskId), "qa", `${pass}.partial.json`);
+        if (!existsSync(p)) return [];
+        try {
+            const partial = QaPassResult.partial().safeParse(JSON.parse(readFileSync(p, "utf8")));
+            return (partial.success ? partial.data.scenarios ?? [] : []).filter(isRecorded);
+        } catch (e) {
+            console.warn(`[stagehand] partial QA results of ${taskId} ignored: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            return [];
+        }
+    }
+
+    // Adds a finished shard's results to qa/<pass>.partial.json (by id, later wins), so a pass that dies half-way —
+    // a restart, a Stop, a shard without output — resumes from what its other shards recorded.
+    private mergeIntoPartial(taskId: string, pass: "before" | "after", scenarios: QaPassResult["scenarios"]): void {
+        const dir = join(this.taskDir(taskId), "qa");
+        mkdirSync(dir, { recursive: true });
+        const merged = mergeScenarios(this.readPartial(taskId, pass), scenarios.filter(isRecorded));
+        writeFileSync(join(dir, `${pass}.partial.json`), JSON.stringify({ pass, scenarios: merged }, null, 2));
+    }
+
+    // The extra vars that resume a pass from its partial file: null when nothing was recorded.
+    private resumeFromPartial(taskId: string, stage: Stage): Record<string, string> | null {
+        const pass = stage === "qa_baseline" ? "before" : "after";
+        const recorded = this.readPartial(taskId, pass);
+        if (recorded.length === 0) return null;
+        const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+        const remaining = this.qaScenariosForPass(design, stage).map((s) => s.id).filter((id) => !recorded.some((r) => r.id === id));
+        return this.resumeHintVars(recorded, remaining);
+    }
+
+    // Removes what earlier runs of a pass left behind: the partial file and every shard's output / partial / questions.
+    private clearPassFiles(taskId: string, pass: "before" | "after"): void {
+        const dir = join(this.taskDir(taskId), "qa");
+        if (!existsSync(dir)) return;
+        for (const f of readdirSync(dir)) {
+            if (f === `${pass}.partial.json` || (f.startsWith(`${pass}.`) && f.endsWith(".json") && f !== `${pass}.json`) || f.startsWith(`questions.${pass}.`)) rmSync(join(dir, f), { force: true });
+        }
     }
 
     // The env's optional components a QA pass needs: the auto-started ones plus those the design's scenarios declare.
@@ -3777,14 +4138,14 @@ export class Engine extends EventEmitter {
     // ---------- questions: the agent asks, the human answers, the stage resumes ----------
 
     // questions.json written (or rewritten) by this run and valid; a stale file from an earlier run does not count.
-    private questionsAskedDuringRun(taskId: string, runId: string): QuestionsFile | null {
-        if (!this.outputWrittenDuringRun(taskId, "questions.json", runId)) return null;
-        const raw = this.readArtifactJson<unknown>(taskId, "questions.json");
+    private questionsAskedDuringRun(taskId: string, runId: string, file = "questions.json"): QuestionsFile | null {
+        if (!this.outputWrittenDuringRun(taskId, file, runId)) return null;
+        const raw = this.readArtifactJson<unknown>(taskId, file);
         const parsed = QuestionsFile.safeParse(raw);
         return parsed.success ? parsed.data : null;
     }
 
-    private parkOnQuestions(taskId: string, runId: string, def: StageDef, asked: QuestionsFile, opts: DispatchOpts): void {
+    private parkOnQuestions(taskId: string, runId: string | null, def: StageDef, asked: QuestionsFile, opts: DispatchOpts): void {
         const id = randomUUID();
         // Keep what the run was started with (reviewer notes, PR-fix failure text, attempt) so the resumed run gets the same brief.
         const resume = { notes: opts.notes ?? null, attempt: opts.attempt ?? 1, extraVars: opts.extraVars ?? {}, ...(opts.operation ? { operation: opts.operation } : {}) };
@@ -3852,18 +4213,12 @@ export class Engine extends EventEmitter {
         // A QA runner that asked mid-pass left qa/<pass>.partial.json with the scenarios it finished: resume from there.
         if (row.stage === "qa_baseline" || row.stage === "manual_qa") {
             const pass = row.stage === "qa_baseline" ? "before" : "after";
-            const partialPath = join(this.taskDir(taskId), "qa", `${pass}.partial.json`);
-            try {
-                const partial = existsSync(partialPath) ? QaPassResult.partial().safeParse(JSON.parse(readFileSync(partialPath, "utf8"))) : null;
-                const recorded = (partial?.success ? partial.data.scenarios ?? [] : []).filter((s) => s.outcome === "pass" || s.outcome === "fail");
-                if (recorded.length) {
-                    const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
-                    const remaining = this.qaScenariosForPass(design, row.stage).map((s) => s.id).filter((id) => !recorded.some((r) => r.id === id));
-                    extraVars = { ...extraVars, ...this.resumeVars(taskId, pass, recorded, remaining) };
-                    delete extraVars["seedReport"];
-                }
-            } catch (e) {
-                console.warn(`[stagehand] partial QA results of ${task.ticket_id} ignored: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            const recorded = this.readPartial(taskId, pass);
+            if (recorded.length) {
+                const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+                const remaining = this.qaScenariosForPass(design, row.stage).map((s) => s.id).filter((id) => !recorded.some((r) => r.id === id));
+                extraVars = { ...extraVars, ...this.resumeVars(taskId, pass, recorded, remaining) };
+                delete extraVars["seedReport"];
             }
         }
         this.dispatch(taskId, row.stage, {
@@ -3897,18 +4252,10 @@ export class Engine extends EventEmitter {
         // copy into its output are merged in here, so nothing recorded is lost or driven twice.
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
             const qa = parsed.data as QaPassResult;
-            const partialPath = join(this.taskDir(taskId), "qa", `${qa.pass}.partial.json`);
-            if (existsSync(partialPath)) {
-                try {
-                    const partial = QaPassResult.partial().safeParse(JSON.parse(readFileSync(partialPath, "utf8")));
-                    const missing = (partial.success ? partial.data.scenarios ?? [] : []).filter((s) => (s.outcome === "pass" || s.outcome === "fail") && !qa.scenarios.some((o) => o.id === s.id));
-                    if (missing.length) {
-                        qa.scenarios = [...qa.scenarios, ...missing].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-                        writeFileSync(path, JSON.stringify(qa, null, 2));
-                    }
-                } catch (e) {
-                    console.warn(`[stagehand] partial QA results not merged for ${taskId}: ${String((e as Error).message ?? e).slice(0, 160)}`);
-                }
+            const missing = this.readPartial(taskId, qa.pass).filter((s) => !qa.scenarios.some((o) => o.id === s.id));
+            if (missing.length) {
+                qa.scenarios = mergeScenarios(qa.scenarios, missing);
+                writeFileSync(path, JSON.stringify(qa, null, 2));
             }
         }
         if (def.stage === "design_proposal") {
@@ -4253,9 +4600,8 @@ export class Engine extends EventEmitter {
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
             let qa = QaPassResult.parse(data);
             const taskDirQa = this.taskDir(taskId);
-            // The pass consumed its partial results (a resumed pass); a leftover would resume the next pass wrongly.
-            const partialPath = join(taskDirQa, "qa", `${qa.pass}.partial.json`);
-            if (existsSync(partialPath)) rmSync(partialPath, { force: true });
+            // The pass consumed its partial results (a resumed pass) and its shards' files; a leftover would resume the next pass wrongly.
+            this.clearPassFiles(taskId, qa.pass);
             // Baseline: the `baseline: false` scenarios the pass did not drive are recorded as failures by construction.
             if (def.stage === "qa_baseline") {
                 const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
@@ -4329,8 +4675,8 @@ export class Engine extends EventEmitter {
                         "running",
                         `${def.label} · ${blocked.length}/${qa.scenarios.length} scenario(s) blocked — ${reason} — attempting to unblock and retry (${attemptNum}/${MAX_UNBLOCK_ATTEMPTS})`,
                     );
-                    // Only the blocked scenarios run again; pass/fail results of this attempt carry over.
-                    const recorded = qa.scenarios.filter((s) => s.outcome === "pass" || s.outcome === "fail");
+                    // Only the blocked scenarios run again; the verdicts and hand-offs of this attempt carry over.
+                    const recorded = qa.scenarios.filter(isRecorded);
                     this.dispatch(taskId, def.stage, { extraVars: { unblockHint, ...this.resumeVars(taskId, pass, recorded, blocked.map((s) => s.id)) } });
                     return;
                 }

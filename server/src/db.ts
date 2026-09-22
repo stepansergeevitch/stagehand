@@ -371,6 +371,8 @@ export interface RunRow {
     last_event: string | null;
     attempt: number;
     model: string | null;
+    shard: string | null;
+    group_id: string | null;
 }
 
 // One row per model used by one claude invocation: a stage run, or a helper (ticket fetch, QA login, probe).
@@ -707,6 +709,9 @@ const MIGRATIONS: Array<[string, string]> = [
     ["tasks.model", `ALTER TABLE tasks ADD COLUMN model TEXT`],
     // The --model the run was started with (null = the account's default); stage/rerun/operation models (config).
     ["runs.model", `ALTER TABLE runs ADD COLUMN model TEXT`],
+    // A QA pass split into parallel shards: which scenarios this run drove, and the pass dispatch it belongs to.
+    ["runs.shard", `ALTER TABLE runs ADD COLUMN shard TEXT`],
+    ["runs.group_id", `ALTER TABLE runs ADD COLUMN group_id TEXT`],
     ["accounts.provider", `ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic'`],
     ["accounts.oauth_token", `ALTER TABLE accounts ADD COLUMN oauth_token TEXT`],
     ["envs.config_dir_id", `ALTER TABLE envs ADD COLUMN config_dir_id TEXT REFERENCES config_dirs(id)`],
