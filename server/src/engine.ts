@@ -2512,6 +2512,13 @@ export class Engine extends EventEmitter {
         if (!task) return;
         const def = STAGE_DEFS[stage];
         if (!def.prompt) return;
+        // A continuation of an earlier dispatch (BE/FE brought up, seeds run, Chrome checked) must not start the run
+        // when the task was stopped or moved to another stage meanwhile (INV-132, 2026-09-22: Stop during "starting
+        // BE/FE", the human moved the task to User Review, and a Manual QA run began a minute later anyway).
+        if ((opts.servicesReady || opts.seedsDone || opts.chromeVerified || opts.chromeFlagsVerified) && (task.status === "stopped" || task.stage !== stage)) {
+            console.log(`[stagehand] ${task.ticket_id}: dropped a ${def.label} continuation — task is ${task.status} at ${task.stage}`);
+            return;
+        }
         if (stage === "pr_creation_review" && this.skipPrCreationIfDone(taskId)) return;
         if (def.chrome && !opts.servicesReady) {
             // Browser stages run against the task's own BE/FE when the env defines them; bring them up first, then dispatch for real.
