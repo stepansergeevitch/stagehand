@@ -503,12 +503,16 @@ export const DiffView = ({
         void src.commits().then(setBranch).catch(() => undefined);
     }, [src, refreshKey]);
     const filterArg = filter.kind === "all" ? undefined : filter.kind === "uncommitted" ? { uncommitted: true as const } : { shas: filter.shas };
+    // The effect keys on this string, not on the filter object: in controlled mode the parent builds a new filter
+    // object on every render, and keying on its identity made every fetched diff start the next fetch (the view
+    // blinked between "Loading diff…" and the diff forever).
+    const filterKey = filter.kind === "all" ? "all" : filter.kind === "uncommitted" ? "uncommitted" : `commits:${filter.shas.join(",")}`;
     useEffect(() => {
         setDiff(null);
         setError(null);
         void src.diff(filterArg).then(setDiff).catch((e: Error) => setError(e.message));
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [src, refreshKey, filter]);
+    }, [src, refreshKey, filterKey]);
     // The full diff (current file vs base) behind a commit slice: a comment saved in the slice is re-anchored to the
     // full diff's line numbers, because `path:line` is what the review sends to the agent and what "All changes" shows.
     const [fullDiff, setFullDiff] = useState<DiffResponse | null>(null);
