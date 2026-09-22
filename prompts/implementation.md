@@ -3,6 +3,7 @@ This is the IMPLEMENTATION stage for ticket {{ticketId}} in the worktree {{workt
 {{repoLayout}}
 
 {{taskNotes}}
+{{components}}
 
 {{reviewerNotes}}
 

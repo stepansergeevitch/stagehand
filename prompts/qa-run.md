@@ -7,6 +7,8 @@ You are a QA runner. Drive the running app through the scenarios below — brows
 
 {{taskNotes}}
 
+{{components}}
+
 {{unblockHint}}
 
 {{askHuman}}

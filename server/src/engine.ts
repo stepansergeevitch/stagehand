@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
-import { accountBrowserReady, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
+import { accountBrowserReady, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, componentsOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvComponent, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, openInProfile, QA_CHROME_FLAGS, setChromeTabUrl } from "./chrome-profiles.js";
@@ -2438,6 +2438,7 @@ export class Engine extends EventEmitter {
             maxTurns: String(def.maxTurns ?? 100),
             seedHints: env.qa_seed_hints?.trim() ? env.qa_seed_hints.trim() : "(none configured for this environment — inspect the repo's configs/ and models to find the local database and API)",
             seedReport: "(no shell seeds were run)",
+            components: this.describeComponents(task, env, def.stage),
             ...(opts.extraVars ?? {}),
         };
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
@@ -2798,8 +2799,46 @@ export class Engine extends EventEmitter {
             const r = await this.services.waitUntilUp(row);
             if (!r.ok) throw new Error(`${kind.toUpperCase()} did not come up: ${r.error} — see its log in the App widget, or let the agent fix it there`);
         }
+        // Optional components the pass needs (INV-133, 2026-09-22: a Manual QA pass failed because no Celery worker
+        // processed the backend's jobs — the design can now declare `services: ["worker"]`, and the env can auto-start).
+        for (const c of this.wantedComponents(task, env)) {
+            this.setTaskStatus(task.id, "running", `${STAGE_DEFS[task.stage]?.label ?? task.stage} · starting ${c.label}`);
+            const row = await this.services.start(task, env, c.key);
+            const r = await this.services.waitUntilUp(row);
+            if (!r.ok) throw new Error(`${c.label} (optional component "${c.key}") did not come up: ${r.error} — see its log in the App widget`);
+        }
         this.emitTask(task.id);
         return true;
+    }
+
+    // The env's optional components a QA pass needs: the auto-started ones plus those the design's scenarios declare.
+    private wantedComponents(task: TaskRow, env: EnvRow): EnvComponent[] {
+        const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
+        const declared = new Set((design?.qa ?? []).flatMap((s) => s.services ?? []));
+        return componentsOf(env).filter((c) => c.autoStart || declared.has(c.key));
+    }
+
+    // What every agent prompt says about the env's optional components: which exist, which run now, and how to start or
+    // stop one on demand through Stagehand's local API (the design stage learns the `services` declaration instead).
+    private describeComponents(task: TaskRow, env: EnvRow, stage: Stage): string {
+        const comps = componentsOf(env);
+        if (comps.length === 0) return "";
+        const keys = comps.map((c) => `\`${c.key}\``).join(", ");
+        if (stage === "design_proposal") {
+            return (
+                `## Optional components of this environment\n\n` +
+                `Not running by default: ${comps.map((c) => `\`${c.key}\` (${c.label}${c.autoStart ? ", auto-started with the app" : ""})`).join(", ")}. ` +
+                `A QA scenario whose journey depends on one of them — background jobs a worker must process, a scheduler, a relay — lists its key in \`services\` (e.g. \`"services": ["${comps[0]!.key}"]\`); the orchestrator starts it before the seeds of every pass. Only these keys exist: ${keys}.`
+            );
+        }
+        const base = `http://127.0.0.1:${this.cfg.port}/api/tasks/${task.id}/services`;
+        const live = new Set(this.services.list(task.id).map((r) => r.kind));
+        return (
+            `## Optional components of this environment\n\n` +
+            `Extra services beside the BE/FE, not running unless started. When a journey needs one (e.g. a queued job that only a worker processes), start it yourself from Bash, wait until its log shows it is ready (\`tail -40\` of the log path), then continue — do not report the scenario blocked or needs_human for a missing component.\n` +
+            comps.map((c) => `- \`${c.key}\` — ${c.label}${live.has(c.key) ? " · **running now**" : " · not running"}: start \`curl -s -X POST ${base}/${c.key}/start\`; stop \`curl -s -X POST ${base}/${c.key}/stop\`; log \`${join(this.taskDir(task.id), "logs", `${c.key}.log`)}\``).join("\n") +
+            `\n- Status of every service of this task: \`curl -s ${base}\`.`
+        );
     }
 
     // "Rebase onto latest base" (task page): the task's own agent rebases the branch onto origin/<base> in the worktree,
@@ -3526,6 +3565,10 @@ export class Engine extends EventEmitter {
             if (seeds) return { ok: false, error: seeds };
             const contract = qaContractProblems((parsed.data as DesignResult).qa ?? []);
             if (contract) return { ok: false, error: contract };
+            const owner = this.getTask(taskId);
+            const known = owner ? componentsOf(this.env(owner.env_id)).map((c) => c.key) : [];
+            const unknown = ((parsed.data as DesignResult).qa ?? []).flatMap((s) => (s.services ?? []).filter((k) => !known.includes(k)).map((k) => `${s.id}: "${k}"`));
+            if (unknown.length) return { ok: false, error: `QA scenarios name optional components this environment does not define: ${unknown.join(", ")} — available: ${known.length ? known.map((k) => `"${k}"`).join(", ") : "none (drop the services list)"}` };
         }
         if (def.stage === "pr_creation_review") {
             const task = this.getTask(taskId);

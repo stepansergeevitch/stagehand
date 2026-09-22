@@ -57,7 +57,7 @@ export interface Env {
     chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
-    rules: string | null; cleanup_command: string | null; check_command?: string | null; pr_templates?: string | null;
+    rules: string | null; cleanup_command: string | null; check_command?: string | null; components?: string | null; pr_templates?: string | null;
     // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
     pr_draft?: number;
     // Another env whose BE this one needs reachable to work (started once, shared across every task of this env).
@@ -134,8 +134,16 @@ export interface TicketAttachment { name: string; url: string; mime: string | nu
 // `state`: starting until the port answers; failed once its command exited, its tmux session vanished, or the start
 // budget ran out — `error` says which. A failed row stays until Stop, Retry, or Fix with agent.
 export type ServiceState = "starting" | "running" | "failed";
+// An optional component of an env (envs.components): an extra per-task service beside the BE/FE, without a port.
+export interface EnvComponent { key: string; label: string; command: string; autoStart: boolean }
+export const componentsOf = (env: Pick<Env, "components"> | undefined): EnvComponent[] => {
+    try {
+        const v: unknown = env?.components ? JSON.parse(env.components) : [];
+        return Array.isArray(v) ? v.filter((c): c is EnvComponent => !!c && typeof c === "object" && typeof (c as EnvComponent).key === "string").map((c) => ({ key: c.key, label: c.label?.trim() ? c.label : c.key, command: c.command ?? "", autoStart: c.autoStart === true })) : [];
+    } catch { return []; }
+};
 export interface Service {
-    id: string; task_id: string; kind: "be" | "fe"; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string;
+    id: string; task_id: string; kind: string; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string;
     running: boolean; state: ServiceState; failed_at: string | null; error: string | null;
 }
 // The diff line a chat message hangs on (asked from Code changes); stored as JSON on the message.
@@ -353,7 +361,7 @@ export const api = {
             chromeDeviceId?: string | null; chromeBrowserName?: string | null; qaSeedHints?: string | null; appUrl?: string | null; qaScript?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
-            cleanupCommand?: string | null; checkCommand?: string | null; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
+            cleanupCommand?: string | null; checkCommand?: string | null; components?: EnvComponent[]; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
@@ -425,9 +433,9 @@ export const api = {
     setAccount: (id: string, accountId: string) => post<Task>(`/api/tasks/${id}/account`, { accountId }),
     terminal: (id: string) => post<{ terminal: string }>(`/api/tasks/${id}/terminal`),
     services: (id: string) => fetch(`/api/tasks/${id}/services`).then((r) => j<Service[]>(r)),
-    startService: (id: string, kind: "be" | "fe") => post<Service>(`/api/tasks/${id}/services/${kind}/start`),
-    stopService: (id: string, kind: "be" | "fe") => post<Service[]>(`/api/tasks/${id}/services/${kind}/stop`),
-    serviceLog: (id: string, kind: "be" | "fe", lines = 120) => fetch(`/api/tasks/${id}/services/${kind}/log?lines=${lines}`).then((r) => r.text()),
+    startService: (id: string, kind: string) => post<Service>(`/api/tasks/${id}/services/${kind}/start`),
+    stopService: (id: string, kind: string) => post<Service[]>(`/api/tasks/${id}/services/${kind}/stop`),
+    serviceLog: (id: string, kind: string, lines = 120) => fetch(`/api/tasks/${id}/services/${kind}/log?lines=${lines}`).then((r) => r.text()),
     // Resolves once the agent run has started; its outcome and the automatic restart's result land in Chat.
     fixService: (id: string, kind: "be" | "fe") => post<{ started: true }>(`/api/tasks/${id}/services/${kind}/fix`),
     sessions: () => fetch("/api/sessions").then((r) => j<Session[]>(r)),

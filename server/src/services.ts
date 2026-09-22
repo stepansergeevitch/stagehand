@@ -5,16 +5,23 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Config } from "./config.js";
-import { now, parseEnvVars, type DB, type EnvRow, type EnvServiceRow, type ServiceKind, type ServiceRow, type TaskRow } from "./db.js";
+import { componentsOf, now, parseEnvVars, type CoreServiceKind, type DB, type EnvRow, type EnvServiceRow, type ServiceKind, type ServiceRow, type TaskRow } from "./db.js";
 import { ensureSession, killSession, sessionExists } from "./tmux.js";
 
 const execFileAsync = promisify(execFile);
 
-const PORT_RANGE: Record<ServiceKind, [number, number]> = { be: [18000, 18999], fe: [13000, 13999] };
+const PORT_RANGE: Record<CoreServiceKind, [number, number]> = { be: [18000, 18999], fe: [13000, 13999] };
 
 // How long a BE/FE gets to start listening on its port before it counts as failed (a Next/Vite dev server compiles
 // first; a Python backend runs migrations). Same budgets the QA bring-up used to wait with.
-export const START_TIMEOUT_MS: Record<ServiceKind, number> = { be: 180_000, fe: 300_000 };
+export const START_TIMEOUT_MS: Record<CoreServiceKind, number> = { be: 180_000, fe: 300_000 };
+
+const isCore = (kind: ServiceKind): kind is CoreServiceKind => kind === "be" || kind === "fe";
+// An optional component has no port to probe: it counts as running once its command has stayed alive this long.
+const COMPONENT_READY_MS = 5_000;
+// The command a service kind runs: the env's BE/FE command, or the optional component with that key.
+const commandTemplate = (env: EnvRow, kind: ServiceKind): string | null =>
+    kind === "be" ? env.be_command : kind === "fe" ? env.fe_command : (componentsOf(env).find((c) => c.key === kind)?.command ?? null);
 
 export type ServiceState = "starting" | "running" | "failed";
 export type ServiceStatus = ServiceRow & { running: boolean; state: ServiceState };
@@ -80,8 +87,7 @@ export class Services {
     // recorded on the row so the state is stable (and the reason is kept) until the service is stopped or restarted.
     async probe(row: ServiceRow): Promise<ServiceStatus> {
         if (row.failed_at) return { ...row, running: false, state: "failed" };
-        const listening = await portListening(row.port);
-        if (listening) return { ...row, running: true, state: "running" };
+        if (row.port > 0 && (await portListening(row.port))) return { ...row, running: true, state: "running" };
         const kind = row.kind.toUpperCase();
         let error: string | null = null;
         if (!(await sessionExists(row.tmux))) {
@@ -93,7 +99,10 @@ export class Services {
             error = recovered;
         } else {
             const exited = currentRunLog(row).map((l) => exitMarker(row.kind).exec(l)).find((m) => m);
-            if (exited) error = `the ${kind} command exited (status ${exited[1]}) without leaving anything listening on port ${row.port}`;
+            if (exited) error = row.port > 0 ? `the ${kind} command exited (status ${exited[1]}) without leaving anything listening on port ${row.port}` : `the ${kind} command exited (status ${exited[1]})`;
+            // A port-less component is "running" once its command has survived the first seconds (a worker prints its
+            // banner and blocks); a crash later shows up as the exit marker on the next probe.
+            else if (!isCore(row.kind)) return Date.now() - Date.parse(row.started_at) > COMPONENT_READY_MS ? { ...row, running: true, state: "running" } : { ...row, running: false, state: "starting" };
             else if (Date.now() - Date.parse(row.started_at) > START_TIMEOUT_MS[row.kind]) error = `nothing is listening on port ${row.port} after ${Math.round(START_TIMEOUT_MS[row.kind] / 60_000)} min`;
         }
         if (!error) return { ...row, running: false, state: "starting" };
@@ -152,7 +161,7 @@ export class Services {
         try {
             const fresh = await this.start(task, env, row.kind);
             this.db.prepare(`UPDATE services SET auto_restart = 1 WHERE id = ?`).run(fresh.id);
-            this.onNotice?.(row.task_id, `♻️ The ${row.kind.toUpperCase()}'s tmux session ${row.tmux} had vanished (host/tmux restart, or killed by hand) — restarted it on port ${fresh.port} (${recent + 1}/${Services.AUTO_RESTART_MAX} automatic restarts this hour).`);
+            this.onNotice?.(row.task_id, `♻️ The ${row.kind.toUpperCase()}'s tmux session ${row.tmux} had vanished (host/tmux restart, or killed by hand) — restarted it${fresh.port ? ` on port ${fresh.port}` : ""} (${recent + 1}/${Services.AUTO_RESTART_MAX} automatic restarts this hour).`);
             return { ...fresh, auto_restart: 1 };
         } catch (e) {
             this.db.prepare(`UPDATE services SET stopped_at = NULL WHERE id = ?`).run(row.id);
@@ -165,13 +174,13 @@ export class Services {
     // FEs on 13005, 10 ms apart). Reserved here by pickPort, released by start() once the row exists (or on failure).
     private readonly reserving = new Set<number>();
 
-    private async pickPort(kind: ServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
+    private async pickPort(kind: CoreServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
         const port = await this.choosePort(kind, fixed, task);
         this.reserving.add(port);
         return port;
     }
 
-    private async choosePort(kind: ServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
+    private async choosePort(kind: CoreServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
         const taken = new Set((this.db.prepare(`SELECT port FROM services WHERE stopped_at IS NULL`).all() as Array<{ port: number }>).map((r) => r.port));
         for (const p of this.reserving) taken.add(p);
         // A pinned port is a preference, not a requirement: when another task, the user's own dev server or anything
@@ -191,8 +200,8 @@ export class Services {
     }
 
     async start(task: TaskRow, env: EnvRow, kind: ServiceKind): Promise<ServiceRow> {
-        const template = kind === "be" ? env.be_command : env.fe_command;
-        if (!template) throw new Error(`env "${env.name}" has no ${kind.toUpperCase()} command configured`);
+        const template = commandTemplate(env, kind);
+        if (!template) throw new Error(isCore(kind) ? `env "${env.name}" has no ${kind.toUpperCase()} command configured` : `env "${env.name}" has no optional component "${kind}" — its keys: ${componentsOf(env).map((c) => c.key).join(", ") || "none"}`);
         const existing = this.get(task.id, kind);
         if (existing) {
             // A live, healthy (or still starting) row is reused; a failed one is torn down and started over. The probe
@@ -215,19 +224,20 @@ export class Services {
             if (!r.ok) throw new Error(`the BE is not up (${r.error}) — the FE command needs its URL live`);
         }
 
-        const port = await this.pickPort(kind, kind === "be" ? env.be_port : env.fe_port, task);
+        // Optional components have no port (0): nothing to allocate, nothing to probe by socket.
+        const port = isCore(kind) ? await this.pickPort(kind, kind === "be" ? env.be_port : env.fe_port, task) : 0;
         try {
             return await this.launch(task, env, kind, port, be);
         } finally {
-            this.reserving.delete(port);
+            if (port) this.reserving.delete(port);
         }
     }
 
     private async launch(task: TaskRow, env: EnvRow, kind: ServiceKind, port: number, be: ServiceRow | undefined): Promise<ServiceRow> {
-        const template = kind === "be" ? env.be_command : env.fe_command;
-        if (!template) throw new Error(`env "${env.name}" has no ${kind.toUpperCase()} command configured`);
+        const template = commandTemplate(env, kind);
+        if (!template) throw new Error(`env "${env.name}" has no command for service "${kind}"`);
         const urlTemplate = (kind === "be" ? env.be_url_template : env.fe_url_template) ?? "http://localhost:{{port}}";
-        const url = render(urlTemplate, { port: String(port) });
+        const url = port ? render(urlTemplate, { port: String(port) }) : "";
         const vars: Record<string, string> = {
             port: String(port),
             url,
@@ -273,7 +283,7 @@ export class Services {
         await killSession(row.tmux);
         // Only sweep leftover listeners when this service actually owned the port: a process we started, on a port
         // Stagehand chose. On a fixed port (3000/8000-style pins) the listener may be the user's own dev server.
-        if (hadSession && !this.isFixedPort(row.port)) {
+        if (hadSession && row.port > 0 && !this.isFixedPort(row.port)) {
             await new Promise((r) => setTimeout(r, 1500));
             try {
                 const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${row.port}`, "-sTCP:LISTEN", "-t"]);
@@ -286,6 +296,8 @@ export class Services {
     }
 
     async stopAll(taskId: string): Promise<void> {
+        // Optional components first (a worker may still be talking to the BE), then the FE, then the BE.
+        for (const r of this.list(taskId)) if (!isCore(r.kind)) await this.stop(taskId, r.kind);
         await this.stop(taskId, "fe");
         await this.stop(taskId, "be");
     }

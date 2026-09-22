@@ -6,6 +6,8 @@ Something on the open PR for ticket {{ticketId}} (worktree {{worktree}}, branch 
 
 {{taskNotes}}
 
+{{components}}
+
 {{reviewerNotes}}
 
 {{askHuman}}

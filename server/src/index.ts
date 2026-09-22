@@ -28,7 +28,7 @@ const MODEL_OPTIONS = [
     { value: "opus", label: "Opus 5 (claude-opus-5)" },
     { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
 ];
-import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, prTemplateOverridesOf, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type EnvRow, type Stage } from "./db.js";
+import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, COMPONENT_KEY, componentsOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, prTemplateOverridesOf, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type EnvRow, type Stage, type TaskRow } from "./db.js";
 import { matchChromeProfiles, openInProfile, restartChrome } from "./chrome-profiles.js";
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
@@ -542,6 +542,18 @@ app.get("/api/envs/:id/my-tickets", async (c) => {
     }
 });
 
+// Optional components as the API takes them (see db.ts EnvComponent); stored as JSON, an empty list as NULL.
+const ComponentList = z.array(
+    z.object({
+        key: z.string().regex(COMPONENT_KEY, "key: lowercase letters, digits, - and _, starting with a letter").refine((k) => k !== "be" && k !== "fe", "be and fe are the core services"),
+        label: z.string().optional(),
+        command: z.string().min(1),
+        autoStart: z.boolean().optional(),
+    }),
+);
+const componentsJson = (list: z.infer<typeof ComponentList> | undefined): string | null =>
+    list && list.length ? JSON.stringify(list.map((c) => ({ key: c.key, label: c.label?.trim() || c.key, command: c.command, autoStart: c.autoStart === true }))) : null;
+
 app.post("/api/envs", async (c) => {
     const body = json(
         z.object({
@@ -566,6 +578,7 @@ app.post("/api/envs", async (c) => {
             envVars: z.string().optional(),
             cleanupCommand: z.string().optional(),
             checkCommand: z.string().optional(),
+            components: ComponentList.optional(),
             prDraft: z.boolean().optional(),
         }),
         await c.req.json(),
@@ -578,8 +591,8 @@ app.post("/api/envs", async (c) => {
     const configDirId = body.configDirId ?? (configDirsAll().find((d) => d.path === join(body.path, ".claude")) ?? configDirsAll()[0])?.id ?? null;
     const order = body.accountOrder ?? (body.defaultAccountId ? [body.defaultAccountId] : []);
     db.prepare(
-        `INSERT INTO envs (id, name, path, base_branch, default_account_id, account_order, config_dir_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, cleanup_command, check_command, pr_draft, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO envs (id, name, path, base_branch, default_account_id, account_order, config_dir_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, cleanup_command, check_command, components, pr_draft, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
         id,
         body.name,
@@ -603,6 +616,7 @@ app.post("/api/envs", async (c) => {
         body.envVars ?? null,
         body.cleanupCommand ?? null,
         body.checkCommand ?? null,
+        componentsJson(body.components) ?? null,
         body.prDraft ? 1 : 0,
         now(),
     );
@@ -635,6 +649,7 @@ app.patch("/api/envs/:id", async (c) => {
             envVars: z.string().nullable().optional(),
             cleanupCommand: z.string().nullable().optional(),
             checkCommand: z.string().nullable().optional(),
+            components: ComponentList.optional(),
             // Per-repository PR template overrides: {"backend": ".github/pull_request_template.md"}; null/"" removes one.
             prTemplates: z.record(z.string().nullable()).optional(),
             prDraft: z.boolean().optional(),
@@ -668,7 +683,7 @@ app.patch("/api/envs/:id", async (c) => {
         return Object.keys(merged).length ? JSON.stringify(merged) : null;
     })();
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, check_command = ?, pr_templates = ?, pr_draft = ?, depends_on_env_id = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, check_command = ?, components = ?, pr_templates = ?, pr_draft = ?, depends_on_env_id = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         order[0] ?? null,
@@ -693,6 +708,7 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.envVars, env.env_vars),
         pick(body.cleanupCommand, env.cleanup_command),
         pick(body.checkCommand, env.check_command),
+        body.components === undefined ? env.components : componentsJson(body.components),
         prTemplates,
         body.prDraft === undefined ? env.pr_draft : body.prDraft ? 1 : 0,
         pick(body.dependsOnEnvId, env.depends_on_env_id),
@@ -1291,21 +1307,30 @@ app.post("/api/tasks/:id/account", async (c) => {
 
 app.get("/api/tasks/:id/services", async (c) => c.json(await services.status(c.req.param("id"))));
 
+// "be", "fe", or the key of one of the task env's optional components (a worker, a scheduler) — the agents start
+// those on demand through these same routes.
+const serviceKindOf = (task: TaskRow, kind: string): { kind: string; env: EnvRow } | { error: string } => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
+    if (kind === "be" || kind === "fe" || componentsOf(env).some((c) => c.key === kind)) return { kind, env };
+    return { error: `kind must be be, fe or one of this env's optional components (${componentsOf(env).map((c) => c.key).join(", ") || "none defined"})` };
+};
+
 app.post("/api/tasks/:id/services/:kind/start", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
-    const kind = c.req.param("kind");
-    if (kind !== "be" && kind !== "fe") return c.json({ error: "kind must be be|fe" }, 400);
-    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
-    const row = await services.start(task, env, kind);
+    const k = serviceKindOf(task, c.req.param("kind"));
+    if ("error" in k) return c.json({ error: k.error }, 400);
+    const row = await services.start(task, k.env, k.kind);
     return c.json(row);
 });
 
 app.post("/api/tasks/:id/services/:kind/stop", async (c) => {
-    const kind = c.req.param("kind");
-    if (kind !== "be" && kind !== "fe") return c.json({ error: "kind must be be|fe" }, 400);
-    await services.stop(c.req.param("id"), kind);
-    return c.json(await services.status(c.req.param("id")));
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    const k = serviceKindOf(task, c.req.param("kind"));
+    if ("error" in k) return c.json({ error: k.error }, 400);
+    await services.stop(task.id, k.kind);
+    return c.json(await services.status(task.id));
 });
 
 // A failed BE/FE start handed to the task's agent; resolves once the run has started, the outcome (and the automatic
@@ -1323,7 +1348,7 @@ app.post("/api/tasks/:id/services/:kind/fix", async (c) => {
 
 app.get("/api/tasks/:id/services/:kind/log", (c) => {
     const kind = c.req.param("kind");
-    if (kind !== "be" && kind !== "fe") return c.json({ error: "kind must be be|fe" }, 400);
+    if (kind !== "be" && kind !== "fe" && !COMPONENT_KEY.test(kind)) return c.json({ error: "kind must be be, fe or a component key" }, 400);
     const path = join(engine.taskDir(c.req.param("id")), "logs", `${kind}.log`);
     if (!existsSync(path)) return new Response("", { headers: { "content-type": "text/plain" } });
     const text = readFileSync(path, "utf8");

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Env, type Service } from "./api";
+import { api, componentsOf, type Env, type EnvComponent, type Service } from "./api";
 
 // `busy`: a stage/agent run owns the task right now — Fix with agent needs the task's session, so it waits.
 export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, onFixStarted }: { taskId: string; env: Env | undefined; busy?: boolean; onError: (m: string) => void; onFixStarted?: () => void }) => {
     const [rows, setRows] = useState<Service[]>([]);
     const [busy, setBusy] = useState<string | null>(null);
-    const [log, setLog] = useState<{ kind: "be" | "fe"; text: string } | null>(null);
+    const [log, setLog] = useState<{ kind: string; text: string } | null>(null);
     const [fixing, setFixing] = useState<Set<string>>(new Set());
 
     const refresh = useCallback(() => api.services(taskId).then(setRows).catch(() => undefined), [taskId]);
@@ -41,7 +41,31 @@ export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, on
     const be = rows.find((r) => r.kind === "be");
     const fe = rows.find((r) => r.kind === "fe");
     const configured = { be: !!env?.be_command, fe: !!env?.fe_command };
-    if (!configured.be && !configured.fe) return <div className="empty">This env has no BE/FE commands configured — edit the env to add them.</div>;
+    const comps = componentsOf(env);
+    if (!configured.be && !configured.fe && comps.length === 0) return <div className="empty">This env has no BE/FE commands configured — edit the env to add them.</div>;
+
+    // An optional component (a worker, a scheduler): Run / Stop / Log, no port, no agent fix.
+    const compRow = (c: EnvComponent) => {
+        const svc = rows.find((r) => r.kind === c.key);
+        return (
+            <div className={`svc ${svc?.state === "failed" ? "failed" : ""}`} key={c.key}>
+                <span className="svc-kind" title={`optional component "${c.key}"${c.autoStart ? " — auto-started with the app" : ""}`}>{c.label}</span>
+                {svc ? (
+                    <>
+                        {svc.state === "running" ? <span className="chip ok">running</span> : svc.state === "failed" ? <span className="chip bad">failed</span> : <span className="chip warn">starting…</span>}
+                        <button disabled={busy !== null} onClick={() => act(c.key, () => api.stopService(taskId, c.key))}>{svc.state === "failed" ? "Dismiss" : "Stop"}</button>
+                        <button disabled={busy !== null} onClick={() => act("log", () => api.serviceLog(taskId, c.key).then((text) => setLog({ kind: c.key, text })))}>Log</button>
+                        {svc.state === "failed" && svc.error && <span className="svc-error">{svc.error}</span>}
+                    </>
+                ) : (
+                    <>
+                        <span className="chip">stopped</span>
+                        <button className="primary" disabled={busy !== null} title={c.command} onClick={() => act(c.key, () => api.startService(taskId, c.key))}>{busy === c.key ? "starting…" : "Run"}</button>
+                    </>
+                )}
+            </div>
+        );
+    };
 
     const stateChip = (svc: Service) =>
         svc.state === "running" ? <span className="chip ok">running</span> : svc.state === "failed" ? <span className="chip bad">failed</span> : <span className="chip warn">starting…</span>;
@@ -96,6 +120,7 @@ export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, on
         <>
             {configured.be && row("be", be)}
             {configured.fe && row("fe", fe)}
+            {comps.map(compRow)}
             {(fe?.running || (be?.running && !configured.fe)) && (
                 <div className="open-app">
                     <a className="button-link" href={(env?.app_url ?? "{{feUrl}}").replace("{{feUrl}}", fe?.url ?? "").replace("{{beUrl}}", be?.url ?? "")} target="_blank" rel="noreferrer">Open app ↗</a>

@@ -149,6 +149,9 @@ export interface EnvRow {
     // Runs from the worktree after every implementation / PR-fix run; non-zero = the run goes back to the agent with the
     // output (e.g. Django `check --database default` + `makemigrations --check`, which tests and a dev server never run).
     check_command: string | null;
+    // JSON array of EnvComponent: optional per-task services next to the BE/FE (a queue worker, a scheduler), started
+    // on demand by the human or the agents, or automatically (autoStart / a QA scenario's `services`).
+    components: string | null;
     // JSON {"<repo dir or .>": "<template path relative to that repo>"} — per-repository PR template overrides; a repo not listed is auto-detected.
     pr_templates: string | null;
     // Open every PR this env creates as a GitHub draft (0/1). The human marks it ready for review themselves.
@@ -191,6 +194,29 @@ export const accountOrderOf = (env: Pick<EnvRow, "account_order" | "default_acco
         /* fall through */
     }
     return env.default_account_id ? [env.default_account_id] : [];
+};
+
+// Optional components of an env (envs.components, JSON): extra per-task services beside the BE/FE — a queue worker, a
+// scheduler, a relay — each its own tmux session from the worktree, without a port. Started on demand (App widget,
+// POST /api/tasks/:id/services/<key>/start, the agents' prompts) or automatically (autoStart, or a QA scenario's `services`).
+export interface EnvComponent {
+    key: string;
+    label: string;
+    command: string;
+    autoStart: boolean;
+}
+export const COMPONENT_KEY = /^[a-z][a-z0-9_-]{0,30}$/;
+export const componentsOf = (env: Pick<EnvRow, "components">): EnvComponent[] => {
+    try {
+        const v: unknown = env.components ? JSON.parse(env.components) : [];
+        if (!Array.isArray(v)) return [];
+        return v
+            .filter((c): c is EnvComponent => !!c && typeof c === "object" && typeof (c as EnvComponent).key === "string" && typeof (c as EnvComponent).command === "string")
+            .filter((c) => COMPONENT_KEY.test(c.key) && c.key !== "be" && c.key !== "fe")
+            .map((c) => ({ key: c.key, label: typeof c.label === "string" && c.label.trim() ? c.label.trim() : c.key, command: c.command, autoStart: c.autoStart === true }));
+    } catch {
+        return [];
+    }
 };
 
 // tasks.base_branch: NULL (the env's base branch in every repository), one branch name (every repository starts from
@@ -672,6 +698,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["tasks.extra_tickets", `ALTER TABLE tasks ADD COLUMN extra_tickets TEXT`],
     ["envs.cleanup_command", `ALTER TABLE envs ADD COLUMN cleanup_command TEXT`],
     ["envs.check_command", `ALTER TABLE envs ADD COLUMN check_command TEXT`],
+    ["envs.components", `ALTER TABLE envs ADD COLUMN components TEXT`],
     ["window_calibration.anchor_u", `ALTER TABLE window_calibration ADD COLUMN anchor_u REAL`],
     ["window_calibration.anchor_resets", `ALTER TABLE window_calibration ADD COLUMN anchor_resets INTEGER`],
     ["window_calibration.anchor_cost", `ALTER TABLE window_calibration ADD COLUMN anchor_cost REAL NOT NULL DEFAULT 0`],
@@ -746,7 +773,9 @@ export const migrateAccountsToConfigDirs = (db: Database.Database, opts: { mainC
     }
 };
 
-export type ServiceKind = "be" | "fe";
+export type CoreServiceKind = "be" | "fe";
+// "be" | "fe", or the key of one of the env's optional components (envs.components).
+export type ServiceKind = string;
 export interface ServiceRow {
     id: string;
     task_id: string;

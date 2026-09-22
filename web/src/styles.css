@@ -587,6 +587,10 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .rebase-pick > summary::-webkit-details-marker { display: none; }
 .rebase-pick-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; min-width: 180px; box-shadow: 0 6px 20px rgba(0,0,0,.12); }
 .rebase-pick-menu label.inline { white-space: nowrap; }
+/* env page: optional components editor */
+.components { display: grid; gap: 6px; }
+.component-row { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 6px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.component-row textarea { grid-column: 1 / -1; min-height: 56px; }
 /* task list: multi-select for bulk delete */
 .row { grid-template-columns: 14px 18px 1fr auto auto; }
 .row .status { grid-column: 3; }

@@ -4,6 +4,8 @@ This is the DESIGN PROPOSAL stage for ticket {{ticketId}}. You are now in the ta
 
 {{taskNotes}}
 
+{{components}}
+
 {{reviewerNotes}}
 
 {{askHuman}}

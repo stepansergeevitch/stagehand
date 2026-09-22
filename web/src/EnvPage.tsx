@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, type Account, type ConfigDir, type Env, type EnvDependencyStatus, type EnvRules } from "./api";
+import { accountOrderOf, accountUsableWith, api, componentsOf, type Account, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -80,6 +80,9 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
         bePort: env.be_port ? String(env.be_port) : "", fePort: env.fe_port ? String(env.fe_port) : "", setupCommand: env.setup_command ?? "", envVars: env.env_vars ?? "",
         qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", checkCommand: env.check_command ?? "",
     });
+    // ---- optional components (a worker, a scheduler): saved with the Services section
+    const [comps, setComps] = useState<EnvComponent[]>(() => componentsOf(env));
+    const setComp = (i: number, patch: Partial<EnvComponent>) => setComps((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
     const set =<T extends object>(setter: React.Dispatch<React.SetStateAction<T>>) => (k: keyof T) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
         setter((prev) => ({ ...prev, [k]: e.target.type === "checkbox" ? (e.target as HTMLInputElement).checked : e.target.value }));
     const sg = set(setG);
@@ -201,6 +204,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 appUrl: nul(s.appUrl), beCommand: nul(s.beCommand), feCommand: nul(s.feCommand), beUrlTemplate: nul(s.beUrlTemplate), feUrlTemplate: nul(s.feUrlTemplate),
                 bePort: s.bePort.trim() ? Number(s.bePort) : null, fePort: s.fePort.trim() ? Number(s.fePort) : null, setupCommand: nul(s.setupCommand), envVars: nul(s.envVars),
                 qaSeedHints: nul(s.qaSeedHints), cleanupCommand: nul(s.cleanupCommand), checkCommand: nul(s.checkCommand),
+                components: comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
             })}>
                 <div className="two">
                     <label>QA app URL <input value={s.appUrl} onChange={ss("appUrl")} placeholder="{{feUrl}} or {{beUrl}} or a fixed URL" /></label>
@@ -215,6 +219,20 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 <label>Verification command (runs from the worktree after every Implementation and PR Fix run; a non-zero exit sends the output back to the agent, twice, then blocks for you — put here what tests and a dev server never exercise, e.g. Django <code>manage.py check --database default && manage.py makemigrations --check --dry-run</code>) <textarea value={s.checkCommand} onChange={ss("checkCommand")} placeholder="optional" /></label>
                 <label>BE command <textarea value={s.beCommand} onChange={ss("beCommand")} /></label>
                 <label>FE command <textarea value={s.feCommand} onChange={ss("feCommand")} /></label>
+                <div className="components">
+                    <b>Optional components</b>
+                    <span className="field-hint">Extra services beside the BE/FE — a queue worker, a scheduler, a relay. Each runs in its own tmux session from the task's worktree, without a port. The human starts one from the App widget; agents start one on demand through the API (every prompt lists them); a QA scenario declares the ones its journey needs in <code>services</code>; "auto-start" brings it up with the app for every QA pass. Placeholders: {"{{worktree}}"}, {"{{beUrl}}"}, {"{{bePort}}"}, {"{{taskDir}}"}.</span>
+                    {comps.map((c, i) => (
+                        <div className="component-row" key={i}>
+                            <input value={c.key} placeholder="key — e.g. worker (a-z, 0-9, -, _)" onChange={(e) => setComp(i, { key: e.target.value })} />
+                            <input value={c.label} placeholder="label — e.g. Celery worker" onChange={(e) => setComp(i, { label: e.target.value })} />
+                            <label className="inline"><input type="checkbox" checked={c.autoStart} onChange={(e) => setComp(i, { autoStart: e.target.checked })} /> auto-start with the app</label>
+                            <textarea value={c.command} placeholder="command (runs from the worktree)" onChange={(e) => setComp(i, { command: e.target.value })} />
+                            <button className="tiny danger" onClick={() => setComps((cs) => cs.filter((_, j) => j !== i))}>remove</button>
+                        </div>
+                    ))}
+                    <button className="tiny" onClick={() => setComps((cs) => [...cs, { key: "", label: "", command: "", autoStart: false }])}>+ component</button>
+                </div>
                 <label>Seeding hints for QA (how agents create test data here: local DB connection and key tables, API auth, seed scripts; given to the Design and QA prompts verbatim) <textarea value={s.qaSeedHints} onChange={ss("qaSeedHints")} className="tall" placeholder={"Local Postgres: PGPASSWORD=… psql -h localhost -p 5433 -U … -d …\nDeals live in deal, pro formas in pro_forma; sources in pro_forma_source (source_type_id …)\nPrefer SQL for numeric inputs; the pro forma table UI is slow to edit."} /></label>
             </Section>
 

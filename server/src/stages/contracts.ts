@@ -24,6 +24,9 @@ export const QaScenario = z.object({
     // fixture set by natural key (documents first, then master data) so a partial earlier pass never leaves records
     // that make a seed or step collide. Required whenever a seed creates records.
     teardown: z.array(z.string()).default([]),
+    // Keys of the environment's optional components (a queue worker, a scheduler) this journey needs running — the
+    // orchestrator starts them before the seeds of every pass. Only keys the environment defines are accepted.
+    services: z.array(z.string()).default([]),
     // Data the journey needs, as concrete steps the runner performs itself before the first step (UI actions, API calls
     // with payloads, SQL, or a repo script) — never a request for a human to prepare something. Empty = nothing to seed.
     seed: z.array(z.string()).default([]),

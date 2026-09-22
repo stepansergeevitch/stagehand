@@ -2,6 +2,7 @@ This is a DIRECT INSTRUCTION from the human, sent through this task's Chat ("Do"
 
 Worktree: `{{worktree}}` (branch `{{branch}}`). Repos: {{repoLayout}}. Task files: `{{taskDir}}`.
 {{taskNotes}}
+{{components}}
 
 ## The instruction
 
