@@ -4,7 +4,7 @@ import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PREVIEW, type Config } from "./config.js";
 import { accountBrowserReady, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, componentsOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvComponent, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
-import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
+import { rateLimitHit, ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, openInProfile, QA_CHROME_FLAGS, setChromeTabUrl } from "./chrome-profiles.js";
 import { activateCloneTab, cloneProfile, launchClone, pickCdpPort, quitClone, sweepClones, type ChromeClone } from "./chrome-clones.js";
@@ -3111,7 +3111,8 @@ export class Engine extends EventEmitter {
         const pass = def.stage === "qa_baseline" ? "before" : "after";
         const files = shardFiles(pass, shard);
         let result: ShardResult;
-        const limited = outcome.lastRateLimit && outcome.lastRateLimit.status !== "allowed";
+        // A run that ended with a successful result did its work, whatever the last window event said.
+        const limited = rateLimitHit(outcome.lastRateLimit) && !(outcome.result && !outcome.result.is_error);
         if (limited && outcome.lastRateLimit?.resetsAt) {
             finish("rate_limited", "rate limited");
             result = { kind: "rate_limited", resetsAt: outcome.lastRateLimit.resetsAt };
@@ -4065,7 +4066,8 @@ export class Engine extends EventEmitter {
             calibrateWindows(this.db, account.id, outcome.firstRateLimit, outcome.lastRateLimit, outcome.result?.total_cost_usd);
         };
 
-        const limited = outcome.lastRateLimit && outcome.lastRateLimit.status !== "allowed";
+        // A run that ended with a successful result did its work, whatever the last window event said.
+        const limited = rateLimitHit(outcome.lastRateLimit) && !(outcome.result && !outcome.result.is_error);
         if (limited && outcome.lastRateLimit?.resetsAt) {
             finish("rate_limited", "rate limited");
             this.queueRateLimited(task, account, outcome.lastRateLimit.resetsAt, `rate limited on ${account.name}`);

@@ -33,6 +33,11 @@ export const RateLimitInfo = z.object({
 });
 export type RateLimitInfo = z.infer<typeof RateLimitInfo>;
 
+// A rate-limit event that stops work: "allowed" and "allowed_warning" (a window crossed a threshold, e.g. 75% of the
+// 7-day one) let the run go on — only a rejection does not. INV-133, 2026-09-22: a Manual QA run that finished with
+// DONE ended on an allowed_warning and was parked until the 7-day reset instead of having its output processed.
+export const rateLimitHit = (r: RateLimitInfo | null | undefined): boolean => !!r && r.status !== "allowed" && r.status !== "allowed_warning";
+
 const ModelUsage = z.object({
     inputTokens: z.number().optional(),
     outputTokens: z.number().optional(),
