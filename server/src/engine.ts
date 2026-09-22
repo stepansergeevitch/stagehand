@@ -23,6 +23,7 @@ import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { applyApprovedStepFixes } from "./qa-fixes.js";
 import { fillQaVars, newQaPassId, qaContractProblems, type QaVars } from "./qa-vars.js";
 import { jevAsk, jevEnabled } from "./jev.js";
+import { djangoBatchCommand, djangoBatchEnv, parseBatchOutput, planSeedUnits, type SeedItem } from "./seed-batch.js";
 import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
 
 // A comment anchored to one line of the review diff. `line` is the new-file line for add/context lines, the old-file line for deletions.
@@ -432,7 +433,7 @@ export class Engine extends EventEmitter {
     startScheduler(): void {
         this.timer = setInterval(() => this.tick(), 15_000);
         this.startCallbackHopWatcher();
-        this.recoverInterrupted();
+        void this.recoverInterrupted();
         const n = backfillUsage(this.db, this.cfg.dataDir);
         if (n) console.log(`[stagehand] usage backfilled for ${n} run(s)`);
         const c = backfillCalibration(this.db, this.cfg.dataDir);
@@ -444,11 +445,11 @@ export class Engine extends EventEmitter {
         for (const run of this.active.values()) run.kill();
     }
 
-    private recoverInterrupted(): void {
+    private async recoverInterrupted(): Promise<void> {
         const stale = this.db.prepare(`SELECT * FROM runs WHERE status = 'running'`).all() as RunRow[];
         for (const run of stale) {
             // The claude child may have finished its work before the restart; if the stage's output already validates, complete it from disk.
-            if (this.completeFromDisk(run.task_id, run.id, run.stage)) continue;
+            if (await this.completeFromDisk(run.task_id, run.id, run.stage)) continue;
             this.db.prepare(`UPDATE runs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?`).run("server restarted mid-run", now(), run.id);
             this.setTaskStatus(run.task_id, "failed", "run interrupted by server restart — retry to resume");
         }
@@ -508,10 +509,10 @@ export class Engine extends EventEmitter {
         return ticket;
     }
 
-    private completeFromDisk(taskId: string, runId: string, stage: Stage): boolean {
+    private async completeFromDisk(taskId: string, runId: string, stage: Stage): Promise<boolean> {
         const def = STAGE_DEFS[stage];
         if (!def.contract || !def.outputFile) return false;
-        const validation = this.validateOutput(taskId, def);
+        const validation = await this.validateOutput(taskId, def);
         if (!validation.ok) return false;
         this.db
             .prepare(`UPDATE runs SET status = 'done', finished_at = COALESCE(finished_at, ?), error = NULL, result_json = ? WHERE id = ?`)
@@ -787,8 +788,14 @@ export class Engine extends EventEmitter {
         // taken as the result of a later run that died on a network error, and the task went blocked without a run).
         const outputFile = STAGE_DEFS[task.stage]?.outputFile;
         const fresh = !outputFile || (last ? this.outputWrittenDuringRun(taskId, outputFile, last.id) : false);
-        if (last && last.stage === task.stage && fresh && this.completeFromDisk(taskId, last.id, task.stage)) return;
-        this.dispatch(taskId, task.stage, { notes: "Previous attempt did not complete. Continue from the current state of the task directory." });
+        const resume = (): void => this.dispatch(taskId, task.stage, { notes: "Previous attempt did not complete. Continue from the current state of the task directory." });
+        if (last && last.stage === task.stage && fresh) {
+            void this.completeFromDisk(taskId, last.id, task.stage).then((done) => {
+                if (!done) resume();
+            });
+            return;
+        }
+        resume();
     }
 
     // The Chrome profile browser QA uses for this task (resolved to something `open --profile-directory` accepts).
@@ -2712,7 +2719,7 @@ export class Engine extends EventEmitter {
         void run.done.then((outcome) => {
             if (tabKeeper) clearInterval(tabKeeper);
             this.active.delete(runId);
-            this.onRunClosed(taskId, runId, def, account, outcome, opts);
+            void this.onRunClosed(taskId, runId, def, account, outcome, opts).catch((e: unknown) => console.warn(`[stagehand] onRunClosed ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         });
     }
 
@@ -2739,7 +2746,27 @@ export class Engine extends EventEmitter {
     // {{beUrl}}/{{appUrl}}/{{qaPass}}), from the worktree, 120 s each; failures are reported per step, never thrown.
     // Output is kept in <taskDir>/qa/seed-<pass>.log. Teardown first is the rule (user, 2026-09-21): "seeding should
     // first try to delete old records and only then create them".
-    private async runShellSeeds(task: TaskRow, env: EnvRow, def: StageDef, qaPass: string): Promise<string> {
+    // Runs a batch of Django-shell steps in one process (mode "run" commits like the steps would; "dryrun" rolls each
+    // back) and returns one result per step. A process that fails to start reports every step as failed with its tail.
+    private async runDjangoBatch(task: TaskRow, env: EnvRow, prefix: string, items: SeedItem[], mode: "run" | "dryrun"): Promise<ReturnType<typeof parseBatchOutput>> {
+        try {
+            const { stdout } = await execFileAsync("bash", loginShellArgs(djangoBatchCommand(prefix)), {
+                cwd: task.worktree_path ?? env.path,
+                env: loginShellEnv({ ...parseEnvVars(env.env_vars), ...djangoBatchEnv(items, mode) }),
+                timeout: 120_000 + 60_000 * items.length,
+                maxBuffer: 8 * 1024 * 1024,
+            });
+            return parseBatchOutput(stdout, items.map((i) => i.label));
+        } catch (e) {
+            const err = e as { stderr?: string; stdout?: string; message?: string };
+            const partial = parseBatchOutput(String(err.stdout ?? ""), items.map((i) => i.label));
+            const tail = String(err.stderr?.trim() || err.message || e).trim().split("\n").slice(-3).join(" ").slice(0, 300);
+            return partial.map((r) => (r.ok || r.output ? r : { ...r, error: r.error.startsWith("the seed process ended") ? `the Django shell did not start: ${tail}` : r.error }));
+        }
+    }
+
+    // `opts.only`: seed only these scenarios (a QA pass resumed after questions re-seeds just the scenarios still to run).
+    private async runShellSeeds(task: TaskRow, env: EnvRow, def: StageDef, qaPass: string, opts?: { only?: Set<string> }): Promise<string> {
         const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
         const pass = def.stage === "qa_baseline" ? "before" : "after";
         const logPath = join(this.taskDir(task.id), "qa", `seed-${pass}.log`);
@@ -2769,7 +2796,12 @@ export class Engine extends EventEmitter {
                 lines.push(`${label}: FAILED — ${tail}`);
             }
         };
+        // The pass's shell steps in order (teardown, then the leading shell seeds, per scenario); consecutive Django-shell
+        // steps with one prefix then run in ONE Django process (seed-batch.ts) — every `manage.py shell` start boots
+        // Django for 10–30 s, and a pass has two such steps per scenario.
+        const steps: Array<{ label: string; cmd: string }> = [];
         for (const s of design?.qa ?? []) {
+            if (opts?.only && !opts.only.has(s.id)) continue;
             // Reset this scenario's fixture set before creating it again: a partial earlier pass must not leave records
             // that make a seed or a step collide (a teardown that finds nothing to delete is fine).
             for (const [i, step] of (s.teardown ?? []).entries()) {
@@ -2778,7 +2810,7 @@ export class Engine extends EventEmitter {
                     lines.push(`${s.id} teardown ${i + 1}: skipped (not a shell command)`);
                     continue;
                 }
-                await runOne(`${s.id} teardown ${i + 1}`, fillQaVars(step.slice(m[0].length), qaVars));
+                steps.push({ label: `${s.id} teardown ${i + 1}`, cmd: fillQaVars(step.slice(m[0].length), qaVars) });
             }
             // Shell steps that come after a ui step depend on what the ui step creates; the runner executes those itself.
             let afterUi = false;
@@ -2793,7 +2825,23 @@ export class Engine extends EventEmitter {
                     lines.push(`${s.id} seed ${i + 1}: run it yourself after the ui steps — ONE Bash call with the exact command from the scenario's seed list`);
                     continue;
                 }
-                await runOne(`${s.id} seed ${i + 1}`, fillQaVars(step.slice(m[0].length), qaVars));
+                steps.push({ label: `${s.id} seed ${i + 1}`, cmd: fillQaVars(step.slice(m[0].length), qaVars) });
+            }
+        }
+        for (const unit of planSeedUnits(steps)) {
+            if (unit.kind === "plain") {
+                await runOne(unit.label, unit.cmd);
+                continue;
+            }
+            if (unit.items.length === 1) {
+                await runOne(unit.items[0]!.label, unit.items[0]!.cmd);
+                continue;
+            }
+            const results = await this.runDjangoBatch(task, env, unit.prefix, unit.items, "run");
+            for (const [i, r] of results.entries()) {
+                log.push(`### ${r.label}\n$ ${unit.items[i]!.cmd}`);
+                log.push(r.ok ? r.output || "(no output)" : `${r.output}\nFAILED: ${r.error}`.trim());
+                lines.push(r.ok ? `${r.label}: OK${r.output ? ` — ${r.output.split("\n").slice(-1)[0]!.slice(0, 120)}` : ""}` : `${r.label}: FAILED — ${r.error.slice(0, 300)}`);
             }
         }
         writeFileSync(logPath, `${log.join("\n\n")}\n`);
@@ -3394,7 +3442,7 @@ export class Engine extends EventEmitter {
         return candidates.find((a) => !this.exhausted(a.id)) ?? null;
     }
 
-    private onRunClosed(taskId: string, runId: string, def: StageDef, account: AccountRow, outcome: RunOutcome, opts: DispatchOpts): void {
+    private async onRunClosed(taskId: string, runId: string, def: StageDef, account: AccountRow, outcome: RunOutcome, opts: DispatchOpts): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) return;
         if (task.status === "stopped") {
@@ -3418,7 +3466,7 @@ export class Engine extends EventEmitter {
         // The agent handed a decision to the human (questions.json written by this run, no valid output): park the task
         // until the answers arrive; the same session is then resumed with them.
         const asked = this.questionsAskedDuringRun(taskId, runId);
-        if (asked && !(def.contract && def.outputFile && this.outputWrittenDuringRun(taskId, def.outputFile, runId) && this.validateOutput(taskId, def).ok)) {
+        if (asked && !(def.contract && def.outputFile && this.outputWrittenDuringRun(taskId, def.outputFile, runId) && (await this.validateOutput(taskId, def)).ok)) {
             finish("blocked", `asked the human ${asked.questions.length} question(s)`);
             this.parkOnQuestions(taskId, runId, def, asked, opts);
             return;
@@ -3429,7 +3477,7 @@ export class Engine extends EventEmitter {
             // the validation error, not a "stopped before writing" message that hides it (INV-132, 2026-09-17: design.md
             // only lacked bold lead-ins, and two cap-hit runs reported it as never written).
             if (def.contract && def.outputFile && this.outputWrittenDuringRun(taskId, def.outputFile, runId)) {
-                const validation = this.validateOutput(taskId, def);
+                const validation = await this.validateOutput(taskId, def);
                 if (validation.ok) {
                     finish("done", `ended with ${outcome.result?.subtype ?? `exit ${outcome.exitCode}`} after writing the output`, JSON.stringify(validation.data));
                     this.afterStage(taskId, def, validation.data);
@@ -3460,7 +3508,7 @@ export class Engine extends EventEmitter {
                 this.retryContract(taskId, def, opts, `${def.outputFile} was not written by this run — it still describes the previous fix. This run is about the check(s) named in the instructions above: make the fix, commit it, then write ${def.outputFile} fresh with what you did.`, finish);
                 return;
             }
-            const validation = this.validateOutput(taskId, def);
+            const validation = await this.validateOutput(taskId, def);
             if (!validation.ok) {
                 this.retryContract(taskId, def, opts, validation.error, finish);
                 return;
@@ -3580,7 +3628,7 @@ export class Engine extends EventEmitter {
         return statSync(path).mtimeMs >= new Date(run.started_at).getTime() - 1000;
     }
 
-    private validateOutput(taskId: string, def: StageDef): { ok: true; data: unknown } | { ok: false; error: string } {
+    private async validateOutput(taskId: string, def: StageDef): Promise<{ ok: true; data: unknown } | { ok: false; error: string }> {
         const path = join(this.taskDir(taskId), def.outputFile!);
         if (!existsSync(path)) return { ok: false, error: `${def.outputFile} was not written` };
         let raw: unknown;
@@ -3594,7 +3642,7 @@ export class Engine extends EventEmitter {
         if (def.stage === "design_proposal") {
             const md = this.designMdProblems(taskId);
             if (md) return { ok: false, error: md };
-            const seeds = this.seedDryRunProblems(taskId, parsed.data as DesignResult);
+            const seeds = await this.seedDryRunProblems(taskId, parsed.data as DesignResult);
             if (seeds) return { ok: false, error: seeds };
             const contract = qaContractProblems((parsed.data as DesignResult).qa ?? []);
             if (contract) return { ok: false, error: contract };
@@ -3620,17 +3668,21 @@ export class Engine extends EventEmitter {
     // contract here, when the agent can still fix it, instead of blocking the QA pass. Rows the seed depends on may
     // not exist yet (a ui: step creates them), so only SQL errors count; a database that is not reachable is logged and
     // ignored — that is an environment matter, not the design's.
-    private seedDryRunProblems(taskId: string, design: DesignResult): string | null {
+    private async seedDryRunProblems(taskId: string, design: DesignResult): Promise<string | null> {
         const task = this.getTask(taskId);
         if (!task) return null;
         const env = this.env(task.env_id);
         const cwd = task.worktree_path ?? env.path;
         const problems: string[] = [];
+        // Placeholders resolve to harmless values for the dry run; the Django steps roll back anyway.
+        const dryVars: QaVars = { beUrl: "http://localhost:0", feUrl: "http://localhost:0", appUrl: "http://localhost:0", qaPass: "dryrun" };
+        const django: Array<{ label: string; prefix: string; code: string }> = [];
         for (const s of design.qa ?? []) {
-            (s.seed ?? []).forEach((step, i) => {
+            const all = [...(s.teardown ?? []).map((step, i) => ({ step, label: `${s.id} teardown ${i + 1}` })), ...(s.seed ?? []).map((step, i) => ({ step, label: `${s.id} seed ${i + 1}` }))];
+            for (const { step, label } of all) {
                 const m = /^\s*(shell|sql)\s*:\s*/i.exec(step);
-                if (!m) return;
-                const cmd = step.slice(m[0].length);
+                if (!m) continue;
+                const cmd = fillQaVars(step.slice(m[0].length), dryVars);
                 // An interpreter called bare in command position (`cd backend && python manage.py …`) must exist on the
                 // orchestrator's PATH; this host has python3 and `poetry run python` but no `python` (INV-130's S2 seed
                 // failed in Manual QA with "python: command not found"). Checked with the same login shell the seed runs in.
@@ -3638,26 +3690,47 @@ export class Engine extends EventEmitter {
                 if (bare) {
                     const interp = bare[1]!;
                     try {
-                        execFileSync("bash", loginShellArgs(`command -v ${interp}`), { cwd, env: loginShellEnv(parseEnvVars(env.env_vars)), timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
+                        await execFileAsync("bash", loginShellArgs(`command -v ${interp}`), { cwd, env: loginShellEnv(parseEnvVars(env.env_vars)), timeout: 10_000 });
                     } catch {
-                        problems.push(`${s.id} seed ${i + 1} runs \`${interp}\` directly, which is not on the orchestrator's PATH — invoke it the way the repository's own commands do (\`poetry run ${interp} …\`, \`uv run ${interp} …\`, \`npx …\`)`);
+                        problems.push(`${label} runs \`${interp}\` directly, which is not on the orchestrator's PATH — invoke it the way the repository's own commands do (\`poetry run ${interp} …\`, \`uv run ${interp} …\`, \`npx …\`)`);
                     }
                 }
-                if (!/\bpsql\b/.test(cmd) || /<[a-z ]+>/i.test(cmd)) return;
+                const unit = planSeedUnits([{ label, cmd }])[0];
+                if (unit?.kind === "django") {
+                    django.push({ label, prefix: unit.prefix, code: unit.items[0]!.code });
+                    continue;
+                }
+                if (!/\bpsql\b/.test(cmd) || /<[a-z ]+>/i.test(cmd)) continue;
                 const dry = wrapPsqlInRollback(cmd);
-                if (dry === cmd) return;
+                if (dry === cmd) continue;
                 try {
-                    execFileSync("bash", loginShellArgs(dry), { cwd, env: loginShellEnv(parseEnvVars(env.env_vars)), timeout: 60_000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+                    await execFileAsync("bash", loginShellArgs(dry), { cwd, env: loginShellEnv(parseEnvVars(env.env_vars)), timeout: 60_000, maxBuffer: 1024 * 1024 });
                 } catch (e) {
-                    const err = e as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+                    const err = e as { stderr?: string; stdout?: string; message?: string };
                     const text = String(err.stderr ?? err.stdout ?? err.message ?? e);
                     const sqlErr = /ERROR:\s+(.+)/.exec(text);
-                    if (sqlErr) problems.push(`${s.id} seed ${i + 1}: the database rejects this SQL — ${sqlErr[1]!.trim().slice(0, 200)}`);
-                    else console.warn(`[stagehand] seed dry-run skipped for ${task.ticket_id} ${s.id} seed ${i + 1}: ${text.trim().split("\n").slice(-1)[0]?.slice(0, 160)}`);
+                    if (sqlErr) problems.push(`${label}: the database rejects this SQL — ${sqlErr[1]!.trim().slice(0, 200)}`);
+                    else console.warn(`[stagehand] seed dry-run skipped for ${task.ticket_id} ${label}: ${text.trim().split("\n").slice(-1)[0]?.slice(0, 160)}`);
                 }
-            });
+            }
         }
-        return problems.length ? `seed steps must run against the real schema (each psql seed is dry-run inside BEGIN…ROLLBACK): ${problems.join("; ")} — check the table's columns (\\d <table>) and the models, then fix the seed text` : null;
+        // Django-shell steps: one process per distinct prefix, every step inside transaction.atomic() and rolled back
+        // — an ImportError, a missing model or field, a wrong keyword surfaces here (INV-133's S4 seed imported a
+        // model that only exists after the implementation; INV-136's seeds created a fixed sku twice).
+        const byPrefix = new Map<string, SeedItem[]>();
+        for (const d of django) byPrefix.set(d.prefix, [...(byPrefix.get(d.prefix) ?? []), { label: d.label, code: d.code }]);
+        for (const [prefix, items] of byPrefix) {
+            const results = await this.runDjangoBatch(task, env, prefix, items, "dryrun");
+            for (const r of results) {
+                if (r.ok) continue;
+                if (/did not start/.test(r.error)) {
+                    console.warn(`[stagehand] Django seed dry-run skipped for ${task.ticket_id}: ${r.error.slice(0, 200)}`);
+                    break;
+                }
+                problems.push(`${r.label}: ${r.error.slice(0, 240)}`);
+            }
+        }
+        return problems.length ? `seed and teardown steps must run against the real code and schema (psql steps are dry-run inside BEGIN…ROLLBACK, Django-shell steps inside transaction.atomic() and rolled back): ${problems.join("; ")} — a step may only use models, fields and functions that exist on the base branch (add feature-only records with getattr / try-import), check the table's columns (\\d <table>) and the models, then fix the step text` : null;
     }
 
     private designMdProblems(taskId: string): string | null {
