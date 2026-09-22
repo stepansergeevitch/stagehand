@@ -251,8 +251,12 @@ export const cdpNewTab = (port: number, url: string): Promise<CdpTab> => cdpGet<
 // front — CDP activation raises the whole window to the top of the screen, which must not happen every few seconds.
 export const activateCloneTab = async (port: number, urlPrefix: string): Promise<boolean> => {
     try {
+        // Always activate the newest tab on the origin (idempotent). The copy starts with the app URL as its first
+        // tab and the extension makes its own tab for the runner; an early tick used to activate the first app tab
+        // while the runner's tab was still blank, and a later "newest app tab is already first" shortcut never
+        // re-activated the runner's tab — it stayed in the background, document hidden, pickers empty (INV-133 S1/S2,
+        // 2026-09-23). /json lists the newest target first.
         const tabs = await cdpTabs(port);
-        if (tabs[0]?.url.startsWith(urlPrefix)) return true;
         const tab = tabs.find((t) => t.url.startsWith(urlPrefix));
         if (!tab) return false;
         await cdpActivate(port, tab.id);
