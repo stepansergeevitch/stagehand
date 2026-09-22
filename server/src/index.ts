@@ -953,7 +953,8 @@ app.post("/api/server/restart", async (c) => {
     // The pane normally runs scripts/serve.sh, which starts the server again after Ctrl-C by itself; a pane without
     // that loop gets the start command.
     const command = cfg.server.startCommand ?? `cd ${REPO_ROOT} && scripts/serve.sh`;
-    const script = `cd /; sleep 1; tmux send-keys -t ${JSON.stringify(session)} C-c; sleep 3; pgrep -f 'scripts/serve.sh' >/dev/null || tmux send-keys -t ${JSON.stringify(session)} ${JSON.stringify(command)} Enter`;
+    // "[s]cripts": the pattern must not match this detached shell, whose own command line contains it.
+    const script = `cd /; sleep 1; tmux send-keys -t ${JSON.stringify(session)} C-c; sleep 3; pgrep -f '[s]cripts/serve.sh' >/dev/null || tmux send-keys -t ${JSON.stringify(session)} ${JSON.stringify(command)} Enter`;
     const child = spawn("sh", ["-c", script], { detached: true, stdio: "ignore" });
     child.unref();
     console.log(`[stagehand] restart requested${body.force ? " (forced)" : ""} — tmux ${session}`);

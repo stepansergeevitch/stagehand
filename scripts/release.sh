@@ -84,8 +84,9 @@ fi
 say "restarting the server in tmux $TMUX_SESSION (detached; a caller that runs under the server ends here — the API answers again in ~10 s)"
 LOG="${STAGEHAND_HOME:-$HOME/.stagehand}/release.log"
 # Ctrl-C ends the current server; serve.sh (when the pane runs it) starts the next one by itself. A pane without the
-# loop (older setup, or the loop was stopped) gets the start command.
-RESTART="cd /; tmux send-keys -t '$TMUX_SESSION' C-c; sleep 3; pgrep -f 'scripts/serve.sh' >/dev/null || tmux send-keys -t '$TMUX_SESSION' \"$START_CMD\" Enter; for i in \$(seq 1 60); do sleep 1; curl -sf '$API/api/health' >/dev/null && { echo \"\$(date '+%H:%M:%S') release: server up @ $after\"; exit 0; }; done; echo \"\$(date '+%H:%M:%S') release: the server did not answer within 60 s — tmux attach -t $TMUX_SESSION\"; exit 6"
+# loop (older setup, or the loop was stopped) gets the start command. The bracket in the pgrep pattern keeps it from
+# matching this very shell, whose command line contains the pattern.
+RESTART="cd /; tmux send-keys -t '$TMUX_SESSION' C-c; sleep 3; pgrep -f '[s]cripts/serve.sh' >/dev/null || tmux send-keys -t '$TMUX_SESSION' \"$START_CMD\" Enter; for i in \$(seq 1 60); do sleep 1; curl -sf '$API/api/health' >/dev/null && { echo \"\$(date '+%H:%M:%S') release: server up @ $after\"; exit 0; }; done; echo \"\$(date '+%H:%M:%S') release: the server did not answer within 60 s — tmux attach -t $TMUX_SESSION\"; exit 6"
 perl -MPOSIX -e 'POSIX::setsid(); open(STDIN, "<", "/dev/null"); open(STDOUT, ">>", $ARGV[0]); open(STDERR, ">&", STDOUT); exec("sh", "-c", $ARGV[1]) or die "exec: $!";' "$LOG" "$RESTART" &
 disown 2>/dev/null || true
 # When this process survives the restart (a human's terminal), report the outcome here as well.
