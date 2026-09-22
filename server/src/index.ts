@@ -19,6 +19,7 @@ import { mimeOf } from "./tickets.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
 import { recordUsage, taskUsage, usageReport, windowShares } from "./usage.js";
+import { timingReport } from "./timing.js";
 import { type ResultEvent } from "./claude/runner.js";
 import { desktopNotifier, notify } from "./notify.js";
 import { jevProbe } from "./jev.js";
@@ -770,6 +771,13 @@ app.get("/api/usage", (c) => {
     const days = Number(c.req.query("days") ?? "0");
     const since = days > 0 ? new Date(Date.now() - days * 86_400_000) : null;
     return c.json(usageReport(db, since));
+});
+// Time instead of cost: run wall time by stage / operation / day, and per task how long it worked, waited for the
+// human, waited for GitHub or sat rate-limited (timing.ts).
+app.get("/api/timing", (c) => {
+    const days = Number(c.req.query("days") ?? "0");
+    const since = days > 0 ? new Date(Date.now() - days * 86_400_000) : null;
+    return c.json(timingReport(db, since));
 });
 
 // ---------- tasks ----------

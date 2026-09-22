@@ -11,7 +11,7 @@ import { STAGE_ORDER, type Stage } from "./api";
 //   #/tasks/<taskId>/design[/<section>]            #/tasks/<taskId>/code[?repo=<dir>&scope=all|uncommitted|<sha>,<sha>]
 //   #/tasks/<taskId>/pr[/<repo>]                   #/tasks/<taskId>/comments[/<user|pr|automation>][?repo=<dir>]
 //   #/tasks/<taskId>/chat | ticket | cost
-//   #/sessions[/<sessionId>/<terminal|changes>]    #/analytics[?days=<n>]
+//   #/sessions[/<sessionId>/<terminal|changes>]    #/analytics[?days=<n>]   #/timing[?days=<n>]
 //   #/envs[/<envId>]                               #/config-dirs[/<dirId>]
 //   #/accounts                                     #/integrations
 // Older shapes (#/env/<id>, #/dir/<id>, #/dirs, #/managers) still parse and are rewritten to the current one.
@@ -42,6 +42,7 @@ export type Route =
     | { page: "tasks"; env?: string; task?: string; view?: TaskView; create?: boolean }
     | { page: "sessions"; session?: string; view?: "terminal" | "changes" }
     | { page: "analytics"; days?: number }
+    | { page: "timing"; days?: number }
     | { page: "envs"; env?: string }
     | { page: "config-dirs"; dir?: string }
     | { page: "accounts" }
@@ -95,6 +96,10 @@ export const parseRoute = (hash: string): Route => {
             const days = Number(q.get("days"));
             return { page: "analytics", ...(Number.isFinite(days) && days > 0 ? { days } : {}) };
         }
+        case "timing": {
+            const days = Number(q.get("days"));
+            return { page: "timing", ...(Number.isFinite(days) && days > 0 ? { days } : {}) };
+        }
         case "envs":
         case "env":
             return { page: "envs", ...(a ? { env: a } : {}) };
@@ -141,6 +146,7 @@ export const formatRoute = (r: Route): string => {
             return withQuery(r.create ? "#/tasks/new" : "#/tasks", { env: r.env });
         case "sessions": return r.session ? `#/sessions/${enc(r.session)}/${r.view ?? "terminal"}` : "#/sessions";
         case "analytics": return withQuery("#/analytics", { days: r.days ? String(r.days) : null });
+        case "timing": return withQuery("#/timing", { days: r.days ? String(r.days) : null });
         case "envs": return r.env ? `#/envs/${enc(r.env)}` : "#/envs";
         case "config-dirs": return r.dir ? `#/config-dirs/${enc(r.dir)}` : "#/config-dirs";
         default: return `#/${r.page}`;

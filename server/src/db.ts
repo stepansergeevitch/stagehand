@@ -671,7 +671,27 @@ CREATE TABLE IF NOT EXISTS prompter_messages (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS prompter_messages_session ON prompter_messages(session_id, created_at);
+CREATE TABLE IF NOT EXISTS task_events (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    ticket_id TEXT,
+    at TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS task_events_task ON task_events(task_id, at);
 `;
+
+// One row per change of a task's (stage, status) — the timing analytics read how long a task sat where (working,
+// waiting for the human, waiting for GitHub, rate-limited). No foreign key: rows outlive the task, with its ticket id.
+export interface TaskEventRow {
+    id: string;
+    task_id: string;
+    ticket_id: string | null;
+    at: string;
+    stage: string;
+    status: string;
+}
 
 // A round of questions the agent asked the human mid-stage (see prompts: questions.json → NEED_INPUT). `questions`
 // and `answers` are JSON; an unanswered round has answers = NULL and keeps the task in waiting_user.

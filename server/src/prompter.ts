@@ -409,6 +409,8 @@ export class Prompter {
             }
             case "analytics":
                 return { summary: "Analytics", context: `Page: Analytics — usage and cost, last ${r.days ?? 7} days.` };
+            case "timing":
+                return { summary: "Timing", context: `Page: Timing — how long runs and tasks take (per stage, operation, task, day; working vs waiting), last ${r.days ?? 7} days.` };
             case "envs": {
                 const env = r.env ? (this.db.prepare(`SELECT * FROM envs WHERE id = ?`).get(r.env) as EnvRow | undefined) : undefined;
                 return env

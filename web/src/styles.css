@@ -654,3 +654,7 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .prompter-tab-close:hover { opacity: 1; color: var(--bad, #c33); }
 .prompter-fab .chip { margin-left: 4px; }
 @keyframes prompter-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+.timing-task { cursor: pointer; }
+.timing-task:hover td { background: var(--accent-soft); }
+.timing-stages td { padding: 4px 8px 10px; }
+.timing-stages .chip { margin: 0 4px 4px 0; }

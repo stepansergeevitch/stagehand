@@ -94,6 +94,19 @@ export interface UsageBucket {
     fiveHour?: number | null; sevenDay?: number | null;
 }
 export interface WindowShare { accountId: string; accountName: string; window: string; usdPerWindow: number; samples: number }
+// Timing (timing.ts on the server): run wall time by stage / operation / day, and per task how long it worked,
+// waited for the human, waited for GitHub or sat rate-limited.
+export interface TimingBucket { key: string; label: string; sub?: string; runs: number; totalMs: number; avgMs: number; medianMs: number; p90Ms: number; maxMs: number }
+export interface TaskTiming {
+    key: string; label: string; sub?: string; done: boolean; status: string | null; stage: string | null; createdAt: string | null;
+    leadMs: number; agentMs: number; runs: number; workingMs: number; waitingHumanMs: number; waitingGithubMs: number; rateLimitedMs: number;
+    stagesMs: Record<string, number>; tracked: boolean;
+}
+export interface TimingReport {
+    since: string | null;
+    totals: { runs: number; agentMs: number; operationsMs: number; tasks: number; doneTasks: number; avgLeadMs: number; medianLeadMs: number; workingMs: number; waitingHumanMs: number; waitingGithubMs: number; rateLimitedMs: number };
+    byStage: TimingBucket[]; byOperation: TimingBucket[]; byStageState: TimingBucket[]; byTask: TaskTiming[]; byDay: TimingBucket[];
+}
 export interface UsageReport {
     since: string | null; totals: Omit<UsageBucket, "key" | "label">;
     byEnv: UsageBucket[]; byAccount: UsageBucket[]; byTask: UsageBucket[]; byStage: UsageBucket[]; byModel: UsageBucket[]; byDay: UsageBucket[];
@@ -423,6 +436,7 @@ export const api = {
         fetch(`/api/tasks/${id}?${new URLSearchParams({ ...(keepWorktree ? { worktree: "keep" } : {}), ...(force ? { force: "1" } : {}) })}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
     usage: (days: number) => fetch(`/api/usage?days=${days}`).then((r) => j<UsageReport>(r)),
+    timing: (days: number) => fetch(`/api/timing?days=${days}`).then((r) => j<TimingReport>(r)),
     taskUsage: (id: string) => fetch(`/api/tasks/${id}/usage`).then((r) => j<TaskUsage>(r)),
     patchSettings: (body: Partial<Omit<Settings, "models" | "notifications" | "prompter">> & { notifications?: Partial<Notifications>; prompter?: Partial<Omit<PrompterSettings, "seedWings">> }) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),

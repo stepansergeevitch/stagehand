@@ -22,6 +22,7 @@ export type Route =
     | { page: "tasks"; env?: string; task?: string; view?: TaskView; create?: boolean }
     | { page: "sessions"; session?: string; view?: "terminal" | "changes" }
     | { page: "analytics"; days?: number }
+    | { page: "timing"; days?: number }
     | { page: "envs"; env?: string }
     | { page: "config-dirs"; dir?: string }
     | { page: "accounts" }
@@ -66,6 +67,10 @@ export const parseRoute = (hash: string): Route => {
         case "analytics": {
             const days = Number(q.get("days"));
             return { page: "analytics", ...(Number.isFinite(days) && days > 0 ? { days } : {}) };
+        }
+        case "timing": {
+            const days = Number(q.get("days"));
+            return { page: "timing", ...(Number.isFinite(days) && days > 0 ? { days } : {}) };
         }
         case "envs":
         case "env":

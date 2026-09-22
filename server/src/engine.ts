@@ -886,6 +886,7 @@ export class Engine extends EventEmitter {
             .run(id, env.id, ref.id, ref.source, ref.url, model ?? this.cfg.defaultModel, sessionId, accountId ?? accountOrderOf(env)[0] ?? null, notes?.trim() || null, extras.length ? JSON.stringify(extras) : null, base, ts, ts);
         this.taskDir(id);
         const task = this.getTask(id)!;
+        this.recordTaskEvent(id, "research", "running");
         this.emit("task", task);
         this.fetchTicketThenResearch(id);
         return task;
@@ -1013,7 +1014,9 @@ export class Engine extends EventEmitter {
     private parkQueued(taskId: string, stage: Stage, opts: DispatchOpts): void {
         const { notes: _notes, servicesReady: _services, ...rest } = opts;
         this.queuedOpts.set(`${taskId}:${stage}`, rest);
+        const prev = this.getTask(taskId);
         this.db.prepare(`UPDATE tasks SET status = 'queued' WHERE id = ?`).run(taskId);
+        if (prev && (prev.status as string) !== "queued") this.recordTaskEvent(taskId, stage, "queued");
     }
 
     // ---------- the login callback hop, always on ----------
@@ -2144,7 +2147,9 @@ export class Engine extends EventEmitter {
     // ---------- stage machine ----------
 
     private setStage(taskId: string, stage: Stage): void {
+        const prev = this.getTask(taskId);
         this.db.prepare(`UPDATE tasks SET stage = ?, updated_at = ? WHERE id = ?`).run(stage, now(), taskId);
+        if (prev && prev.stage !== stage) this.recordTaskEvent(taskId, stage, prev.status);
     }
 
     private setTaskStatus(taskId: string, status: TaskStatus, line?: string): void {
@@ -2153,8 +2158,16 @@ export class Engine extends EventEmitter {
             .prepare(`UPDATE tasks SET status = ?, status_line = COALESCE(?, status_line), updated_at = ? WHERE id = ?`)
             .run(status, line ?? null, now(), taskId);
         const next = this.getTask(taskId);
+        if (next && prev && prev.status !== status) this.recordTaskEvent(taskId, next.stage, status);
         this.emit("task", next);
         if (next && prev && NEEDS_HUMAN.has(status) && (prev.status !== status || prev.status_line !== next.status_line)) this.notifyNeedsHuman(next);
+    }
+
+    // Every change of (stage, status) is one row for the timing analytics (timing.ts); "queued" is written straight
+    // into the row by parkQueued and lands here through the next status change.
+    private recordTaskEvent(taskId: string, stage: Stage, status: string): void {
+        const t = this.getTask(taskId);
+        this.db.prepare(`INSERT INTO task_events (id, task_id, ticket_id, at, stage, status) VALUES (?, ?, ?, ?, ?, ?)`).run(randomUUID(), taskId, t?.ticket_id ?? null, now(), stage, status);
     }
 
     // One push per distinct (task, status, line) within ten minutes: the human learns once that a task waits on them.

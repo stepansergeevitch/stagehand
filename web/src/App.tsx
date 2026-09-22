@@ -11,6 +11,7 @@ import { ConfigDirPage } from "./ConfigDirPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
 import { Dashboard, needsAttention } from "./Dashboard";
 import { Analytics } from "./Analytics";
+import { Timing } from "./Timing";
 import { SessionsPage } from "./SessionsPage";
 import { storage } from "./storage";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -23,6 +24,7 @@ const NAV: { id: Page; label: string; hint: string }[] = [
     { id: "tasks", label: "Tasks", hint: "Tasks in the selected environment" },
     { id: "sessions", label: "Sessions", hint: "Free-form claude sessions in an environment, with the account and worktree of your choice" },
     { id: "analytics", label: "Analytics", hint: "Token and cost usage by environment, task, account" },
+    { id: "timing", label: "Timing", hint: "How long runs and tasks take: by stage, operation, task, day; working vs waiting" },
     { id: "envs", label: "Environments", hint: "Repositories, services, which config dir and account they use" },
     { id: "config-dirs", label: "Config dirs", hint: "Claude config dirs: skills, hooks, rules, Chrome" },
     { id: "accounts", label: "AI accounts", hint: "Provider logins (tokens), usage, failover" },
@@ -340,6 +342,14 @@ export const App = () => {
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
                             <ErrorBoundary label="Analytics"><Analytics days={route.page === "analytics" ? route.days : undefined} onDays={(d) => navigate({ page: "analytics", days: d })} onError={setError} /></ErrorBoundary>
+                        </main>
+                    </div>
+                )}
+                {page === "timing" && (
+                    <div className="main page">
+                        <main className="detail">
+                            {error && <div className="blocked-box">{error}</div>}
+                            <ErrorBoundary label="Timing"><Timing days={route.page === "timing" ? route.days : undefined} onDays={(d) => navigate({ page: "timing", days: d })} onError={setError} /></ErrorBoundary>
                         </main>
                     </div>
                 )}
