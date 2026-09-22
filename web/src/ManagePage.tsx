@@ -357,10 +357,11 @@ const NotificationsCard = ({ settings, onChanged, onError }: { settings: Setting
 // own MemPalace (~/.stagehand/prompter); this card picks the account and model, the idle timeout, and seeds the palace.
 const PrompterCard = ({ settings, accounts, onChanged, onError }: { settings: Settings; accounts: Account[]; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
     // A server older than this UI (between a deploy and its restart) has no prompter settings yet.
-    const p: PrompterSettings = settings.prompter ?? { accountId: null, model: "fable", idleMinutes: 240, farewell: true, maxTurns: 40, seedFrom: "", seedWings: [] };
+    const p: PrompterSettings = settings.prompter ?? { accountId: null, model: "fable", idleHours: 24, purgeDays: 7, farewell: true, maxTurns: 40, seedFrom: "", seedWings: [] };
     const [status, setStatus] = useState<PrompterStatus | null>(null);
     const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
-    const [idle, setIdle] = useState(String(p.idleMinutes));
+    const [idle, setIdle] = useState(String(p.idleHours));
+    const [purge, setPurge] = useState(String(p.purgeDays));
     const [busy, setBusy] = useState(false);
     const refresh = async () => setStatus(await api.prompterStatus().catch(() => null));
     useEffect(() => {
@@ -379,7 +380,7 @@ const PrompterCard = ({ settings, accounts, onChanged, onError }: { settings: Se
     return (
         <section className="card manager">
             <h2>Prompter <TypeChip type="assistant" /> {status ? (status.ready ? <span className="chip ok">ready</span> : <span className="chip bad">not ready</span>) : null}{status && status.open > 0 && <span className="chip">{status.open} open chat{status.open === 1 ? "" : "s"}</span>}</h2>
-            <p className="field-hint">The assistant in the bottom-right corner. It runs headless on a token account, in its own config dir with its own MemPalace under <code>{status?.home ?? "~/.stagehand/prompter"}</code>; every chat window is a fresh session and the palace is its memory between chats. It sees the current page (the URL) with every message and acts through the local API. Usage is recorded in Analytics as kind <code>prompter</code>.</p>
+            <p className="field-hint">The assistant in the bottom-right corner. It runs headless on a token account, in its own config dir with its own MemPalace under <code>{status?.home ?? "~/.stagehand/prompter"}</code>; every chat is a session of its own (several can be open at once) and the palace is its memory between chats. It sees the current page (the URL) with every message and acts through the local API. Usage is recorded in Analytics as kind <code>prompter</code>.</p>
             {status && !status.ready && <div className="blocked-box">{status.reason}</div>}
             <div className="kv">
                 <b>AI account</b>
@@ -398,8 +399,12 @@ const PrompterCard = ({ settings, accounts, onChanged, onError }: { settings: Se
                 </span>
                 <b>End an idle chat after</b>
                 <span>
-                    <input value={idle} onChange={(e) => setIdle(e.target.value)} onBlur={() => { const n = Number(idle); if (Number.isFinite(n) && n >= 1 && n !== p.idleMinutes) void save({ idleMinutes: Math.round(n) }); }} style={{ width: 80 }} /> minutes without an open window
-                    <span className="field-hint">A server restart never ends a chat; the window re-attaches and the timer starts again.</span>
+                    <input value={idle} onChange={(e) => setIdle(e.target.value)} onBlur={() => { const n = Number(idle); if (Number.isFinite(n) && n > 0 && n !== p.idleHours) void save({ idleHours: n }); }} style={{ width: 80 }} /> hours without activity (a message, or an open window)
+                    <span className="field-hint">Several chats can be open at once (the window's session strip). A server restart never ends a chat: the window re-attaches, and a turn that died with the server is sent again.</span>
+                </span>
+                <b>Remove closed chats after</b>
+                <span>
+                    <input value={purge} onChange={(e) => setPurge(e.target.value)} onBlur={() => { const n = Number(purge); if (Number.isFinite(n) && n > 0 && n !== p.purgeDays) void save({ purgeDays: n }); }} style={{ width: 80 }} /> days (messages and per-turn logs)
                 </span>
                 <b>Farewell turn</b>
                 <span>

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -22,9 +22,11 @@ import { STAGE_DEFS } from "./stages/registry.js";
 //   ~/.stagehand/prompter/.mcp.json   = the mempalace MCP server, pointed at the folder above
 //   ~/.stagehand/prompter/logs/       = one stream-json event log per turn
 //
-// Every chat window is a fresh claude session (first turn --session-id, later turns --resume); the palace is the only
-// memory between chats. A session ends when the window closes or when nothing pinged it for `idleMinutes`; before it
-// ends, one short farewell turn asks it to file what is not filed yet.
+// Every chat is a claude session of its own (first turn --session-id, later turns --resume); the palace is the only
+// memory between chats. Several chats can be open at once (the widget's session strip); a chat ends when the human
+// closes it or when it saw no activity for `idleHours` (a message, or an open window's ping); before it ends, one
+// short farewell turn asks it to file what is not filed yet. Closed chats are removed after `purgeDays`. A server
+// restart ends no chat: a turn that died with the server is sent again when the server is back.
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -40,6 +42,8 @@ export interface PrompterSessionRow {
     pinged_at: string;
     closed_at: string | null;
     turns: number;
+    // The first message, trimmed — the chat's name in the widget's session strip.
+    title: string | null;
 }
 export interface PrompterMessageRow {
     id: string;
@@ -60,6 +64,8 @@ export type PrompterEvent =
     | { sessionId: string; kind: "queued"; message: PrompterMessageRow }
     | { sessionId: string; kind: "removed"; messageId: string }
     | { sessionId: string; kind: "turn"; messageIds: string[] }
+    // The session list changed (a chat was created or named): widgets re-read GET /sessions.
+    | { sessionId: string; kind: "updated" }
     | { sessionId: string; kind: "closed" };
 
 export class Prompter {
@@ -176,8 +182,9 @@ export class Prompter {
         const ts = now();
         const id = randomUUID();
         this.db
-            .prepare(`INSERT INTO prompter_sessions (id, claude_session_id, model, account_id, created_at, last_at, pinged_at, closed_at, turns) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0)`)
+            .prepare(`INSERT INTO prompter_sessions (id, claude_session_id, model, account_id, created_at, last_at, pinged_at, closed_at, turns, title) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL)`)
             .run(id, randomUUID(), model?.trim() || this.cfg.prompter.model || null, acc?.id ?? null, ts, ts, ts);
+        this.emit({ sessionId: id, kind: "updated" });
         return this.session(id)!;
     }
 
@@ -194,6 +201,11 @@ export class Prompter {
         const ts = now();
         this.db.prepare(`INSERT INTO prompter_messages (id, session_id, role, text, path, created_at, state) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(id, sessionId, role, text, path, ts, state);
         this.db.prepare(`UPDATE prompter_sessions SET last_at = ?, pinged_at = ? WHERE id = ?`).run(ts, ts, sessionId);
+        if (role === "user") {
+            // The first message names the chat.
+            const r = this.db.prepare(`UPDATE prompter_sessions SET title = ? WHERE id = ? AND title IS NULL`).run(text.replace(/\s+/g, " ").trim().slice(0, 60), sessionId);
+            if (r.changes) this.emit({ sessionId, kind: "updated" });
+        }
         return { id, session_id: sessionId, role, text, path, created_at: ts, state };
     }
 
@@ -318,21 +330,60 @@ export class Prompter {
         this.emit({ sessionId: id, kind: "closed" });
     }
 
-    // Sessions nobody pinged for idleMinutes (the window closed without saying so, a laptop lid) are ended. A server
-    // restart never ends a chat: open sessions get a fresh idle timer, and the widget re-attaches with its session id
-    // (the conversation itself lives in claude's transcript and resumes with --resume).
+    // Chats with no activity for idleHours — no message and no ping from an open window — are ended; chats closed
+    // longer than purgeDays ago are removed with their messages and logs. A server restart never ends a chat: the
+    // widget re-attaches with its session id (the conversation itself lives in claude's transcript and resumes with
+    // --resume), and a turn that died with the server goes out again (resumeInterrupted).
     startReaper(): void {
         this.ensureHome();
         this.db.prepare(`UPDATE prompter_sessions SET pinged_at = ? WHERE closed_at IS NULL`).run(now());
         this.timer = setInterval(() => void this.reap(), 60_000);
         this.timer.unref();
+        setTimeout(() => this.resumeInterrupted(), 3_000).unref();
     }
     async reap(): Promise<void> {
-        const cutoff = Date.now() - this.cfg.prompter.idleMinutes * 60_000;
+        const cutoff = Date.now() - this.cfg.prompter.idleHours * 3_600_000;
         const stale = this.db.prepare(`SELECT * FROM prompter_sessions WHERE closed_at IS NULL`).all() as PrompterSessionRow[];
         for (const s of stale) {
             if (this.active.has(s.id)) continue;
-            if (new Date(s.pinged_at).getTime() < cutoff) await this.close(s.id);
+            const lastActivity = Math.max(new Date(s.pinged_at).getTime(), new Date(s.last_at).getTime());
+            if (lastActivity < cutoff) await this.close(s.id);
+        }
+        this.purge();
+    }
+
+    // Closed chats older than purgeDays: rows and per-turn logs go.
+    purge(): number {
+        const cutoff = new Date(Date.now() - this.cfg.prompter.purgeDays * 86_400_000).toISOString();
+        const old = this.db.prepare(`SELECT id FROM prompter_sessions WHERE closed_at IS NOT NULL AND closed_at < ?`).all(cutoff) as Array<{ id: string }>;
+        if (old.length === 0) return 0;
+        const logs = join(this.home, "logs");
+        const names = existsSync(logs) ? readdirSync(logs) : [];
+        for (const { id } of old) {
+            this.db.prepare(`DELETE FROM prompter_messages WHERE session_id = ?`).run(id);
+            this.db.prepare(`DELETE FROM prompter_sessions WHERE id = ?`).run(id);
+            for (const f of names) if (f.startsWith(`${id}-`)) rmSync(join(logs, f), { force: true });
+        }
+        console.log(`[prompter] ${old.length} closed chat(s) older than ${this.cfg.prompter.purgeDays} day(s) removed`);
+        return old.length;
+    }
+
+    // A turn that was running when the server went down left the human's message(s) without an answer: they are
+    // stacked again and go out as one turn now (claude may have seen part of them; a repeat is harmless).
+    resumeInterrupted(): void {
+        const open = this.listSessions();
+        for (const s of open) {
+            if (this.active.has(s.id)) continue;
+            const all = this.db.prepare(`SELECT * FROM prompter_messages WHERE session_id = ? ORDER BY created_at`).all(s.id) as PrompterMessageRow[];
+            let lastAnswer = -1;
+            all.forEach((m, i) => {
+                if (m.role !== "user") lastAnswer = i;
+            });
+            const trailing = all.slice(lastAnswer + 1).filter((m) => m.role === "user" && m.state === "sent");
+            if (trailing.length === 0) continue;
+            this.db.prepare(`UPDATE prompter_messages SET state = 'queued' WHERE id IN (${trailing.map(() => "?").join(",")})`).run(...trailing.map((m) => m.id));
+            console.log(`[prompter] chat ${s.id.slice(0, 8)}: ${trailing.length} message(s) had no answer when the server stopped — sending them again`);
+            this.flush(s.id);
         }
     }
 

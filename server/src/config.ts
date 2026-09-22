@@ -83,8 +83,10 @@ const ConfigSchema = z.object({
         .object({
             accountId: z.string().nullable().default(null),
             model: z.string().default("fable"),
-            // Minutes without a ping from an open chat window before a session is ended (a server restart resets it).
-            idleMinutes: z.number().int().default(240),
+            // Hours without activity (a message, or an open window's ping) before a chat is ended; closed chats and
+            // their logs are removed after purgeDays.
+            idleHours: z.number().default(24),
+            purgeDays: z.number().default(7),
             farewell: z.boolean().default(true),
             maxTurns: z.number().int().default(40),
             seedFrom: z.string().default(join(homedir(), "code", "northspyre", ".mempalace")),
@@ -143,7 +145,7 @@ const defaults = (): Config => ({
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_fix: null, helper: "sonnet" },
     stageRerunModels: { research: null, design_proposal: null, qa_baseline: null, implementation: null, manual_qa: null, pr_creation_review: null, pr_fix: null },
     operationModels: { pr_fix_ci: null, pr_fix_comments: null, chat: null, instruct: null, rebase: null, fix_service: null, git_edit: null },
-    prompter: { accountId: null, model: "fable", idleMinutes: 240, farewell: true, maxTurns: 40, seedFrom: join(homedir(), "code", "northspyre", ".mempalace"), seedWings: ["task-orchestrator=stagehand", "stagehand"] },
+    prompter: { accountId: null, model: "fable", idleHours: 24, purgeDays: 7, farewell: true, maxTurns: 40, seedFrom: join(homedir(), "code", "northspyre", ".mempalace"), seedWings: ["task-orchestrator=stagehand", "stagehand"] },
     server: { tmuxSession: "stagehand-server", startCommand: null },
     publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },
 });

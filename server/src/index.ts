@@ -907,7 +907,8 @@ app.post("/api/tasks/:id/cleanup", async (c) => {
 app.get("/api/prompter/status", (c) => c.json(prompter.status()));
 app.post("/api/prompter/seed", async (c) => c.json(await prompter.seed()));
 app.get("/api/prompter/describe", (c) => c.json(prompter.describe(c.req.query("path") ?? "#/dashboard")));
-app.get("/api/prompter/sessions", (c) => c.json(prompter.listSessions()));
+// The open chats (newest first), each with whether a turn is running — the widget's session strip.
+app.get("/api/prompter/sessions", (c) => c.json(prompter.listSessions().map((s) => ({ ...s, busy: prompter.busy(s.id) }))));
 app.post("/api/prompter/sessions", async (c) => {
     const body = json(z.object({ model: z.string().nullable().optional() }), await c.req.json().catch(() => ({})));
     try {
@@ -1024,7 +1025,8 @@ app.patch("/api/settings", async (c) => {
                 .object({
                     accountId: z.string().nullable().optional(),
                     model: z.string().optional(),
-                    idleMinutes: z.number().int().min(1).optional(),
+                    idleHours: z.number().min(0.1).optional(),
+                    purgeDays: z.number().min(0.1).optional(),
                     farewell: z.boolean().optional(),
                     maxTurns: z.number().int().min(1).optional(),
                     seedFrom: z.string().optional(),
@@ -1051,7 +1053,8 @@ app.patch("/api/settings", async (c) => {
         const p = body.prompter;
         if (p.accountId !== undefined) cfg.prompter.accountId = p.accountId;
         if (p.model !== undefined) cfg.prompter.model = p.model.trim() || "fable";
-        if (p.idleMinutes !== undefined) cfg.prompter.idleMinutes = p.idleMinutes;
+        if (p.idleHours !== undefined) cfg.prompter.idleHours = p.idleHours;
+        if (p.purgeDays !== undefined) cfg.prompter.purgeDays = p.purgeDays;
         if (p.farewell !== undefined) cfg.prompter.farewell = p.farewell;
         if (p.maxTurns !== undefined) cfg.prompter.maxTurns = p.maxTurns;
         if (p.seedFrom !== undefined && p.seedFrom.trim()) cfg.prompter.seedFrom = p.seedFrom.trim();

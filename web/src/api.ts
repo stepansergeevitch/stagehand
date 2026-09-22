@@ -118,7 +118,7 @@ export const windowPct = (shares: WindowShare[], accountId: string | null, windo
 export const pct = (v: number | null | undefined): string => (v == null ? "—" : v >= 10 ? `${Math.round(v)}%` : v >= 1 ? `${v.toFixed(1)}%` : `${v.toFixed(2)}%`);
 export interface Notifications { macos: boolean; ntfyServer: string; ntfyTopic: string | null; ntfyToken: string | null; baseUrl: string | null; localBaseUrl: string }
 // Prompter, the in-app assistant: which token account runs it, its default model, when an idle chat ends.
-export interface PrompterSettings { accountId: string | null; model: string; idleMinutes: number; farewell: boolean; maxTurns: number; seedFrom: string; seedWings: string[] }
+export interface PrompterSettings { accountId: string | null; model: string; idleHours: number; purgeDays: number; farewell: boolean; maxTurns: number; seedFrom: string; seedWings: string[] }
 // Which model a run gets: stageModels for a stage's first run on a task, stageRerunModels for every later run of it,
 // operationModels for the side runs (PR fixes by cause, chat, Do, rebase, service fix, history edit). "" / null = fallback.
 export type ModelStage = "research" | "design_proposal" | "qa_baseline" | "implementation" | "manual_qa" | "pr_creation_review" | "pr_fix";
@@ -134,7 +134,7 @@ export interface Settings {
     // Absent from a server older than this UI.
     prompter?: PrompterSettings;
 }
-export interface PrompterSession { id: string; claude_session_id: string; model: string | null; account_id: string | null; created_at: string; last_at: string; pinged_at: string; closed_at: string | null; turns: number }
+export interface PrompterSession { id: string; claude_session_id: string; model: string | null; account_id: string | null; created_at: string; last_at: string; pinged_at: string; closed_at: string | null; turns: number; title: string | null; busy?: boolean }
 // state "queued": sent while a turn was running; goes out with the next turn and can be taken back into the input until then.
 export interface PrompterMessage { id: string; session_id: string; role: "user" | "assistant" | "system"; text: string; path: string | null; created_at: string; state: "sent" | "queued" }
 export interface PrompterStatus { home: string; configDir: string; account: string | null; model: string; open: number; seeded: { at: string; total: number; copied: number } | null; ready: boolean; reason: string | null }
@@ -428,6 +428,7 @@ export const api = {
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
     // Prompter, the in-app assistant.
     prompterStatus: () => fetch("/api/prompter/status").then((r) => j<PrompterStatus>(r)),
+    prompterSessions: () => fetch("/api/prompter/sessions").then((r) => j<PrompterSession[]>(r)),
     prompterSeed: () => post<{ ok: boolean; detail: string }>("/api/prompter/seed"),
     prompterDescribe: (path: string) => fetch(`/api/prompter/describe?path=${encodeURIComponent(path)}`).then((r) => j<{ summary: string; context: string }>(r)),
     prompterCreate: (model: string | null) => post<PrompterSession>("/api/prompter/sessions", { model }),

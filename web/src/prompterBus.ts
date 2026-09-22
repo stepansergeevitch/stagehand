@@ -10,6 +10,8 @@ export type PrompterEvent =
     | { sessionId: string; kind: "queued"; message: PrompterMessage }
     | { sessionId: string; kind: "removed"; messageId: string }
     | { sessionId: string; kind: "turn"; messageIds: string[] }
+    // The chat list changed (a chat was created or named): the widget re-reads it.
+    | { sessionId: string; kind: "updated" }
     | { sessionId: string; kind: "closed" };
 
 const listeners = new Set<(ev: PrompterEvent) => void>();
