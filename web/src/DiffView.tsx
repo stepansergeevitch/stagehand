@@ -293,6 +293,9 @@ const FileDiff = ({
     const [asking, setAsking] = useState<Set<string>>(new Set());
     const count = Object.values(comments).filter((c) => c.path === file.path).length;
     const placed = useMemo(() => placeAnchored(file, prior), [file, prior]);
+    // Draft comments are placed by line text like everything else: a draft saved in a commit slice carries the full
+    // diff's line number (see DiffView.handleChange), which is not this slice's numbering — and vice versa.
+    const drafts = useMemo(() => placeAnchored(file, Object.values(comments).filter((c) => c.path === file.path)), [file, comments]);
     const placedThreads = useMemo(() => placeAnchored(file, threads), [file, threads]);
     const priorCount = prior.filter((p) => p.path === file.path).length;
     const threadCount = Object.keys(placedThreads.byKey).length + placedThreads.outdated.length;
@@ -323,8 +326,15 @@ const FileDiff = ({
                     <button className="tiny" style={{ marginLeft: 8 }} disabled={expanding} onClick={() => { setExpanding(true); void onExpand(file.path).finally(() => setExpanding(false)); }}>{expanding ? "Loading…" : "Show anyway"}</button>
                 </div>
             )}
-            {(placed.outdated.length > 0 || placedThreads.outdated.length > 0) && (
+            {(placed.outdated.length > 0 || placedThreads.outdated.length > 0 || drafts.outdated.length > 0) && (
                 <div className="outdated">
+                    {drafts.outdated.map((c, i) => (
+                        <div key={`d${i}`} className="line-comment outdated-item">
+                            <b>💬 draft</b> <span className="chip">line not in this view</span> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
+                            <div>{c.text}</div>
+                            {canComment && <button className="tiny" onClick={() => onChange(commentKey(c), null)}>Delete</button>}
+                        </div>
+                    ))}
                     {placed.outdated.map((c, i) => (
                         <div key={i} className="line-comment prior outdated-item">
                             <b>{roundLabel(c)}</b> <span className="chip">outdated</span> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
@@ -345,7 +355,9 @@ const FileDiff = ({
                     {h.lines.map((l, li) => {
                         const anchor = lineAnchor(file.path, l);
                         const key = commentKey(anchor);
-                        const existing = comments[key];
+                        const existing = drafts.byKey[key]?.[0];
+                        // Edits and deletes address the draft under its stored key (its line number may come from another view).
+                        const existingKey = existing ? commentKey(existing) : key;
                         const thread = placedThreads.byKey[key];
                         const fullAnchor: MessageAnchor = { ...anchor, snippet: l.text };
                         return (
@@ -375,10 +387,10 @@ const FileDiff = ({
                                     <CommentEditor
                                         initial={existing?.text ?? ""}
                                         placeholder={canComment && canAsk ? "What should change here? — or a question for the agent (⌘/Ctrl+Enter saves the comment)" : canComment ? "What should change here?" : "Ask the agent about this line…"}
-                                        {...(canComment ? { onSave: (text: string) => { onChange(key, { ...anchor, snippet: l.text, text }); setEditing(null); } } : {})}
+                                        {...(canComment ? { onSave: (text: string) => { onChange(existingKey, { ...(existing ?? anchor), snippet: l.text, text }); setEditing(null); } } : {})}
                                         {...(canAsk ? { onAsk: (text: string) => void ask(key, fullAnchor, text) } : {})}
                                         onCancel={() => setEditing(null)}
-                                        {...(existing && canComment ? { onDelete: () => { onChange(key, null); setEditing(null); } } : {})}
+                                        {...(existing && canComment ? { onDelete: () => { onChange(existingKey, null); setEditing(null); } } : {})}
                                     />
                                 )}
                             </div>
@@ -477,6 +489,43 @@ export const DiffView = ({
         void src.diff(filterArg).then(setDiff).catch((e: Error) => setError(e.message));
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [src, refreshKey, filter]);
+    // The full diff (current file vs base) behind a commit slice: a comment saved in the slice is re-anchored to the
+    // full diff's line numbers, because `path:line` is what the review sends to the agent and what "All changes" shows.
+    const [fullDiff, setFullDiff] = useState<DiffResponse | null>(null);
+    useEffect(() => {
+        if (filter.kind === "all") {
+            setFullDiff(null);
+            return;
+        }
+        void src.diff(undefined).then(setFullDiff).catch(() => setFullDiff(null));
+    }, [src, refreshKey, filter.kind]);
+    const reanchor = (c: LineComment): LineComment => {
+        if (filter.kind === "all" || !fullDiff) return c;
+        const file = fullDiff.files.find((f) => f.path === c.path);
+        const want = c.snippet.trim();
+        const candidates = (file?.hunks ?? [])
+            .flatMap((h) => h.lines)
+            .filter((l) => l.text.trim() === want && (c.side === "old" ? l.type === "del" : l.type !== "del"))
+            .map((l) => lineAnchor(c.path, l).line);
+        if (candidates.length === 0) {
+            // The line is not part of the change vs base any more (a later commit rewrote it, or the slice removed a
+            // line the branch had added). Kept as written; the agent is told where it was seen.
+            const where = filter.kind === "commits" ? `commit ${filter.shas.map((s) => s.slice(0, 7)).join(",")}` : "the uncommitted changes";
+            return { ...c, text: `(on line ${c.line} of ${where}; the line is not in the current diff vs base) ${c.text}` };
+        }
+        const line = candidates.reduce((best, n) => (Math.abs(n - c.line) < Math.abs(best - c.line) ? n : best));
+        return { ...c, line };
+    };
+    const handleChange = (key: string, c: LineComment | null): void => {
+        if (!c) {
+            onChange(key, null);
+            return;
+        }
+        const next = reanchor(c);
+        const nextKey = commentKey(next);
+        if (nextKey !== key) onChange(key, null);
+        onChange(nextKey, next);
+    };
     // "Show anyway" on a collapsed file: fetch just that file and splice its hunks into the loaded diff.
     const expand = async (path: string): Promise<void> => {
         const one = await src.diff(filterArg, path).catch((e: Error) => { onError(e.message); return null; });
@@ -487,9 +536,9 @@ export const DiffView = ({
     const threadItems = useMemo(() => threadMessages(threads), [threads]);
     // The commit picker only offers this repository's commits — its shas mean nothing in another checkout.
     const repoCommits = branch.commits.filter((c) => c.repo === repo);
-    // Line comments anchor to line numbers of the full diff (the current file); a commit slice numbers lines differently.
-    // Questions match by the line's text, so they work in any view.
-    const commentsOn = canComment && filter.kind === "all";
+    // Comments and questions work in every view: both are placed by the line's text, and a comment saved in a commit
+    // slice is re-anchored to the full diff's line numbers (handleChange).
+    const commentsOn = canComment;
     const picker = <CommitPicker commits={repoCommits} uncommitted={branch.uncommitted} filter={filter} onChange={setFilter} />;
     const tabs = repos.length > 1 && (
         <div className="subtabs pr-repo-tabs">
@@ -526,9 +575,8 @@ export const DiffView = ({
                 <div className="diff-summary mono">
                     {picker}
                     {files.length} file{files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>
-                    {commentsOn && <span className="hint"> · tap a line to comment{canAsk ? " or ask" : ""}</span>}
+                    {commentsOn && <span className="hint"> · tap a line to comment{canAsk ? " or ask" : ""}{filter.kind !== "all" ? " (comments are kept against the current file's lines)" : ""}</span>}
                     {!commentsOn && canAsk && <span className="hint"> · tap a line to ask the agent about it</span>}
-                    {canComment && !commentsOn && <span className="hint"> · switch to All changes to comment on lines</span>}
                 </div>
                 {files.length === 0 && <div className="empty">{diff.filtered ? "Nothing in this selection." : `No changes against ${diff.base} yet.`}</div>}
                 {!diff.filtered && (() => {
@@ -549,7 +597,7 @@ export const DiffView = ({
                     <div key={gi} className="diff-group">
                         {diff.filtered && groups.length > 1 && <div className="diff-group-head mono">{g.label} · {g.files.length} file{g.files.length === 1 ? "" : "s"}</div>}
                         {g.files.map((f) => (
-                            <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} threads={threadItems} canComment={commentsOn} canAsk={canAsk} onChange={onChange} onAsk={onAsk} onExpand={expand} />
+                            <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} threads={threadItems} canComment={commentsOn} canAsk={canAsk} onChange={handleChange} onAsk={onAsk} onExpand={expand} />
                         ))}
                     </div>
                 ))}
