@@ -773,8 +773,12 @@ export class Engine extends EventEmitter {
         return b?.profileDir ? b : null;
     }
 
+    // Copies up for this account PLUS copies being prepared for it: preparation takes about a minute and is
+    // serialised, so without the second term every shard of a pass passed the cap before any copy was registered
+    // (five Chromes at once on 2026-09-23, host down to 58 MB free).
+    private readonly cloning = new Map<string, number>();
     private clonesOf(accountId: string): number {
-        let n = 0;
+        let n = this.cloning.get(accountId) ?? 0;
         for (const c of this.clones.values()) if (c.accountId === accountId) n++;
         return n;
     }
@@ -2845,7 +2849,9 @@ export class Engine extends EventEmitter {
                     return;
                 }
                 this.setTaskStatus(taskId, "running", `${def.label}${shard ? ` · ${shard.id}` : ""} · copying Chrome profile "${chromeBrowserLabel(cloneSource)}" for this run`);
+                this.cloning.set(chrome.account.id, (this.cloning.get(chrome.account.id) ?? 0) + 1);
                 void this.prepareClone(task, chrome.account, cloneSource, chrome.configDir, this.appUrlFor(task, env))
+                    .finally(() => this.cloning.set(chrome.account.id, Math.max(0, (this.cloning.get(chrome.account.id) ?? 1) - 1)))
                     .then((clone) => {
                         // A parallel dispatch of the same task (shard) may have prepared its own copy first: one copy per key.
                         if (this.clones.has(cloneKey)) void quitClone(clone);
