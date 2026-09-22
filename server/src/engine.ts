@@ -1479,12 +1479,9 @@ export class Engine extends EventEmitter {
         if (opts.removeWorktree && task.worktree_path && existsSync(task.worktree_path)) {
             if (env.cleanup_command) {
                 this.setTaskStatus(task.id, task.status, "cleanup · running the environment's cleanup command");
-                try {
-                    await runWorktreeSetup(task.worktree_path, env.path, env.cleanup_command, vars);
-                    done.push("cleanup command ran");
-                } catch (e) {
-                    skipped.push(`cleanup command failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
-                }
+                const error = await this.runCleanupCommand(task, env, vars);
+                if (error) skipped.push(`cleanup command failed: ${error}`);
+                else done.push("cleanup command ran");
             }
             if (task.branch) {
                 await removeWorktreeAndBranch(env, task.worktree_path, task.branch, vars).catch((e: unknown) => skipped.push(`worktree: ${String((e as Error).message ?? e).slice(0, 160)}`));
@@ -1496,6 +1493,19 @@ export class Engine extends EventEmitter {
         }
         rmSync(join(this.taskDir(task.id), "logs"), { recursive: true, force: true });
         return { done, skipped };
+    }
+
+    // Runs the env's cleanup command from the task's worktree (drop the per-task databases, free caches, …). Returns the
+    // error text when it failed, null when it ran. The command must be idempotent: it runs when the task reaches Done
+    // and again from "Clean up" / Delete before the worktree goes.
+    private async runCleanupCommand(task: TaskRow, env: EnvRow, vars: Record<string, string>): Promise<string | null> {
+        if (!env.cleanup_command || !task.worktree_path || !existsSync(task.worktree_path)) return null;
+        try {
+            await runWorktreeSetup(task.worktree_path, env.path, env.cleanup_command, vars);
+            return null;
+        } catch (e) {
+            return String((e as Error).message ?? e).slice(0, 160);
+        }
     }
 
     review(taskId: string, input: ReviewInput): void {
@@ -2199,6 +2209,12 @@ export class Engine extends EventEmitter {
                 this.onParentMerged(cur, env);
                 // Nothing needs the task's BE/FE (or components) once its PRs are merged — also the end of "keep services".
                 void this.services.stopAll(cur.id).catch((e: unknown) => console.warn(`[stagehand] stop services of merged ${cur.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+                // Nor its per-task databases and caches: run the env's cleanup command now instead of waiting for "Clean up"
+                // (DualEntry, 2026-09-22: 20 test-database clones of done and parked tasks sat on the shared Postgres).
+                // The worktree stays for the human; the command runs again, harmlessly, when they clean up or delete.
+                void this.runCleanupCommand(cur, env, parseEnvVars(env.env_vars)).then((error) => {
+                    if (error) this.addAgentNote(cur.id, `cleanup command failed after merge: ${error}`);
+                });
             }
             return set("done", "done", `merged · ${rows.map((r) => r.url).filter(Boolean).join(" ")}`);
         }
