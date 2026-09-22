@@ -781,19 +781,30 @@ export class Engine extends EventEmitter {
 
     // Copies the profile, starts a Chrome on the copy and waits until the copy's extension is listed as a connected
     // browser (the probe is the same `claude -p --chrome` round trip the shared-profile path pays for chromeVerified).
+    // Copies are prepared one at a time: three started together (INV-63's shards, 2026-09-22) had their probes overlap
+    // while the relay was still pairing, and none was recognised.
+    private cloneLock: Promise<unknown> = Promise.resolve();
     private async prepareClone(task: TaskRow, account: AccountRow, source: ChromeBrowser, configDir: string, url: string): Promise<ChromeClone> {
-        const port = await pickCdpPort(new Set([...this.clones.values()].map((c) => c.cdpPort)));
-        const slot = `${task.ticket_id.toLowerCase()}-${randomUUID().slice(0, 6)}`;
-        const bare = await cloneProfile(source.browser ?? "Google", source.profileDir!, slot, port);
-        const clone = await launchClone(bare, url, this.clones.size);
-        const usage = (res: ResultEvent) => recordUsage(this.db, { accountId: account.id, envId: task.env_id, taskId: task.id, runId: null, kind: "probe", stage: null }, res);
-        for (let i = 0; i < 4; i++) {
-            const r = await probeChrome(configDir, task.worktree_path ?? this.env(task.env_id).path, 1, usage);
-            if (r.browsers.some((b) => b.deviceId === clone.deviceId)) return clone;
-            await new Promise((res) => setTimeout(res, 3_000));
+        const previous = this.cloneLock;
+        let release: () => void = () => undefined;
+        this.cloneLock = new Promise<void>((r) => (release = r));
+        await previous.catch(() => undefined);
+        try {
+            const port = await pickCdpPort(new Set([...this.clones.values()].map((c) => c.cdpPort)));
+            const slot = `${task.ticket_id.toLowerCase()}-${randomUUID().slice(0, 6)}`;
+            const bare = await cloneProfile(source.browser ?? "Google", source.profileDir!, slot, port);
+            const clone = await launchClone(bare, url, this.clones.size);
+            const usage = (res: ResultEvent) => recordUsage(this.db, { accountId: account.id, envId: task.env_id, taskId: task.id, runId: null, kind: "probe", stage: null }, res);
+            for (let i = 0; i < 4; i++) {
+                const r = await probeChrome(configDir, task.worktree_path ?? this.env(task.env_id).path, 1, usage);
+                if (r.browsers.some((b) => b.deviceId === clone.deviceId)) return clone;
+                await new Promise((res) => setTimeout(res, 3_000));
+            }
+            await quitClone(clone);
+            throw new Error(`the copy's extension (${clone.deviceId.slice(0, 8)}…) did not connect as a browser within 4 probes`);
+        } finally {
+            release();
         }
-        await quitClone(clone);
-        throw new Error(`the copy's extension (${clone.deviceId.slice(0, 8)}…) did not connect as a browser within 4 probes`);
     }
 
     private async releaseClone(taskId: string): Promise<void> {
@@ -2850,7 +2861,9 @@ export class Engine extends EventEmitter {
             // One account = one Chrome profile = one extension bridge: while another task's browser run drives it, this
             // task waits — checked BEFORE the live probe below, because a probe against a Chrome that is mid-run can
             // fail and would then wrongly mark the account as not Chrome-capable (seen on INV-63 vs INV-130, 2026-09-17).
-            const chromeBusy = cloneSource ? null : this.runningBrowserRun(chrome.account.id, taskId);
+            // A shard without a copy of its own (cloning failed, or a shared profile) shares the one Chrome with every
+            // other browser run — its sibling shards included (INV-63, 2026-09-22: three shards drove one profile).
+            const chromeBusy = cloneSource ? null : this.runningBrowserRun(chrome.account.id, shard ? "" : taskId);
             if (chromeBusy) {
                 if (shard) {
                     this.shardDefer(shard);
@@ -2909,7 +2922,7 @@ export class Engine extends EventEmitter {
         // Headless stages run side by side up to the configured number per account (the only shared thing is the
         // account's rate-limit window). Browser stages are different: one account = one Chrome profile = one
         // extension bridge, so two of them at once would drive the same browser — they run one at a time per account.
-        const browserBusy = chromeNeeded && !this.clones.has(cloneKey) ? this.runningBrowserRun(account.id, taskId) : null;
+        const browserBusy = chromeNeeded && !this.clones.has(cloneKey) ? this.runningBrowserRun(account.id, shard ? "" : taskId) : null;
         if (browserBusy) {
             if (shard) {
                 this.shardDefer(shard);
