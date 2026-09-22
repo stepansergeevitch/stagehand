@@ -122,8 +122,8 @@ const probeChromeOnce = async (configDir: string, cwd: string): Promise<ChromePr
         "Use ToolSearch to load mcp__claude-in-chrome__list_connected_browsers and mcp__claude-in-chrome__tabs_context_mcp. " +
         "Call list_connected_browsers once and remember its JSON. Then call tabs_context_mcp once; if it throws an error (for example \"extension is not connected\"), wait 5 seconds and call it once more. " +
         "Never call AskUserQuestion, select_browser or switch_browser. " +
-        "Success means tabs_context_mcp returned without an error — an empty tab list or no tab group counts as success. " +
-        'Reply with exactly one line: CHROME_OK <the JSON array from list_connected_browsers> on success, otherwise CHROME_FAIL <the error text>.';
+        "Success means tabs_context_mcp returned without an error — an empty tab list or no tab group counts as success, and so does an error that only says several Chrome browsers are connected and none has been selected (the bridge answers; a later run selects one). " +
+        'Reply with exactly one line: CHROME_OK <the JSON array from list_connected_browsers> on success, otherwise CHROME_FAIL <the error text> <the JSON array from list_connected_browsers>.';
     try {
         const stdout = await runClaudeJson(
             ["-p", prompt, "--chrome", "--output-format", "json", "--permission-mode", "auto", "--max-turns", "8", "--no-session-persistence", "--model", "sonnet"],
@@ -134,7 +134,9 @@ const probeChromeOnce = async (configDir: string, cwd: string): Promise<ChromePr
         const result = parseResult(stdout);
         const text = result?.result ?? "";
         console.error(`[probeChrome] ${configDir} cwd=${cwd} → ${text.slice(0, 200) || "unparseable"}`);
-        const ok = text.includes("CHROME_OK");
+        // Several connected browsers with none selected is the bridge working, not failing (a QA run selects its own
+        // by device id) — three cloned Chromes started at once made every probe say CHROME_FAIL for that (INV-63, 2026-09-22).
+        const ok = text.includes("CHROME_OK") || /multiple chrome browsers are connected/i.test(text);
         let browsers: ChromeProbe["browsers"] = [];
         const m = /\[[\s\S]*\]/.exec(text);
         if (ok && m) {
