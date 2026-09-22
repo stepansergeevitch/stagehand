@@ -337,6 +337,8 @@ export class Prompter {
     startReaper(): void {
         this.ensureHome();
         this.db.prepare(`UPDATE prompter_sessions SET pinged_at = ? WHERE closed_at IS NULL`).run(now());
+        // Chats from before titles existed take their first message as their name.
+        this.db.prepare(`UPDATE prompter_sessions SET title = (SELECT substr(replace(replace(m.text, char(10), ' '), char(13), ' '), 1, 60) FROM prompter_messages m WHERE m.session_id = prompter_sessions.id AND m.role = 'user' ORDER BY m.created_at LIMIT 1) WHERE title IS NULL`).run();
         this.timer = setInterval(() => void this.reap(), 60_000);
         this.timer.unref();
         setTimeout(() => this.resumeInterrupted(), 3_000).unref();
