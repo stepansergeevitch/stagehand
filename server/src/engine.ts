@@ -2737,21 +2737,23 @@ export class Engine extends EventEmitter {
         const qaVars: QaVars = { beUrl: be?.url ?? "", feUrl: fe?.url ?? "", appUrl: this.appUrlFor(task, env), qaPass };
         const lines: string[] = [`(pass id: ${qaPass} — every {{qaPass}} in seeds, steps and asserts reads as this)`];
         const log: string[] = [];
-        const runOne = (label: string, cmd: string): void => {
+        // Asynchronous on purpose: a Django-shell seed takes 10–60 s and a pass has several — run synchronously they
+        // froze the whole server (no API, no UI) for minutes (INV-133, 2026-09-22: "server doesn't load anything").
+        const runOne = async (label: string, cmd: string): Promise<void> => {
             log.push(`### ${label}\n$ ${cmd}`);
             try {
-                const out = execFileSync("bash", loginShellArgs(cmd), {
+                const { stdout } = await execFileAsync("bash", loginShellArgs(cmd), {
                     cwd: task.worktree_path ?? env.path,
                     env: loginShellEnv(parseEnvVars(env.env_vars)),
                     timeout: 120_000,
                     maxBuffer: 4 * 1024 * 1024,
-                    stdio: ["ignore", "pipe", "pipe"],
-                }).toString();
-                log.push(out.trim() || "(no output)");
-                lines.push(`${label}: OK${out.trim() ? ` — ${out.trim().split("\n").slice(-1)[0]!.slice(0, 120)}` : ""}`);
+                });
+                const out = stdout.trim();
+                log.push(out || "(no output)");
+                lines.push(`${label}: OK${out ? ` — ${out.split("\n").slice(-1)[0]!.slice(0, 120)}` : ""}`);
             } catch (e) {
-                const err = e as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
-                const tail = String(err.stderr ?? err.stdout ?? err.message ?? e).trim().split("\n").slice(-3).join(" ").slice(0, 300);
+                const err = e as { stderr?: string; stdout?: string; message?: string };
+                const tail = String(err.stderr?.trim() || err.stdout?.trim() || err.message || e).trim().split("\n").slice(-3).join(" ").slice(0, 300);
                 log.push(`FAILED: ${tail}`);
                 lines.push(`${label}: FAILED — ${tail}`);
             }
@@ -2759,29 +2761,29 @@ export class Engine extends EventEmitter {
         for (const s of design?.qa ?? []) {
             // Reset this scenario's fixture set before creating it again: a partial earlier pass must not leave records
             // that make a seed or a step collide (a teardown that finds nothing to delete is fine).
-            (s.teardown ?? []).forEach((step, i) => {
+            for (const [i, step] of (s.teardown ?? []).entries()) {
                 const m = /^\s*(shell|sql)\s*:\s*/i.exec(step);
                 if (!m) {
                     lines.push(`${s.id} teardown ${i + 1}: skipped (not a shell command)`);
-                    return;
+                    continue;
                 }
-                runOne(`${s.id} teardown ${i + 1}`, fillQaVars(step.slice(m[0].length), qaVars));
-            });
+                await runOne(`${s.id} teardown ${i + 1}`, fillQaVars(step.slice(m[0].length), qaVars));
+            }
             // Shell steps that come after a ui step depend on what the ui step creates; the runner executes those itself.
             let afterUi = false;
-            (s.seed ?? []).forEach((step, i) => {
+            for (const [i, step] of (s.seed ?? []).entries()) {
                 const m = /^\s*(shell|sql)\s*:\s*/i.exec(step);
                 if (!m) {
                     afterUi = afterUi || /^\s*ui\s*:/i.test(step);
                     lines.push(`${s.id} seed ${i + 1}: left for you (${/^\s*ui\s*:/i.test(step) ? "ui" : "not a shell command"})`);
-                    return;
+                    continue;
                 }
                 if (afterUi) {
                     lines.push(`${s.id} seed ${i + 1}: run it yourself after the ui steps — ONE Bash call with the exact command from the scenario's seed list`);
-                    return;
+                    continue;
                 }
-                runOne(`${s.id} seed ${i + 1}`, fillQaVars(step.slice(m[0].length), qaVars));
-            });
+                await runOne(`${s.id} seed ${i + 1}`, fillQaVars(step.slice(m[0].length), qaVars));
+            }
         }
         writeFileSync(logPath, `${log.join("\n\n")}\n`);
         return lines.length > 1 ? lines.join("\n") : "(no seed steps in the design)";
