@@ -740,6 +740,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.pr_templates", `ALTER TABLE envs ADD COLUMN pr_templates TEXT`],
     ["envs.pr_draft", `ALTER TABLE envs ADD COLUMN pr_draft INTEGER NOT NULL DEFAULT 0`],
     ["envs.depends_on_env_id", `ALTER TABLE envs ADD COLUMN depends_on_env_id TEXT REFERENCES envs(id)`],
+    // Prompter: a message sent while a turn ran is "queued" until the next turn takes it (editable until then).
+    ["prompter_messages.state", `ALTER TABLE prompter_messages ADD COLUMN state TEXT NOT NULL DEFAULT 'sent'`],
     // Free-form labels the human puts on a task: JSON [{text, color}] (color = CSS hex), shown in the list and the header.
     ["tasks.labels", `ALTER TABLE tasks ADD COLUMN labels TEXT`],
     // Per-task base branch (stacked PRs); null = the env's base_branch.

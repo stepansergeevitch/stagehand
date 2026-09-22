@@ -7,6 +7,9 @@ export type PrompterEvent =
     | { sessionId: string; kind: "text"; text: string }
     | { sessionId: string; kind: "activity"; text: string }
     | { sessionId: string; kind: "done"; message: PrompterMessage | null; error: string | null }
+    | { sessionId: string; kind: "queued"; message: PrompterMessage }
+    | { sessionId: string; kind: "removed"; messageId: string }
+    | { sessionId: string; kind: "turn"; messageIds: string[] }
     | { sessionId: string; kind: "closed" };
 
 const listeners = new Set<(ev: PrompterEvent) => void>();

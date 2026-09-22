@@ -128,7 +128,8 @@ export interface Settings {
     prompter?: PrompterSettings;
 }
 export interface PrompterSession { id: string; claude_session_id: string; model: string | null; account_id: string | null; created_at: string; last_at: string; pinged_at: string; closed_at: string | null; turns: number }
-export interface PrompterMessage { id: string; session_id: string; role: "user" | "assistant" | "system"; text: string; path: string | null; created_at: string }
+// state "queued": sent while a turn was running; goes out with the next turn and can be taken back into the input until then.
+export interface PrompterMessage { id: string; session_id: string; role: "user" | "assistant" | "system"; text: string; path: string | null; created_at: string; state: "sent" | "queued" }
 export interface PrompterStatus { home: string; configDir: string; account: string | null; model: string; open: number; seeded: { at: string; total: number; copied: number } | null; ready: boolean; reason: string | null }
 export interface Ticket {
     source: "clickup" | "linear"; id: string; url: string | null; title: string; status: string | null; description: string;
@@ -419,7 +420,8 @@ export const api = {
     prompterDescribe: (path: string) => fetch(`/api/prompter/describe?path=${encodeURIComponent(path)}`).then((r) => j<{ summary: string; context: string }>(r)),
     prompterCreate: (model: string | null) => post<PrompterSession>("/api/prompter/sessions", { model }),
     prompterMessages: (id: string) => fetch(`/api/prompter/sessions/${id}/messages`).then((r) => j<{ session: PrompterSession; busy: boolean; messages: PrompterMessage[] }>(r)),
-    prompterSend: (id: string, text: string, path: string) => post<{ ok: true }>(`/api/prompter/sessions/${id}/messages`, { text, path }),
+    prompterSend: (id: string, text: string, path: string) => post<{ ok: true; message: PrompterMessage; queued: boolean }>(`/api/prompter/sessions/${id}/messages`, { text, path }),
+    prompterUnqueue: (id: string, messageId: string) => fetch(`/api/prompter/sessions/${id}/messages/${messageId}`, { method: "DELETE" }).then((r) => j<{ ok: true }>(r)),
     prompterPing: (id: string) => post<{ ok: true }>(`/api/prompter/sessions/${id}/ping`),
     prompterClose: (id: string, farewell = true) => fetch(`/api/prompter/sessions/${id}?farewell=${farewell ? 1 : 0}`, { method: "DELETE", keepalive: true }).then((r) => j<{ ok: true }>(r)),
     restartServer: (force = false) => post<{ ok: boolean; detail: string }>("/api/server/restart", { force }),

@@ -921,14 +921,22 @@ app.get("/api/prompter/sessions/:id/messages", (c) => {
     if (!s) return c.json({ error: "not found" }, 404);
     return c.json({ session: s, busy: prompter.busy(s.id), messages: prompter.messages(s.id) });
 });
-// The turn runs in the background; its text streams over the websocket and `done` carries the stored answer.
+// The turn runs in the background; its text streams over the websocket and `done` carries the stored answer. Sent
+// while a turn runs, the message is stacked (`queued: true`) and goes out with the next turn.
 app.post("/api/prompter/sessions/:id/messages", async (c) => {
     const body = json(z.object({ text: z.string().min(1), path: z.string().nullable().optional() }), await c.req.json());
     const id = c.req.param("id");
     if (!prompter.session(id)) return c.json({ error: "not found" }, 404);
-    if (prompter.busy(id)) return c.json({ error: "the assistant is still answering — wait for it" }, 409);
-    void prompter.send(id, body.text, body.path ?? null).catch((e: unknown) => console.warn(`[prompter] ${id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
-    return c.json({ ok: true }, 202);
+    try {
+        return c.json({ ok: true, ...prompter.submit(id, body.text, body.path ?? null) }, 202);
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+// Takes a stacked message back (the human edits it); 409 once it went to the assistant.
+app.delete("/api/prompter/sessions/:id/messages/:mid", (c) => {
+    const ok = prompter.unqueue(c.req.param("id"), c.req.param("mid"));
+    return ok ? c.json({ ok: true }) : c.json({ error: "that message already went to the assistant" }, 409);
 });
 app.post("/api/prompter/sessions/:id/ping", (c) => {
     prompter.ping(c.req.param("id"));

@@ -9,6 +9,8 @@ import { formatRoute, type Route } from "./routes";
 // each time the window is opened; the palace is its memory between chats). It sees the current location (the route)
 // with every message. Collapse keeps the session (it keeps pinging); the × ends it (a farewell turn files notes).
 // A server restart does not end it: the session id is kept here, and the widget re-attaches when the socket is back.
+// Messages sent while it answers stack up (dashed) and go out together as the next turn; ArrowUp in an empty input
+// takes the last stacked message back for editing.
 
 const OPEN_KEY = "stagehand.prompter.open";
 const SESSION_KEY = "stagehand.prompter.session";
@@ -30,6 +32,7 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
     const path = formatRoute(route);
     const bottom = useRef<HTMLDivElement>(null);
     const input = useRef<HTMLTextAreaElement>(null);
+    const queued = messages.filter((m) => m.role === "user" && m.state === "queued");
 
     // Re-attach to the session this browser had (a reload, a server restart), else start a new one.
     const attach = useCallback(async () => {
@@ -78,8 +81,17 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
                     setLive("");
                     setActivity(null);
                     setBusy(false);
-                    if (ev.message) setMessages((m) => [...m, ev.message!]);
+                    if (ev.message) setMessages((m) => (m.some((x) => x.id === ev.message!.id) ? m : [...m, ev.message!]));
                     if (ev.error) setError(ev.error);
+                } else if (ev.kind === "queued") {
+                    setMessages((m) => (m.some((x) => x.id === ev.message.id) ? m : [...m, ev.message]));
+                } else if (ev.kind === "removed") {
+                    setMessages((m) => m.filter((x) => x.id !== ev.messageId));
+                } else if (ev.kind === "turn") {
+                    // The stacked messages went out together; the assistant is answering again.
+                    setMessages((m) => m.map((x) => (ev.messageIds.includes(x.id) ? { ...x, state: "sent" } : x)));
+                    setBusy(true);
+                    setActivity(null);
                 } else if (ev.kind === "closed") {
                     if (storage.get(SESSION_KEY) === session.id) storage.set(SESSION_KEY, "");
                     setSession(null);
@@ -116,17 +128,30 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
         bottom.current?.scrollIntoView({ block: "end" });
     }, [messages.length, live, activity, open]);
 
+    // Sends now, or stacks the message behind the running turn (the server decides; the dashed bubble says which).
     const send = async () => {
         const t = text.trim();
-        if (!t || !session || busy) return;
+        if (!t || !session) return;
         setText("");
         setError(null);
-        setBusy(true);
-        setMessages((m) => [...m, { id: `local-${Date.now()}`, session_id: session.id, role: "user", text: t, path, created_at: new Date().toISOString() }]);
         try {
-            await api.prompterSend(session.id, t, path);
+            const r = await api.prompterSend(session.id, t, path);
+            setMessages((m) => (m.some((x) => x.id === r.message.id) ? m : [...m, r.message]));
+            if (!r.queued) setBusy(true);
         } catch (e) {
-            setBusy(false);
+            setText(t);
+            setError(String((e as Error).message ?? e));
+        }
+    };
+    // ArrowUp in an empty input: the last stacked message comes back for editing (it leaves the stack).
+    const takeBack = async (m: PrompterMessage) => {
+        if (!session) return;
+        try {
+            await api.prompterUnqueue(session.id, m.id);
+            setMessages((ms) => ms.filter((x) => x.id !== m.id));
+            setText((cur) => (cur.trim() ? `${cur}\n${m.text}` : m.text));
+            input.current?.focus();
+        } catch (e) {
             setError(String((e as Error).message ?? e));
         }
     };
@@ -149,6 +174,9 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
             </button>
         );
     }
+    const placeholder = busy
+        ? `Answering… a message sent now waits for the next turn${queued.length ? ` (${queued.length} stacked; ArrowUp edits the last one)` : ""}`
+        : "Message Prompter… (Enter to send, Shift+Enter for a new line)";
     return (
         <aside className={`prompter ${wide ? "wide" : ""}`} aria-label="Prompter">
             <header className="prompter-head">
@@ -168,8 +196,14 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
             <div className="prompter-log">
                 {messages.length === 0 && !live && <div className="empty">Ask about what you see, how Stagehand works, or tell me what to do here. I remember through the palace, not through this window.</div>}
                 {messages.map((m) => (
-                    <div key={m.id} className={`chat-msg ${m.role === "user" ? "user" : "agent"}`}>
+                    <div key={m.id} className={`chat-msg ${m.role === "user" ? "user" : "agent"} ${m.state === "queued" ? "queued" : ""}`}>
                         {m.role === "user" ? <div className="prompter-user-text">{m.text}</div> : <Markdown source={m.text} />}
+                        {m.state === "queued" && (
+                            <div className="prompter-queued-row">
+                                <span>waits for the next turn</span>
+                                <button title="Take it back into the input to edit (ArrowUp does the same for the last one)" onClick={() => void takeBack(m)}>edit</button>
+                            </div>
+                        )}
                     </div>
                 ))}
                 {live && <div className="chat-msg agent live"><Markdown source={live} /></div>}
@@ -186,13 +220,16 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
                         if (e.key === "Enter" && !e.shiftKey) {
                             e.preventDefault();
                             void send();
+                        } else if (e.key === "ArrowUp" && !text && queued.length) {
+                            e.preventDefault();
+                            void takeBack(queued[queued.length - 1]!);
                         }
                     }}
-                    placeholder={busy ? "Answering…" : "Message Prompter… (Enter to send, Shift+Enter for a new line)"}
+                    placeholder={placeholder}
                     disabled={!session || (status !== null && !status.ready)}
                     rows={2}
                 />
-                <button className="primary" disabled={!session || busy || !text.trim()} onClick={() => void send()}>{busy ? "…" : "Send"}</button>
+                <button className="primary" disabled={!session || !text.trim()} title={busy ? "Stacks behind the running turn" : "Send"} onClick={() => void send()}>{busy ? "Stack" : "Send"}</button>
             </div>
         </aside>
     );

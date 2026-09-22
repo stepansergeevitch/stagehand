@@ -48,11 +48,18 @@ export interface PrompterMessageRow {
     text: string;
     path: string | null;
     created_at: string;
+    // "queued": sent by the human while a turn was running; goes to the assistant with the next turn, and can still be
+    // taken back into the input (ArrowUp) until then. "sent": part of a turn.
+    state: "sent" | "queued";
 }
 export type PrompterEvent =
     | { sessionId: string; kind: "text"; text: string }
     | { sessionId: string; kind: "activity"; text: string }
     | { sessionId: string; kind: "done"; message: PrompterMessageRow | null; error: string | null }
+    // A message stacked behind the running turn / taken back out of the stack / a turn started with these messages.
+    | { sessionId: string; kind: "queued"; message: PrompterMessageRow }
+    | { sessionId: string; kind: "removed"; messageId: string }
+    | { sessionId: string; kind: "turn"; messageIds: string[] }
     | { sessionId: string; kind: "closed" };
 
 export class Prompter {
@@ -182,26 +189,77 @@ export class Prompter {
         return this.active.has(id);
     }
 
-    private addMessage(sessionId: string, role: PrompterMessageRow["role"], text: string, path: string | null): PrompterMessageRow {
+    private addMessage(sessionId: string, role: PrompterMessageRow["role"], text: string, path: string | null, state: PrompterMessageRow["state"] = "sent"): PrompterMessageRow {
         const id = randomUUID();
         const ts = now();
-        this.db.prepare(`INSERT INTO prompter_messages (id, session_id, role, text, path, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(id, sessionId, role, text, path, ts);
+        this.db.prepare(`INSERT INTO prompter_messages (id, session_id, role, text, path, created_at, state) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(id, sessionId, role, text, path, ts, state);
         this.db.prepare(`UPDATE prompter_sessions SET last_at = ?, pinged_at = ? WHERE id = ?`).run(ts, ts, sessionId);
-        return { id, session_id: sessionId, role, text, path, created_at: ts };
+        return { id, session_id: sessionId, role, text, path, created_at: ts, state };
     }
 
-    // One turn: the human's text with the location described in front of it. Streams text and tool activity as
-    // `prompter` events; the final answer is stored and sent with `done`.
-    async send(id: string, text: string, path: string | null, opts: { system?: boolean; maxTurns?: number } = {}): Promise<PrompterMessageRow> {
+    private queued(sessionId: string): PrompterMessageRow[] {
+        return this.db.prepare(`SELECT * FROM prompter_messages WHERE session_id = ? AND state = 'queued' ORDER BY created_at`).all(sessionId) as PrompterMessageRow[];
+    }
+
+    // The human's message. While a turn runs it is stacked (state "queued") and goes to the assistant, together with
+    // anything else stacked, as the next turn the moment the current one ends; otherwise a turn starts now (taking any
+    // messages left stacked from before a restart with it).
+    submit(id: string, text: string, path: string | null): { message: PrompterMessageRow; queued: boolean } {
+        const s = this.session(id);
+        if (!s || s.closed_at) throw new Error("session not found or closed");
+        if (this.active.has(id)) {
+            const message = this.addMessage(id, "user", text, path, "queued");
+            this.emit({ sessionId: id, kind: "queued", message });
+            return { message, queued: true };
+        }
+        const earlier = this.queued(id);
+        const message = this.addMessage(id, "user", text, path, "sent");
+        const batch = [...earlier, message];
+        if (earlier.length) {
+            this.db.prepare(`UPDATE prompter_messages SET state = 'sent' WHERE session_id = ? AND state = 'queued'`).run(id);
+            this.emit({ sessionId: id, kind: "turn", messageIds: batch.map((m) => m.id) });
+        }
+        void this.runTurn(id, batch, {}).catch((e: unknown) => console.warn(`[prompter] ${id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+        return { message, queued: false };
+    }
+
+    // Takes a stacked message back (the human edits it in the input). False when it already went to the assistant.
+    unqueue(id: string, messageId: string): boolean {
+        const r = this.db.prepare(`DELETE FROM prompter_messages WHERE id = ? AND session_id = ? AND state = 'queued'`).run(messageId, id);
+        if (r.changes === 0) return false;
+        this.emit({ sessionId: id, kind: "removed", messageId });
+        return true;
+    }
+
+    // Everything stacked while the last turn ran goes out as one turn.
+    private flush(id: string): void {
+        const s = this.session(id);
+        if (!s || s.closed_at) return;
+        const batch = this.queued(id);
+        if (batch.length === 0) return;
+        this.db.prepare(`UPDATE prompter_messages SET state = 'sent' WHERE session_id = ? AND state = 'queued'`).run(id);
+        this.emit({ sessionId: id, kind: "turn", messageIds: batch.map((m) => m.id) });
+        void this.runTurn(id, batch, {}).catch((e: unknown) => console.warn(`[prompter] ${id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+    }
+
+    // One turn: the human's message(s) with the location described in front of them. Streams text and tool activity as
+    // `prompter` events; the final answer is stored and sent with `done`; whatever stacked up meanwhile follows as the
+    // next turn.
+    private async runTurn(id: string, messages: PrompterMessageRow[], opts: { system?: boolean; maxTurns?: number }): Promise<PrompterMessageRow | null> {
         const s = this.session(id);
         if (!s || s.closed_at) throw new Error("session not found or closed");
         if (this.active.has(id)) throw new Error("the assistant is still answering — wait for it");
         this.ensureHome();
         const acc = this.account();
         if (!acc?.oauth_token) throw new Error("no AI account with a token for the assistant");
-        const userMsg = this.addMessage(id, opts.system ? "system" : "user", text, path);
+        const last = messages[messages.length - 1]!;
+        const path = last.path;
         const context = path ? this.describe(path) : null;
-        const prompt = `${context ? `<stagehand-context>\nLocation: ${path}\n${context.context}\nLocal API: http://127.0.0.1:${this.cfg.port} (skill stagehand-api). Now: ${new Date().toLocaleString()}.\n</stagehand-context>\n\n` : ""}${text}`;
+        const body =
+            messages.length === 1
+                ? last.text
+                : `The human sent ${messages.length} messages while you were answering; read them all before you act:\n\n${messages.map((m, i) => `${i + 1}. ${m.text}`).join("\n\n")}`;
+        const prompt = `${context ? `<stagehand-context>\nLocation: ${path}\n${context.context}\nLocal API: http://127.0.0.1:${this.cfg.port} (skill stagehand-api). Now: ${new Date().toLocaleString()}.\n</stagehand-context>\n\n` : ""}${body}`;
         const turn = s.turns + 1;
         const run = startClaude({
             prompt,
@@ -240,7 +298,8 @@ export class Prompter {
         const message = finalText && !opts.system ? this.addMessage(id, "assistant", finalText, path) : null;
         if (opts.system && finalText) this.addMessage(id, "system", finalText, path);
         this.emit({ sessionId: id, kind: "done", message, error });
-        return message ?? userMsg;
+        if (!opts.system) this.flush(id);
+        return message;
     }
 
     // Ends a session: an in-flight turn is killed; otherwise one short farewell turn lets the assistant file its notes.
@@ -248,9 +307,12 @@ export class Prompter {
         const s = this.session(id);
         if (!s || s.closed_at) return;
         const running = this.active.get(id);
+        // Messages still stacked never go out: the chat ends.
+        this.db.prepare(`DELETE FROM prompter_messages WHERE session_id = ? AND state = 'queued'`).run(id);
         if (running) running.kill();
         else if ((opts.farewell ?? this.cfg.prompter.farewell) && s.turns > 0) {
-            await this.send(id, "This chat ends now. File anything durable from it into the palace (a drawer, or a diary line) that is not filed yet, then answer with one short line.", null, { system: true, maxTurns: 8 }).catch((e: unknown) => console.warn(`[prompter] farewell ${id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+            const note = this.addMessage(id, "system", "This chat ends now. File anything durable from it into the palace (a drawer, or a diary line) that is not filed yet, then answer with one short line.", null);
+            await this.runTurn(id, [note], { system: true, maxTurns: 8 }).catch((e: unknown) => console.warn(`[prompter] farewell ${id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
         }
         this.db.prepare(`UPDATE prompter_sessions SET closed_at = ? WHERE id = ? AND closed_at IS NULL`).run(now(), id);
         this.emit({ sessionId: id, kind: "closed" });
