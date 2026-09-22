@@ -371,9 +371,13 @@ export class Prompter {
     }
 
     // A turn that was running when the server went down left the human's message(s) without an answer: they are
-    // stacked again and go out as one turn now (claude may have seen part of them; a repeat is harmless).
+    // stacked again and go out as one turn now (claude may have seen part of them; a repeat is harmless). Only recent
+    // ones: an unanswered message from hours ago was a turn that ended without an answer, not one the restart cut
+    // (the first restart with this replayed a 7-hour-old "land" whose branch had long been landed).
+    private static readonly RESEND_MAX_AGE_MS = 2 * 3_600_000;
     resumeInterrupted(): void {
         const open = this.listSessions();
+        const freshAfter = Date.now() - Prompter.RESEND_MAX_AGE_MS;
         for (const s of open) {
             if (this.active.has(s.id)) continue;
             const all = this.db.prepare(`SELECT * FROM prompter_messages WHERE session_id = ? ORDER BY created_at`).all(s.id) as PrompterMessageRow[];
@@ -381,6 +385,7 @@ export class Prompter {
             all.forEach((m, i) => {
                 if (m.role !== "user") lastAnswer = i;
             });
+            if (new Date(all[all.length - 1]?.created_at ?? 0).getTime() < freshAfter) continue;
             const trailing = all.slice(lastAnswer + 1).filter((m) => m.role === "user" && m.state === "sent");
             if (trailing.length === 0) continue;
             this.db.prepare(`UPDATE prompter_messages SET state = 'queued' WHERE id IN (${trailing.map(() => "?").join(",")})`).run(...trailing.map((m) => m.id));
