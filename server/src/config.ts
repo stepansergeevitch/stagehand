@@ -10,6 +10,8 @@ const ConfigSchema = z.object({
     dataDir: z.string(),
     tmuxSession: z.string().default("stagehand"),
     maxConcurrentRunsPerAccount: z.number().int().default(2),
+    // Accounts that clone their QA Chrome profile per run (accounts.chrome_clone_qa): how many cloned Chrome windows may run at once.
+    maxChromeClonesPerAccount: z.number().int().default(3),
     preflightUtilizationLimit: z.number().default(0.9),
     clickupToken: z.string().nullable().default(null),
     clickupTeamId: z.string().nullable().default(null),
@@ -76,6 +78,7 @@ const defaults = (): Config => ({
     dataDir: STAGEHAND_HOME,
     tmuxSession: "stagehand",
     maxConcurrentRunsPerAccount: 2,
+    maxChromeClonesPerAccount: 3,
     preflightUtilizationLimit: 0.9,
     clickupToken: null,
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,

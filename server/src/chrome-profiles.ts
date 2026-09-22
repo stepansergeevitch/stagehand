@@ -76,7 +76,7 @@ export const matchChromeProfiles = (deviceIds: string[]): Map<string, ProfileMat
 };
 
 // macOS application name for a browser data dir, for `open -a`.
-const APP_NAMES: Record<string, string> = { Google: "Google Chrome", "Microsoft Edge": "Microsoft Edge", BraveSoftware: "Brave Browser", Arc: "Arc", Vivaldi: "Vivaldi" };
+export const APP_NAMES: Record<string, string> = { Google: "Google Chrome", "Microsoft Edge": "Microsoft Edge", BraveSoftware: "Brave Browser", Arc: "Arc", Vivaldi: "Vivaldi" };
 
 // Opens `url` in that browser profile without any agent: `open -na <app> --args --profile-directory=<dir> <url>` hands the
 // URL to the running instance (or starts one) and Chrome honours the profile flag either way.

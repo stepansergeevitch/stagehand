@@ -211,6 +211,11 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                                     </select>
                                 ) : <span className="chip bad">no Chrome bridge under this login</span>}
                             </span>
+                            <b>Chrome per QA run</b>
+                            <span>
+                                <label className="inline"><input type="checkbox" checked={a.chrome_clone_qa === 1} disabled={!a.chrome_device_id} onChange={(e) => void act(() => api.patchAccount(a.id, { chromeCloneQa: e.target.checked }))} /> copy the profile for every browser QA run</label>
+                                <span className="field-hint">On: each QA baseline / Manual QA run copies the Chrome profile above (cookies and app logins included, about one second), starts its own Chrome window on the copy with the QA launch flags, drives that window, and deletes the copy afterwards — several browser runs of this account go in parallel (up to maxChromeClonesPerAccount, 3) and your own Chrome is never touched. Log in to the apps in the profile above; every copy inherits it. Off: runs share the profile above, one at a time.</span>
+                            </span>
                             <b>Default model</b><span>{modelLabel(a.default_model, settings?.models) ?? "—"}</span>
                             <b>Windows 5h / 7d</b>
                             <span className="mono">
@@ -236,6 +241,18 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
                                     setBusy(null);
                                 }
                             }}>{busy === `chrome-${a.id}` ? "Probing…" : "Probe Chrome"}</button>
+                            <button disabled={busy === `clone-${a.id}` || !a.chrome_device_id} title="Copies the chosen Chrome profile, starts a Chrome window on the copy, waits for its extension to connect, then removes it" onClick={async () => {
+                                setBusy(`clone-${a.id}`);
+                                setVerify((v) => ({ ...v, [a.id]: { ok: true, text: "copying the profile, starting a Chrome on the copy, waiting for its extension…" } }));
+                                try {
+                                    const r = await api.testAccountClone(a.id);
+                                    setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } }));
+                                } catch (e) {
+                                    setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } }));
+                                } finally {
+                                    setBusy(null);
+                                }
+                            }}>{busy === `clone-${a.id}` ? "Cloning…" : "Test profile cloning"}</button>
                             <button disabled={busy === a.id} onClick={async () => {
                                 setBusy(a.id);
                                 setVerify({ ...verify, [a.id]: { ok: true, text: "running a trivial agent turn…" } });

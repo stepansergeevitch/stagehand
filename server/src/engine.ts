@@ -7,6 +7,7 @@ import { accountBrowserReady, accountOrderOf, accountUsableWith, baseBranchFor, 
 import { ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, openInProfile, QA_CHROME_FLAGS, setChromeTabUrl } from "./chrome-profiles.js";
+import { activateCloneTab, cloneProfile, launchClone, pickCdpPort, quitClone, sweepClones, type ChromeClone } from "./chrome-clones.js";
 import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stampTaskOnUsage } from "./usage.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
 import { baseDrift, baseOf, branchCommits, commitsDiff, createWorktree, type RepoLayout, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
@@ -173,6 +174,10 @@ interface DispatchOpts {
     chromeVerified?: boolean;
     // Browser stages: the running Chrome was confirmed to carry QA_CHROME_FLAGS for this dispatch.
     chromeFlagsVerified?: boolean;
+    // Browser stages on an account that clones its QA profile per run: the clone for this task is up and its extension connected.
+    cloneReady?: boolean;
+    // Browser stages: cloning failed for this dispatch — run in the shared profile instead.
+    cloneFailed?: boolean;
 }
 
 // CircleCI jobs gated behind a manual "Approve" click in the CircleCI UI (deploy/db-reset gates) sit forever in a
@@ -433,8 +438,13 @@ export class Engine extends EventEmitter {
     // ---------- lifecycle ----------
 
     startScheduler(): void {
-        this.timer = setInterval(() => this.tick(), 15_000);
+        this.timer = setInterval(() => {
+            this.tick();
+            void this.reapClones();
+        }, 15_000);
         this.startCallbackHopWatcher();
+        // No run survives a restart, so no cloned Chrome profile should either.
+        void sweepClones(new Set()).then((n) => n && console.log(`[stagehand] ${n} leftover cloned Chrome profile(s) removed`));
         void this.recoverInterrupted();
         const n = backfillUsage(this.db, this.cfg.dataDir);
         if (n) console.log(`[stagehand] usage backfilled for ${n} run(s)`);
@@ -715,7 +725,88 @@ export class Engine extends EventEmitter {
         return (env.app_url ?? (fe ? "{{feUrl}}" : "https://localhost:3000")).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{beUrl\}\}/g, be?.url ?? "");
     }
 
-    private chromeSelectStep(account: AccountRow | null): string {
+    // ---------- cloned Chrome profiles (chrome-clones.ts) ----------
+
+    // Task id → the cloned Chrome started for its current browser run, on accounts with chrome_clone_qa on.
+    private readonly clones = new Map<string, ChromeClone & { accountId: string }>();
+
+    // The profile to copy when this account clones per run: the chosen Chrome profile, resolved to a directory.
+    private cloneSourceFor(account: AccountRow): ChromeBrowser | null {
+        if (account.chrome_clone_qa !== 1) return null;
+        const b = chromeBrowsersOf(account).find((x) => x.deviceId === account.chrome_device_id);
+        return b?.profileDir ? b : null;
+    }
+
+    private clonesOf(accountId: string): number {
+        let n = 0;
+        for (const c of this.clones.values()) if (c.accountId === accountId) n++;
+        return n;
+    }
+
+    // Copies the profile, starts a Chrome on the copy and waits until the copy's extension is listed as a connected
+    // browser (the probe is the same `claude -p --chrome` round trip the shared-profile path pays for chromeVerified).
+    private async prepareClone(task: TaskRow, account: AccountRow, source: ChromeBrowser, configDir: string, url: string): Promise<ChromeClone> {
+        const port = await pickCdpPort(new Set([...this.clones.values()].map((c) => c.cdpPort)));
+        const slot = `${task.ticket_id.toLowerCase()}-${randomUUID().slice(0, 6)}`;
+        const bare = await cloneProfile(source.browser ?? "Google", source.profileDir!, slot, port);
+        const clone = await launchClone(bare, url, this.clones.size);
+        const usage = (res: ResultEvent) => recordUsage(this.db, { accountId: account.id, envId: task.env_id, taskId: task.id, runId: null, kind: "probe", stage: null }, res);
+        for (let i = 0; i < 4; i++) {
+            const r = await probeChrome(configDir, task.worktree_path ?? this.env(task.env_id).path, 1, usage);
+            if (r.browsers.some((b) => b.deviceId === clone.deviceId)) return clone;
+            await new Promise((res) => setTimeout(res, 3_000));
+        }
+        await quitClone(clone);
+        throw new Error(`the copy's extension (${clone.deviceId.slice(0, 8)}…) did not connect as a browser within 4 probes`);
+    }
+
+    private async releaseClone(taskId: string): Promise<void> {
+        const clone = this.clones.get(taskId);
+        if (!clone) return;
+        this.clones.delete(taskId);
+        await quitClone(clone);
+    }
+
+    // A clone whose task stopped while parked, or was moved by the human, is ended (a run's own end releases its clone directly).
+    private async reapClones(): Promise<void> {
+        for (const taskId of [...this.clones.keys()]) {
+            const t = this.getTask(taskId);
+            // "queued" is written by parkQueued straight into the row (not part of TaskStatus).
+            if (!t || !["running", "queued"].includes(t.status as string)) await this.releaseClone(taskId);
+        }
+    }
+
+    // AI accounts page: one full copy → launch → bridge round trip on the account's profile, then cleanup.
+    async testClone(account: AccountRow, configDir: string): Promise<{ ok: boolean; detail: string }> {
+        const source = chromeBrowsersOf(account).find((b) => b.deviceId === account.chrome_device_id);
+        if (!source?.profileDir) return { ok: false, detail: "pick the account's Chrome profile first (Probe Chrome, then the profile select)" };
+        const started = Date.now();
+        let clone: ChromeClone | null = null;
+        try {
+            const port = await pickCdpPort(new Set([...this.clones.values()].map((c) => c.cdpPort)));
+            const c = await launchClone(await cloneProfile(source.browser ?? "Google", source.profileDir, `test-${randomUUID().slice(0, 6)}`, port), "about:blank", this.clones.size);
+            clone = c;
+            const launched = ((Date.now() - started) / 1000).toFixed(1);
+            const usage = (res: ResultEvent) => recordUsage(this.db, { accountId: account.id, envId: null, taskId: null, runId: null, kind: "probe", stage: null }, res);
+            for (let i = 0; i < 4; i++) {
+                const r = await probeChrome(configDir, this.cfg.dataDir, 1, usage);
+                if (r.browsers.some((b) => b.deviceId === c.deviceId)) {
+                    return { ok: true, detail: `OK — profile "${chromeBrowserLabel(source)}" copied and started in ${launched} s; the copy's extension connected as its own browser (${c.deviceId.slice(0, 8)}…) after ${((Date.now() - started) / 1000).toFixed(0)} s; ${r.browsers.length} browser(s) connected in total` };
+                }
+                await new Promise((res) => setTimeout(res, 3_000));
+            }
+            return { ok: false, detail: `the copy started (CDP port ${port}) but its extension never appeared as a connected browser — is the extension in "${chromeBrowserLabel(source)}" signed into ${account.email ?? "this account"}?` };
+        } catch (e) {
+            return { ok: false, detail: String((e as Error).message ?? e).slice(0, 300) };
+        } finally {
+            if (clone) await quitClone(clone);
+        }
+    }
+
+    private chromeSelectStep(account: AccountRow | null, clone?: ChromeClone): string {
+        if (clone) {
+            return `Before any other browser tool, load mcp__claude-in-chrome__select_browser with ToolSearch and call it with deviceId "${clone.deviceId}" (a copy of Chrome profile "${account?.chrome_browser_name ?? "QA"}" started for this run only — its own window). Never call switch_browser or AskUserQuestion.`;
+        }
         return account?.chrome_device_id
             ? `Before any other browser tool, load mcp__claude-in-chrome__select_browser with ToolSearch and call it with deviceId "${account.chrome_device_id}" (Chrome profile "${account.chrome_browser_name ?? account.chrome_device_id}"). Never call switch_browser or AskUserQuestion.`
             : "Never call switch_browser or AskUserQuestion; use whichever browser is already paired.";
@@ -2470,7 +2561,7 @@ export class Engine extends EventEmitter {
             const fe = this.services.get(task.id, "fe");
             const appUrl = this.appUrlFor(task, env);
             vars["appUrl"] = appUrl;
-            vars["chromeSelect"] = this.chromeSelectStep(this.browserAccounts(env).find((a) => a.id === task.account_id) ?? this.browserAccounts(env)[0] ?? null);
+            vars["chromeSelect"] = this.chromeSelectStep(this.browserAccounts(env).find((a) => a.id === task.account_id) ?? this.browserAccounts(env)[0] ?? null, this.clones.get(task.id));
             const firstBrowser = scenarios.find((s) => (s.kind ?? "browser") === "browser");
             vars["firstUrl"] = firstBrowser?.url ?? "/";
             const beUrl = be?.url ?? "";
@@ -2599,10 +2690,32 @@ export class Engine extends EventEmitter {
                 else this.setTaskStatus(taskId, "blocked", `${def.label} · ${chrome.reason}`);
                 return;
             }
+            // Accounts that clone their QA profile per run: several browser runs at once, each in its own Chrome
+            // started with the QA flags — no shared-profile queue, no launch-flag check; the bridge confirmation is
+            // part of preparing the copy. A failed copy falls back to the shared profile for this dispatch.
+            const cloneSource = opts.cloneFailed ? null : this.cloneSourceFor(chrome.account);
+            if (cloneSource && !(opts.cloneReady && this.clones.has(taskId))) {
+                if (this.clonesOf(chrome.account.id) >= this.cfg.maxChromeClonesPerAccount) {
+                    this.setTaskStatus(taskId, "idle", `queued · ${chrome.account.name} already runs ${this.cfg.maxChromeClonesPerAccount} cloned Chrome window(s) (maxChromeClonesPerAccount in config.json)`);
+                    this.parkQueued(taskId, stage, opts);
+                    return;
+                }
+                this.setTaskStatus(taskId, "running", `${def.label} · copying Chrome profile "${chromeBrowserLabel(cloneSource)}" for this run`);
+                void this.prepareClone(task, chrome.account, cloneSource, chrome.configDir, this.appUrlFor(task, env))
+                    .then((clone) => {
+                        this.clones.set(taskId, { ...clone, accountId: chrome.account.id });
+                        this.dispatch(taskId, stage, { ...opts, cloneReady: true, chromeVerified: true, chromeFlagsVerified: true });
+                    })
+                    .catch((e: unknown) => {
+                        this.addAgentNote(taskId, `No cloned Chrome profile for this run (${String((e as Error).message ?? e).slice(0, 200)}) — running in the shared QA profile instead.`);
+                        this.dispatch(taskId, stage, { ...opts, cloneFailed: true });
+                    });
+                return;
+            }
             // One account = one Chrome profile = one extension bridge: while another task's browser run drives it, this
             // task waits — checked BEFORE the live probe below, because a probe against a Chrome that is mid-run can
             // fail and would then wrongly mark the account as not Chrome-capable (seen on INV-63 vs INV-130, 2026-09-17).
-            const chromeBusy = this.runningBrowserRun(chrome.account.id, taskId);
+            const chromeBusy = cloneSource ? null : this.runningBrowserRun(chrome.account.id, taskId);
             if (chromeBusy) {
                 this.setTaskStatus(taskId, "idle", `queued · ${chrome.account.name}'s Chrome is busy with ${chromeBusy.ticket_id} (${STAGE_DEFS[chromeBusy.stage]?.label ?? chromeBusy.stage}) — browser stages run one at a time per account`);
                 this.parkQueued(taskId, stage, opts);
@@ -2664,7 +2777,7 @@ export class Engine extends EventEmitter {
         // Headless stages run side by side up to the configured number per account (the only shared thing is the
         // account's rate-limit window). Browser stages are different: one account = one Chrome profile = one
         // extension bridge, so two of them at once would drive the same browser — they run one at a time per account.
-        const browserBusy = chromeNeeded ? this.runningBrowserRun(account.id, taskId) : null;
+        const browserBusy = chromeNeeded && !this.clones.has(taskId) ? this.runningBrowserRun(account.id, taskId) : null;
         if (browserBusy) {
             this.setTaskStatus(taskId, "idle", `queued · ${account.name}'s Chrome is busy with ${browserBusy.ticket_id} (${STAGE_DEFS[browserBusy.stage]?.label ?? browserBusy.stage}) — browser stages run one at a time per account`);
             this.parkQueued(taskId, stage, opts);
@@ -2736,6 +2849,8 @@ export class Engine extends EventEmitter {
         void run.done.then((outcome) => {
             if (tabKeeper) clearInterval(tabKeeper);
             this.active.delete(runId);
+            // The copy served this run only; a retry or unblock makes a fresh one.
+            void this.releaseClone(taskId);
             void this.onRunClosed(taskId, runId, def, account, outcome, opts).catch((e: unknown) => console.warn(`[stagehand] onRunClosed ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         });
     }
@@ -2752,7 +2867,9 @@ export class Engine extends EventEmitter {
         }
         const picked = this.qaBrowser(task, env);
         const kind = "browser" in picked ? (picked.browser.browser ?? "Google") : "Google";
-        const timer = setInterval(() => void activateChromeTab(`${origin}/`, kind), Engine.TAB_KEEPER_MS);
+        // A cloned Chrome is a separate process AppleScript cannot address; its tabs are reached over its CDP port.
+        const clone = this.clones.get(task.id);
+        const timer = setInterval(() => void (clone ? activateCloneTab(clone.cdpPort, `${origin}/`) : activateChromeTab(`${origin}/`, kind)), Engine.TAB_KEEPER_MS);
         timer.unref();
         return timer;
     }

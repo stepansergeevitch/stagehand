@@ -11,6 +11,8 @@ export interface Account {
     logged_in: number; failover_enabled: number; failover_threshold: number; default_model: string | null;
     // Browser stages need this account's claude.ai browser login (in browser_dir) and a Chrome profile whose extension is signed into it.
     login_ok: number | null; login_dir: string | null; chrome_capable: number | null; chrome_device_id: string | null; chrome_browser_name: string | null;
+    // 1: every browser QA run copies the Chrome profile into a private Chrome window of its own (parallel browser QA).
+    chrome_clone_qa: number;
     browsers: ChromeBrowser[]; browser_dir: string;
     // `expired`: the window's reset instant has passed and nothing reported since — the utilisation is unknown, not this number.
     limits: Array<{ window: string; utilization: number; resetsAt: number; updatedAt: string; expired: boolean }>;
@@ -348,7 +350,8 @@ export const api = {
         fetch(`/api/config-dirs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<ConfigDir>(r)),
     deleteConfigDir: (id: string) => fetch(`/api/config-dirs/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     configDirRules: (id: string) => fetch(`/api/config-dirs/${id}/rules`).then((r) => j<ConfigDirRules>(r)),
-    patchAccount: (id: string, body: { name?: string; failover_enabled?: boolean; failover_threshold?: number; chromeDeviceId?: string | null }) =>
+    testAccountClone: (id: string) => post<{ ok: boolean; detail: string }>(`/api/accounts/${id}/clone-test`),
+    patchAccount: (id: string, body: { name?: string; failover_enabled?: boolean; failover_threshold?: number; chromeDeviceId?: string | null; chromeCloneQa?: boolean }) =>
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: {

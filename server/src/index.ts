@@ -289,18 +289,20 @@ app.patch("/api/accounts/:id", async (c) => {
             failover_enabled: z.boolean().optional(),
             failover_threshold: z.number().min(0).max(1).optional(),
             chromeDeviceId: z.string().nullable().optional(),
+            chromeCloneQa: z.boolean().optional(),
         }),
         await c.req.json(),
     );
     const acc = accountById(c.req.param("id"));
     if (!acc) return c.json({ error: "not found" }, 404);
     const chosen = body.chromeDeviceId === undefined ? undefined : body.chromeDeviceId ? chromeBrowsersOf(acc).find((b) => b.deviceId === body.chromeDeviceId) ?? null : null;
-    db.prepare(`UPDATE accounts SET name = ?, failover_enabled = ?, failover_threshold = ?, chrome_device_id = ?, chrome_browser_name = ? WHERE id = ?`).run(
+    db.prepare(`UPDATE accounts SET name = ?, failover_enabled = ?, failover_threshold = ?, chrome_device_id = ?, chrome_browser_name = ?, chrome_clone_qa = ? WHERE id = ?`).run(
         body.name ?? acc.name,
         body.failover_enabled === undefined ? acc.failover_enabled : body.failover_enabled ? 1 : 0,
         body.failover_threshold ?? acc.failover_threshold,
         chosen === undefined ? acc.chrome_device_id : chosen?.deviceId ?? null,
         chosen === undefined ? acc.chrome_browser_name : chosen ? chromeBrowserLabel(chosen) : null,
+        body.chromeCloneQa === undefined ? acc.chrome_clone_qa : body.chromeCloneQa ? 1 : 0,
         acc.id,
     );
     emitAccount(acc.id);
@@ -399,6 +401,13 @@ app.post("/api/accounts/:id/login", async (c) => {
         { CLAUDE_CONFIG_DIR: dir },
     );
     return c.json({ terminal: name, dir });
+});
+
+// One copy of the account's QA Chrome profile: started, its extension awaited as a connected browser, then removed.
+app.post("/api/accounts/:id/clone-test", async (c) => {
+    const acc = accountById(c.req.param("id"));
+    if (!acc) return c.json({ error: "not found" }, 404);
+    return c.json(await engine.testClone(acc, acc.login_dir ?? browserDirFor(cfg, acc)));
 });
 
 app.post("/api/accounts/:id/probe-chrome", async (c) => {

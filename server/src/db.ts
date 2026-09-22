@@ -60,6 +60,8 @@ export interface AccountRow {
     chrome_browsers: string | null;
     chrome_device_id: string | null;
     chrome_browser_name: string | null;
+    // 1: every browser QA run copies the profile above into a private Chrome (chrome-clones.ts) instead of sharing it.
+    chrome_clone_qa: number;
     failover_enabled: number;
     failover_threshold: number;
     // What `claude` picks when no --model is passed for this account (observed from run init events / a probe).
@@ -693,6 +695,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["accounts.chrome_browsers", `ALTER TABLE accounts ADD COLUMN chrome_browsers TEXT`],
     ["accounts.chrome_device_id", `ALTER TABLE accounts ADD COLUMN chrome_device_id TEXT`],
     ["accounts.chrome_browser_name", `ALTER TABLE accounts ADD COLUMN chrome_browser_name TEXT`],
+    ["accounts.chrome_clone_qa", `ALTER TABLE accounts ADD COLUMN chrome_clone_qa INTEGER NOT NULL DEFAULT 0`],
     ["envs.chrome_browser_name", `ALTER TABLE envs ADD COLUMN chrome_browser_name TEXT`],
     ["config_dirs.login_email", `ALTER TABLE config_dirs ADD COLUMN login_email TEXT`],
     ["config_dirs.login_ok", `ALTER TABLE config_dirs ADD COLUMN login_ok INTEGER`],
