@@ -167,7 +167,9 @@ const pidOf = async (dir: string): Promise<number | null> => {
 // `index` staggers the window so several clones do not stack exactly on top of each other.
 export const launchClone = async (clone: ChromeClone, url: string, index = 0): Promise<ChromeClone> => {
     const app = APP_NAMES[clone.browser] ?? "Google Chrome";
+    // -g: the new Chrome starts behind the human's windows instead of taking the front.
     const args = [
+        "-g",
         "-na",
         app,
         "--args",
@@ -221,10 +223,13 @@ export const cdpClose = (port: number, id: string): Promise<unknown> => cdpGet(p
 export const cdpNewTab = (port: number, url: string): Promise<CdpTab> => cdpGet<CdpTab>(port, `/json/new?${url}`, "PUT");
 
 // Same job as activateChromeTab for the human's Chrome: keep the newest tab on the app origin in front (a background
-// tab stops rendering popovers). /json lists tabs most recently activated first, so the first match is the live one.
+// tab stops rendering popovers). /json lists the front tab first, so nothing is done while an app tab is already in
+// front — CDP activation raises the whole window to the top of the screen, which must not happen every few seconds.
 export const activateCloneTab = async (port: number, urlPrefix: string): Promise<boolean> => {
     try {
-        const tab = (await cdpTabs(port)).find((t) => t.url.startsWith(urlPrefix));
+        const tabs = await cdpTabs(port);
+        if (tabs[0]?.url.startsWith(urlPrefix)) return true;
+        const tab = tabs.find((t) => t.url.startsWith(urlPrefix));
         if (!tab) return false;
         await cdpActivate(port, tab.id);
         return true;

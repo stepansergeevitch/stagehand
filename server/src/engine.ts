@@ -2703,7 +2703,9 @@ export class Engine extends EventEmitter {
                 this.setTaskStatus(taskId, "running", `${def.label} · copying Chrome profile "${chromeBrowserLabel(cloneSource)}" for this run`);
                 void this.prepareClone(task, chrome.account, cloneSource, chrome.configDir, this.appUrlFor(task, env))
                     .then((clone) => {
-                        this.clones.set(taskId, { ...clone, accountId: chrome.account.id });
+                        // A parallel dispatch of the same task may have prepared its own copy first: one copy per task.
+                        if (this.clones.has(taskId)) void quitClone(clone);
+                        else this.clones.set(taskId, { ...clone, accountId: chrome.account.id });
                         this.dispatch(taskId, stage, { ...opts, cloneReady: true, chromeVerified: true, chromeFlagsVerified: true });
                     })
                     .catch((e: unknown) => {
@@ -2790,6 +2792,14 @@ export class Engine extends EventEmitter {
         }
         this.queuedOpts.delete(`${taskId}:${stage}`);
 
+        // Two top-level dispatches of one task (a Retry click plus an automatic re-dispatch, two clicks) prepare in
+        // parallel for up to a minute (BE/FE, seeds, Chrome copy, probe); only the first to get here starts a run
+        // (PRODUCT-10502, 2026-09-22: two Manual QA sessions drove two cloned Chromes at once).
+        const already = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND status = 'running'`).get(taskId) as { n: number };
+        if (already.n > 0) {
+            console.log(`[stagehand] ${task.ticket_id}: ${def.label} already has a run going — duplicate dispatch dropped`);
+            return;
+        }
         const runId = randomUUID();
         const attempt = opts.attempt ?? 1;
         const fresh = def.freshSession === true;
