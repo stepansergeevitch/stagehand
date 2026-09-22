@@ -71,7 +71,7 @@ STAGEHAND_DEV_TLS_CERT=/path/cert.pem STAGEHAND_DEV_TLS_KEY=/path/key.pem npx vi
 
 Then in the UI: add a Claude config dir, add an AI account (it opens a terminal running `claude setup-token`), add an
 environment (path, base branch, backend/frontend commands with `{{port}}`, setup command), set the ClickUp or Linear
-token under Task managers, and create a task from a ticket id.
+token under Integrations, and create a task from a ticket id.
 
 State lives in `~/.stagehand/` (`config.json`, `stagehand.sqlite`, `tasks/`, `runs/`, `accounts/`). Set
 `STAGEHAND_HOME` to use another directory — handy for a scratch instance while the real one keeps working.

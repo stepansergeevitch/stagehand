@@ -66,7 +66,7 @@ export const Dashboard = ({ envs, tasks, readiness, onOpen }: { envs: Env[]; tas
             {warnings.length > 0 && (
                 <section className="card">
                     <h2>Not ready <span className="chip warn">{warnings.length}</span></h2>
-                    <p className="field-hint">Found now, not when a stage blocks. Fix these on the AI accounts / Task managers pages.</p>
+                    <p className="field-hint">Found now, not when a stage blocks. Fix these on the AI accounts / Integrations pages.</p>
                     {warnings.map((r) => (
                         <div key={r.envId} className="kv" style={{ marginBottom: 6 }}>
                             <b>{r.envName}</b>

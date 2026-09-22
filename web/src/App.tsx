@@ -22,11 +22,12 @@ const NAV: { id: Page; label: string; hint: string }[] = [
     { id: "envs", label: "Environments", hint: "Repositories, services, which config dir and account they use" },
     { id: "dirs", label: "Config dirs", hint: "Claude config dirs: skills, hooks, rules, Chrome" },
     { id: "accounts", label: "AI accounts", hint: "Provider logins (tokens), usage, failover" },
-    { id: "managers", label: "Task managers", hint: "ClickUp / Linear credentials" },
+    { id: "integrations", label: "Integrations", hint: "External services, each tagged with its type: task managers (ClickUp, Linear), notifications, decision model (Jev)" },
 ];
 
 // Where the user is, as a URL hash: #/dashboard, #/tasks, #/tasks/<taskId>/<tab>, #/sessions, #/analytics, #/envs,
-// #/env/<envId>, #/dirs, #/dir/<dirId>, #/accounts, #/managers. Reloads and back/forward restore it.
+// #/env/<envId>, #/dirs, #/dir/<dirId>, #/accounts, #/integrations (old #/managers links still resolve). Reloads and
+// back/forward restore it.
 interface Route {
     page: Page;
     selected: string | null;
@@ -34,7 +35,7 @@ interface Route {
     envId: string | null;
     dirId: string | null;
 }
-const PAGES: readonly Page[] = ["dashboard", "tasks", "sessions", "analytics", "envs", "dirs", "accounts", "managers"];
+const PAGES: readonly Page[] = ["dashboard", "tasks", "sessions", "analytics", "envs", "dirs", "accounts", "integrations"];
 const parseHash = (hash: string): Route => {
     const [head = "", a = "", b = ""] = hash.replace(/^#\/?/, "").split("/");
     const r: Route = { page: "dashboard", selected: null, taskTab: "work", envId: null, dirId: null };
@@ -49,7 +50,8 @@ const parseHash = (hash: string): Route => {
     } else if (head === "dir" && a) {
         r.page = "dir";
         r.dirId = decodeURIComponent(a);
-    } else if ((PAGES as readonly string[]).includes(head)) r.page = head as Page;
+    } else if (head === "managers") r.page = "integrations";
+    else if ((PAGES as readonly string[]).includes(head)) r.page = head as Page;
     return r;
 };
 const buildHash = (page: Page, selected: string | null, taskTab: TaskTab, envId: string, dirId: string | null): string => {
@@ -383,7 +385,7 @@ export const App = () => {
                         </main>
                     </div>
                 )}
-                {(page === "envs" || page === "dirs" || page === "accounts" || page === "managers") && (
+                {(page === "envs" || page === "dirs" || page === "accounts" || page === "integrations") && (
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}

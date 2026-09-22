@@ -49,7 +49,7 @@ export const jevAsk = async <Q extends Record<string, JevQuestion>>(
     questions: Q,
     usage?: { db: DB; ctx: Omit<UsageContext, "kind"> & { kind?: string } },
 ): Promise<JevResult<Q>> => {
-    if (!cfg.typesafeApiKey) throw new Error("Jev is not configured — add it on the Task managers page");
+    if (!cfg.typesafeApiKey) throw new Error("Jev is not configured — add it on the Integrations page");
     const started = Date.now();
     const res = await fetch(JEV_URL, {
         method: "POST",

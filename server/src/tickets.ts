@@ -370,7 +370,7 @@ export const fetchTicket = async (
 // Server-side only (ClickUp/Linear REST); refuses instead of spawning an agent when no token is configured.
 export const fetchTicketRest = async (ref: TicketRef, cfg: Config, taskDir: string, outFile = "ticket.json"): Promise<Ticket> => {
     const restConfigured = ref.source === "clickup" ? !!cfg.clickupToken : !!cfg.linearApiKey;
-    if (!restConfigured) throw new Error(`no ${ref.source === "clickup" ? "ClickUp" : "Linear"} token configured — add one under Task managers, then fetch again`);
+    if (!restConfigured) throw new Error(`no ${ref.source === "clickup" ? "ClickUp" : "Linear"} token configured — add one under Integrations, then fetch again`);
     const fetched = ref.source === "clickup" ? await fetchClickUpRest(ref, cfg) : await fetchLinearRest(ref, cfg);
     const ticket = await downloadAttachments(fetched, cfg, taskDir);
     writeFileSync(join(taskDir, outFile), JSON.stringify(ticket, null, 2));

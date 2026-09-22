@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager } from "./api";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
-export type ManageTab = "envs" | "dirs" | "accounts" | "managers";
+export type ManageTab = "envs" | "dirs" | "accounts" | "integrations";
+
+// Every card on the Integrations page carries one of these, so a new kind of integration announces what it is.
+type IntegrationType = "task manager" | "notifications" | "decision model";
+const TypeChip = ({ type }: { type: IntegrationType }) => <span className="chip type" title="integration type">{type}</span>;
 
 const repoList = (json: string | null): string => {
     try {
@@ -13,7 +17,7 @@ const repoList = (json: string | null): string => {
     }
 };
 
-const TITLE: Record<ManageTab, string> = { envs: "Environments", dirs: "Claude config dirs", accounts: "AI accounts", managers: "Task managers" };
+const TITLE: Record<ManageTab, string> = { envs: "Environments", dirs: "Claude config dirs", accounts: "AI accounts", integrations: "Integrations" };
 
 export const ManagePage = ({
     tab,
@@ -58,9 +62,10 @@ export const ManagePage = ({
             {tab === "envs" && <EnvList envs={envs} configDirs={configDirs} accounts={accounts} tasks={tasks} onConfigure={onConfigureEnv} onAdd={onAddEnv} onDelete={(id) => act(() => api.deleteEnv(id))} />}
             {tab === "dirs" && <ConfigDirList dirs={configDirs} onOpen={onOpenDir} act={act} />}
             {tab === "accounts" && <AccountList accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onError={onError} />}
-            {tab === "managers" && <TaskManagerList onError={onError} />}
-            {tab === "managers" && settings && <NotificationsCard settings={settings} onChanged={onChanged} onError={onError} />}
-            {tab === "managers" && settings && <JevCard settings={settings} onChanged={onChanged} onError={onError} />}
+            {tab === "integrations" && <p className="field-hint">External services Stagehand talks to. Each card is tagged with its type: task manager (tickets), notifications (pushes to you), decision model (Jev).</p>}
+            {tab === "integrations" && <TaskManagerList onError={onError} />}
+            {tab === "integrations" && settings && <NotificationsCard settings={settings} onChanged={onChanged} onError={onError} />}
+            {tab === "integrations" && settings && <JevCard settings={settings} onChanged={onChanged} onError={onError} />}
         </div>
     );
 };
@@ -264,7 +269,7 @@ const NotificationsCard = ({ settings, onChanged, onError }: { settings: Setting
     const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
     return (
         <section className="card manager">
-            <h2>Notifications {n.ntfyTopic ? <span className="chip ok">phone via ntfy</span> : <span className="chip">desktop only</span>}</h2>
+            <h2>Notifications <TypeChip type="notifications" /> {n.ntfyTopic ? <span className="chip ok">phone via ntfy</span> : <span className="chip">desktop only</span>}</h2>
             <p className="field-hint">Sent whenever a task starts waiting on you: review needed, blocked (login, missing data), failed, or parked on a rate limit — once per distinct reason. Phone: install the ntfy app (iOS/Android), subscribe to a private topic name, and enter it here; Stagehand posts to it. Set the public URL so a tap opens the task.</p>
             <div className="env-fields manager-fields">
                 <label className="inline"><input type="checkbox" checked={f.macos} onChange={(e) => setF({ ...f, macos: e.target.checked })} /> macOS notification centre on this Mac <span className="chip">{settings.desktopNotifier}</span></label>
@@ -292,7 +297,7 @@ const JevCard = ({ settings, onChanged, onError }: { settings: Settings; onChang
     const configured = Boolean(settings.typesafeApiKey);
     return (
         <section className="card manager">
-            <h2>Jev decision model {configured ? <span className="chip ok">configured</span> : <span className="chip">no key</span>}</h2>
+            <h2>Jev (TypeSafe AI) <TypeChip type="decision model" /> {configured ? <span className="chip ok">configured</span> : <span className="chip">no key</span>}</h2>
             <p className="field-hint">TypeSafe AI's Jev answers typed questions (yes/no, choice, score) over a piece of state with calibrated probabilities — no prose, sub-second, $0.042 per 1M input tokens. Calls are recorded in Analytics as kind <code>jev</code>. Without a key every Jev-backed judgment falls back to the built-in heuristics.</p>
             <div className="env-fields manager-fields">
                 <label>TypeSafe API key <input value={key} onChange={(e) => setKey(e.target.value)} placeholder={settings.typesafeApiKey ?? "apikey_…"} /></label>
@@ -322,7 +327,7 @@ const TaskManagerList = ({ onError }: { onError: (m: string) => void }) => {
                 const t = test[m.source];
                 return (
                     <section className="card manager" key={m.source}>
-                        <h2>{m.label} {m.configured ? <span className="chip ok">configured</span> : <span className="chip">no token</span>}</h2>
+                        <h2>{m.label} <TypeChip type="task manager" /> {m.configured ? <span className="chip ok">configured</span> : <span className="chip">no token</span>}</h2>
                         <div className="kv">
                             <b>Used by</b><span>{m.envs.join(", ") || "no environment yet"}</span>
                         </div>
