@@ -152,7 +152,8 @@ export const cloneProfile = async (browser: string, profileDir: string, slot: st
 };
 
 const pidOf = async (dir: string): Promise<number | null> => {
-    const { stdout } = await execFileAsync("pgrep", ["-f", `--user-data-dir=${dir}`]).catch(() => ({ stdout: "" }));
+    // "--" ends option parsing: the pattern itself starts with "--".
+    const { stdout } = await execFileAsync("pgrep", ["-f", "--", `--user-data-dir=${dir}`]).catch(() => ({ stdout: "" }));
     // The browser process is the lowest pid of the family (helpers are its children, spawned later).
     const pids = stdout
         .split("\n")
@@ -247,7 +248,7 @@ export const quitClone = async (clone: Pick<ChromeClone, "dir" | "pid">): Promis
         while (Date.now() < deadline && (await pidOf(clone.dir)) !== null) await sleep(300);
     }
     // Helpers that outlived the browser process, or a browser that ignored TERM.
-    await execFileAsync("pkill", ["-9", "-f", `--user-data-dir=${clone.dir}`]).catch(() => undefined);
+    await execFileAsync("pkill", ["-9", "-f", "--", `--user-data-dir=${clone.dir}`]).catch(() => undefined);
     await sleep(200);
     rmSync(clone.dir, { recursive: true, force: true });
 };
