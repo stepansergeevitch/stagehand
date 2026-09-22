@@ -29,6 +29,15 @@ export const recordUsage = (db: DB, ctx: UsageContext, result: ResultEvent): voi
     }
 };
 
+// A call to a non-Claude model (Jev) — one row, cost computed by the caller from the provider's price list.
+export const recordExternalUsage = (db: DB, ctx: UsageContext, r: { model: string; inputTokens: number; outputTokens: number; costUsd: number; durationMs: number | null }): void => {
+    const task = ctx.taskId ? (db.prepare(`SELECT ticket_id, title FROM tasks WHERE id = ?`).get(ctx.taskId) as { ticket_id: string; title: string | null } | undefined) : undefined;
+    db.prepare(
+        `INSERT INTO usage (id, at, account_id, env_id, task_id, run_id, kind, stage, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, turns, ticket_id, task_title)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, NULL, ?, ?)`,
+    ).run(randomUUID(), ctx.at ?? now(), ctx.accountId, ctx.envId, ctx.taskId, ctx.runId, ctx.kind, ctx.stage, r.model, r.inputTokens, r.outputTokens, r.costUsd, r.durationMs, task?.ticket_id ?? null, task?.title ?? null);
+};
+
 // Before a task row goes away: stamp its final name onto every usage row that points at it.
 export const stampTaskOnUsage = (db: DB, taskId: string): void => {
     db.prepare(`UPDATE usage SET ticket_id = (SELECT t.ticket_id FROM tasks t WHERE t.id = ?), task_title = (SELECT t.title FROM tasks t WHERE t.id = ?) WHERE task_id = ?`).run(taskId, taskId, taskId);

@@ -116,7 +116,7 @@ export const windowPct = (shares: WindowShare[], accountId: string | null, windo
 export const pct = (v: number | null | undefined): string => (v == null ? "—" : v >= 10 ? `${Math.round(v)}%` : v >= 1 ? `${v.toFixed(1)}%` : `${v.toFixed(2)}%`);
 export interface Notifications { macos: boolean; ntfyServer: string; ntfyTopic: string | null; ntfyToken: string | null; baseUrl: string | null; localBaseUrl: string }
 export interface Settings {
-    clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null;
+    clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null; typesafeApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
     notifications: Notifications;
     desktopNotifier: string;
@@ -388,6 +388,7 @@ export const api = {
     patchSettings: (body: Partial<Omit<Settings, "models" | "notifications">> & { notifications?: Partial<Notifications> }) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
     testNotification: () => post<{ macos: boolean; ntfy: boolean | null; error?: string }>("/api/notifications/test"),
+    testJev: () => post<{ ok: true; model: string; ms: number; inputTokens: number; summary: string } | { ok: false; error: string }>("/api/jev/test"),
     review: (id: string, body: { verdict: "approve" | "changes"; repo?: string; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[]; skipQa?: boolean }) =>
         post<Task>(`/api/tasks/${id}/review`, body),
     // filter: a set of commit shas (contiguous runs become one group each) or "uncommitted"; none = everything vs the base.

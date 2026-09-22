@@ -20,6 +20,7 @@ import { inspectConfigDir } from "./config-dirs.js";
 import { recordUsage, taskUsage, usageReport, windowShares } from "./usage.js";
 import { type ResultEvent } from "./claude/runner.js";
 import { desktopNotifier, notify } from "./notify.js";
+import { jevProbe } from "./jev.js";
 
 const MODEL_OPTIONS = [
     { value: "", label: "Account default" },
@@ -876,6 +877,7 @@ app.get("/api/settings", (c) =>
         clickupToken: mask(cfg.clickupToken),
         clickupTeamId: cfg.clickupTeamId,
         linearApiKey: mask(cfg.linearApiKey),
+        typesafeApiKey: mask(cfg.typesafeApiKey),
         defaultModel: cfg.defaultModel,
         models: MODEL_OPTIONS,
         notifications: { ...cfg.notifications, ntfyToken: mask(cfg.notifications.ntfyToken) },
@@ -898,12 +900,16 @@ app.post("/api/notifications/test", async (c) =>
     ),
 );
 
+// One real Jev request with the stored configuration: proves the endpoint and the response contract.
+app.post("/api/jev/test", async (c) => c.json(await jevProbe(cfg)));
+
 app.patch("/api/settings", async (c) => {
     const body = json(
         z.object({
             clickupToken: z.string().nullable().optional(),
             clickupTeamId: z.string().nullable().optional(),
             linearApiKey: z.string().nullable().optional(),
+            typesafeApiKey: z.string().nullable().optional(),
             defaultModel: z.string().nullable().optional(),
             notifications: z
                 .object({
@@ -921,6 +927,7 @@ app.patch("/api/settings", async (c) => {
     if (body.clickupToken !== undefined) cfg.clickupToken = body.clickupToken;
     if (body.clickupTeamId !== undefined) cfg.clickupTeamId = body.clickupTeamId;
     if (body.linearApiKey !== undefined) cfg.linearApiKey = body.linearApiKey;
+    if (body.typesafeApiKey !== undefined) cfg.typesafeApiKey = body.typesafeApiKey?.trim() || null;
     if (body.notifications) {
         const n = body.notifications;
         if (n.macos !== undefined) cfg.notifications.macos = n.macos;

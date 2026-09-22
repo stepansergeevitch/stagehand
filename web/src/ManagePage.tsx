@@ -60,6 +60,7 @@ export const ManagePage = ({
             {tab === "accounts" && <AccountList accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onError={onError} />}
             {tab === "managers" && <TaskManagerList onError={onError} />}
             {tab === "managers" && settings && <NotificationsCard settings={settings} onChanged={onChanged} onError={onError} />}
+            {tab === "managers" && settings && <JevCard settings={settings} onChanged={onChanged} onError={onError} />}
         </div>
     );
 };
@@ -276,6 +277,30 @@ const NotificationsCard = ({ settings, onChanged, onError }: { settings: Setting
             <div className="actions">
                 <button className="primary" onClick={async () => { try { await api.patchSettings({ notifications: { macos: f.macos, ntfyServer: f.ntfyServer, ntfyTopic: f.ntfyTopic || null, ...(f.ntfyToken ? { ntfyToken: f.ntfyToken } : {}), baseUrl: f.baseUrl || null, localBaseUrl: f.localBaseUrl || "http://localhost:5173" } }); setF({ ...f, ntfyToken: "" }); await onChanged(); setResult({ ok: true, text: "saved" }); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Save</button>
                 <button onClick={async () => { setResult({ ok: true, text: "sending…" }); try { const r = await api.testNotification(); setResult({ ok: !r.error, text: `desktop ${r.macos ? "sent" : "off"} · phone ${r.ntfy === null ? "not configured" : r.ntfy ? "sent" : `failed: ${r.error ?? "?"}`}` }); } catch (e) { setResult({ ok: false, text: String((e as Error).message ?? e) }); } }}>Send a test</button>
+            </div>
+            {result && <div className={`test-result ${result.ok ? "" : "bad"}`}>{result.text}</div>}
+        </section>
+    );
+};
+
+// Jev (TypeSafe AI): a decision model that answers typed yes/no, choice and score questions with probabilities in
+// ~100–500 ms — for the engine's small judgments (CI failure triage, QA blocker kinds, comment routing) instead of
+// regexes or a full Claude run.
+const JevCard = ({ settings, onChanged, onError }: { settings: Settings; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
+    const [key, setKey] = useState("");
+    const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+    const configured = Boolean(settings.typesafeApiKey);
+    return (
+        <section className="card manager">
+            <h2>Jev decision model {configured ? <span className="chip ok">configured</span> : <span className="chip">no key</span>}</h2>
+            <p className="field-hint">TypeSafe AI's Jev answers typed questions (yes/no, choice, score) over a piece of state with calibrated probabilities — no prose, sub-second, $0.042 per 1M input tokens. Calls are recorded in Analytics as kind <code>jev</code>. Without a key every Jev-backed judgment falls back to the built-in heuristics.</p>
+            <div className="env-fields manager-fields">
+                <label>TypeSafe API key <input value={key} onChange={(e) => setKey(e.target.value)} placeholder={settings.typesafeApiKey ?? "apikey_…"} /></label>
+            </div>
+            <div className="actions">
+                <button className="primary" disabled={!key.trim()} onClick={async () => { try { await api.patchSettings({ typesafeApiKey: key.trim() }); setKey(""); await onChanged(); setResult({ ok: true, text: "saved" }); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Save</button>
+                <button disabled={!configured} onClick={async () => { setResult({ ok: true, text: "asking Jev to triage a sample CI failure…" }); try { const r = await api.testJev(); setResult(r.ok ? { ok: true, text: `OK — ${r.model} answered in ${r.ms} ms (${r.inputTokens} input tokens): ${r.summary}` } : { ok: false, text: `failed: ${r.error}` }); } catch (e) { setResult({ ok: false, text: String((e as Error).message ?? e) }); } }}>Test</button>
+                <button className="danger" disabled={!configured} onClick={async () => { if (!confirm("Remove the TypeSafe API key?")) return; try { await api.patchSettings({ typesafeApiKey: null }); await onChanged(); setResult(null); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Remove key</button>
             </div>
             {result && <div className={`test-result ${result.ok ? "" : "bad"}`}>{result.text}</div>}
         </section>

@@ -16,6 +16,8 @@ const ConfigSchema = z.object({
     // Resolved once from GET /user with the token above and cached here.
     clickupUserId: z.string().nullable().default(null),
     linearApiKey: z.string().nullable().default(null),
+    // TypeSafe AI — Jev decision model (jev.ts). Null: Jev-backed judgments use the built-in heuristics.
+    typesafeApiKey: z.string().nullable().default(null),
     defaultModel: z.string().nullable().default(null),
     // Where to push "needs you" events: macOS notification centre, and ntfy (phone app subscribed to ntfyTopic).
     notifications: z
@@ -79,6 +81,7 @@ const defaults = (): Config => ({
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
     clickupUserId: null,
     linearApiKey: null,
+    typesafeApiKey: null,
     defaultModel: null,
     notifications: { macos: true, ntfyServer: "https://ntfy.sh", ntfyTopic: null, ntfyToken: null, baseUrl: null, localBaseUrl: "http://localhost:5173" },
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_fix: null, helper: "sonnet" },
