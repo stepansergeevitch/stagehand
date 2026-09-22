@@ -1653,6 +1653,7 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                     <summary>
                         <h3>
                             <span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip">API</span>}<span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}</span> <span>after {chip(a?.outcome)}</span>
+                            {a?.jev && <span className={`chip ${a.jev.verdict === "pass" ? "ok" : "warn"}`} title={`Jev's grade of the runner's observation against the asserts (pass needs 85); the runner said ${a.jev.runner}`}>Jev {a.jev.grade}/100</span>}
                             {(suspicious(b) || suspicious(a)) && <span className="chip warn" title="The runner marked this pass but its observation mentions an error — check the screenshots">⚠ observation mentions an error</span>}
                         </h3>
                     </summary>

@@ -197,7 +197,8 @@ export interface Design {
 }
 export interface QaPass {
     pass: "before" | "after";
-    scenarios: Array<{ id: string; outcome: "pass" | "fail" | "blocked" | "needs_human"; observation: string; shots: Array<{ step: number; file: string }>; log?: string }>;
+    // `jev`: Jev's 0–100 grade of the runner's observation against the asserts (Manual QA only; pass needs 85+).
+    scenarios: Array<{ id: string; outcome: "pass" | "fail" | "blocked" | "needs_human"; observation: string; shots: Array<{ step: number; file: string }>; log?: string; jev?: { grade: number; verdict: "pass" | "fail"; runner: string } }>;
     blockers: string[];
 }
 export interface Impl {

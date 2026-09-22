@@ -22,6 +22,7 @@ import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { applyApprovedStepFixes } from "./qa-fixes.js";
 import { fillQaVars, newQaPassId, qaContractProblems, type QaVars } from "./qa-vars.js";
+import { jevAsk, jevEnabled } from "./jev.js";
 import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
 
 // A comment anchored to one line of the review diff. `line` is the new-file line for add/context lines, the old-file line for deletions.
@@ -3646,7 +3647,90 @@ export class Engine extends EventEmitter {
             void this.verifyThenContinue(taskId, def, data, env);
             return;
         }
+        if (def.stage === "manual_qa" && jevEnabled(this.cfg)) {
+            void this.gradeQaWithJev(taskId, env, QaPassResult.parse(data))
+                .catch((e: unknown) => {
+                    console.warn(`[stagehand] jev grading ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                    return QaPassResult.parse(data);
+                })
+                .then((graded) => this.afterStageChecked(taskId, def, graded));
+            return;
+        }
         this.afterStageChecked(taskId, def, data);
+    }
+
+    // Jev grades every Manual QA scenario the runner marked pass or fail: 0–100 = how sure it is that every expected
+    // result held, from the scenario's steps/asserts and the runner's observation (user, 2026-09-22: "auto-use it to
+    // score Manual QA - did it pass or not, 0-100, with 85+ graded as Pass"). A runner "pass" graded under 85 becomes
+    // needs_human with the grade (the human checks it); a runner "fail" keeps its outcome, the grade is only shown.
+    // Grades land in qa/after.json (`jev` per scenario), the summary in Chat.
+    private static readonly JEV_PASS_GRADE = 85;
+    private async gradeQaWithJev(taskId: string, env: EnvRow, qa: QaPassResult): Promise<QaPassResult> {
+        type Scenario = QaPassResult["scenarios"][number];
+        const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+        const grades: Record<string, { grade: number; verdict: "pass" | "fail"; runner: string }> = {};
+        const scenarios: Scenario[] = await Promise.all(
+            qa.scenarios.map(async (s): Promise<Scenario> => {
+                if (s.outcome !== "pass" && s.outcome !== "fail") return s;
+                const spec = design?.qa.find((d) => d.id === s.id);
+                try {
+                    const r = await jevAsk(
+                        this.cfg,
+                        {
+                            scenario: { id: s.id, title: spec?.title ?? "", kind: spec?.kind ?? "browser", steps: (spec?.steps ?? []).map((st, i) => ({ n: i + 1, action: st.action, expected: st.assert })) },
+                            runner: { outcome: s.outcome, observation: s.observation, log: (s.log ?? "").slice(-1500), blockers: qa.blockers },
+                        },
+                        {
+                            passed: {
+                                type: "noul",
+                                instructions: "Every expected result of this scenario held in the observed run",
+                                criteria: {
+                                    true: "The observation confirms each expected result with concrete evidence (values, states, messages); no step skipped, no contradiction, no workaround, no blocker",
+                                    false: "An expected result is contradicted, unverified or skipped, holds only through a workaround, or the runner reports a blocker or an error",
+                                },
+                            },
+                        },
+                        { db: this.db, ctx: { accountId: null, envId: env.id, taskId, runId: null, stage: "manual_qa" } },
+                    );
+                    const grade = Math.round(r.answers.passed.noul * 100);
+                    const verdict: "pass" | "fail" = grade >= Engine.JEV_PASS_GRADE ? "pass" : "fail";
+                    grades[s.id] = { grade, verdict, runner: s.outcome };
+                    if (s.outcome === "pass" && verdict === "fail") {
+                        return { ...s, outcome: "needs_human", observation: `Jev grades this run ${grade}/100 (a pass needs ${Engine.JEV_PASS_GRADE}) — check it yourself. Runner: ${s.observation}` };
+                    }
+                    return s;
+                } catch (e) {
+                    console.warn(`[stagehand] jev grade ${taskId} ${s.id}: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                    return s;
+                }
+            }),
+        );
+        if (Object.keys(grades).length === 0) return qa;
+        const path = join(this.taskDir(taskId), "qa", "after.json");
+        try {
+            const raw = JSON.parse(readFileSync(path, "utf8")) as { scenarios?: Array<{ id: string; outcome: string; observation: string; jev?: unknown }> };
+            for (const sc of raw.scenarios ?? []) {
+                const g = grades[sc.id];
+                if (!g) continue;
+                sc.jev = g;
+                const adjusted = scenarios.find((x) => x.id === sc.id);
+                if (adjusted && adjusted.outcome !== sc.outcome) {
+                    sc.outcome = adjusted.outcome;
+                    sc.observation = adjusted.observation;
+                }
+            }
+            writeFileSync(path, JSON.stringify(raw, null, 2));
+        } catch (e) {
+            console.warn(`[stagehand] jev grades not written to ${path}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+        }
+        this.addMessage(
+            taskId,
+            "agent",
+            `🎯 Jev graded Manual QA (pass ≥ ${Engine.JEV_PASS_GRADE}/100): ${Object.entries(grades)
+                .map(([id, g]) => `${id} ${g.grade}/100 → ${g.verdict}${g.runner !== g.verdict ? ` (runner said ${g.runner}${g.runner === "pass" ? " → needs your check" : ""})` : ""}`)
+                .join(" · ")}`,
+        );
+        return { ...qa, scenarios };
     }
 
     // The env's verification command runs from the worktree after every implementation / PR-fix run — what tests and a
