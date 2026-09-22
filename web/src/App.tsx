@@ -4,6 +4,8 @@ import { BranchPicker } from "./BranchPicker";
 import { accountOrderOf, accountUsableWith, api, envRepos, labelsOf, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
 import { TaskDetailView } from "./TaskDetail";
 import { formatRoute, navigate, taskRoute, useRoute, type Page, type TaskView } from "./routes";
+import { Prompter } from "./Prompter";
+import { prompterBus, type PrompterEvent } from "./prompterBus";
 import { EnvPage } from "./EnvPage";
 import { ConfigDirPage } from "./ConfigDirPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
@@ -178,29 +180,54 @@ export const App = () => {
         void reload();
     }, [reload]);
 
+    // Live updates. The socket reconnects on its own after a drop (a server restart): the lists are re-read and the
+    // Prompter widget re-attaches to its session, so nobody has to reload the page.
     useEffect(() => {
         const proto = location.protocol === "https:" ? "wss" : "ws";
-        const ws = new WebSocket(`${proto}://${location.host}/ws/events`);
-        ws.onmessage = (e) => {
-            const msg = JSON.parse(e.data as string) as { kind: string; payload: unknown };
-            if (msg.kind === "task") {
-                const t = msg.payload as Task | null;
-                if (!t) return;
-                setTasks((prev) => (prev.some((p) => p.id === t.id) ? prev.map((p) => (p.id === t.id ? t : p)) : [t, ...prev]));
-                if (t.id === selected) void loadDetail(t.id);
-            }
-            if (msg.kind === "activity") {
-                const a = msg.payload as { taskId: string; event: { kind: string; summary: string } };
-                setFeed((f) => ({ ...f, [a.taskId]: [...(f[a.taskId] ?? []).slice(-199), `${a.event.kind}: ${a.event.summary}`] }));
-            }
-            if (msg.kind === "message") {
-                const m = msg.payload as { task_id: string };
-                if (m.task_id === selected) void loadDetail(m.task_id);
-            }
-            if (msg.kind === "rate_limit" || msg.kind === "account") void Promise.all([api.accounts(), api.configDirs()]).then(([a, d]) => { setAccounts(a); setConfigDirs(d); });
+        let ws: WebSocket | null = null;
+        let retry: ReturnType<typeof setTimeout> | null = null;
+        let dropped = false;
+        let closed = false;
+        const connect = () => {
+            ws = new WebSocket(`${proto}://${location.host}/ws/events`);
+            ws.onopen = () => {
+                if (!dropped) return;
+                dropped = false;
+                void reload();
+                prompterBus.reconnected();
+            };
+            ws.onclose = () => {
+                if (closed) return;
+                dropped = true;
+                retry = setTimeout(connect, 3_000);
+            };
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data as string) as { kind: string; payload: unknown };
+                if (msg.kind === "task") {
+                    const t = msg.payload as Task | null;
+                    if (!t) return;
+                    setTasks((prev) => (prev.some((p) => p.id === t.id) ? prev.map((p) => (p.id === t.id ? t : p)) : [t, ...prev]));
+                    if (t.id === selected) void loadDetail(t.id);
+                }
+                if (msg.kind === "activity") {
+                    const a = msg.payload as { taskId: string; event: { kind: string; summary: string } };
+                    setFeed((f) => ({ ...f, [a.taskId]: [...(f[a.taskId] ?? []).slice(-199), `${a.event.kind}: ${a.event.summary}`] }));
+                }
+                if (msg.kind === "message") {
+                    const m = msg.payload as { task_id: string };
+                    if (m.task_id === selected) void loadDetail(m.task_id);
+                }
+                if (msg.kind === "rate_limit" || msg.kind === "account") void Promise.all([api.accounts(), api.configDirs()]).then(([a, d]) => { setAccounts(a); setConfigDirs(d); });
+                if (msg.kind === "prompter") prompterBus.emit(msg.payload as PrompterEvent);
+            };
         };
-        return () => ws.close();
-    }, [selected, loadDetail]);
+        connect();
+        return () => {
+            closed = true;
+            if (retry) clearTimeout(retry);
+            ws?.close();
+        };
+    }, [selected, loadDetail, reload]);
 
     useEffect(() => {
         if (selected) void loadDetail(selected);
@@ -457,6 +484,7 @@ export const App = () => {
                     <LazyTerminal session={terminal} />
                 </Modal>
             )}
+            <ErrorBoundary label="Prompter"><Prompter route={route} settings={settings} /></ErrorBoundary>
         </div>
     );
 };

@@ -648,6 +648,26 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL,
     opened_at TEXT
 );
+CREATE TABLE IF NOT EXISTS prompter_sessions (
+    id TEXT PRIMARY KEY,
+    claude_session_id TEXT NOT NULL,
+    model TEXT,
+    account_id TEXT,
+    created_at TEXT NOT NULL,
+    last_at TEXT NOT NULL,
+    pinged_at TEXT NOT NULL,
+    closed_at TEXT,
+    turns INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS prompter_messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES prompter_sessions(id),
+    role TEXT NOT NULL,
+    text TEXT NOT NULL,
+    path TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS prompter_messages_session ON prompter_messages(session_id, created_at);
 `;
 
 // A round of questions the agent asked the human mid-stage (see prompts: questions.json → NEED_INPUT). `questions`

@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager } from "./api";
+import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type PrompterStatus, type Settings, type Task, type TaskManager } from "./api";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
 export type ManageTab = "envs" | "dirs" | "accounts" | "integrations";
 
 // Every card on the Integrations page carries one of these, so a new kind of integration announces what it is.
-type IntegrationType = "task manager" | "notifications" | "decision model";
+type IntegrationType = "task manager" | "notifications" | "decision model" | "assistant";
 const TypeChip = ({ type }: { type: IntegrationType }) => <span className="chip type" title="integration type">{type}</span>;
 
 const repoList = (json: string | null): string => {
@@ -62,6 +62,7 @@ export const ManagePage = ({
             {tab === "envs" && <EnvList envs={envs} configDirs={configDirs} accounts={accounts} tasks={tasks} onConfigure={onConfigureEnv} onAdd={onAddEnv} onDelete={(id) => act(() => api.deleteEnv(id))} />}
             {tab === "dirs" && <ConfigDirList dirs={configDirs} onOpen={onOpenDir} act={act} />}
             {tab === "accounts" && <AccountList accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onError={onError} />}
+            {tab === "accounts" && settings && <PrompterCard settings={settings} accounts={accounts} onChanged={onChanged} onError={onError} />}
             {tab === "integrations" && <p className="field-hint">External services Stagehand talks to. Each card is tagged with its type: task manager (tickets), notifications (pushes to you), decision model (Jev).</p>}
             {tab === "integrations" && <TaskManagerList onError={onError} />}
             {tab === "integrations" && settings && <NotificationsCard settings={settings} onChanged={onChanged} onError={onError} />}
@@ -299,6 +300,72 @@ const NotificationsCard = ({ settings, onChanged, onError }: { settings: Setting
             <div className="actions">
                 <button className="primary" onClick={async () => { try { await api.patchSettings({ notifications: { macos: f.macos, ntfyServer: f.ntfyServer, ntfyTopic: f.ntfyTopic || null, ...(f.ntfyToken ? { ntfyToken: f.ntfyToken } : {}), baseUrl: f.baseUrl || null, localBaseUrl: f.localBaseUrl || "http://localhost:5173" } }); setF({ ...f, ntfyToken: "" }); await onChanged(); setResult({ ok: true, text: "saved" }); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Save</button>
                 <button onClick={async () => { setResult({ ok: true, text: "sending…" }); try { const r = await api.testNotification(); setResult({ ok: !r.error, text: `desktop ${r.macos ? "sent" : "off"} · phone ${r.ntfy === null ? "not configured" : r.ntfy ? "sent" : `failed: ${r.error ?? "?"}`}` }); } catch (e) { setResult({ ok: false, text: String((e as Error).message ?? e) }); } }}>Send a test</button>
+            </div>
+            {result && <div className={`test-result ${result.ok ? "" : "bad"}`}>{result.text}</div>}
+        </section>
+    );
+};
+
+// Prompter: the assistant in the bottom-right corner of the app. Runs on a token account in its own config dir with its
+// own MemPalace (~/.stagehand/prompter); this card picks the account and model, the idle timeout, and seeds the palace.
+const PrompterCard = ({ settings, accounts, onChanged, onError }: { settings: Settings; accounts: Account[]; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
+    const p = settings.prompter;
+    const [status, setStatus] = useState<PrompterStatus | null>(null);
+    const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+    const [idle, setIdle] = useState(String(p.idleMinutes));
+    const [busy, setBusy] = useState(false);
+    const refresh = async () => setStatus(await api.prompterStatus().catch(() => null));
+    useEffect(() => {
+        void refresh();
+    }, []);
+    const save = async (body: Parameters<typeof api.patchSettings>[0]["prompter"]) => {
+        try {
+            await api.patchSettings({ prompter: body });
+            await onChanged();
+            await refresh();
+        } catch (e) {
+            onError(String((e as Error).message ?? e));
+        }
+    };
+    const tokenAccounts = accounts.filter((a) => a.has_token);
+    return (
+        <section className="card manager">
+            <h2>Prompter <TypeChip type="assistant" /> {status ? (status.ready ? <span className="chip ok">ready</span> : <span className="chip bad">not ready</span>) : null}{status && status.open > 0 && <span className="chip">{status.open} open chat{status.open === 1 ? "" : "s"}</span>}</h2>
+            <p className="field-hint">The assistant in the bottom-right corner. It runs headless on a token account, in its own config dir with its own MemPalace under <code>{status?.home ?? "~/.stagehand/prompter"}</code>; every chat window is a fresh session and the palace is its memory between chats. It sees the current page (the URL) with every message and acts through the local API. Usage is recorded in Analytics as kind <code>prompter</code>.</p>
+            {status && !status.ready && <div className="blocked-box">{status.reason}</div>}
+            <div className="kv">
+                <b>AI account</b>
+                <span>
+                    <select value={p.accountId ?? ""} onChange={(e) => void save({ accountId: e.target.value || null })}>
+                        <option value="">— first account with a token{status?.account ? ` (${status.account})` : ""} —</option>
+                        {tokenAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.email ? ` · ${a.email}` : ""}</option>)}
+                    </select>
+                </span>
+                <b>Default model</b>
+                <span>
+                    <select value={p.model} onChange={(e) => void save({ model: e.target.value })}>
+                        {settings.models.filter((m) => m.value).map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                    </select>
+                    <span className="field-hint">The window's own model select overrides this for the next new chat.</span>
+                </span>
+                <b>End an idle chat after</b>
+                <span>
+                    <input value={idle} onChange={(e) => setIdle(e.target.value)} onBlur={() => { const n = Number(idle); if (Number.isFinite(n) && n >= 1 && n !== p.idleMinutes) void save({ idleMinutes: Math.round(n) }); }} style={{ width: 80 }} /> minutes without an open window
+                    <span className="field-hint">A server restart never ends a chat; the window re-attaches and the timer starts again.</span>
+                </span>
+                <b>Farewell turn</b>
+                <span>
+                    <label className="inline"><input type="checkbox" checked={p.farewell} onChange={(e) => void save({ farewell: e.target.checked })} /> before a chat ends, one short turn lets it file what is not filed yet</label>
+                </span>
+                <b>Palace</b>
+                <span>
+                    {status?.seeded ? <>seeded {new Date(status.seeded.at).toLocaleString()} · {status.seeded.total} drawer(s)</> : "not seeded yet"}
+                    <span className="field-hint">Seeding copies the Stagehand knowledge (wings {p.seedWings.join(", ")} and the diary entries about it) from <code>{p.seedFrom}</code>. Re-running only adds what is missing.</span>
+                </span>
+            </div>
+            <div className="actions">
+                <button disabled={busy} onClick={async () => { setBusy(true); setResult({ ok: true, text: "copying drawers…" }); try { const r = await api.prompterSeed(); setResult({ ok: r.ok, text: r.detail }); await refresh(); } catch (e) { setResult({ ok: false, text: String((e as Error).message ?? e) }); } finally { setBusy(false); } }}>{busy ? "Seeding…" : status?.seeded ? "Seed again" : "Seed the palace"}</button>
+                <button onClick={() => void refresh()}>Refresh</button>
             </div>
             {result && <div className={`test-result ${result.ok ? "" : "bad"}`}>{result.text}</div>}
         </section>

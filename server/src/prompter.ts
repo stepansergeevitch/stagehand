@@ -1,0 +1,347 @@
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import type { Config } from "./config.js";
+import { now, type AccountRow, type DB, type EnvRow, type TaskRow } from "./db.js";
+import { authEnv } from "./claude/accounts.js";
+import { startClaude, type ActivityEvent, type ClaudeRun, type ResultEvent } from "./claude/runner.js";
+import { recordUsage } from "./usage.js";
+import { parseRoute, type Route, type TaskView } from "./routes.js";
+import { STAGE_DEFS } from "./stages/registry.js";
+
+// Prompter — the assistant in the bottom-right corner of the web app. A theatre prompter feeds lines from the prompt
+// box; this one knows how Stagehand works (its own MemPalace), sees where the human is (the URL hash, described per
+// turn), and acts through the local API. It lives in its own data folder:
+//
+//   ~/.stagehand/prompter/            = MEMPALACE_HOME (config.json → palace_path, knowledge_graph.sqlite3, palace/)
+//   ~/.stagehand/prompter/claude/     = CLAUDE_CONFIG_DIR (CLAUDE.md, settings.json, skills/ — synced from the repo's
+//                                       prompter/ folder at every start; .claude.json copied once from the main dir)
+//   ~/.stagehand/prompter/.mcp.json   = the mempalace MCP server, pointed at the folder above
+//   ~/.stagehand/prompter/logs/       = one stream-json event log per turn
+//
+// Every chat window is a fresh claude session (first turn --session-id, later turns --resume); the palace is the only
+// memory between chats. A session ends when the window closes or when nothing pinged it for `idleMinutes`; before it
+// ends, one short farewell turn asks it to file what is not filed yet.
+
+const execFileAsync = promisify(execFile);
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const TEMPLATES = join(REPO_ROOT, "prompter");
+
+export interface PrompterSessionRow {
+    id: string;
+    claude_session_id: string;
+    model: string | null;
+    account_id: string | null;
+    created_at: string;
+    last_at: string;
+    pinged_at: string;
+    closed_at: string | null;
+    turns: number;
+}
+export interface PrompterMessageRow {
+    id: string;
+    session_id: string;
+    role: "user" | "assistant" | "system";
+    text: string;
+    path: string | null;
+    created_at: string;
+}
+export type PrompterEvent =
+    | { sessionId: string; kind: "text"; text: string }
+    | { sessionId: string; kind: "activity"; text: string }
+    | { sessionId: string; kind: "done"; message: PrompterMessageRow | null; error: string | null }
+    | { sessionId: string; kind: "closed" };
+
+export class Prompter {
+    readonly home: string;
+    readonly configDir: string;
+    private readonly active = new Map<string, ClaudeRun>();
+    private timer: NodeJS.Timeout | null = null;
+
+    constructor(
+        private readonly db: DB,
+        private readonly cfg: Config,
+        private readonly emit: (ev: PrompterEvent) => void,
+    ) {
+        this.home = join(cfg.dataDir, "prompter");
+        this.configDir = join(this.home, "claude");
+    }
+
+    // ---------- the data folder ----------
+
+    // Creates the folder and refreshes the Stagehand-owned parts (identity, settings, skills, MCP) from the repo.
+    ensureHome(): void {
+        mkdirSync(join(this.configDir, "skills"), { recursive: true });
+        mkdirSync(join(this.home, "logs"), { recursive: true });
+        mkdirSync(join(this.home, "palace"), { recursive: true });
+        if (!existsSync(TEMPLATES)) return;
+        const copyText = (from: string, to: string, subst?: (s: string) => string): void => {
+            if (!existsSync(from)) return;
+            const s = readFileSync(from, "utf8");
+            writeFileSync(to, subst ? subst(s) : s);
+        };
+        copyText(join(TEMPLATES, "CLAUDE.md"), join(this.configDir, "CLAUDE.md"));
+        copyText(join(TEMPLATES, "settings.json"), join(this.configDir, "settings.json"));
+        copyText(join(TEMPLATES, "mcp.json"), join(this.home, ".mcp.json"), (s) => s.replace(/\{\{home\}\}/g, this.home));
+        const skills = join(TEMPLATES, "skills");
+        if (existsSync(skills)) {
+            rmSync(join(this.configDir, "skills"), { recursive: true, force: true });
+            cpSync(skills, join(this.configDir, "skills"), { recursive: true });
+        }
+        // mempalace resolves its data from <MEMPALACE_HOME>/config.json, not from the home itself.
+        const palaceCfg = join(this.home, "config.json");
+        if (!existsSync(palaceCfg)) writeFileSync(palaceCfg, JSON.stringify({ palace_path: join(this.home, "palace"), collection_name: "mempalace_drawers" }, null, 2));
+        // Onboarding flags and the trust of this folder come from the main config dir's .claude.json, once.
+        const claudeJson = join(this.configDir, ".claude.json");
+        if (!existsSync(claudeJson)) {
+            let base: Record<string, unknown> = {};
+            try {
+                base = JSON.parse(readFileSync(join(this.cfg.mainConfigDir, ".claude.json"), "utf8")) as Record<string, unknown>;
+            } catch {
+                /* start from nothing */
+            }
+            const projects = (base["projects"] as Record<string, Record<string, unknown>> | undefined) ?? {};
+            projects[this.home] = { ...(projects[this.home] ?? {}), hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, allowedTools: [] };
+            const { oauthAccount: _o, ...rest } = base;
+            writeFileSync(claudeJson, JSON.stringify({ ...rest, projects }, null, 2));
+        }
+    }
+
+    // The account whose token drives the assistant: the configured one, else the first account with a token.
+    account(): AccountRow | null {
+        const all = this.db.prepare(`SELECT * FROM accounts WHERE logged_in = 1 ORDER BY created_at`).all() as AccountRow[];
+        const chosen = this.cfg.prompter.accountId ? all.find((a) => a.id === this.cfg.prompter.accountId) : undefined;
+        return chosen ?? all.find((a) => a.oauth_token) ?? null;
+    }
+
+    status(): { home: string; configDir: string; account: string | null; model: string; open: number; seeded: { at: string; total: number; copied: number } | null; ready: boolean; reason: string | null } {
+        const acc = this.account();
+        const seeded = this.readSeedMarker();
+        const open = (this.db.prepare(`SELECT COUNT(*) AS n FROM prompter_sessions WHERE closed_at IS NULL`).get() as { n: number }).n;
+        const reason = !acc ? "no AI account with a token — set one up on the AI accounts page" : !acc.oauth_token ? `${acc.name} has no token (a browser-only login cannot run headless)` : null;
+        return { home: this.home, configDir: this.configDir, account: acc?.name ?? null, model: this.cfg.prompter.model, open, seeded, ready: !reason, reason };
+    }
+
+    private readSeedMarker(): { at: string; total: number; copied: number } | null {
+        try {
+            return JSON.parse(readFileSync(join(this.home, "seeded.json"), "utf8")) as { at: string; total: number; copied: number };
+        } catch {
+            return null;
+        }
+    }
+
+    // Copies the Stagehand knowledge out of another palace (see scripts/seed-prompter-palace.py). Re-runnable.
+    async seed(): Promise<{ ok: boolean; detail: string; result?: unknown }> {
+        const script = join(REPO_ROOT, "scripts", "seed-prompter-palace.py");
+        const args = [script, "--src", this.cfg.prompter.seedFrom, "--dst", this.home, "--diary", "wing_claude", "--mention", "stagehand"];
+        for (const w of this.cfg.prompter.seedWings) args.push("--wing", w);
+        try {
+            const { stdout, stderr } = await execFileAsync("python3", args, { timeout: 600_000, maxBuffer: 16 * 1024 * 1024 });
+            const line = stdout.trim().split("\n").pop() ?? "";
+            const result = JSON.parse(line) as { copied: number; skipped: number; total: number; wings: Record<string, number>; extras: string[] };
+            writeFileSync(join(this.home, "seeded.json"), JSON.stringify({ at: now(), total: result.total, copied: result.copied }));
+            const wings = Object.entries(result.wings).map(([k, v]) => `${k}: ${v}`).join(", ");
+            return { ok: true, detail: `${result.copied} drawer(s) copied, ${result.skipped} already there, ${result.total} in the palace (${wings})${result.extras.length ? `; copied ${result.extras.join(", ")}` : ""}${stderr.trim() ? ` — ${stderr.trim().slice(-200)}` : ""}`, result };
+        } catch (e) {
+            const err = e as Error & { stderr?: string; stdout?: string };
+            return { ok: false, detail: `${err.message.slice(0, 200)}${err.stderr ? ` — ${err.stderr.trim().slice(-400)}` : ""}` };
+        }
+    }
+
+    // ---------- sessions ----------
+
+    listSessions(): PrompterSessionRow[] {
+        return this.db.prepare(`SELECT * FROM prompter_sessions WHERE closed_at IS NULL ORDER BY created_at DESC`).all() as PrompterSessionRow[];
+    }
+    session(id: string): PrompterSessionRow | undefined {
+        return this.db.prepare(`SELECT * FROM prompter_sessions WHERE id = ?`).get(id) as PrompterSessionRow | undefined;
+    }
+    messages(id: string): PrompterMessageRow[] {
+        return this.db.prepare(`SELECT * FROM prompter_messages WHERE session_id = ? AND role != 'system' ORDER BY created_at`).all(id) as PrompterMessageRow[];
+    }
+
+    createSession(model?: string | null): PrompterSessionRow {
+        this.ensureHome();
+        const acc = this.account();
+        const ts = now();
+        const id = randomUUID();
+        this.db
+            .prepare(`INSERT INTO prompter_sessions (id, claude_session_id, model, account_id, created_at, last_at, pinged_at, closed_at, turns) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0)`)
+            .run(id, randomUUID(), model?.trim() || this.cfg.prompter.model || null, acc?.id ?? null, ts, ts, ts);
+        return this.session(id)!;
+    }
+
+    ping(id: string): void {
+        this.db.prepare(`UPDATE prompter_sessions SET pinged_at = ? WHERE id = ? AND closed_at IS NULL`).run(now(), id);
+    }
+
+    busy(id: string): boolean {
+        return this.active.has(id);
+    }
+
+    private addMessage(sessionId: string, role: PrompterMessageRow["role"], text: string, path: string | null): PrompterMessageRow {
+        const id = randomUUID();
+        const ts = now();
+        this.db.prepare(`INSERT INTO prompter_messages (id, session_id, role, text, path, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(id, sessionId, role, text, path, ts);
+        this.db.prepare(`UPDATE prompter_sessions SET last_at = ?, pinged_at = ? WHERE id = ?`).run(ts, ts, sessionId);
+        return { id, session_id: sessionId, role, text, path, created_at: ts };
+    }
+
+    // One turn: the human's text with the location described in front of it. Streams text and tool activity as
+    // `prompter` events; the final answer is stored and sent with `done`.
+    async send(id: string, text: string, path: string | null, opts: { system?: boolean; maxTurns?: number } = {}): Promise<PrompterMessageRow> {
+        const s = this.session(id);
+        if (!s || s.closed_at) throw new Error("session not found or closed");
+        if (this.active.has(id)) throw new Error("the assistant is still answering — wait for it");
+        this.ensureHome();
+        const acc = this.account();
+        if (!acc?.oauth_token) throw new Error("no AI account with a token for the assistant");
+        const userMsg = this.addMessage(id, opts.system ? "system" : "user", text, path);
+        const context = path ? this.describe(path) : null;
+        const prompt = `${context ? `<stagehand-context>\nLocation: ${path}\n${context.context}\nLocal API: http://127.0.0.1:${this.cfg.port} (skill stagehand-api). Now: ${new Date().toLocaleString()}.\n</stagehand-context>\n\n` : ""}${text}`;
+        const turn = s.turns + 1;
+        const run = startClaude({
+            prompt,
+            cwd: this.home,
+            configDir: this.configDir,
+            extraEnv: authEnv(acc),
+            ...(turn === 1 ? { sessionId: s.claude_session_id, name: "prompter" } : { resume: s.claude_session_id }),
+            ...(s.model ? { model: s.model } : {}),
+            maxTurns: opts.maxTurns ?? this.cfg.prompter.maxTurns,
+            addDirs: [REPO_ROOT],
+            eventLogPath: join(this.home, "logs", `${id}-${turn}.ndjson`),
+        });
+        this.active.set(id, run);
+        this.db.prepare(`UPDATE prompter_sessions SET turns = ? WHERE id = ?`).run(turn, id);
+        let answer = "";
+        run.on("activity", (ev: ActivityEvent) => {
+            const raw = ev.raw as { type?: string; message?: { content?: Array<Record<string, unknown>> } };
+            if (raw.type !== "assistant") return;
+            for (const block of raw.message?.content ?? []) {
+                if (block["type"] === "text" && typeof block["text"] === "string") {
+                    answer = block["text"];
+                    this.emit({ sessionId: id, kind: "text", text: block["text"] });
+                } else if (block["type"] === "tool_use") {
+                    const input = block["input"] as Record<string, unknown> | undefined;
+                    const hint = String(input?.["query"] ?? input?.["command"] ?? input?.["description"] ?? input?.["file_path"] ?? "").slice(0, 90);
+                    this.emit({ sessionId: id, kind: "activity", text: `${String(block["name"]).replace(/^mcp__mempalace__/, "palace: ")} ${hint}`.trim() });
+                }
+            }
+        });
+        const outcome = await run.done;
+        this.active.delete(id);
+        const result: ResultEvent | null = outcome.result;
+        if (result) recordUsage(this.db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "prompter", stage: null }, result);
+        const finalText = (result?.result?.trim() || answer.trim() || "").trim();
+        const error = !finalText ? (outcome.signal ? `stopped (${outcome.signal})` : outcome.stderr.trim().split("\n").pop()?.slice(0, 300) || `exited with ${outcome.exitCode ?? "?"}`) : result?.is_error ? finalText.slice(0, 300) : null;
+        const message = finalText && !opts.system ? this.addMessage(id, "assistant", finalText, path) : null;
+        if (opts.system && finalText) this.addMessage(id, "system", finalText, path);
+        this.emit({ sessionId: id, kind: "done", message, error });
+        return message ?? userMsg;
+    }
+
+    // Ends a session: an in-flight turn is killed; otherwise one short farewell turn lets the assistant file its notes.
+    async close(id: string, opts: { farewell?: boolean } = {}): Promise<void> {
+        const s = this.session(id);
+        if (!s || s.closed_at) return;
+        const running = this.active.get(id);
+        if (running) running.kill();
+        else if ((opts.farewell ?? this.cfg.prompter.farewell) && s.turns > 0) {
+            await this.send(id, "This chat ends now. File anything durable from it into the palace (a drawer, or a diary line) that is not filed yet, then answer with one short line.", null, { system: true, maxTurns: 8 }).catch((e: unknown) => console.warn(`[prompter] farewell ${id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+        }
+        this.db.prepare(`UPDATE prompter_sessions SET closed_at = ? WHERE id = ? AND closed_at IS NULL`).run(now(), id);
+        this.emit({ sessionId: id, kind: "closed" });
+    }
+
+    // Sessions nobody pinged for idleMinutes (the window closed without saying so, a laptop lid) are ended. A server
+    // restart never ends a chat: open sessions get a fresh idle timer, and the widget re-attaches with its session id
+    // (the conversation itself lives in claude's transcript and resumes with --resume).
+    startReaper(): void {
+        this.ensureHome();
+        this.db.prepare(`UPDATE prompter_sessions SET pinged_at = ? WHERE closed_at IS NULL`).run(now());
+        this.timer = setInterval(() => void this.reap(), 60_000);
+        this.timer.unref();
+    }
+    async reap(): Promise<void> {
+        const cutoff = Date.now() - this.cfg.prompter.idleMinutes * 60_000;
+        const stale = this.db.prepare(`SELECT * FROM prompter_sessions WHERE closed_at IS NULL`).all() as PrompterSessionRow[];
+        for (const s of stale) {
+            if (this.active.has(s.id)) continue;
+            if (new Date(s.pinged_at).getTime() < cutoff) await this.close(s.id);
+        }
+    }
+
+    // ---------- where the human is ----------
+
+    // The URL hash as words: what the location is and what it holds right now, for the prompt and for the widget's chip.
+    describe(path: string): { summary: string; context: string } {
+        const r: Route = parseRoute(path);
+        switch (r.page) {
+            case "dashboard":
+                return r.task ? this.describeTask(r.task, r.view, "Dashboard") : { summary: "Dashboard", context: "Page: Dashboard — tasks that need the human, per environment." };
+            case "tasks": {
+                if (r.task) return this.describeTask(r.task, r.view, "Tasks");
+                const env = r.env ? (this.db.prepare(`SELECT * FROM envs WHERE id = ?`).get(r.env) as EnvRow | undefined) : undefined;
+                const label = r.create ? `New task${env ? ` in ${env.name}` : ""}` : `Tasks${env ? ` · ${env.name}` : ""}`;
+                return { summary: label, context: `Page: ${label}${env ? ` (environment ${env.name}, ${env.path}, base ${env.base_branch})` : ""}.` };
+            }
+            case "sessions": {
+                const s = r.session ? (this.db.prepare(`SELECT s.*, e.name AS env_name FROM sessions s JOIN envs e ON e.id = s.env_id WHERE s.id = ?`).get(r.session) as { name: string; env_name: string; branch: string | null; worktree_path: string | null; tmux: string } | undefined) : undefined;
+                return s
+                    ? { summary: `Session ${s.name}`, context: `Page: Sessions — session "${s.name}" (${s.env_name}${s.branch ? `, branch ${s.branch}` : ""}${s.worktree_path ? `, worktree ${s.worktree_path}` : ", main checkout"}), sub-view ${r.view ?? "terminal"}.` }
+                    : { summary: "Sessions", context: "Page: Sessions — free-form claude sessions in tmux." };
+            }
+            case "analytics":
+                return { summary: "Analytics", context: `Page: Analytics — usage and cost, last ${r.days ?? 7} days.` };
+            case "envs": {
+                const env = r.env ? (this.db.prepare(`SELECT * FROM envs WHERE id = ?`).get(r.env) as EnvRow | undefined) : undefined;
+                return env
+                    ? { summary: `Environment ${env.name}`, context: `Page: environment "${env.name}" configuration (id ${env.id}; path ${env.path}; base ${env.base_branch}; repos ${env.repos ?? "single"}; ticket source ${env.ticket_source}; BE port ${env.be_port ?? "free"}, FE port ${env.fe_port ?? "free"}).` }
+                    : { summary: "Environments", context: "Page: Environments list." };
+            }
+            case "config-dirs": {
+                const d = r.dir ? (this.db.prepare(`SELECT name, path FROM config_dirs WHERE id = ?`).get(r.dir) as { name: string; path: string } | undefined) : undefined;
+                return d ? { summary: `Config dir ${d.name}`, context: `Page: Claude config dir "${d.name}" (${d.path}).` } : { summary: "Config dirs", context: "Page: Config dirs list." };
+            }
+            case "accounts":
+                return { summary: "AI accounts", context: "Page: AI accounts (tokens, browser logins, Chrome profiles, usage)." };
+            case "integrations":
+                return { summary: "Integrations", context: "Page: Integrations (ClickUp, Linear, notifications, Jev)." };
+            default:
+                return { summary: path, context: `Page: ${path}` };
+        }
+    }
+
+    private describeTask(taskId: string, view: TaskView | undefined, page: string): { summary: string; context: string } {
+        const t = this.db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(taskId) as TaskRow | undefined;
+        if (!t) return { summary: "Task (not found)", context: `Page: ${page} — task ${taskId} does not exist any more.` };
+        const env = this.db.prepare(`SELECT * FROM envs WHERE id = ?`).get(t.env_id) as EnvRow | undefined;
+        const run = this.db.prepare(`SELECT stage, status, started_at, finished_at, last_event, error, attempt FROM runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1`).get(taskId) as { stage: string; status: string; started_at: string; finished_at: string | null; last_event: string | null; error: string | null; attempt: number } | undefined;
+        const questions = (this.db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE task_id = ? AND answers IS NULL`).get(taskId) as { n: number }).n;
+        const prs = this.db.prepare(`SELECT repo, number, state, approved_at FROM pr_state WHERE task_id = ?`).all(taskId) as Array<{ repo: string; number: number | null; state: string | null; approved_at: string | null }>;
+        const services = this.db.prepare(`SELECT kind, port, url FROM services WHERE task_id = ? AND stopped_at IS NULL`).all(taskId) as Array<{ kind: string; port: number; url: string }>;
+        const stageLabel = STAGE_DEFS[t.stage]?.label ?? t.stage;
+        const lines = [
+            `Task ${t.ticket_id}${t.title ? ` "${t.title}"` : ""} (id ${t.id}) in ${env?.name ?? t.env_id} · stage ${stageLabel} · status ${t.status}${t.status_line ? ` — "${t.status_line}"` : ""}.`,
+            `Branch ${t.branch ?? "(none yet)"}${t.base_branch ? ` on base ${t.base_branch}` : env ? ` on base ${env.base_branch}` : ""}; worktree ${t.worktree_path ?? "(none yet)"}.`,
+            run ? `Latest run: ${STAGE_DEFS[run.stage as keyof typeof STAGE_DEFS]?.label ?? run.stage} #${run.attempt} ${run.status} (started ${run.started_at}${run.finished_at ? `, finished ${run.finished_at}` : ""})${run.error ? `, error: ${run.error.slice(0, 160)}` : run.last_event ? `, last event: ${run.last_event.slice(0, 120)}` : ""}.` : "No run yet.",
+            questions ? `${questions} open question round(s) from the agent wait for answers.` : "No open questions.",
+            prs.length ? `PRs: ${prs.map((p) => `${p.repo || "repo"} ${p.number ? `#${p.number}` : "(not opened)"}${p.state ? ` ${p.state}` : ""}${p.approved_at ? " approved" : ""}`).join("; ")}.` : "No pull request yet.",
+            services.length ? `Services up: ${services.map((s) => `${s.kind.toUpperCase()} ${s.url}`).join(", ")}.` : "No BE/FE service of this task is running.",
+            t.notes ? `Human notes on the task: ${t.notes.slice(0, 300)}` : "",
+        ].filter(Boolean);
+        const v = view ?? { tab: "work" };
+        const viewing =
+            v.tab === "work" ? `Viewing: Work tab, step ${v.step ?? t.stage}.`
+            : v.tab === "code" ? `Viewing: Code changes${v.repo ? `, repository ${v.repo}` : ""}${v.scope ? `, scope ${v.scope.kind === "commits" ? `commits ${v.scope.shas.join(",")}` : v.scope.kind}` : ", all changes vs base"}.`
+            : v.tab === "pr" ? `Viewing: Pull request tab${v.repo ? `, repository ${v.repo}` : ""}.`
+            : v.tab === "comments" ? `Viewing: PR comments, list ${v.sub ?? "user"}${v.repo ? `, repository ${v.repo}` : ""}.`
+            : v.tab === "design" ? `Viewing: Design proposal${v.section ? `, section "${v.section}"` : ""}.`
+            : v.tab === "runs" ? `Viewing: Runs${v.run ? `, run ${v.run}` : ""}.`
+            : `Viewing: ${v.tab} tab.`;
+        return { summary: `${t.ticket_id} · ${stageLabel} · ${v.tab}`, context: `Page: ${page}.\n${lines.join("\n")}\n${viewing}` };
+    }
+}

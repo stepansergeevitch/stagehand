@@ -117,12 +117,18 @@ export const windowPct = (shares: WindowShare[], accountId: string | null, windo
 };
 export const pct = (v: number | null | undefined): string => (v == null ? "—" : v >= 10 ? `${Math.round(v)}%` : v >= 1 ? `${v.toFixed(1)}%` : `${v.toFixed(2)}%`);
 export interface Notifications { macos: boolean; ntfyServer: string; ntfyTopic: string | null; ntfyToken: string | null; baseUrl: string | null; localBaseUrl: string }
+// Prompter, the in-app assistant: which token account runs it, its default model, when an idle chat ends.
+export interface PrompterSettings { accountId: string | null; model: string; idleMinutes: number; farewell: boolean; maxTurns: number; seedFrom: string; seedWings: string[] }
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null; typesafeApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
     notifications: Notifications;
     desktopNotifier: string;
+    prompter: PrompterSettings;
 }
+export interface PrompterSession { id: string; claude_session_id: string; model: string | null; account_id: string | null; created_at: string; last_at: string; pinged_at: string; closed_at: string | null; turns: number }
+export interface PrompterMessage { id: string; session_id: string; role: "user" | "assistant" | "system"; text: string; path: string | null; created_at: string }
+export interface PrompterStatus { home: string; configDir: string; account: string | null; model: string; open: number; seeded: { at: string; total: number; copied: number } | null; ready: boolean; reason: string | null }
 export interface Ticket {
     source: "clickup" | "linear"; id: string; url: string | null; title: string; status: string | null; description: string;
     acceptanceCriteria: string[]; parent: { id: string; title: string; description: string } | null;
@@ -397,8 +403,18 @@ export const api = {
     settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
     usage: (days: number) => fetch(`/api/usage?days=${days}`).then((r) => j<UsageReport>(r)),
     taskUsage: (id: string) => fetch(`/api/tasks/${id}/usage`).then((r) => j<TaskUsage>(r)),
-    patchSettings: (body: Partial<Omit<Settings, "models" | "notifications">> & { notifications?: Partial<Notifications> }) =>
+    patchSettings: (body: Partial<Omit<Settings, "models" | "notifications" | "prompter">> & { notifications?: Partial<Notifications>; prompter?: Partial<Omit<PrompterSettings, "seedWings">> }) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
+    // Prompter, the in-app assistant.
+    prompterStatus: () => fetch("/api/prompter/status").then((r) => j<PrompterStatus>(r)),
+    prompterSeed: () => post<{ ok: boolean; detail: string }>("/api/prompter/seed"),
+    prompterDescribe: (path: string) => fetch(`/api/prompter/describe?path=${encodeURIComponent(path)}`).then((r) => j<{ summary: string; context: string }>(r)),
+    prompterCreate: (model: string | null) => post<PrompterSession>("/api/prompter/sessions", { model }),
+    prompterMessages: (id: string) => fetch(`/api/prompter/sessions/${id}/messages`).then((r) => j<{ session: PrompterSession; busy: boolean; messages: PrompterMessage[] }>(r)),
+    prompterSend: (id: string, text: string, path: string) => post<{ ok: true }>(`/api/prompter/sessions/${id}/messages`, { text, path }),
+    prompterPing: (id: string) => post<{ ok: true }>(`/api/prompter/sessions/${id}/ping`),
+    prompterClose: (id: string, farewell = true) => fetch(`/api/prompter/sessions/${id}?farewell=${farewell ? 1 : 0}`, { method: "DELETE", keepalive: true }).then((r) => j<{ ok: true }>(r)),
+    restartServer: (force = false) => post<{ ok: boolean; detail: string }>("/api/server/restart", { force }),
     testNotification: () => post<{ macos: boolean; ntfy: boolean | null; error?: string }>("/api/notifications/test"),
     testJev: () => post<{ ok: true; model: string; ms: number; inputTokens: number; summary: string } | { ok: false; error: string }>("/api/jev/test"),
     review: (id: string, body: { verdict: "approve" | "changes"; repo?: string; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[]; skipQa?: boolean }) =>

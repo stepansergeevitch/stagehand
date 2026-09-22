@@ -1,0 +1,26 @@
+{
+    "enableAllProjectMcpServers": true,
+    "permissions": {
+        "allow": [
+            "Read",
+            "Grep",
+            "Glob",
+            "WebFetch",
+            "Bash(curl *)",
+            "Bash(sqlite3 *)",
+            "Bash(git log *)",
+            "Bash(git show *)",
+            "Bash(git status *)",
+            "Bash(git diff *)",
+            "Bash(ls *)",
+            "Bash(cat *)",
+            "Bash(jq *)",
+            "Bash(tail *)",
+            "Bash(head *)",
+            "Bash(grep *)",
+            "Bash(rg *)",
+            "Bash(fd *)",
+            "mcp__mempalace__*"
+        ]
+    }
+}

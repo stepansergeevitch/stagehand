@@ -47,6 +47,28 @@ const ConfigSchema = z.object({
             helper: z.string().nullable().default("sonnet"),
         })
         .default({}),
+    // Prompter, the assistant in the web app (prompter.ts): which token account runs it, its model, when an idle
+    // chat is ended, whether it gets a farewell turn to file its notes, and where its palace is seeded from.
+    prompter: z
+        .object({
+            accountId: z.string().nullable().default(null),
+            model: z.string().default("fable"),
+            // Minutes without a ping from an open chat window before a session is ended (a server restart resets it).
+            idleMinutes: z.number().int().default(240),
+            farewell: z.boolean().default(true),
+            maxTurns: z.number().int().default(40),
+            seedFrom: z.string().default(join(homedir(), "code", "northspyre", ".mempalace")),
+            seedWings: z.array(z.string()).default(["task-orchestrator=stagehand", "stagehand"]),
+        })
+        .default({}),
+    // How this server is hosted, for POST /api/server/restart: the tmux session whose pane runs it and the command
+    // that starts it (null = the repository's own `npx tsx src/index.ts | tee <dataDir>/server.log`).
+    server: z
+        .object({
+            tmuxSession: z.string().default("stagehand-server"),
+            startCommand: z.string().nullable().default(null),
+        })
+        .default({}),
     // Second listener for access from outside the LAN: HTTPS + Basic auth (then a signed cookie), serving the built web UI too.
     publicAccess: z
         .object({
@@ -88,6 +110,8 @@ const defaults = (): Config => ({
     defaultModel: null,
     notifications: { macos: true, ntfyServer: "https://ntfy.sh", ntfyTopic: null, ntfyToken: null, baseUrl: null, localBaseUrl: "http://localhost:5173" },
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_fix: null, helper: "sonnet" },
+    prompter: { accountId: null, model: "fable", idleMinutes: 240, farewell: true, maxTurns: 40, seedFrom: join(homedir(), "code", "northspyre", ".mempalace"), seedWings: ["task-orchestrator=stagehand", "stagehand"] },
+    server: { tmuxSession: "stagehand-server", startCommand: null },
     publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },
 });
 

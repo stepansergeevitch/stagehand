@@ -3,10 +3,11 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer as createHttpsServer } from "node:https";
-import { join, normalize } from "node:path";
+import { dirname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 import { randomUUID } from "node:crypto";
@@ -33,10 +34,12 @@ import { matchChromeProfiles, openInProfile, restartChrome } from "./chrome-prof
 import { Engine } from "./engine.js";
 import { Services } from "./services.js";
 import { Sessions } from "./sessions.js";
+import { Prompter } from "./prompter.js";
 import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, probeRateLimits, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
 import { collapseLargeFiles, isGitRepo, repoPaths, type DiffGroup } from "./git.js";
 import { attach, capturePane, ensureSession, killSession, loginSessionName, pipePane, sessionExists, taskSessionName } from "./tmux.js";
 
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cfg = loadConfig();
 const db = openDb(cfg.dataDir);
 migrateAccountsToConfigDirs(db, { mainConfigDir: cfg.mainConfigDir, scratchAccountsDir: cfg.accountsDir });
@@ -45,6 +48,8 @@ services.startWatch();
 const engine = new Engine(db, cfg, services);
 services.onNotice = (taskId, text) => engine.serviceNotice(taskId, text);
 const sessions = new Sessions(db, cfg, engine);
+// The in-app assistant; its events ride the same websocket as everything else (kind "prompter").
+const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev));
 
 const app = new Hono();
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -897,6 +902,62 @@ app.post("/api/tasks/:id/cleanup", async (c) => {
     }
 });
 
+// ---------- Prompter, the in-app assistant ----------
+
+app.get("/api/prompter/status", (c) => c.json(prompter.status()));
+app.post("/api/prompter/seed", async (c) => c.json(await prompter.seed()));
+app.get("/api/prompter/describe", (c) => c.json(prompter.describe(c.req.query("path") ?? "#/dashboard")));
+app.get("/api/prompter/sessions", (c) => c.json(prompter.listSessions()));
+app.post("/api/prompter/sessions", async (c) => {
+    const body = json(z.object({ model: z.string().nullable().optional() }), await c.req.json().catch(() => ({})));
+    try {
+        return c.json(prompter.createSession(body.model ?? null));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+app.get("/api/prompter/sessions/:id/messages", (c) => {
+    const s = prompter.session(c.req.param("id"));
+    if (!s) return c.json({ error: "not found" }, 404);
+    return c.json({ session: s, busy: prompter.busy(s.id), messages: prompter.messages(s.id) });
+});
+// The turn runs in the background; its text streams over the websocket and `done` carries the stored answer.
+app.post("/api/prompter/sessions/:id/messages", async (c) => {
+    const body = json(z.object({ text: z.string().min(1), path: z.string().nullable().optional() }), await c.req.json());
+    const id = c.req.param("id");
+    if (!prompter.session(id)) return c.json({ error: "not found" }, 404);
+    if (prompter.busy(id)) return c.json({ error: "the assistant is still answering — wait for it" }, 409);
+    void prompter.send(id, body.text, body.path ?? null).catch((e: unknown) => console.warn(`[prompter] ${id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+    return c.json({ ok: true }, 202);
+});
+app.post("/api/prompter/sessions/:id/ping", (c) => {
+    prompter.ping(c.req.param("id"));
+    return c.json({ ok: true });
+});
+app.delete("/api/prompter/sessions/:id", async (c) => {
+    const farewell = c.req.query("farewell") !== "0";
+    void prompter.close(c.req.param("id"), { farewell }).catch((e: unknown) => console.warn(`[prompter] close: ${String((e as Error).message ?? e).slice(0, 200)}`));
+    return c.json({ ok: true });
+});
+
+// Restarts this server from inside the app (the assistant after a code change, or the human): the tmux pane that
+// hosts it gets Ctrl-C and the start command again, from a detached shell that outlives this process. Refused while
+// a run is going unless forced (a restart kills every run; Retry resumes them). Prompter chats survive: their
+// sessions are rows plus claude transcripts, and the widget re-attaches when the server is back.
+app.post("/api/server/restart", async (c) => {
+    const body = json(z.object({ force: z.boolean().optional() }), await c.req.json().catch(() => ({})));
+    const running = (db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE status = 'running'`).get() as { n: number }).n;
+    const busy = (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status IN ('running', 'queued')`).get() as { n: number }).n;
+    if ((running || busy) && !body.force) return c.json({ error: `not a boundary: ${running} run(s) running, ${busy} task(s) running or queued — pass force to restart anyway (runs are killed; Retry resumes them)` }, 409);
+    const session = cfg.server.tmuxSession;
+    const command = cfg.server.startCommand ?? `cd ${join(REPO_ROOT, "server")} && npx tsx src/index.ts 2>&1 | tee ${join(cfg.dataDir, "server.log")}`;
+    const script = `sleep 1; tmux send-keys -t ${JSON.stringify(session)} C-c; sleep 2; tmux send-keys -t ${JSON.stringify(session)} ${JSON.stringify(command)} Enter`;
+    const child = spawn("sh", ["-c", script], { detached: true, stdio: "ignore" });
+    child.unref();
+    console.log(`[stagehand] restart requested${body.force ? " (forced)" : ""} — tmux ${session}`);
+    return c.json({ ok: true, detail: `restarting in tmux ${session}; the API answers again in a few seconds` }, 202);
+});
+
 // ---------- settings (integrations, defaults) ----------
 
 const mask = (s: string | null): string | null => (s ? `${s.slice(0, 4)}…${s.slice(-3)}` : null);
@@ -911,6 +972,7 @@ app.get("/api/settings", (c) =>
         models: MODEL_OPTIONS,
         notifications: { ...cfg.notifications, ntfyToken: mask(cfg.notifications.ntfyToken) },
         desktopNotifier: desktopNotifier(),
+        prompter: cfg.prompter,
     }),
 );
 
@@ -940,6 +1002,16 @@ app.patch("/api/settings", async (c) => {
             linearApiKey: z.string().nullable().optional(),
             typesafeApiKey: z.string().nullable().optional(),
             defaultModel: z.string().nullable().optional(),
+            prompter: z
+                .object({
+                    accountId: z.string().nullable().optional(),
+                    model: z.string().optional(),
+                    idleMinutes: z.number().int().min(1).optional(),
+                    farewell: z.boolean().optional(),
+                    maxTurns: z.number().int().min(1).optional(),
+                    seedFrom: z.string().optional(),
+                })
+                .optional(),
             notifications: z
                 .object({
                     macos: z.boolean().optional(),
@@ -957,6 +1029,15 @@ app.patch("/api/settings", async (c) => {
     if (body.clickupTeamId !== undefined) cfg.clickupTeamId = body.clickupTeamId;
     if (body.linearApiKey !== undefined) cfg.linearApiKey = body.linearApiKey;
     if (body.typesafeApiKey !== undefined) cfg.typesafeApiKey = body.typesafeApiKey?.trim() || null;
+    if (body.prompter) {
+        const p = body.prompter;
+        if (p.accountId !== undefined) cfg.prompter.accountId = p.accountId;
+        if (p.model !== undefined) cfg.prompter.model = p.model.trim() || "fable";
+        if (p.idleMinutes !== undefined) cfg.prompter.idleMinutes = p.idleMinutes;
+        if (p.farewell !== undefined) cfg.prompter.farewell = p.farewell;
+        if (p.maxTurns !== undefined) cfg.prompter.maxTurns = p.maxTurns;
+        if (p.seedFrom !== undefined && p.seedFrom.trim()) cfg.prompter.seedFrom = p.seedFrom.trim();
+    }
     if (body.notifications) {
         const n = body.notifications;
         if (n.macos !== undefined) cfg.notifications.macos = n.macos;
@@ -1487,7 +1568,7 @@ app.get(
         const listeners: Array<[string, (...args: unknown[]) => void]> = [];
         return {
             onOpen(_evt, ws) {
-                for (const kind of ["task", "activity", "rate_limit", "account", "message"]) {
+                for (const kind of ["task", "activity", "rate_limit", "account", "message", "prompter"]) {
                     const fn = (payload: unknown): void => ws.send(JSON.stringify({ kind, payload }));
                     engine.on(kind, fn);
                     listeners.push([kind, fn]);
@@ -1605,6 +1686,7 @@ const server = serve({ fetch: app.fetch, port: cfg.port, hostname: "127.0.0.1" }
 injectWebSocket(server);
 startPublicListener();
 engine.startScheduler();
+prompter.startReaper();
 void resumeTokenSetups();
 
 process.on("SIGINT", () => {
