@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClassicLevel } from "classic-level";
 import { afterEach, describe, expect, it } from "vitest";
-import { CLONE_EXCLUDES, rewriteBridgeDeviceId, rsyncArgs } from "./chrome-clones.js";
+import { CLONE_EXCLUDES, rewriteBridgeDeviceId, rsyncArgs, seedLocalState } from "./chrome-clones.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -59,5 +59,37 @@ describe("rewriteBridgeDeviceId", () => {
         const r = await rewriteBridgeDeviceId(dir, "abc");
         expect(r.previous).toBeNull();
         expect(await read(dir, "bridgeDeviceId")).toBe('"abc"');
+    });
+});
+
+describe("seedLocalState", () => {
+    const setup = (localState: unknown): { userData: string; clone: string } => {
+        const root = mkdtempSync(join(tmpdir(), "clone-ls-"));
+        dirs.push(root);
+        const userData = join(root, "Chrome");
+        const clone = join(root, "clone");
+        mkdirSync(userData);
+        mkdirSync(clone);
+        if (localState !== undefined) writeFileSync(join(userData, "Local State"), typeof localState === "string" ? localState : JSON.stringify(localState));
+        return { userData, clone };
+    };
+    const entry = { name: "Northspyre", hosted_domain: "northspyre.com", is_managed: 1, user_accepted_account_management: true, gaia_id: "g" };
+
+    it("moves the source profile's entry under Default and makes it the last used profile", () => {
+        const { userData, clone } = setup({ profile: { info_cache: { Default: { name: "Other" }, "Profile 2": entry }, last_used: "Profile 2" }, browser: {} });
+        expect(seedLocalState(userData, clone, "Profile 2")).toBe(true);
+        const out = JSON.parse(readFileSync(join(clone, "Local State"), "utf8")) as { profile: Record<string, unknown> };
+        expect(out.profile.info_cache).toEqual({ Default: entry });
+        expect(out.profile.last_used).toBe("Default");
+        expect(out.profile.profiles_order).toEqual(["Default"]);
+        expect(out).not.toHaveProperty("browser");
+    });
+    it("writes nothing when the entry, the file or valid JSON is missing", () => {
+        const a = setup({ profile: { info_cache: { Default: entry } } });
+        expect(seedLocalState(a.userData, a.clone, "Profile 2")).toBe(false);
+        const b = setup(undefined);
+        expect(seedLocalState(b.userData, b.clone, "Profile 2")).toBe(false);
+        const c = setup("{not json");
+        expect(seedLocalState(c.userData, c.clone, "Profile 2")).toBe(false);
     });
 });

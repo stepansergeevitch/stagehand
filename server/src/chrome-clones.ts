@@ -122,6 +122,29 @@ const markCleanExit = (profileDir: string): void => {
     }
 };
 
+// Chrome keeps the fact that the human accepted the account's management (with the account's hosted domain) in
+// Local State's profile.info_cache, not in the profile directory. A copy launched in a new user-data-dir starts with
+// an empty Local State, so Chrome sees a managed account in a profile nobody accepted and opens "This profile will be
+// managed by <domain>" with Keep / Create new profile — and the QA run waits behind that dialog. Seeding the copy's
+// Local State with the source profile's entry under "Default" makes the copy open as the already accepted profile.
+export const seedLocalState = (userDataDir: string, cloneDir: string, profileDir: string): boolean => {
+    const path = join(userDataDir, "Local State");
+    if (!existsSync(path)) return false;
+    let entry: unknown;
+    try {
+        const state = JSON.parse(readFileSync(path, "utf8")) as { profile?: { info_cache?: Record<string, unknown> } };
+        entry = state.profile?.info_cache?.[profileDir];
+    } catch {
+        return false;
+    }
+    if (!entry || typeof entry !== "object") return false;
+    const seeded = {
+        profile: { info_cache: { Default: entry }, last_used: "Default", last_active_profiles: ["Default"], profiles_order: ["Default"], profiles_created: 1 },
+    };
+    writeFileSync(join(cloneDir, "Local State"), JSON.stringify(seeded));
+    return true;
+};
+
 const portFree = async (port: number): Promise<boolean> =>
     new Promise((resolve) => {
         const srv = createServer();
@@ -144,6 +167,7 @@ export const cloneProfile = async (browser: string, profileDir: string, slot: st
     mkdirSync(join(dir, "Default"), { recursive: true });
     await execFileAsync("rsync", rsyncArgs(src, join(dir, "Default")), { maxBuffer: 1024 * 1024 });
     markCleanExit(join(dir, "Default"));
+    seedLocalState(userDataDirFor(browser), dir, profileDir);
     const storage = join(dir, "Default", "Local Extension Settings", EXTENSION_ID);
     if (!existsSync(storage)) throw new Error(`the Claude extension's storage is missing in ${profileDir} (${storage})`);
     const deviceId = randomUUID();
