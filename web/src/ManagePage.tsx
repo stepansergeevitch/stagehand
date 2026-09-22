@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager } from "./api";
+import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type ModelOperation, type ModelStage, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager } from "./api";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
 export type ManageTab = "envs" | "dirs" | "accounts" | "integrations";
@@ -18,6 +18,70 @@ const repoList = (json: string | null): string => {
 };
 
 const TITLE: Record<ManageTab, string> = { envs: "Environments", dirs: "Claude config dirs", accounts: "AI accounts", integrations: "Integrations" };
+
+// Which model runs what: the global default, one model per stage for its first run on a task and one for every later
+// run (review rounds, retries, QA returns), and one per side operation. Every select saves at once.
+const MODEL_STAGES: Array<{ key: ModelStage; label: string }> = [
+    { key: "research", label: "Research" },
+    { key: "design_proposal", label: "Design Proposal" },
+    { key: "qa_baseline", label: "QA baseline" },
+    { key: "implementation", label: "Implementation" },
+    { key: "manual_qa", label: "Manual QA" },
+    { key: "pr_creation_review", label: "PR draft" },
+    { key: "pr_fix", label: "PR Fix (any cause)" },
+];
+const MODEL_OPERATIONS: Array<{ key: ModelOperation; label: string; hint: string }> = [
+    { key: "pr_fix_ci", label: "PR Fix for failing checks", hint: "wins over the PR Fix stage model for rounds started from CI" },
+    { key: "pr_fix_comments", label: "PR Fix for comments", hint: "rounds started from picked PR comments or Code-changes comments" },
+    { key: "chat", label: "Chat (Ask)", hint: "questions in the task's Chat and on diff lines" },
+    { key: "instruct", label: "Chat (Do)", hint: "free-text instructions carried out in the worktree" },
+    { key: "rebase", label: "Rebase with the agent", hint: "only when the plain git rebase conflicted" },
+    { key: "fix_service", label: "Fix a BE/FE start", hint: "the App widget's Fix with agent" },
+    { key: "git_edit", label: "Remove a commit", hint: "history edits from Code changes" },
+];
+const ModelsCard = ({ settings, accounts, act }: { settings: Settings; accounts: Account[]; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
+    const fallback = `Account default · ${accounts.filter((a) => a.logged_in).map((a) => `${a.name}: ${modelLabel(a.default_model, settings.models) ?? "?"}`).join(", ") || "no account"}`;
+    const options = (blank: string) => settings.models.map((m) => <option key={m.value} value={m.value}>{m.value === "" ? blank : m.label}</option>);
+    const first = settings.stageModels ?? {};
+    const rerun = settings.stageRerunModels ?? {};
+    const ops = settings.operationModels ?? {};
+    const globalLabel = settings.defaultModel ? modelLabel(settings.defaultModel, settings.models) ?? settings.defaultModel : "account default";
+    return (
+        <section className="card item">
+            <h2>Models</h2>
+            <p className="field-hint">A task created with its own model uses that everywhere. Otherwise a stage's first run on a task takes its "first run" model, every later run of that stage (a review round sent back, Retry, a contract or unblock retry, a QA return to Implementation) takes its "reruns" model, and the side operations take theirs. A blank falls back along the arrows.</p>
+            <div className="env-fields" style={{ maxWidth: 560 }}>
+                <label>Global default (the fallback of every blank below)
+                    <select value={settings.defaultModel ?? ""} onChange={(e) => void act(() => api.patchSettings({ defaultModel: e.target.value || null }))}>{options(fallback)}</select>
+                </label>
+            </div>
+            <table className="models-table">
+                <thead><tr><th>Stage</th><th>First run</th><th>Reruns</th></tr></thead>
+                <tbody>
+                    {MODEL_STAGES.map((s) => (
+                        <tr key={s.key}>
+                            <td>{s.label}</td>
+                            <td><select value={first[s.key] ?? ""} onChange={(e) => void act(() => api.patchSettings({ stageModels: { [s.key]: e.target.value || null } }))}>{options(`→ global default (${globalLabel})`)}</select></td>
+                            <td><select value={rerun[s.key] ?? ""} onChange={(e) => void act(() => api.patchSettings({ stageRerunModels: { [s.key]: e.target.value || null } }))}>{options(`→ first run (${first[s.key] ? modelLabel(first[s.key], settings.models) ?? first[s.key] : globalLabel})`)}</select></td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+            <table className="models-table">
+                <thead><tr><th>Operation</th><th>Model</th><th></th></tr></thead>
+                <tbody>
+                    {MODEL_OPERATIONS.map((o) => (
+                        <tr key={o.key}>
+                            <td>{o.label}</td>
+                            <td><select value={ops[o.key] ?? ""} onChange={(e) => void act(() => api.patchSettings({ operationModels: { [o.key]: e.target.value || null } }))}>{options(o.key.startsWith("pr_fix") ? `→ PR Fix stage (${first.pr_fix ? modelLabel(first.pr_fix, settings.models) ?? first.pr_fix : globalLabel})` : `→ global default (${globalLabel})`)}</select></td>
+                            <td className="quiet">{o.hint}</td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </section>
+    );
+};
 
 export const ManagePage = ({
     tab,
@@ -156,24 +220,7 @@ const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, 
             <div className="actions" style={{ marginTop: 0 }}>
                 <button className="primary" onClick={onAdd}>+ Account</button>
             </div>
-            {settings && (
-                <section className="card item">
-                    <h2>Defaults</h2>
-                    <div className="env-fields" style={{ maxWidth: 560 }}>
-                        <label>Default Claude model for new tasks (applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet)
-                            <select value={settings.defaultModel ?? ""} onChange={(e) => void act(() => api.patchSettings({ defaultModel: e.target.value || null }))}>
-                                {settings.models.map((m) => (
-                                    <option key={m.value} value={m.value}>
-                                        {m.value === ""
-                                            ? `Account default · ${accounts.filter((a) => a.logged_in).map((a) => `${a.name}: ${modelLabel(a.default_model, settings.models) ?? "?"}`).join(", ") || "no account"}`
-                                            : m.label}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-                    </div>
-                </section>
-            )}
+            {settings && <ModelsCard settings={settings} accounts={accounts} act={act} />}
             {accounts.map((a) => {
                 const five = a.limits.find((l) => l.window === "five_hour");
                 const week = a.limits.find((l) => l.window === "seven_day");

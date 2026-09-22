@@ -119,9 +119,16 @@ export const pct = (v: number | null | undefined): string => (v == null ? "—" 
 export interface Notifications { macos: boolean; ntfyServer: string; ntfyTopic: string | null; ntfyToken: string | null; baseUrl: string | null; localBaseUrl: string }
 // Prompter, the in-app assistant: which token account runs it, its default model, when an idle chat ends.
 export interface PrompterSettings { accountId: string | null; model: string; idleMinutes: number; farewell: boolean; maxTurns: number; seedFrom: string; seedWings: string[] }
+// Which model a run gets: stageModels for a stage's first run on a task, stageRerunModels for every later run of it,
+// operationModels for the side runs (PR fixes by cause, chat, Do, rebase, service fix, history edit). "" / null = fallback.
+export type ModelStage = "research" | "design_proposal" | "qa_baseline" | "implementation" | "manual_qa" | "pr_creation_review" | "pr_fix";
+export type ModelOperation = "pr_fix_ci" | "pr_fix_comments" | "chat" | "instruct" | "rebase" | "fix_service" | "git_edit";
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null; typesafeApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
+    stageModels?: Partial<Record<ModelStage, string | null>>;
+    stageRerunModels?: Partial<Record<ModelStage, string | null>>;
+    operationModels?: Partial<Record<ModelOperation, string | null>>;
     notifications: Notifications;
     desktopNotifier: string;
     // Absent from a server older than this UI.
@@ -197,6 +204,8 @@ export interface Run {
     id: string; task_id: string; stage: Stage; kind: string; status: string; account_id: string; started_at: string | null;
     finished_at: string | null; resume_at: string | null; error: string | null; result_json: string | null; cost_usd: number | null;
     num_turns: number | null; last_event: string | null; attempt: number;
+    // The --model the run started with; null = the account's default (absent from a server older than this UI).
+    model?: string | null;
 }
 export interface QaStep { action: string; assert: string; shot: boolean }
 export interface QaScenario { id: string; kind?: "browser" | "api"; title: string; url: string; persona: string; seed?: string[]; steps: QaStep[] }

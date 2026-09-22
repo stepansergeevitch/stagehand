@@ -981,6 +981,9 @@ app.get("/api/settings", (c) =>
         typesafeApiKey: mask(cfg.typesafeApiKey),
         defaultModel: cfg.defaultModel,
         models: MODEL_OPTIONS,
+        stageModels: cfg.stageModels,
+        stageRerunModels: cfg.stageRerunModels,
+        operationModels: cfg.operationModels,
         notifications: { ...cfg.notifications, ntfyToken: mask(cfg.notifications.ntfyToken) },
         desktopNotifier: desktopNotifier(),
         prompter: cfg.prompter,
@@ -1013,6 +1016,10 @@ app.patch("/api/settings", async (c) => {
             linearApiKey: z.string().nullable().optional(),
             typesafeApiKey: z.string().nullable().optional(),
             defaultModel: z.string().nullable().optional(),
+            // Partial maps: only the keys present change; "" or null clears a key (back to the fallback).
+            stageModels: z.record(z.string().nullable()).optional(),
+            stageRerunModels: z.record(z.string().nullable()).optional(),
+            operationModels: z.record(z.string().nullable()).optional(),
             prompter: z
                 .object({
                     accountId: z.string().nullable().optional(),
@@ -1059,6 +1066,12 @@ app.patch("/api/settings", async (c) => {
         if (n.localBaseUrl !== undefined && n.localBaseUrl.trim()) cfg.notifications.localBaseUrl = n.localBaseUrl.trim();
     }
     if (body.defaultModel !== undefined) cfg.defaultModel = body.defaultModel;
+    const applyModels = (target: Record<string, string | null>, patch: Record<string, string | null> | undefined): void => {
+        for (const [k, v] of Object.entries(patch ?? {})) if (k in target) target[k] = v?.trim() || null;
+    };
+    applyModels(cfg.stageModels as Record<string, string | null>, body.stageModels);
+    applyModels(cfg.stageRerunModels as Record<string, string | null>, body.stageRerunModels);
+    applyModels(cfg.operationModels as Record<string, string | null>, body.operationModels);
     saveConfig(cfg);
     return c.json({ ok: true });
 });

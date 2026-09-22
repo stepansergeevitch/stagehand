@@ -34,7 +34,8 @@ const ConfigSchema = z.object({
             localBaseUrl: z.string().default("http://localhost:5173"),
         })
         .default({}),
-    // Per-stage model defaults (task.model overrides); cheaper models for reading-heavy or mechanical stages.
+    // Per-stage model for the FIRST run of a stage on a task (task.model overrides); cheaper models for reading-heavy
+    // or mechanical stages. Null = defaultModel, else the account's default.
     stageModels: z
         .object({
             research: z.string().nullable().default("sonnet"),
@@ -45,6 +46,33 @@ const ConfigSchema = z.object({
             pr_creation_review: z.string().nullable().default("sonnet"),
             pr_fix: z.string().nullable().default(null),
             helper: z.string().nullable().default("sonnet"),
+        })
+        .default({}),
+    // Per-stage model for every LATER run of a stage on the same task — a review round sent back, a Retry, a contract
+    // or unblock retry, a QA pass that returns to Implementation. Null = the first-run model of that stage.
+    stageRerunModels: z
+        .object({
+            research: z.string().nullable().default(null),
+            design_proposal: z.string().nullable().default(null),
+            qa_baseline: z.string().nullable().default(null),
+            implementation: z.string().nullable().default(null),
+            manual_qa: z.string().nullable().default(null),
+            pr_creation_review: z.string().nullable().default(null),
+            pr_fix: z.string().nullable().default(null),
+        })
+        .default({}),
+    // Models for the runs that are not pipeline stages (task.model overrides). Null = defaultModel, else the account's
+    // default. pr_fix_ci / pr_fix_comments are PR Fix runs started for failing checks / for PR or Code-changes
+    // comments; when set they win over stageModels.pr_fix for that run.
+    operationModels: z
+        .object({
+            pr_fix_ci: z.string().nullable().default(null),
+            pr_fix_comments: z.string().nullable().default(null),
+            chat: z.string().nullable().default(null),
+            instruct: z.string().nullable().default(null),
+            rebase: z.string().nullable().default(null),
+            fix_service: z.string().nullable().default(null),
+            git_edit: z.string().nullable().default(null),
         })
         .default({}),
     // Prompter, the assistant in the web app (prompter.ts): which token account runs it, its model, when an idle
@@ -110,6 +138,8 @@ const defaults = (): Config => ({
     defaultModel: null,
     notifications: { macos: true, ntfyServer: "https://ntfy.sh", ntfyTopic: null, ntfyToken: null, baseUrl: null, localBaseUrl: "http://localhost:5173" },
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_fix: null, helper: "sonnet" },
+    stageRerunModels: { research: null, design_proposal: null, qa_baseline: null, implementation: null, manual_qa: null, pr_creation_review: null, pr_fix: null },
+    operationModels: { pr_fix_ci: null, pr_fix_comments: null, chat: null, instruct: null, rebase: null, fix_service: null, git_edit: null },
     prompter: { accountId: null, model: "fable", idleMinutes: 240, farewell: true, maxTurns: 40, seedFrom: join(homedir(), "code", "northspyre", ".mempalace"), seedWings: ["task-orchestrator=stagehand", "stagehand"] },
     server: { tmuxSession: "stagehand-server", startCommand: null },
     publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },

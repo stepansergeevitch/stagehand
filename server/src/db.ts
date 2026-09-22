@@ -370,6 +370,7 @@ export interface RunRow {
     num_turns: number | null;
     last_event: string | null;
     attempt: number;
+    model: string | null;
 }
 
 // One row per model used by one claude invocation: a stage run, or a helper (ticket fetch, QA login, probe).
@@ -704,6 +705,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.rules", `ALTER TABLE envs ADD COLUMN rules TEXT`],
     ["tasks.ticket_url", `ALTER TABLE tasks ADD COLUMN ticket_url TEXT`],
     ["tasks.model", `ALTER TABLE tasks ADD COLUMN model TEXT`],
+    // The --model the run was started with (null = the account's default); stage/rerun/operation models (config).
+    ["runs.model", `ALTER TABLE runs ADD COLUMN model TEXT`],
     ["accounts.provider", `ALTER TABLE accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic'`],
     ["accounts.oauth_token", `ALTER TABLE accounts ADD COLUMN oauth_token TEXT`],
     ["envs.config_dir_id", `ALTER TABLE envs ADD COLUMN config_dir_id TEXT REFERENCES config_dirs(id)`],

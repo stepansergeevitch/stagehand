@@ -178,7 +178,12 @@ interface DispatchOpts {
     cloneReady?: boolean;
     // Browser stages: cloning failed for this dispatch — run in the shared profile instead.
     cloneFailed?: boolean;
+    // PR Fix: what started the round — failing checks or picked comments — for config.operationModels.
+    operation?: "pr_fix_ci" | "pr_fix_comments";
 }
+
+// Runs that are not pipeline stages, each with its own model setting (config.operationModels).
+type OperationKind = "pr_fix_ci" | "pr_fix_comments" | "chat" | "instruct" | "rebase" | "fix_service" | "git_edit";
 
 // CircleCI jobs gated behind a manual "Approve" click in the CircleCI UI (deploy/db-reset gates) sit forever in a
 // pending/no-conclusion state until a human clicks through, independent of whether the actual test/build jobs passed.
@@ -2011,6 +2016,7 @@ export class Engine extends EventEmitter {
         this.setStage(taskId, "pr_fix");
         this.dispatch(taskId, "pr_fix", {
             attempt: rounds.n + 1,
+            operation: "pr_fix_ci",
             extraVars: { failureOutput: `${repoScopeNote(repo)}Failing checks on PR #${row.number}: ${names}. Read their logs with \`gh pr checks ${row.number}\` and \`gh run view --log-failed <run-id>\` (run inside that repository) before changing anything.` },
         });
     }
@@ -2037,7 +2043,7 @@ export class Engine extends EventEmitter {
         const failureOutput = `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (this is not necessarily a CI failure):\n${picked.map(describe).join("\n")}`;
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         this.setStage(taskId, "pr_fix");
-        this.dispatch(taskId, "pr_fix", { attempt: rounds.n + 1, extraVars: { failureOutput } });
+        this.dispatch(taskId, "pr_fix", { attempt: rounds.n + 1, operation: "pr_fix_comments", extraVars: { failureOutput } });
     }
 
     // After the human approves a PR Fix (already committed locally, never pushed): push every checkout that has
@@ -2197,6 +2203,26 @@ export class Engine extends EventEmitter {
         return row.n;
     }
 
+    // ---------- which model a run gets ----------
+    //
+    // The task's own model (set at creation) wins everywhere. A stage run: the operation's model when the round was
+    // started as one (PR Fix for checks / for comments), else the stage's rerun model once the stage already ran on
+    // this task, else the stage's first-run model; then the global default; null = the account's default.
+    private modelForStage(task: TaskRow, stage: Stage, opts: DispatchOpts): string | null {
+        if (task.model) return task.model;
+        const op = opts.operation ? this.cfg.operationModels[opts.operation] : null;
+        if (op) return op;
+        const prior = (this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = ?`).get(task.id, stage) as { n: number }).n;
+        const rerun = prior > 0 || (opts.attempt ?? 1) > 1 ? (this.cfg.stageRerunModels as Record<string, string | null | undefined>)[stage] : null;
+        const first = (this.cfg.stageModels as Record<string, string | null | undefined>)[stage];
+        return rerun ?? first ?? this.cfg.defaultModel ?? null;
+    }
+
+    // The side runs (chat, Do, rebase, service fix, history edit): the task's model, else the operation's, else the default.
+    private modelForOperation(task: TaskRow, op: OperationKind): string | null {
+        return task.model ?? this.cfg.operationModels[op] ?? this.cfg.defaultModel ?? null;
+    }
+
     // ---------- chat: the human's own Q&A / notes channel with the task's agent ----------
 
     listMessages(taskId: string): MessageRow[] {
@@ -2261,7 +2287,10 @@ export class Engine extends EventEmitter {
             extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             resume: task.session_id,
             maxTurns: 15,
-            ...(task.model ? { model: task.model } : {}),
+            ...((): { model?: string } => {
+                const m = this.modelForOperation(task, "chat");
+                return m ? { model: m } : {};
+            })(),
         });
         const outcome = await run.done;
         if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "chat", stage: null }, outcome.result);
@@ -2319,7 +2348,10 @@ export class Engine extends EventEmitter {
             maxTurns: Engine.INSTRUCT_MAX_TURNS,
             addDirs: [taskDir],
             eventLogPath: join(taskDir, "instructions", `${message.id}.ndjson`),
-            ...(task.model ? { model: task.model } : {}),
+            ...((): { model?: string } => {
+                const m = this.modelForOperation(task, "instruct");
+                return m ? { model: m } : {};
+            })(),
         });
         this.instructing.set(taskId, run);
         run.on("activity", (ev: ActivityEvent) => {
@@ -2434,7 +2466,10 @@ export class Engine extends EventEmitter {
             extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             resume: task.session_id,
             maxTurns: 60,
-            ...(task.model ? { model: task.model } : {}),
+            ...((): { model?: string } => {
+                const m = this.modelForOperation(task, "git_edit");
+                return m ? { model: m } : {};
+            })(),
         });
         void run.done.then((outcome: RunOutcome) => {
             this.setTaskStatus(taskId, prevStatus, prevLine ?? undefined);
@@ -2813,16 +2848,15 @@ export class Engine extends EventEmitter {
         const vars = this.promptVars(task, def, opts);
         const prompt = renderPrompt(def.prompt, vars);
         const eventLogPath = join(this.cfg.dataDir, "runs", `${runId}.ndjson`);
+        const explicitModel = this.modelForStage(task, def.stage, opts);
 
         this.db
             .prepare(
-                `INSERT INTO runs (id, task_id, stage, kind, status, account_id, started_at, attempt)
-                 VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`,
+                `INSERT INTO runs (id, task_id, stage, kind, status, account_id, started_at, attempt, model)
+                 VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)`,
             )
-            .run(runId, taskId, stage, fresh ? "fresh-session" : "task-session", account.id, now(), attempt);
+            .run(runId, taskId, stage, fresh ? "fresh-session" : "task-session", account.id, now(), attempt, explicitModel);
         this.setTaskStatus(taskId, "running", `${def.label} · starting`);
-        const stageModel = (this.cfg.stageModels as Record<string, string | null | undefined>)[def.stage];
-        const explicitModel = task.model ?? stageModel ?? this.cfg.defaultModel ?? null;
 
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path, this.cfg.dataDir);
         const run = startClaude({
@@ -3177,7 +3211,10 @@ export class Engine extends EventEmitter {
             resume: task.session_id,
             maxTurns: 80,
             addDirs: [this.taskDir(taskId)],
-            ...(task.model ? { model: task.model } : {}),
+            ...((): { model?: string } => {
+                const m = this.modelForOperation(task, "rebase");
+                return m ? { model: m } : {};
+            })(),
         });
         void run.done.then(async (outcome: RunOutcome) => {
             if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "rebase", stage: null }, outcome.result);
@@ -3348,7 +3385,7 @@ export class Engine extends EventEmitter {
             jobs.map((j, i) => `### Job ${i + 1} of ${jobs.length}\n\n${j}`).join("\n\n");
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         this.setStage(taskId, "pr_fix");
-        this.dispatch(taskId, "pr_fix", { attempt: rounds.n + 1, extraVars: { failureOutput } });
+        this.dispatch(taskId, "pr_fix", { attempt: rounds.n + 1, operation: "pr_fix_comments", extraVars: { failureOutput } });
         return { started: true, note: summary.join(" · ") };
     }
 
@@ -3582,7 +3619,10 @@ export class Engine extends EventEmitter {
             extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             resume: task.session_id,
             maxTurns: 60,
-            ...(task.model ? { model: task.model } : {}),
+            ...((): { model?: string } => {
+                const m = this.modelForOperation(task, "fix_service");
+                return m ? { model: m } : {};
+            })(),
         });
         void run.done.then(async (outcome: RunOutcome) => {
             if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "fix-service", stage: null }, outcome.result);
@@ -3724,6 +3764,7 @@ export class Engine extends EventEmitter {
         if (attempt < MAX_CONTRACT_ATTEMPTS) {
             this.dispatch(taskId, def.stage, {
                 attempt: attempt + 1,
+                ...(opts.operation ? { operation: opts.operation } : {}),
                 notes:
                     `## Output contract violation (fix this and rewrite the file) — attempt ${attempt + 1} of ${MAX_CONTRACT_ATTEMPTS}\n\n${error}\n\n` +
                     `Rewrite \`${this.taskDir(taskId)}/${def.outputFile}\` to match the contract exactly, then reply DONE.`,
@@ -3746,7 +3787,7 @@ export class Engine extends EventEmitter {
     private parkOnQuestions(taskId: string, runId: string, def: StageDef, asked: QuestionsFile, opts: DispatchOpts): void {
         const id = randomUUID();
         // Keep what the run was started with (reviewer notes, PR-fix failure text, attempt) so the resumed run gets the same brief.
-        const resume = { notes: opts.notes ?? null, attempt: opts.attempt ?? 1, extraVars: opts.extraVars ?? {} };
+        const resume = { notes: opts.notes ?? null, attempt: opts.attempt ?? 1, extraVars: opts.extraVars ?? {}, ...(opts.operation ? { operation: opts.operation } : {}) };
         this.db
             .prepare(`INSERT INTO questions (id, task_id, run_id, stage, questions, answers, created_at, answered_at) VALUES (?, ?, ?, ?, ?, NULL, ?, NULL)`)
             .run(id, taskId, runId, def.stage, JSON.stringify({ ...asked, resume }), now());
@@ -3793,7 +3834,7 @@ export class Engine extends EventEmitter {
         const row = this.db.prepare(`SELECT * FROM questions WHERE id = ? AND task_id = ?`).get(questionRowId, taskId) as QuestionRow | undefined;
         if (!row) throw new Error("questions not found");
         if (row.answers) throw new Error("these questions were already answered");
-        const stored = JSON.parse(row.questions) as QuestionsFile & { resume?: { notes: string | null; attempt: number; extraVars: Record<string, string> } };
+        const stored = JSON.parse(row.questions) as QuestionsFile & { resume?: { notes: string | null; attempt: number; extraVars: Record<string, string>; operation?: DispatchOpts["operation"] } };
         this.db.prepare(`UPDATE questions SET answers = ?, answered_at = ? WHERE id = ?`).run(JSON.stringify(answers), now(), row.id);
         this.addMessage(taskId, "user", stored.questions.map((q) => `**${q.id}** ${q.text}\n→ ${answers[q.id]?.trim() || "(no answer — decide yourself)"}`).join("\n\n"));
         // A corrected scenario step/seed the human approved is written into design.json here (deterministic), so a
@@ -3828,6 +3869,7 @@ export class Engine extends EventEmitter {
         this.dispatch(taskId, row.stage, {
             notes: prior ? `${answerNotes}\n\n---\n\n${prior}` : answerNotes,
             attempt: stored.resume?.attempt ?? 1,
+            ...(stored.resume?.operation ? { operation: stored.resume.operation } : {}),
             ...(Object.keys(extraVars).length ? { extraVars } : {}),
         });
     }
