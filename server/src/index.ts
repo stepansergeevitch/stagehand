@@ -947,6 +947,8 @@ app.delete("/api/prompter/sessions/:id/messages/:mid", (c) => {
     const ok = prompter.unqueue(c.req.param("id"), c.req.param("mid"));
     return ok ? c.json({ ok: true }) : c.json({ error: "that message already went to the assistant" }, 409);
 });
+// Ctrl-C for the running turn: kills it, keeps its partial answer, and the stacked messages (if any) go out next.
+app.post("/api/prompter/sessions/:id/stop", (c) => c.json({ stopped: prompter.stop(c.req.param("id")) }));
 app.post("/api/prompter/sessions/:id/ping", (c) => {
     prompter.ping(c.req.param("id"));
     return c.json({ ok: true });

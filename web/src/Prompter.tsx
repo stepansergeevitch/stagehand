@@ -189,6 +189,15 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
             setError(String((e as Error).message ?? e));
         }
     };
+    // Ctrl-C: the running turn is killed; what it said so far stays; stacked messages go out as the next turn.
+    const stop = async () => {
+        if (!session) return;
+        try {
+            await api.prompterStop(session.id);
+        } catch (e) {
+            setError(String((e as Error).message ?? e));
+        }
+    };
     // ArrowUp in an empty input: the last stacked message comes back for editing (it leaves the stack).
     const takeBack = async (m: PrompterMessage) => {
         if (!session) return;
@@ -224,7 +233,7 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
         );
     }
     const placeholder = chat.busy
-        ? `Answering… a message sent now waits for the next turn${queued.length ? ` (${queued.length} stacked; ArrowUp edits the last one)` : ""}`
+        ? `Answering… Esc stops it; a message sent now waits for the next turn${queued.length ? ` (${queued.length} stacked; ArrowUp edits the last one)` : ""}`
         : "Message Prompter… (Enter to send, Shift+Enter for a new line)";
     return (
         <aside className={`prompter ${wide ? "wide" : ""}`} aria-label="Prompter">
@@ -289,6 +298,9 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
                         if (e.key === "Enter" && !e.shiftKey) {
                             e.preventDefault();
                             void send();
+                        } else if (e.key === "Escape" && chat.busy) {
+                            e.preventDefault();
+                            void stop();
                         } else if (e.key === "ArrowUp" && !text && queued.length) {
                             e.preventDefault();
                             void takeBack(queued[queued.length - 1]!);
@@ -298,6 +310,7 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
                     disabled={!session || (status !== null && !status.ready)}
                     rows={2}
                 />
+                {chat.busy && <button className="prompter-stop" title={`Stop this turn (Esc)${queued.length ? `; the ${queued.length} stacked message${queued.length === 1 ? "" : "s"} go out next` : ""}`} onClick={() => void stop()}>■ Stop</button>}
                 <button className="primary" disabled={!session || !text.trim()} title={chat.busy ? "Stacks behind the running turn" : "Send"} onClick={() => void send()}>{chat.busy ? "Stack" : "Send"}</button>
             </div>
         </aside>

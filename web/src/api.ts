@@ -450,6 +450,7 @@ export const api = {
     prompterSend: (id: string, text: string, path: string) => post<{ ok: true; message: PrompterMessage; queued: boolean }>(`/api/prompter/sessions/${id}/messages`, { text, path }),
     prompterUnqueue: (id: string, messageId: string) => fetch(`/api/prompter/sessions/${id}/messages/${messageId}`, { method: "DELETE" }).then((r) => j<{ ok: true }>(r)),
     prompterPing: (id: string) => post<{ ok: true }>(`/api/prompter/sessions/${id}/ping`),
+    prompterStop: (id: string) => post<{ stopped: boolean }>(`/api/prompter/sessions/${id}/stop`),
     prompterClose: (id: string, farewell = true) => fetch(`/api/prompter/sessions/${id}?farewell=${farewell ? 1 : 0}`, { method: "DELETE", keepalive: true }).then((r) => j<{ ok: true }>(r)),
     restartServer: (force = false) => post<{ ok: boolean; detail: string }>("/api/server/restart", { force }),
     testNotification: () => post<{ macos: boolean; ntfy: boolean | null; error?: string }>("/api/notifications/test"),

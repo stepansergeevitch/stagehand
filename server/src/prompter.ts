@@ -196,6 +196,18 @@ export class Prompter {
         return this.active.has(id);
     }
 
+    // Ctrl-C for a turn: the in-flight claude run is killed; the text it had streamed so far stays in the chat marked
+    // as stopped, and whatever the human stacked meanwhile goes out as the next turn (runTurn's flush). The chat
+    // itself stays open. False when nothing was running.
+    private readonly stopping = new Set<string>();
+    stop(id: string): boolean {
+        const run = this.active.get(id);
+        if (!run) return false;
+        this.stopping.add(id);
+        run.kill();
+        return true;
+    }
+
     private addMessage(sessionId: string, role: PrompterMessageRow["role"], text: string, path: string | null, state: PrompterMessageRow["state"] = "sent"): PrompterMessageRow {
         const id = randomUUID();
         const ts = now();
@@ -305,8 +317,11 @@ export class Prompter {
         this.active.delete(id);
         const result: ResultEvent | null = outcome.result;
         if (result) recordUsage(this.db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "prompter", stage: null }, result);
-        const finalText = (result?.result?.trim() || answer.trim() || "").trim();
-        const error = !finalText ? (outcome.signal ? `stopped (${outcome.signal})` : outcome.stderr.trim().split("\n").pop()?.slice(0, 300) || `exited with ${outcome.exitCode ?? "?"}`) : result?.is_error ? finalText.slice(0, 300) : null;
+        const stopped = this.stopping.delete(id);
+        const partial = (result?.result?.trim() || answer.trim() || "").trim();
+        // A stopped turn keeps what it had said so far, marked; a stopped turn with nothing said leaves no message.
+        const finalText = stopped ? (partial ? `${partial}\n\n_(stopped here)_` : "") : partial;
+        const error = stopped ? null : !finalText ? (outcome.signal ? `stopped (${outcome.signal})` : outcome.stderr.trim().split("\n").pop()?.slice(0, 300) || `exited with ${outcome.exitCode ?? "?"}`) : result?.is_error ? finalText.slice(0, 300) : null;
         const message = finalText && !opts.system ? this.addMessage(id, "assistant", finalText, path) : null;
         if (opts.system && finalText) this.addMessage(id, "system", finalText, path);
         this.emit({ sessionId: id, kind: "done", message, error });

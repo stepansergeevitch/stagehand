@@ -658,3 +658,5 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .timing-task:hover td { background: var(--accent-soft); }
 .timing-stages td { padding: 4px 8px 10px; }
 .timing-stages .chip { margin: 0 4px 4px 0; }
+.prompter-stop { flex: 0 0 auto; min-height: 0; padding: 6px 10px; border-color: var(--bad, #c33); color: var(--bad, #c33); background: transparent; }
+.prompter-stop:hover { background: var(--bad, #c33); color: #fff; }
