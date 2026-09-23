@@ -342,6 +342,10 @@ export interface PrStateRow {
     review_decision: string | null;
     merged_at: string | null;
     pushed_at: string | null;
+    // The commit Stagehand itself last pushed to origin for this repository (null before any push, or when the push
+    // came from elsewhere). When origin still sits on it, every remote commit is Stagehand's own and a rewritten local
+    // history may replace them with a force-push under lease.
+    pushed_sha: string | null;
     approved_at: string | null;
     // GitHub's OPEN / CLOSED / MERGED as of the last poll.
     state: string | null;
@@ -567,6 +571,7 @@ CREATE TABLE IF NOT EXISTS pr_state (
     review_decision TEXT,
     merged_at TEXT,
     pushed_at TEXT,
+    pushed_sha TEXT,
     approved_at TEXT,
     state TEXT,
     updated_at TEXT NOT NULL,
@@ -781,6 +786,8 @@ const MIGRATIONS: Array<[string, string]> = [
     // Which repository's draft a PR Creation Review verdict was about (multi-repo envs review one PR per repo).
     ["reviews.repo", `ALTER TABLE reviews ADD COLUMN repo TEXT`],
     ["pr_state.state", `ALTER TABLE pr_state ADD COLUMN state TEXT`],
+    // The commit Stagehand last pushed for the repository: origin still on it means nobody else pushed since.
+    ["pr_state.pushed_sha", `ALTER TABLE pr_state ADD COLUMN pushed_sha TEXT`],
     ["envs.pr_templates", `ALTER TABLE envs ADD COLUMN pr_templates TEXT`],
     ["envs.pr_draft", `ALTER TABLE envs ADD COLUMN pr_draft INTEGER NOT NULL DEFAULT 0`],
     ["envs.depends_on_env_id", `ALTER TABLE envs ADD COLUMN depends_on_env_id TEXT REFERENCES envs(id)`],
@@ -893,6 +900,7 @@ export const openDb = (dataDir: string): DB => {
             review_decision TEXT,
             merged_at TEXT,
             pushed_at TEXT,
+            pushed_sha TEXT,
             approved_at TEXT,
             state TEXT,
             updated_at TEXT NOT NULL,

@@ -302,7 +302,7 @@ export interface PrDraftEntry { repo: string; title: string; body: string; base?
 export interface PrDraft { base: string; drafts: PrDraftEntry[]; legacy?: boolean }
 export interface PrState {
     repo: string; number: number | null; url: string | null; checks_json: string | null; review_decision: string | null; merged_at: string | null;
-    updated_at: string; pushed_at: string | null; approved_at: string | null; state: string | null;
+    updated_at: string; pushed_at: string | null; pushed_sha: string | null; approved_at: string | null; state: string | null;
 }
 // How a repository is named in the UI: its directory, or "repo" for a single-repo env.
 export const repoName = (repo: string): string => repo || "repo";

@@ -1065,6 +1065,17 @@ export class Engine extends EventEmitter {
         for (const r of running) this.active.get(r.id)?.kill();
     }
 
+    // A task at PR Fix that failed after its agent run finished and the human approved the fix: the only step in
+    // between is the push, so that is what failed.
+    private pushFailedAfterPrFix(taskId: string): boolean {
+        const task = this.getTask(taskId);
+        if (!task || task.stage !== "pr_fix" || task.status !== "failed") return false;
+        const last = this.latestRun(taskId);
+        if (!last || last.stage !== "pr_fix" || last.status !== "done") return false;
+        const since = last.finished_at ?? last.started_at ?? "";
+        return !!this.db.prepare(`SELECT 1 FROM reviews WHERE task_id = ? AND stage = 'pr_fix' AND verdict = 'approve' AND created_at >= ? LIMIT 1`).get(taskId, since);
+    }
+
     retry(taskId: string): void {
         const task = this.getTask(taskId);
         if (!task) return;
@@ -1075,6 +1086,13 @@ export class Engine extends EventEmitter {
         }
         if (task.stage === "research" && !existsSync(join(this.taskDir(taskId), "ticket.json")) && !this.latestRun(taskId)) {
             this.fetchTicketThenResearch(taskId);
+            return;
+        }
+        // An approved PR Fix whose push was rejected afterwards: the fix is committed, verified and reviewed, so the
+        // push runs again — not the agent, and not the verification-and-review round (INV-133, 2026-09-23: Retry
+        // re-verified the finished fix and asked for a second approval before it pushed).
+        if (this.pushFailedAfterPrFix(taskId)) {
+            void this.pushPrFix(taskId);
             return;
         }
         const last = this.latestRun(taskId);
@@ -1565,23 +1583,31 @@ export class Engine extends EventEmitter {
     }
 
     // Pushes the task branch after integrating the remote first (the user's rule: "it should pull --rebase first"):
-    // fetch; when the remote has commits this checkout lacks, either every one of them is already here by content —
-    // the local history was rewritten (a rebase onto a newer base, a folded fix) and the push is forced with lease —
-    // or they are genuinely new and are rebased under the local commits with `git pull --rebase` (aborted and reported
-    // on conflict). A plain push otherwise. Returns a one-line note of what happened. Seen on INV-130 (2026-09-18):
-    // the frontend checkout had been rebased onto newer dev, the remote still held the 7 old commits, and the plain
-    // push was rejected as non-fast-forward.
-    private async pushBranch(cwd: string, env: EnvRow, branch: string): Promise<string> {
+    // fetch; when the remote has commits this checkout lacks, the local history was rewritten and the push is forced
+    // with lease when either every remote commit is already here by content (a clean rebase onto a newer base, a
+    // folded fix) or the remote still sits on the commit Stagehand itself pushed last (`lastPushed`: nobody else
+    // pushed since, so the remote commits are the old shape of the local ones even when a conflict resolution or a
+    // merge commit changed their content); otherwise they are genuinely new and are rebased under the local commits
+    // with `git pull --rebase` (aborted and reported on conflict). A plain push otherwise. Returns a one-line note of
+    // what happened. Seen on INV-130 (2026-09-18): the frontend checkout had been rebased onto newer dev, the remote
+    // still held the 7 old commits, and the plain push was rejected as non-fast-forward. Seen on INV-133 (2026-09-23):
+    // the backend fix rebased onto dev with a resolved conflict and a merge migration, so `git cherry` saw new content,
+    // `pull --rebase` replayed 23 stale remote commits onto the rewritten branch and conflicted, and the task failed
+    // although nothing but Stagehand's own old push was on the remote.
+    private async pushBranch(cwd: string, env: EnvRow, branch: string, lastPushed: string | null = null): Promise<string> {
         await this.git(cwd, ["fetch", "origin", branch], env).catch(() => "");
         const remote = (await this.git(cwd, ["rev-parse", "-q", "--verify", `origin/${branch}`], env).catch(() => "")).trim();
         if (remote) {
             const remoteOnly = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${branch}`], env).catch(() => "0")) || 0;
             if (remoteOnly > 0) {
                 const unique = (await this.git(cwd, ["cherry", "HEAD", `origin/${branch}`], env).catch(() => "+ unknown")).split("\n").filter((l) => l.startsWith("+")).length;
-                if (unique === 0) {
+                const ownOldPush = !!lastPushed && remote === lastPushed;
+                if (unique === 0 || ownOldPush) {
                     await this.git(cwd, ["push", `--force-with-lease=${branch}:${remote}`, "-u", "origin", branch], env);
                     this.onBranchRewritten(env, branch);
-                    return `force-pushed with lease — the ${remoteOnly} remote commit(s) were already here by content (history rewritten locally)`;
+                    return unique === 0
+                        ? `force-pushed with lease — the ${remoteOnly} remote commit(s) were already here by content (history rewritten locally)`
+                        : `force-pushed with lease — the ${remoteOnly} remote commit(s) were Stagehand's own last push (${remote.slice(0, 7)}), replaced by the rewritten local history`;
                 }
                 try {
                     await this.git(cwd, ["pull", "--rebase", "origin", branch], env);
@@ -1595,6 +1621,12 @@ export class Engine extends EventEmitter {
         }
         await this.git(cwd, ["push", "-u", "origin", branch], env);
         return "pushed";
+    }
+
+    // The checkout's current commit, recorded as `pushed_sha` right after a push so a later push can tell Stagehand's
+    // own old push from somebody else's commits.
+    private async headSha(cwd: string, env: EnvRow): Promise<string | null> {
+        return (await this.git(cwd, ["rev-parse", "HEAD"], env).catch(() => "")).trim() || null;
     }
 
     private async gh(cwd: string, args: string[], env: EnvRow): Promise<string> {
@@ -1617,13 +1649,13 @@ export class Engine extends EventEmitter {
 
     private upsertPrRow(taskId: string, repo: string, patch: Partial<Omit<PrStateRow, "task_id" | "repo" | "updated_at">>): void {
         const cur = this.prRow(taskId, repo);
-        const next = { number: null, url: null, checks_json: null, review_decision: null, merged_at: null, pushed_at: null, approved_at: null, state: null, ...(cur ?? {}), ...patch };
+        const next = { number: null, url: null, checks_json: null, review_decision: null, merged_at: null, pushed_at: null, pushed_sha: null, approved_at: null, state: null, ...(cur ?? {}), ...patch };
         this.db
             .prepare(
-                `INSERT INTO pr_state (task_id, repo, number, url, checks_json, review_decision, merged_at, pushed_at, approved_at, state, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(task_id, repo) DO UPDATE SET number = excluded.number, url = excluded.url, checks_json = excluded.checks_json, review_decision = excluded.review_decision, merged_at = excluded.merged_at, pushed_at = excluded.pushed_at, approved_at = excluded.approved_at, state = excluded.state, updated_at = excluded.updated_at`,
+                `INSERT INTO pr_state (task_id, repo, number, url, checks_json, review_decision, merged_at, pushed_at, pushed_sha, approved_at, state, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(task_id, repo) DO UPDATE SET number = excluded.number, url = excluded.url, checks_json = excluded.checks_json, review_decision = excluded.review_decision, merged_at = excluded.merged_at, pushed_at = excluded.pushed_at, pushed_sha = excluded.pushed_sha, approved_at = excluded.approved_at, state = excluded.state, updated_at = excluded.updated_at`,
             )
-            .run(taskId, repo, next.number, next.url, next.checks_json, next.review_decision, next.merged_at, next.pushed_at, next.approved_at, next.state, now());
+            .run(taskId, repo, next.number, next.url, next.checks_json, next.review_decision, next.merged_at, next.pushed_at, next.pushed_sha, next.approved_at, next.state, now());
     }
 
     // pr.json normalised to one draft per repository. A file from before per-repo drafts ({title, body, base}) is fanned
@@ -1832,20 +1864,22 @@ export class Engine extends EventEmitter {
                 : `this env forbids agent pushes — push \`${task.branch}\` and open the PR yourself (draft below); Stagehand picks it up by branch`;
         }
         this.setTaskStatus(taskId, "running", `PR Creation Review · pushing ${repoLabel(repo)} (${task.branch})`);
+        let pushed: string | null = null;
         try {
-            const how = await this.pushBranch(cwd, env, task.branch);
+            const how = await this.pushBranch(cwd, env, task.branch, existing?.pushed_sha ?? null);
+            pushed = await this.headSha(cwd, env);
             if (how !== "pushed") this.addAgentNote(taskId, `${repoLabel(repo)}: ${how}`);
         } catch (e) {
-            this.setTaskStatus(taskId, "failed", `${repoLabel(repo)}: push failed — ${gitErrorTail(e)}`);
+            this.setTaskStatus(taskId, "failed", `${repoLabel(repo)}: push failed — ${gitErrorTail(e)} · fix the checkout (or force-push from Code changes), then approve the draft again`);
             return null;
         }
         // A task sent back after its PR existed just needs the push; the open PR picks the new commits up.
         if (existing?.number) {
-            this.resetPrState(taskId, repo);
+            this.resetPrState(taskId, repo, pushed);
             return `pushed to PR #${existing.number}`;
         }
         if (!rules.allowPrCreate || !entry) {
-            this.upsertPrRow(taskId, repo, { pushed_at: now() });
+            this.upsertPrRow(taskId, repo, { pushed_at: now(), pushed_sha: pushed });
             return `pushed \`${task.branch}\` — this env forbids agent PR creation: open the PR yourself (draft below); Stagehand picks it up by branch`;
         }
         try {
@@ -1856,7 +1890,7 @@ export class Engine extends EventEmitter {
             const body = this.stackedBodyPrefix(parent, prBase, env.base_branch) + entry.body;
             const url = await this.gh(cwd, ["pr", "create", "--base", prBase, "--head", task.branch, "--title", entry.title, "--body", body, ...(env.pr_draft ? ["--draft"] : [])], env);
             const number = Number(url.split("/").pop());
-            this.upsertPrRow(taskId, repo, { number: Number.isFinite(number) ? number : null, url, pushed_at: now(), state: "OPEN" });
+            this.upsertPrRow(taskId, repo, { number: Number.isFinite(number) ? number : null, url, pushed_at: now(), pushed_sha: pushed, state: "OPEN" });
             return `PR #${Number.isFinite(number) ? number : "?"} created`;
         } catch (e) {
             this.setTaskStatus(taskId, "failed", `${repoLabel(repo)}: gh pr create failed — ${gitErrorTail(e)}`);
@@ -1866,8 +1900,8 @@ export class Engine extends EventEmitter {
 
     // A push changed the PR's head: what was known about checks and review verdicts describes the old commit. Drop it and
     // remember when the push happened, so the next poll starts from "nothing reported yet" instead of stale green/red.
-    private resetPrState(taskId: string, repo: string): void {
-        this.upsertPrRow(taskId, repo, { checks_json: null, review_decision: null, pushed_at: now() });
+    private resetPrState(taskId: string, repo: string, pushedSha: string | null = null): void {
+        this.upsertPrRow(taskId, repo, { checks_json: null, review_decision: null, pushed_at: now(), ...(pushedSha ? { pushed_sha: pushedSha } : {}) });
         this.prCommentsCache.delete(`${taskId}:${repo}`);
     }
 
@@ -2285,19 +2319,23 @@ export class Engine extends EventEmitter {
             return;
         }
         this.setTaskStatus(taskId, "running", "PR Fix · pushing the approved fix");
+        let current = "";
         try {
             for (const repo of this.prRepos(env)) {
+                current = repo;
                 const cwd = this.checkoutOf(task, env, repo);
                 if (!existsSync(cwd)) continue;
                 const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch], env).catch(() => "");
                 const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `origin/${this.baseBranchOf(task, env, repo)}..HEAD`], env).catch(() => "");
                 if (!ahead) continue;
-                const how = await this.pushBranch(cwd, env, task.branch);
+                const how = await this.pushBranch(cwd, env, task.branch, this.prRow(taskId, repo)?.pushed_sha ?? null);
                 if (how !== "pushed") this.addAgentNote(taskId, `${repoLabel(repo)}: ${how}`);
-                this.resetPrState(taskId, repo);
+                this.resetPrState(taskId, repo, await this.headSha(cwd, env));
             }
         } catch (e) {
-            this.setTaskStatus(taskId, "failed", `push failed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            // The fix stays committed and approved: Retry runs this push again (no agent run), and a force-push from
+            // Code changes carries on from here by itself.
+            this.setTaskStatus(taskId, "failed", `PR Fix · ${repoLabel(current)}: push failed — ${gitErrorTail(e).slice(0, 200)} · fix the checkout (or force-push from Code changes), then Retry pushes again`);
             return;
         }
         // A fix can land while a repository's draft is still unapproved (its PR never opened before CI on another
@@ -2746,10 +2784,16 @@ export class Engine extends EventEmitter {
             );
         }
         await this.git(cwd, ["push", remote ? `--force-with-lease=${task.branch}:${remote}` : "--force-with-lease", "-u", "origin", task.branch], env);
-        this.resetPrState(taskId, repo);
+        this.resetPrState(taskId, repo, await this.headSha(cwd, env));
         this.onBranchRewritten(env, task.branch);
         this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
         this.emitTask(taskId);
+        // The push an approved PR Fix failed on was just done by hand: carry on where that step stopped (any other
+        // repository still ahead is pushed, then the task moves to PR Waiting) instead of staying "failed".
+        if (this.pushFailedAfterPrFix(taskId)) {
+            void this.pushPrFix(taskId);
+            return `force-pushed ${repoLabel(repo)} — resuming the PR Fix push`;
+        }
         this.pollPrSoon(taskId);
         return `force-pushed ${repoLabel(repo)}`;
     }
@@ -4276,7 +4320,7 @@ export class Engine extends EventEmitter {
             }
             try {
                 await this.git(cwd, ["push", "--force-with-lease", "origin", task.branch!], env);
-                this.resetPrState(task.id, repo);
+                this.resetPrState(task.id, repo, await this.headSha(cwd, env));
                 pushed = true;
                 lines.push(`✅ ${repoLabel(repo)}: force-pushed (with lease); PR checks restart`);
             } catch (e) {
