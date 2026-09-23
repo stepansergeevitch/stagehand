@@ -18,6 +18,7 @@ Worktree: `{{worktree}}` (every command below runs there; in a multi-repository 
    On a conflict: read both sides and the design; keep this task's behaviour, take the base's changes for everything else, resolve the file, `git add` it, `git rebase --continue`. Do not create new commits and do not `--amend`: conflict resolutions are folded into the commit being replayed by the rebase itself. If a conflict cannot be resolved with confidence (the base removed or rewrote what this task builds on), `git rebase --abort` in that repository and explain — an aborted repository is left exactly as it was.
 3. After a successful rebase, run the repository's fast checks on the touched areas — typecheck / lint and the tests this task added or changed (the commands the implementation stage used, or the repository's standard ones). A failure caused by the rebase (an API that moved, a renamed symbol) is yours to fix in the affected commit(s) — with a plain follow-up commit only if the environment allows commits and folding it into the replayed commit is impractical; say which.
 4. Do not push, do not touch GitHub, do not run the browser.
+5. Never end your turn while a command you started in the background is still running: this is a headless run, no completion notification ever arrives, and the process exit kills the command. Run long commands in the foreground (raise the timeout) or block on their output before you go on.
 
 ## Reply
 

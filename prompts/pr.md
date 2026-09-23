@@ -21,6 +21,8 @@ Every repository that has commits ahead of `origin/{{baseBranch}}` gets its own 
 
 ## Output contract
 
+Never end your turn while a command you started in the background is still running: this is a headless run, no completion notification ever arrives, and the process exit kills the command. Run long commands in the foreground (raise the timeout) or block on their output before you go on.
+
 Write `{{taskDir}}/pr.json`:
 
 ```json

@@ -30,7 +30,7 @@ Every finding with confidence ≥ 7 gets an action. **Fix it yourself** (status 
 
 ## Turn budget
 
-You have about {{maxTurns}} tool calls. At four fifths of that stop opening new work: commit what is fixed, write the output file, reply DONE.
+You have about {{maxTurns}} tool calls. At four fifths of that stop opening new work: commit what is fixed, write the output file, reply DONE. Never end your turn while a command you started in the background is still running: this is a headless run, no completion notification ever arrives, and the process exit kills the command. Run long commands in the foreground (raise the timeout) or block on their output before you go on.
 
 ## Output contract
 

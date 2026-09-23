@@ -19,6 +19,7 @@ Something on the open PR for ticket {{ticketId}} (worktree {{worktree}}, branch 
 - If this is a failing CI check, diagnose from the logs above; use `mcp__circleci-mcp-server__get_build_failure_logs` / `get_job_test_results` if you need more. If it's PR comments, address each one directly — don't invent a CI failure to explain, and don't touch anything the comments didn't ask about.
 - Do not weaken or delete failing assertions to make tests pass; do not add `# type: ignore`, `# pyright: ignore`, `cast`, or baseline entries.
 - Re-run the affected tests and the repo's type-checker/linter locally (commands per the repo's CLAUDE.md) until green, even if nothing above mentioned a test failure — your change must not break anything else.
+- Never end your turn while a command you started in the background is still running: this is a headless run, no completion notification ever arrives, and the process exit kills the command. Run long commands in the foreground (raise the timeout) or block on their output before you go on.
 - {{commitRule}}
 - Do **not** push, and do not open, comment on, or review anything on GitHub — a human reviews your diff first; the push happens only after they approve.
 

@@ -18,6 +18,7 @@ This is the IMPLEMENTATION stage for ticket {{ticketId}} in the worktree {{workt
 - Gates before you finish: all targeted tests green AND the repo's type-checker/linter clean. Fix at the source — no `# type: ignore`, `# pyright: ignore`, `cast`, or baseline entries.
 - {{commitRule}} Never touch `{{baseBranch}}`, never rewrite history. Never push from this stage.
 - Never put the ticket id in source code or comments. Never post to GitHub.
+- Never end your turn while a command you started in the background is still running: this is a headless run, no completion notification ever arrives, and the process exit kills the command. Run long commands in the foreground (raise the timeout) or block on their output before you go on.
 - If reviewer notes are present above, they come from a human reading your diff: fix every point (line comments name `path:line` in the current diff and quote the line), re-run the gates, and account for each point in `notes`.
 
 ## Turn budget
