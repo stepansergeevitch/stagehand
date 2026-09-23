@@ -668,6 +668,7 @@ app.patch("/api/envs/:id", async (c) => {
             checkCommand: z.string().nullable().optional(),
             components: ComponentList.optional(),
             keepServices: z.boolean().optional(),
+            qaBrowser: z.enum(["chrome", "gstack"]).optional(),
             // Per-repository PR template overrides: {"backend": ".github/pull_request_template.md"}; null/"" removes one.
             prTemplates: z.record(z.string().nullable()).optional(),
             prDraft: z.boolean().optional(),
@@ -733,6 +734,7 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.dependsOnEnvId, env.depends_on_env_id),
         env.id,
     );
+    if (body.qaBrowser !== undefined) db.prepare(`UPDATE envs SET qa_browser = ? WHERE id = ?`).run(body.qaBrowser, env.id);
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));
 });
 

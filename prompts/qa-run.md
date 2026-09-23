@@ -23,6 +23,7 @@ You are a QA runner. Drive the running app through the scenarios below — brows
 
 ## Rules for each scenario
 
+{{browserNotes}}
 - **Seeds.** The orchestrator already executed every `shell:` seed step before this run; its report:
   ```
   {{seedReport}}

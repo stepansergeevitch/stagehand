@@ -83,6 +83,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     // ---- optional components (a worker, a scheduler): saved with the Services section
     const [comps, setComps] = useState<EnvComponent[]>(() => componentsOf(env));
     const [keepServices, setKeepServices] = useState(env.keep_services === 1);
+    const [qaBrowser, setQaBrowser] = useState<"chrome" | "gstack">(env.qa_browser ?? "chrome");
     const setComp = (i: number, patch: Partial<EnvComponent>) => setComps((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
     const set =<T extends object>(setter: React.Dispatch<React.SetStateAction<T>>) => (k: keyof T) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
         setter((prev) => ({ ...prev, [k]: e.target.type === "checkbox" ? (e.target as HTMLInputElement).checked : e.target.value }));
@@ -207,6 +208,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 qaSeedHints: nul(s.qaSeedHints), cleanupCommand: nul(s.cleanupCommand), checkCommand: nul(s.checkCommand),
                 components: comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
                 keepServices,
+                qaBrowser,
             })}>
                 <div className="two">
                     <label>QA app URL <input value={s.appUrl} onChange={ss("appUrl")} placeholder="{{feUrl}} or {{beUrl}} or a fixed URL" /></label>
@@ -221,6 +223,12 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 <label>Verification command (runs from the worktree after every Implementation and PR Fix run; a non-zero exit sends the output back to the agent, twice, then blocks for you — put here what tests and a dev server never exercise, e.g. Django <code>manage.py check --database default && manage.py makemigrations --check --dry-run</code>) <textarea value={s.checkCommand} onChange={ss("checkCommand")} placeholder="optional" /></label>
                 <label>BE command <textarea value={s.beCommand} onChange={ss("beCommand")} /></label>
                 <label>FE command <textarea value={s.feCommand} onChange={ss("feCommand")} /></label>
+                <label>QA browser for browser scenarios
+                    <select value={qaBrowser} onChange={(e) => setQaBrowser(e.target.value as "chrome" | "gstack")}>
+                        <option value="chrome">Chrome profile of the QA account (claude-in-chrome: windows, copies per run, browser login)</option>
+                        <option value="gstack">gstack headless Chromium (no windows; the session is imported from that Chrome profile's cookies per run; runs on a token account)</option>
+                    </select>
+                </label>
                 <label className="inline"><input type="checkbox" checked={keepServices} onChange={(e) => setKeepServices(e.target.checked)} /> Keep a task's BE/FE running between stages (QA baseline → Implementation → Manual QA → User Review) instead of stopping them after every QA pass — saves the cold start (a Next dev server compiles for minutes) at the cost of RAM; they stop when the task is done or cleaned up</label>
                 <div className="components">
                     <b>Optional components</b>

@@ -183,6 +183,8 @@ interface DispatchOpts {
     operation?: "pr_fix_ci" | "pr_fix_comments";
     // QA stages: this dispatch is one shard of a pass split into parallel runs (qa-shards.ts).
     shard?: QaShard | PrShard;
+    // Browser stages on a gstack env: this run's headless daemon is up and its session cookies are in.
+    gstackReady?: boolean;
     // A run that hit its turn cap without output is resumed in the same session this many times so far (cap = checkpoint).
     continuations?: number;
 }
@@ -523,6 +525,7 @@ export class Engine extends EventEmitter {
         this.startCallbackHopWatcher();
         // No run survives a restart, so no cloned Chrome profile should either.
         void sweepClones(new Set()).then((n) => n && console.log(`[stagehand] ${n} leftover cloned Chrome profile(s) removed`));
+        void this.sweepGstackBrowsers();
         void this.recoverInterrupted();
         const n = backfillUsage(this.db, this.cfg.dataDir);
         if (n) console.log(`[stagehand] usage backfilled for ${n} run(s)`);
@@ -806,6 +809,92 @@ export class Engine extends EventEmitter {
         const be = this.services.get(task.id, "be");
         const fe = this.services.get(task.id, "fe");
         return (env.app_url ?? (fe ? "{{feUrl}}" : "https://localhost:3000")).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{beUrl\}\}/g, be?.url ?? "");
+    }
+
+    // ---------- gstack's headless browser (config.gstackDir, envs.qa_browser = "gstack") ----------
+
+    // The compiled `browse` CLI of the gstack checkout, when built (`bun install && bun run build` in gstackDir).
+    private gstackBin(): string | null {
+        const p = join(this.cfg.gstackDir, "browse", "dist", "browse");
+        return existsSync(p) ? p : null;
+    }
+
+    private gstackWarned = false;
+    // Which browser this env's QA runners drive; an env set to gstack without a built binary falls back to Chrome, once with a warning.
+    private qaEngine(env: EnvRow): "chrome" | "gstack" {
+        if (env.qa_browser !== "gstack") return "chrome";
+        if (this.gstackBin()) return "gstack";
+        if (!this.gstackWarned) {
+            this.gstackWarned = true;
+            console.warn(`[stagehand] env ${env.name} asks for the gstack QA browser but ${join(this.cfg.gstackDir, "browse", "dist", "browse")} is not built — using Chrome`);
+        }
+        return "chrome";
+    }
+
+    // One daemon per run: its state file names the port and token; the daemon's own profile dies with `browse stop`.
+    private gstackStateFile(taskId: string, shard: QaShard | PrShard | undefined): string {
+        return join(this.taskDir(taskId), "qa", "browser", shard?.id || "all", "browse.json");
+    }
+
+    private gstackEnv(stateFile: string): Record<string, string> {
+        return { ...process.env, BROWSE_STATE_FILE: stateFile, GSTACK_TELEMETRY_OFF: "1" } as Record<string, string>;
+    }
+
+    // Starts the daemon for this run (the first `browse status` boots it) and imports the app's session cookies from the
+    // QA account's Chrome profile through the daemon's own picker API, so the runner lands logged in. Returns a note for
+    // the task chat when the cookies could not be imported (the run still starts; the runner reports the login wall).
+    private async prepareGstackBrowser(task: TaskRow, env: EnvRow, stateFile: string): Promise<string | null> {
+        const bin = this.gstackBin();
+        if (!bin) throw new Error("gstack's browse binary is not built");
+        mkdirSync(join(stateFile, ".."), { recursive: true });
+        await execFileAsync(bin, ["status"], { env: this.gstackEnv(stateFile), cwd: join(stateFile, ".."), timeout: 90_000 });
+        const state = JSON.parse(readFileSync(stateFile, "utf8")) as { port: number; token: string };
+        await execFileAsync(bin, ["viewport", "1440x900"], { env: this.gstackEnv(stateFile), cwd: join(stateFile, ".."), timeout: 30_000 }).catch(() => undefined);
+        const picked = this.qaBrowser(task, env);
+        if ("error" in picked) return `Headless QA browser started without a session: ${picked.error}. The runner will meet the login page.`;
+        const names: Record<string, string> = { Google: "chrome", Chromium: "chromium", Arc: "arc", Brave: "brave", "Microsoft Edge": "edge", Comet: "comet" };
+        const browserName = names[picked.browser.browser ?? "Google"] ?? "chrome";
+        let host: string;
+        try {
+            host = new URL(this.appUrlFor(task, env)).hostname;
+        } catch {
+            host = "localhost";
+        }
+        const res = await fetch(`http://127.0.0.1:${state.port}/cookie-picker/import`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ browser: browserName, profile: picked.browser.profileDir, domains: [host] }),
+            signal: AbortSignal.timeout(120_000),
+        });
+        const body = (await res.json().catch(() => ({}))) as { imported?: number; failed?: number; message?: string };
+        if (!res.ok || !body.imported) return `Headless QA browser started, but no ${host} cookies came over from Chrome profile "${chromeBrowserLabel(picked.browser)}" (${body.message ?? `HTTP ${res.status}`}). The runner will meet the login page — log in there once and retry.`;
+        console.log(`[stagehand] ${task.ticket_id}: gstack browser on port ${state.port}, ${body.imported} ${host} cookie(s) from "${chromeBrowserLabel(picked.browser)}"`);
+        return null;
+    }
+
+    private async stopGstackBrowser(stateFile: string): Promise<void> {
+        const bin = this.gstackBin();
+        if (!bin || !existsSync(stateFile)) return;
+        await execFileAsync(bin, ["stop"], { env: this.gstackEnv(stateFile), cwd: join(stateFile, ".."), timeout: 30_000 }).catch(() => undefined);
+        rmSync(stateFile, { force: true });
+    }
+
+    // No run survives a restart, so no daemon should either (each has a 30-minute idle timeout of its own anyway).
+    private async sweepGstackBrowsers(): Promise<void> {
+        const tasksDir = join(this.cfg.dataDir, "tasks");
+        if (!existsSync(tasksDir) || !this.gstackBin()) return;
+        let n = 0;
+        for (const id of readdirSync(tasksDir)) {
+            const dir = join(tasksDir, id, "qa", "browser");
+            if (!existsSync(dir)) continue;
+            for (const slot of readdirSync(dir)) {
+                const f = join(dir, slot, "browse.json");
+                if (!existsSync(f)) continue;
+                await this.stopGstackBrowser(f);
+                n++;
+            }
+        }
+        if (n) console.log(`[stagehand] ${n} leftover headless QA browser(s) stopped`);
     }
 
     // ---------- cloned Chrome profiles (chrome-clones.ts) ----------
@@ -2764,8 +2853,22 @@ export class Engine extends EventEmitter {
             const firstBrowser = scenarios.find((s) => (s.kind ?? "browser") === "browser");
             vars["firstUrl"] = firstBrowser?.url ?? "/";
             const beUrl = be?.url ?? "";
+            const gstackRun = !!firstBrowser && this.qaEngine(env) === "gstack";
+            vars["browserNotes"] = gstackRun
+                ? [
+                      `- **Browser mapping for this run (overrides every tool name in the bullets below):** \`browser_batch\`, \`computer\`, \`find\`, \`read_page\`, \`get_page_text\`, \`javascript_tool\`, \`tabs_context_mcp\` and \`resize_window\` do not exist here — the browser is gstack's headless Chromium, driven with the \`$B\` command in Bash: \`$B snapshot -i\` instead of find/read_page, \`$B click @eN\` / \`$B fill @eN "text"\` / \`$B press Enter\` instead of computer, \`$B text\` instead of get_page_text, \`$B js "<expr>"\` instead of javascript_tool, \`$B screenshot <path>\` for shots. One Bash call may chain several \`$B\` commands with \`&&\` (that is your "batch"). No zoom check, no tab juggling, no "hidden tab" rule: there is one headless tab.`,
+                      `- **Reading a page:** after every navigation or click that loads data, \`$B wait --networkidle\` then \`$B snapshot -i\` (interactive elements as \`@e1\`…; add \`-C\` for clickable elements outside the ARIA tree, \`@c1\`…). Refs change after a navigation: re-snapshot before clicking. Dropdowns and pickers: click the trigger, snapshot, click the option ref; type-to-filter with \`$B fill\` on the search box first. Tables: \`$B text\` or \`$B html <css selector>\`. Console errors: \`$B console --errors\`; requests: \`$B network\`.`,
+                  ].join("\n")
+                : "";
             // The browser steps of the setup only when a scenario drives a browser; an API-only pass must not touch Chrome.
-            vars["browserSetup"] = firstBrowser
+            vars["browserSetup"] = gstackRun
+                ? [
+                      `1. This run drives gstack's headless Chromium through the \`$B\` command in Bash (\`$B\` and \`$BROWSE_STATE_FILE\` are already set in your environment; the daemon is up). Do NOT load or call any \`mcp__claude-in-chrome__*\` tool. Run \`$B viewport 1440x900\` once.`,
+                      `2. The session is already logged in — its cookies were imported from the QA Chrome profile. Navigate: \`$B goto ${appUrl}${firstBrowser.url}\`, then \`$B wait --networkidle\`. If \`goto\` reports a timeout, the dev server is still compiling that page: \`$B wait --load\`, then repeat the goto once. If the page is a sign-in page (an email box, "Continue with…" buttons) or an identity-provider domain, the session did not carry over: write the output file with every browser scenario \`blocked\`, \`blockers: ["login required in the QA browser"]\`, and stop (API scenarios still run).`,
+                      `3. Screenshots for steps marked **shot**: \`$B screenshot ${taskDir}/qa/${pass}/<scenario id>-<step number>.png\` (create the directory first; PNG, and use that path in \`shots\`). A step marked shot without a saved file is a failure.`,
+                      `4. If a page shows a connection error, retry once after 5 seconds (\`sleep 5 && $B reload\`), then record \`blocked\` with the error.`,
+                  ].join("\n")
+                : firstBrowser
                 ? [
                       `1. ${vars["chromeSelect"]} Then load the browser tools in ONE ToolSearch call: \`select:mcp__claude-in-chrome__tabs_context_mcp,mcp__claude-in-chrome__tabs_create_mcp,mcp__claude-in-chrome__navigate,mcp__claude-in-chrome__javascript_tool,mcp__claude-in-chrome__read_page,mcp__claude-in-chrome__find,mcp__claude-in-chrome__form_input,mcp__claude-in-chrome__computer,mcp__claude-in-chrome__get_page_text,mcp__claude-in-chrome__read_network_requests,mcp__claude-in-chrome__browser_batch\`. If \`tabs_context_mcp\` errors with "extension is not connected", wait 5 seconds and call it once more before giving up (blocker: "browser extension not connected").`,
                       `2. Call \`tabs_context_mcp\` once, then \`tabs_create_mcp\` — do not reuse existing tabs. **Work in that one tab for the whole run and never create another** (a second tab drops yours into the background, where Chrome stops rendering popovers — that looks like an app bug and is not one; if a popover opens empty, check \`document.visibilityState\` with \`javascript_tool\`: \`hidden\` = record \`blocked\` with blocker \`app tab hidden in Chrome\`). Never call \`resize_window\` to change the viewport (it zooms the page instead). After the first page load run \`javascript_tool\` once with \`({ zoom: Math.round(outerWidth / innerWidth * 100), ow: outerWidth, oh: outerHeight })\`; if \`zoom\` is outside 95–105: \`resize_window\` with exactly \`ow\` × \`oh\`, then if still off \`computer\` \`action: "key"\`, \`text: "cmd+0"\`; only if both fail add the blocker "page zoom is <zoom>% in the QA Chrome profile and could not be reset — press ⌘0 on the app tab" and continue (\`devicePixelRatio\` is not a zoom signal; a zoom you corrected is not mentioned in the output).`,
@@ -2857,7 +2960,12 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         const cd = this.configDirOf(env);
         // Services and seeds apply to every QA pass; the Chrome machinery only when a scenario actually drives a browser.
-        const chromeNeeded = def.chrome === true && (opts.shard ? opts.shard.browser : this.qaNeedsBrowser(taskId));
+        const browserNeeded = def.chrome === true && (opts.shard ? opts.shard.browser : this.qaNeedsBrowser(taskId));
+        // gstack's headless daemon replaces the Chrome profile machinery below: no window, no copy, no extension bridge,
+        // and the run needs no browser login — it runs on the token account like any headless stage.
+        const gstack = browserNeeded && this.qaEngine(env) === "gstack";
+        const gstackState = gstack ? this.gstackStateFile(taskId, opts.shard) : null;
+        const chromeNeeded = browserNeeded && !gstack;
         // A shard of a parallel QA pass: a gate that blocks the task records the shard as failed (the group decides
         // what happens once every shard is in), a capacity gate puts it back in the group's queue.
         const shard = opts.shard;
@@ -2906,6 +3014,16 @@ export class Engine extends EventEmitter {
         let account = picked;
         let runAuth: Record<string, string> = authEnv(picked);
         let runDir = cd.path;
+        if (gstack && gstackState && !opts.gstackReady) {
+            this.setTaskStatus(taskId, "running", `${def.label}${shard ? ` · ${shard.id}` : ""} · starting the headless QA browser`);
+            void this.prepareGstackBrowser(task, env, gstackState)
+                .then((note) => {
+                    if (note) this.addAgentNote(taskId, note);
+                    this.dispatch(taskId, stage, { ...opts, gstackReady: true });
+                })
+                .catch((e: unknown) => blockOrAbort(`${def.label} · the headless QA browser did not start: ${String((e as Error).message ?? e).slice(0, 200)}`));
+            return;
+        }
         if (chromeNeeded) {
             const chrome = this.chromeContext(env, cd, task);
             if (!chrome.ok) {
@@ -3065,7 +3183,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: runDir,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...runAuth },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...runAuth, ...(gstackState ? { BROWSE_STATE_FILE: gstackState, B: this.gstackBin() ?? "", GSTACK_TELEMETRY_OFF: "1" } : {}) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...(isPrShard(shard)
@@ -3110,6 +3228,7 @@ export class Engine extends EventEmitter {
             this.active.delete(runId);
             // The copy served this run only; a retry or unblock makes a fresh one.
             void this.releaseClone(cloneKey);
+            if (gstackState) void this.stopGstackBrowser(gstackState);
             void (isPrShard(shard) ? this.onPrShardClosed(taskId, runId, def, account, outcome, shard, opts) : shard ? this.onShardClosed(taskId, runId, def, account, outcome, shard) : this.onRunClosed(taskId, runId, def, account, outcome, opts)).catch((e: unknown) => console.warn(`[stagehand] onRunClosed ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         });
     }

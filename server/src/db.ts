@@ -159,6 +159,8 @@ export interface EnvRow {
     // 1 = a task's BE/FE stay up between QA baseline → implementation → Manual QA → User Review instead of being stopped
     // after every QA pass (a Next dev server compiles for minutes on every cold start); stopped when the task is done or cleaned up.
     keep_services: number;
+    // Which browser the QA runner drives: "chrome" = the account's Chrome profile via claude-in-chrome; "gstack" = gstack's headless Chromium daemon (cookies imported from that profile).
+    qa_browser: string;
     // JSON {"<repo dir or .>": "<template path relative to that repo>"} — per-repository PR template overrides; a repo not listed is auto-detected.
     pr_templates: string | null;
     // Open every PR this env creates as a GitHub draft (0/1). The human marks it ready for review themselves.
@@ -756,6 +758,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.check_command", `ALTER TABLE envs ADD COLUMN check_command TEXT`],
     ["envs.components", `ALTER TABLE envs ADD COLUMN components TEXT`],
     ["envs.keep_services", `ALTER TABLE envs ADD COLUMN keep_services INTEGER NOT NULL DEFAULT 0`],
+    ["envs.qa_browser", `ALTER TABLE envs ADD COLUMN qa_browser TEXT NOT NULL DEFAULT 'chrome'`],
     ["window_calibration.anchor_u", `ALTER TABLE window_calibration ADD COLUMN anchor_u REAL`],
     ["window_calibration.anchor_resets", `ALTER TABLE window_calibration ADD COLUMN anchor_resets INTEGER`],
     ["window_calibration.anchor_cost", `ALTER TABLE window_calibration ADD COLUMN anchor_cost REAL NOT NULL DEFAULT 0`],
