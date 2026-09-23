@@ -20,6 +20,10 @@ This is the IMPLEMENTATION stage for ticket {{ticketId}} in the worktree {{workt
 - Never put the ticket id in source code or comments. Never post to GitHub.
 - If reviewer notes are present above, they come from a human reading your diff: fix every point (line comments name `path:line` in the current diff and quote the line), re-run the gates, and account for each point in `notes`.
 
+## Turn budget
+
+You have about {{maxTurns}} tool calls. At four fifths of that stop opening new work: commit what is done, write the output file, reply DONE. A run that ends without the file is continued in the same session at most twice; what you commit before that is kept.
+
 ## Output contract
 
 Write `{{taskDir}}/impl.json`:

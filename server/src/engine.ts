@@ -182,8 +182,54 @@ interface DispatchOpts {
     // PR Fix: what started the round — failing checks or picked comments — for config.operationModels.
     operation?: "pr_fix_ci" | "pr_fix_comments";
     // QA stages: this dispatch is one shard of a pass split into parallel runs (qa-shards.ts).
-    shard?: QaShard;
+    shard?: QaShard | PrShard;
+    // A run that hit its turn cap without output is resumed in the same session this many times so far (cap = checkpoint).
+    continuations?: number;
 }
+
+// One repository's slice of a PR Fix round that runs in parallel with the other repositories' slices: a fresh session
+// (the task session cannot be resumed twice at once), its own jobs text, output file and questions file.
+interface PrShard {
+    kind: "pr";
+    group: string;
+    // The repository directory ("" = the single-repo root); doubles as the shard id.
+    id: string;
+    repo: string;
+    failureOutput: string;
+    sessionId: string;
+    browser: false;
+    phase: "parallel";
+    scenarios: string[];
+}
+const isPrShard = (s: QaShard | PrShard | undefined): s is PrShard => !!s && "kind" in s && s.kind === "pr";
+type PrShardResult =
+    | { kind: "ok"; summary: string }
+    | { kind: "asked"; questions: QuestionsFile }
+    | { kind: "failed"; error: string }
+    | { kind: "rate_limited"; resetsAt: number | null }
+    | { kind: "stopped" };
+interface PrGroup {
+    id: string;
+    taskId: string;
+    attempt: number;
+    operation: DispatchOpts["operation"];
+    notes: string | undefined;
+    pending: PrShard[];
+    starting: Set<string>;
+    running: Map<string, PrShard>;
+    results: Map<string, PrShardResult>;
+}
+// <taskDir>/pr_fix_round.json — the jobs of the current PR Fix round per repository, so Retry and a restart replay it.
+interface PrRoundSpec {
+    jobs: Record<string, string>;
+    attempt: number;
+    operation: DispatchOpts["operation"];
+}
+// A run that ends at its turn cap without output is resumed in the same session up to this many times.
+const MAX_CONTINUATIONS = 2;
+const continueNote = (n: number, outputFile: string | undefined, prior: string | undefined): string =>
+    `## Turn budget reached — continuation ${n} of ${MAX_CONTINUATIONS}\n\nYour previous run hit its turn cap before writing ${outputFile ?? "its output file"}. Continue from the current state of the worktree: do not redo finished work, commit what is done, and write the output file well before the cap this time.` +
+    (prior?.trim() ? `\n\n---\n\n${prior}` : "");
 
 // One QA pass running as several shards: what is still to start, what runs, what each finished shard reported.
 type ShardResult =
@@ -581,8 +627,9 @@ export class Engine extends EventEmitter {
                 notes: "You were interrupted (rate limit or queue). Continue from the current state of the task directory; do not redo finished work.",
             });
         }
-        // Shards of a QA pass that waited for capacity (a clone slot, a run slot) get another go.
+        // Shards of a QA pass or of a PR Fix round that waited for capacity get another go.
         for (const g of this.qaGroups.values()) this.pumpGroup(g);
+        for (const g of this.prGroups.values()) this.pumpPrGroup(g);
     }
 
     // ---------- queries ----------
@@ -923,6 +970,8 @@ export class Engine extends EventEmitter {
     // Every run of the task that is still going (a parallel QA pass has several), and the shards still waiting to start.
     private killTaskRuns(taskId: string): void {
         for (const g of [...this.qaGroups.values()]) if (g.taskId === taskId) this.qaGroups.delete(g.id);
+        for (const g of [...this.prGroups.values()]) if (g.taskId === taskId) this.prGroups.delete(g.id);
+        this.queuedPrRounds.delete(taskId);
         const running = this.db.prepare(`SELECT id FROM runs WHERE task_id = ? AND status = 'running'`).all(taskId) as Array<{ id: string }>;
         for (const r of running) this.active.get(r.id)?.kill();
     }
@@ -946,6 +995,14 @@ export class Engine extends EventEmitter {
         const outputFile = STAGE_DEFS[task.stage]?.outputFile;
         const fresh = !outputFile || (last ? this.outputWrittenDuringRun(taskId, outputFile, last.id) : false);
         const resume = (): void => {
+            // A PR Fix round is replayed from its saved jobs (its runs may have been fresh per-repository sessions).
+            if (task.stage === "pr_fix") {
+                const spec = this.readArtifactJson<PrRoundSpec>(taskId, "pr_fix_round.json");
+                if (spec && Object.keys(spec.jobs).length) {
+                    this.startPrRound(taskId, spec.jobs, { attempt: spec.attempt, operation: spec.operation, notes: "Previous attempt did not complete. Continue from the current state of the worktree; do not redo finished work." });
+                    return;
+                }
+            }
             // A QA pass that stopped half-way (a restart, a Stop, a shard that died) keeps what its runs recorded in
             // qa/<pass>.partial.json; only the scenarios without a verdict are driven again.
             const extraVars = task.stage === "qa_baseline" || task.stage === "manual_qa" ? this.resumeFromPartial(taskId, task.stage) : null;
@@ -2082,11 +2139,7 @@ export class Engine extends EventEmitter {
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");
         this.setStage(taskId, "pr_fix");
-        this.dispatch(taskId, "pr_fix", {
-            attempt: rounds.n + 1,
-            operation: "pr_fix_ci",
-            extraVars: { failureOutput: `${repoScopeNote(repo)}Failing checks on PR #${row.number}: ${names}. Read their logs with \`gh pr checks ${row.number}\` and \`gh run view --log-failed <run-id>\` (run inside that repository) before changing anything.` },
-        });
+        this.startPrRound(taskId, { [repo]: `${repoScopeNote(repo)}Failing checks on PR #${row.number}: ${names}. Read their logs with \`gh pr checks ${row.number}\` and \`gh run view --log-failed <run-id>\` (run inside that repository) before changing anything.` }, { attempt: rounds.n + 1, operation: "pr_fix_ci" });
     }
 
     // Human-triggered only (checkbox picks on the PR comments tab). Same commit-locally-then-review-the-diff cycle as
@@ -2111,7 +2164,7 @@ export class Engine extends EventEmitter {
         const failureOutput = `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (this is not necessarily a CI failure):\n${picked.map(describe).join("\n")}`;
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         this.setStage(taskId, "pr_fix");
-        this.dispatch(taskId, "pr_fix", { attempt: rounds.n + 1, operation: "pr_fix_comments", extraVars: { failureOutput } });
+        this.startPrRound(taskId, { [repo]: failureOutput }, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
     }
 
     // After the human approves a PR Fix (already committed locally, never pushed): push every checkout that has
@@ -2654,12 +2707,23 @@ export class Engine extends EventEmitter {
             askHuman: askHumanBlock(taskDir),
             attempt: String(opts.attempt ?? 1),
             maxTurns: String(def.maxTurns ?? 100),
+            outputFile: def.outputFile ?? "",
+            shardNote: "",
             seedHints: env.qa_seed_hints?.trim() ? env.qa_seed_hints.trim() : "(none configured for this environment — inspect the repo's configs/ and models to find the local database and API)",
             seedReport: "(no shell seeds were run)",
             resumeHint: "",
             components: this.describeComponents(task, env, def.stage),
             ...(opts.extraVars ?? {}),
         };
+        if (def.stage === "pr_fix" && isPrShard(opts.shard)) {
+            const sh = opts.shard;
+            vars["failureOutput"] = sh.failureOutput;
+            vars["outputFile"] = `pr_fix.${sh.id || "root"}.json`;
+            vars["askHuman"] = askHumanBlock(taskDir, `questions.pr_fix.${sh.id || "root"}.json`);
+            vars["shardNote"] =
+                `**This run covers the \`${sh.repo || "."}\` repository only, in a fresh session.** The other repositories of this task are being fixed by other runs at the same time — do not touch their directories. ` +
+                `For context read \`${taskDir}/design.md\` and \`${taskDir}/impl.json\` (what was built and why) before changing code.`;
+        }
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
             const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
             // A resumed pass (after the human's answers, or an unblock retry) drives only the scenarios still open;
@@ -2759,6 +2823,15 @@ export class Engine extends EventEmitter {
             return;
         }
         if (stage === "pr_creation_review" && this.skipPrCreationIfDone(taskId)) return;
+        // A PR Fix round parked on a rate limit comes back through here without its shard: replay the round.
+        if (stage === "pr_fix" && !opts.shard) {
+            const q = this.queuedPrRounds.get(taskId);
+            if (q) {
+                this.queuedPrRounds.delete(taskId);
+                this.startPrRound(taskId, q.jobs, { attempt: q.attempt, operation: q.operation, ...(opts.notes ? { notes: opts.notes } : {}) });
+                return;
+            }
+        }
         if (def.chrome && !opts.servicesReady) {
             // Browser stages run against the task's own BE/FE when the env defines them; bring them up first, then dispatch for real.
             const env = this.env(task.env_id);
@@ -2961,7 +3034,7 @@ export class Engine extends EventEmitter {
         }
         const runId = randomUUID();
         const attempt = opts.attempt ?? 1;
-        const fresh = def.freshSession === true;
+        const fresh = def.freshSession === true || isPrShard(shard);
         this.dismissPendingQuestions(taskId);
         const priorRuns = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND kind = 'task-session'`).get(taskId) as { n: number };
         const vars = this.promptVars(task, def, opts);
@@ -2987,7 +3060,15 @@ export class Engine extends EventEmitter {
             extraEnv: { ...parseEnvVars(env.env_vars), ...runAuth },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
-            ...(fresh ? {} : priorRuns.n === 0 ? { sessionId: task.session_id, name: task.ticket_id } : { resume: task.session_id }),
+            ...(isPrShard(shard)
+                ? (opts.continuations ?? 0) > 0
+                    ? { resume: shard.sessionId }
+                    : { sessionId: shard.sessionId, name: `${task.ticket_id}-${shard.id || "root"}` }
+                : fresh
+                  ? {}
+                  : priorRuns.n === 0
+                    ? { sessionId: task.session_id, name: task.ticket_id }
+                    : { resume: task.session_id }),
             chrome: chromeNeeded,
             ...(explicitModel ? { model: explicitModel } : {}),
             ...(def.maxTurns ? { maxTurns: def.maxTurns } : {}),
@@ -3021,8 +3102,181 @@ export class Engine extends EventEmitter {
             this.active.delete(runId);
             // The copy served this run only; a retry or unblock makes a fresh one.
             void this.releaseClone(cloneKey);
-            void (shard ? this.onShardClosed(taskId, runId, def, account, outcome, shard) : this.onRunClosed(taskId, runId, def, account, outcome, opts)).catch((e: unknown) => console.warn(`[stagehand] onRunClosed ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+            void (isPrShard(shard) ? this.onPrShardClosed(taskId, runId, def, account, outcome, shard, opts) : shard ? this.onShardClosed(taskId, runId, def, account, outcome, shard) : this.onRunClosed(taskId, runId, def, account, outcome, opts)).catch((e: unknown) => console.warn(`[stagehand] onRunClosed ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         });
+    }
+
+    // ---------- PR Fix rounds: one run per repository, in parallel ----------
+
+    private readonly prGroups = new Map<string, PrGroup>();
+    // Rounds parked on a rate limit: replayed by the next dispatch of pr_fix for the task (tick).
+    private readonly queuedPrRounds = new Map<string, PrRoundSpec>();
+
+    // Starts a PR Fix round: `jobs` maps a repository directory ("" = the root) to the text of what to fix there.
+    // One repository → the task session resumes as before (it remembers the implementation). Several → one fresh
+    // session per repository at the same time, each with its own output file; completePrGroup merges them.
+    startPrRound(taskId: string, jobs: Record<string, string>, opts: { attempt: number; operation: DispatchOpts["operation"]; notes?: string }): void {
+        const task = this.getTask(taskId);
+        if (!task) return;
+        const repos = Object.keys(jobs).filter((r) => jobs[r]?.trim());
+        if (repos.length === 0) return;
+        writeFileSync(join(this.taskDir(taskId), "pr_fix_round.json"), JSON.stringify({ jobs, attempt: opts.attempt, operation: opts.operation } satisfies PrRoundSpec, null, 2));
+        if (repos.length === 1) {
+            this.dispatch(taskId, "pr_fix", { attempt: opts.attempt, ...(opts.operation ? { operation: opts.operation } : {}), ...(opts.notes ? { notes: opts.notes } : {}), extraVars: { failureOutput: jobs[repos[0]!]! } });
+            return;
+        }
+        for (const g of [...this.prGroups.values()]) if (g.taskId === taskId) this.prGroups.delete(g.id);
+        const groupId = randomUUID();
+        const shards: PrShard[] = repos.map((repo) => ({
+            kind: "pr",
+            group: groupId,
+            id: repo,
+            repo,
+            failureOutput: `${jobs[repo]!.startsWith("Repository:") ? "" : repoScopeNote(repo)}${jobs[repo]!}`,
+            sessionId: randomUUID(),
+            browser: false,
+            phase: "parallel",
+            scenarios: [],
+        }));
+        const g: PrGroup = { id: groupId, taskId, attempt: opts.attempt, operation: opts.operation, notes: opts.notes, pending: shards, starting: new Set(), running: new Map(), results: new Map() };
+        this.prGroups.set(groupId, g);
+        this.addAgentNote(taskId, `PR Fix runs as ${shards.length} parallel rounds, one per repository: ${shards.map((s) => repoLabel(s.repo)).join(", ")}.`);
+        this.pumpPrGroup(g);
+    }
+
+    private pumpPrGroup(g: PrGroup): void {
+        if (!this.prGroups.has(g.id)) return;
+        const task = this.getTask(g.taskId);
+        if (!task || task.status === "stopped" || task.stage !== "pr_fix") {
+            this.prGroups.delete(g.id);
+            return;
+        }
+        for (const shard of [...g.pending]) {
+            if (!g.pending.includes(shard)) continue;
+            g.pending = g.pending.filter((s) => s !== shard);
+            g.starting.add(shard.id);
+            this.dispatch(g.taskId, "pr_fix", { attempt: g.attempt, ...(g.operation ? { operation: g.operation } : {}), ...(g.notes ? { notes: g.notes } : {}), shard });
+        }
+        if (g.running.size === 0 && g.starting.size === 0 && g.pending.length === 0) void this.completePrGroup(g).catch((e: unknown) => console.warn(`[stagehand] completePrGroup ${g.taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+    }
+
+    // One repository's run ended: close its row, record what it reported, let the group move on. A run that hit the
+    // turn cap without output continues in its own session first (the cap is a checkpoint here too).
+    private async onPrShardClosed(taskId: string, runId: string, def: StageDef, account: AccountRow, outcome: RunOutcome, shard: PrShard, opts: DispatchOpts): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) return;
+        const g = this.prGroups.get(shard.group);
+        g?.running.delete(runId);
+        if (task.status === "stopped") {
+            this.db.prepare(`UPDATE runs SET status = 'stopped', finished_at = ? WHERE id = ?`).run(now(), runId);
+            g?.results.set(shard.id, { kind: "stopped" });
+            return;
+        }
+        const finish = (status: RunRow["status"], error?: string, resultJson?: string): void => {
+            this.db
+                .prepare(`UPDATE runs SET status = ?, finished_at = ?, error = ?, result_json = ?, cost_usd = ?, num_turns = ? WHERE id = ?`)
+                .run(status, now(), error ?? null, resultJson ?? null, outcome.result?.total_cost_usd ?? null, outcome.result?.num_turns ?? null, runId);
+            if (outcome.result) recordUsage(this.db, { accountId: account.id, envId: task.env_id, taskId, runId, kind: "stage", stage: def.stage }, outcome.result);
+            calibrateWindows(this.db, account.id, outcome.firstRateLimit, outcome.lastRateLimit, outcome.result?.total_cost_usd);
+        };
+        const outputFile = `pr_fix.${shard.id || "root"}.json`;
+        const questionsFile = `questions.pr_fix.${shard.id || "root"}.json`;
+        let result: PrShardResult;
+        const limited = rateLimitHit(outcome.lastRateLimit) && !(outcome.result && !outcome.result.is_error);
+        const asked = this.questionsAskedDuringRun(taskId, runId, questionsFile);
+        const written = this.outputWrittenDuringRun(taskId, outputFile, runId);
+        const parsed = written ? PrFixResult.safeParse(this.readArtifactJson<unknown>(taskId, outputFile)) : null;
+        if (limited && outcome.lastRateLimit?.resetsAt) {
+            finish("rate_limited", "rate limited");
+            result = { kind: "rate_limited", resetsAt: outcome.lastRateLimit.resetsAt };
+        } else if (asked && !parsed?.success) {
+            finish("blocked", `asked the human ${asked.questions.length} question(s)`);
+            const q = join(this.taskDir(taskId), questionsFile);
+            if (existsSync(q)) renameSync(q, `${q}.asked-${Date.now()}`);
+            result = { kind: "asked", questions: asked };
+        } else if (parsed?.success) {
+            finish("done", outcome.result && !outcome.result.is_error && (outcome.exitCode ?? 1) === 0 ? undefined : `ended with ${outcome.result?.subtype ?? `exit ${outcome.exitCode}`} after writing the output`, JSON.stringify(parsed.data));
+            result = { kind: "ok", summary: parsed.data.summary };
+        } else if (outcome.result?.subtype === "error_max_turns" && (opts.continuations ?? 0) < MAX_CONTINUATIONS && g) {
+            const n = (opts.continuations ?? 0) + 1;
+            finish("failed", `turn cap reached (${outcome.result.num_turns ?? "?"} turns) — continuing the session (${n}/${MAX_CONTINUATIONS})`);
+            g.starting.add(shard.id);
+            this.dispatch(taskId, "pr_fix", { ...opts, shard, continuations: n, notes: continueNote(n, outputFile, g.notes) });
+            return;
+        } else if (written && parsed && !parsed.success) {
+            finish("failed", `contract: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+            result = { kind: "failed", error: `${repoLabel(shard.repo)}: ${outputFile} does not match the contract` };
+        } else {
+            const stderrTail = outcome.stderr.trim().split("\n").slice(-3).join(" ").trim();
+            const err = outcome.result?.result?.trim() || (outcome.result ? `ended with ${outcome.result.subtype} before writing ${outputFile}` : stderrTail || `exit ${outcome.exitCode}`);
+            finish("failed", err);
+            result = { kind: "failed", error: `${repoLabel(shard.repo)}: ${err.slice(0, 300)}` };
+        }
+        if (!g) return;
+        g.results.set(shard.id, result);
+        this.pumpPrGroup(g);
+    }
+
+    // Every repository is in: all fixed → one merged pr_fix.json and the normal PR Fix aftermath (verification command,
+    // the human's review of the diff); questions → one round for the human; failures → the failed repositories run
+    // again (up to MAX_CONTRACT_ATTEMPTS rounds); a rate limit parks the remaining repositories until the window resets.
+    private async completePrGroup(g: PrGroup): Promise<void> {
+        this.prGroups.delete(g.id);
+        const task = this.getTask(g.taskId);
+        if (!task || task.status === "stopped" || task.stage !== "pr_fix") return;
+        const taskId = g.taskId;
+        const def = STAGE_DEFS.pr_fix;
+        const spec = this.readArtifactJson<PrRoundSpec>(taskId, "pr_fix_round.json");
+        const summaries: string[] = [];
+        const asked: Array<{ shard: string; questions: AgentQuestion[] }> = [];
+        const failed: Array<{ repo: string; error: string }> = [];
+        let rateLimit: number | null = null;
+        for (const [repo, r] of g.results) {
+            if (r.kind === "stopped") return;
+            if (r.kind === "ok") summaries.push(`${repoLabel(repo)}: ${r.summary}`);
+            else if (r.kind === "asked") asked.push({ shard: repoLabel(repo), questions: r.questions.questions });
+            else if (r.kind === "failed") failed.push({ repo, error: r.error });
+            else if (r.kind === "rate_limited") rateLimit = r.resetsAt ?? rateLimit;
+        }
+        // Repositories that reported nothing final keep their jobs for the next round; finished ones are done.
+        const remaining: Record<string, string> = {};
+        for (const repo of Object.keys(spec?.jobs ?? {})) if (g.results.get(repo)?.kind !== "ok") remaining[repo] = spec!.jobs[repo]!;
+        if (asked.length === 0 && failed.length === 0 && rateLimit === null) {
+            writeFileSync(join(this.taskDir(taskId), def.outputFile!), JSON.stringify({ summary: summaries.join("\n") } satisfies PrFixResult, null, 2));
+            const validation = await this.validateOutput(taskId, def);
+            if (!validation.ok) {
+                this.setTaskStatus(taskId, "failed", `${def.label} · merged pr_fix.json does not validate: ${validation.error.slice(0, 160)}`);
+                return;
+            }
+            this.afterStage(taskId, def, validation.data);
+            return;
+        }
+        if (asked.length) {
+            // The answered round runs as one task-session run over the repositories that asked (their jobs combined).
+            const questions = mergeQuestions(asked).slice(0, 10);
+            const askedRepos = Object.keys(remaining).filter((r) => g.results.get(r)?.kind === "asked");
+            const failureOutput = askedRepos.map((r) => remaining[r]!).join("\n\n---\n\n") + (summaries.length ? `\n\nAlready done in this round: ${summaries.join("; ")}` : "");
+            this.parkOnQuestions(taskId, null, def, { questions }, { attempt: g.attempt, ...(g.operation ? { operation: g.operation } : {}), extraVars: { failureOutput } });
+            return;
+        }
+        if (rateLimit !== null) {
+            const env = this.env(task.env_id);
+            const account = this.pickAccount(task, def, env, this.configDirOf(env));
+            this.queuedPrRounds.set(taskId, { jobs: remaining, attempt: g.attempt, operation: g.operation });
+            if (account) this.queueRateLimited(task, account, rateLimit, `${def.label} · rate limited with ${Object.keys(remaining).length} repository round(s) left`, { failover: false });
+            else this.setTaskStatus(taskId, "failed", `${def.label} · rate limited and no account to resume on — Retry later`);
+            return;
+        }
+        if (g.attempt < MAX_CONTRACT_ATTEMPTS) {
+            this.setTaskStatus(taskId, "running", `${def.label} · ${failed.length} repository round(s) ended without a result — running them again (${g.attempt + 1}/${MAX_CONTRACT_ATTEMPTS})`);
+            this.startPrRound(taskId, remaining, {
+                attempt: g.attempt + 1,
+                operation: g.operation,
+                notes: `## The previous round for this repository ended without a usable result — attempt ${g.attempt + 1} of ${MAX_CONTRACT_ATTEMPTS}\n\n${failed.map((f) => `- ${f.error}`).join("\n")}\n\nDo the jobs below and write the output file exactly as the contract says.`,
+            });
+            return;
+        }
+        this.setTaskStatus(taskId, "failed", `${def.label} · repository rounds kept ending without a result: ${failed.map((f) => f.error).join("; ").slice(0, 200)}`);
     }
 
     // ---------- parallel QA passes (qa-shards.ts) ----------
@@ -3071,14 +3325,28 @@ export class Engine extends EventEmitter {
         if (g.running.size === 0 && g.starting.size === 0 && g.pending.length === 0) void this.completeGroup(g).catch((e: unknown) => console.warn(`[stagehand] completeGroup ${g.taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
     }
 
-    private shardDefer(shard: QaShard): void {
+    private shardDefer(shard: QaShard | PrShard): void {
+        if (isPrShard(shard)) {
+            const pg = this.prGroups.get(shard.group);
+            if (!pg) return;
+            pg.starting.delete(shard.id);
+            if (!pg.pending.some((s) => s.id === shard.id)) pg.pending.push(shard);
+            return;
+        }
         const g = this.qaGroups.get(shard.group);
         if (!g) return;
         g.starting.delete(shard.id);
         if (!g.pending.some((s) => s.id === shard.id)) g.pending.push(shard);
     }
 
-    private shardStarted(shard: QaShard, runId: string): void {
+    private shardStarted(shard: QaShard | PrShard, runId: string): void {
+        if (isPrShard(shard)) {
+            const pg = this.prGroups.get(shard.group);
+            if (!pg) return;
+            pg.starting.delete(shard.id);
+            pg.running.set(runId, shard);
+            return;
+        }
         const g = this.qaGroups.get(shard.group);
         if (!g) return;
         g.starting.delete(shard.id);
@@ -3086,7 +3354,15 @@ export class Engine extends EventEmitter {
     }
 
     // A gate that would block the task ends this shard instead; the group decides once every shard is in.
-    private shardAbort(shard: QaShard, result: ShardResult): void {
+    private shardAbort(shard: QaShard | PrShard, result: ShardResult): void {
+        if (isPrShard(shard)) {
+            const pg = this.prGroups.get(shard.group);
+            if (!pg) return;
+            pg.starting.delete(shard.id);
+            pg.results.set(shard.id, result.kind === "rate_limited" || result.kind === "stopped" ? result : { kind: "failed", error: result.kind === "failed" ? result.error : result.kind });
+            setTimeout(() => this.pumpPrGroup(pg), 0);
+            return;
+        }
         const g = this.qaGroups.get(shard.group);
         if (!g) return;
         g.starting.delete(shard.id);
@@ -3723,7 +3999,11 @@ export class Engine extends EventEmitter {
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
         if (!task.branch || !task.worktree_path) throw new Error("the task has no branch/worktree yet");
         const env = this.env(task.env_id);
-        const jobs: string[] = [];
+        // Jobs per repository: each repository's jobs run as their own parallel PR Fix round (startPrRound).
+        const byRepo = new Map<string, string[]>();
+        const addJob = (repo: string, text: string): void => {
+            byRepo.set(repo, [...(byRepo.get(repo) ?? []), text]);
+        };
         const summary: string[] = [];
         let headsBefore: Map<string, string> | null = null;
         let rebasedRepos: string[] = [];
@@ -3732,15 +4012,15 @@ export class Engine extends EventEmitter {
             headsBefore = pass.headsBefore;
             rebasedRepos = pass.repos.filter((r) => !pass.conflicted.includes(r));
             const done = pass.plain.filter((l) => l.startsWith("✅"));
-            if (pass.conflicted.length) {
-                const bases = pass.conflicted.map((r) => `${repoLabel(r)}: origin/${this.baseBranchOf(task, env, r)}`).join("; ");
-                jobs.push(
+            for (const conflictedRepo of pass.conflicted) {
+                const bases = `${repoLabel(conflictedRepo)}: origin/${this.baseBranchOf(task, env, conflictedRepo)}`;
+                addJob(
+                    conflictedRepo,
                     `Rebase onto the latest base. Stagehand already tried a plain \`git rebase --onto\` of this branch's own commits: ${done.length ? `it went through in ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}; ` : ""}it CONFLICTED in ${pass.conflicted.map(repoLabel).join(", ")} and was aborted there (those checkouts are exactly as they were). In each of those repositories run \`git fetch origin <base>\` and \`git rebase origin/<base>\` (${bases}), resolve the conflicts in the spirit of this task's change (keep this task's behaviour, take the base's changes for everything else; drop a commit of this branch that the base now already provides, e.g. a duplicate merge migration), \`git add\` + \`git rebase --continue\` until done — never \`--abort\` and leave it, never \`-i\`. Do the rebase BEFORE the other jobs so they are made on top of the rebased history.`,
                 );
-                summary.push(`rebase (conflicts in ${pass.conflicted.map(repoLabel).join(", ")})`);
-            } else if (pass.repos.length || pass.fastForwarded.length) {
-                summary.push("rebase (done mechanically)");
             }
+            if (pass.conflicted.length) summary.push(`rebase (conflicts in ${pass.conflicted.map(repoLabel).join(", ")})`);
+            else if (pass.repos.length || pass.fastForwarded.length) summary.push("rebase (done mechanically)");
             if (done.length) this.addMessage(taskId, "agent", `🔀 Rebase (batched): ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}${pass.conflicted.length ? ` — conflicts in ${pass.conflicted.map(repoLabel).join(", ")} go to the agent` : ""}`);
         }
         if (spec.fixCi) {
@@ -3748,7 +4028,7 @@ export class Engine extends EventEmitter {
             for (const repo of repos) {
                 const ci = await this.ciFailureText(task, env, repo);
                 if (ci.count) {
-                    jobs.push(ci.text);
+                    addJob(repo, ci.text);
                     summary.push(`fix CI (${repoLabel(repo)}: ${ci.count} failing)`);
                 }
             }
@@ -3756,15 +4036,19 @@ export class Engine extends EventEmitter {
         for (const c of spec.comments ?? []) {
             const t = await this.commentsText(task, c.repo, c.ids);
             if (t.count) {
-                jobs.push(t.text);
+                addJob(c.repo, t.text);
                 summary.push(`${t.count} comment(s) on ${repoLabel(c.repo)}`);
             }
         }
         if (spec.instructions?.trim()) {
-            jobs.push(`Instructions from the human (do exactly this, nothing more):\n\n${spec.instructions.trim()}`);
+            // Instructions go with every repository that has work; alone, they are one job on the task root.
+            const text = `Instructions from the human (do exactly this, nothing more):\n\n${spec.instructions.trim()}`;
+            if (byRepo.size === 0) addJob("", text);
+            else for (const repo of [...byRepo.keys()]) addJob(repo, text);
             summary.push("instructions");
         }
-        if (jobs.length === 0) {
+        const jobCount = [...byRepo.values()].reduce((n, l) => n + l.length, 0);
+        if (jobCount === 0) {
             // Only a clean mechanical rebase (or nothing at all): no agent needed — finish it the way the Rebase button does.
             if (headsBefore && rebasedRepos.length) {
                 const lines = await this.finishRebase(task, env, rebasedRepos, headsBefore);
@@ -3774,12 +4058,15 @@ export class Engine extends EventEmitter {
             }
             throw new Error("nothing to do: no failing checks, no comments picked, no instructions, and the branch is up to date");
         }
-        const failureOutput =
-            `This run batches ${jobs.length} job(s) the human ticked — do them in this order, commit as you go (one commit per job is fine), then write pr_fix.json covering all of them:\n\n` +
-            jobs.map((j, i) => `### Job ${i + 1} of ${jobs.length}\n\n${j}`).join("\n\n");
+        const jobs: Record<string, string> = {};
+        for (const [repo, list] of byRepo) {
+            jobs[repo] =
+                `This run batches ${list.length} job(s) the human ticked${repo ? ` for ${repoLabel(repo)}` : ""} — do them in this order, commit as you go (one commit per job is fine), then write the output file covering all of them:\n\n` +
+                list.map((j, i) => `### Job ${i + 1} of ${list.length}\n\n${j}`).join("\n\n");
+        }
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         this.setStage(taskId, "pr_fix");
-        this.dispatch(taskId, "pr_fix", { attempt: rounds.n + 1, operation: "pr_fix_comments", extraVars: { failureOutput } });
+        this.startPrRound(taskId, jobs, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
         return { started: true, note: summary.join(" · ") };
     }
 
@@ -4113,6 +4400,13 @@ export class Engine extends EventEmitter {
                     return;
                 }
                 this.retryContract(taskId, def, opts, validation.error, finish);
+                return;
+            }
+            // The turn cap is a checkpoint, not a verdict: the same session goes on where it stopped, a couple of times.
+            if (outcome.result?.subtype === "error_max_turns" && !def.freshSession && (opts.continuations ?? 0) < MAX_CONTINUATIONS) {
+                const n = (opts.continuations ?? 0) + 1;
+                finish("failed", `turn cap reached (${outcome.result.num_turns ?? "?"} turns) — continuing the session (${n}/${MAX_CONTINUATIONS})`);
+                this.dispatch(taskId, def.stage, { ...opts, continuations: n, notes: continueNote(n, def.outputFile, opts.notes) });
                 return;
             }
             const stderrTail = outcome.stderr.trim().split("\n").slice(-3).join(" ").trim();

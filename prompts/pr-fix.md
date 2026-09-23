@@ -2,6 +2,8 @@ Something on the open PR for ticket {{ticketId}} (worktree {{worktree}}, branch 
 
 ## What to address
 
+{{shardNote}}
+
 {{failureOutput}}
 
 {{taskNotes}}
@@ -20,9 +22,13 @@ Something on the open PR for ticket {{ticketId}} (worktree {{worktree}}, branch 
 - {{commitRule}}
 - Do **not** push, and do not open, comment on, or review anything on GitHub — a human reviews your diff first; the push happens only after they approve.
 
+## Turn budget
+
+You have about {{maxTurns}} tool calls. At four fifths of that stop opening new work: commit what is done, write the output file, reply DONE. A run that ends without the file is continued in the same session at most twice; what you commit before that is kept.
+
 ## Output contract
 
-Write `{{taskDir}}/pr_fix.json`:
+Write `{{taskDir}}/{{outputFile}}`:
 
 ```json
 { "summary": "<one or two sentences: what was wrong, what you changed>" }
