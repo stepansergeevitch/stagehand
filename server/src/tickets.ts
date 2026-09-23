@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { extname, join } from "node:path";
 import { z } from "zod";
 import type { Config } from "./config.js";
+import type { SharedFile } from "./db.js";
 import { claudeEnv } from "./claude/env.js";
 
 // A file attached to the ticket (explicitly, or embedded as an image/link in its description or comments). `file` is
@@ -379,6 +380,28 @@ export const fetchTicketRest = async (ref: TicketRef, cfg: Config, taskDir: stri
 
 const fmtSize = (n: number | null): string => (n == null ? "" : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} kB` : `${n} B`);
 
+// What the agent can do with a file of this kind: Read shows images; videos need frames extracted first.
+const kindHint = (mime: string | null): string =>
+    mime?.startsWith("image/") ? "image — view it with the Read tool" : mime?.startsWith("video/") ? "video — Read cannot play it; extract frames with `ffmpeg -i <file> -vf fps=1 frame-%03d.jpg` if you need to see it" : mime ?? "file";
+
+// The name a shared file gets on disk: ASCII only, no spaces — the agent gets the path in a prompt and pastes it into
+// shell commands. A name with nothing usable left (all Cyrillic, say) becomes `file` plus its extension when known.
+export const sharedFileName = (name: string): string => {
+    const clean = (s: string): string => s.normalize("NFKD").replace(/[^\x20-\x7E]/g, "").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[_.-]+|[_.-]+$/g, "");
+    const ext = extname(name);
+    const base = clean(ext ? name.slice(0, -ext.length) : name);
+    const cleanExt = clean(ext).toLowerCase();
+    return `${base || "file"}${cleanExt ? `.${cleanExt}` : ""}`;
+};
+
+// Files the human attached to a Chat message, a Do instruction or an answer: appended to the text the agent gets, as
+// absolute paths under the task dir (passed with --add-dir, so Read works there) with the same hints as ticket attachments.
+export const renderSharedFiles = (files: SharedFile[], taskDir: string): string => {
+    if (files.length === 0) return "";
+    const lines = files.map((f) => `- ${f.name}: \`${join(taskDir, f.file)}\` (${[kindHint(f.mime), fmtSize(f.size)].filter(Boolean).join(", ")})`);
+    return `\n\n### Files from the human (${files.length})\n\nThey attached these to this message; look at them before you answer or act.\n\n${lines.join("\n")}`;
+};
+
 // How the agent learns about the files: absolute paths it can Read (images) or inspect (videos: ffmpeg frames), and
 // the URL for anything that could not be downloaded.
 const renderAttachments = (t: Ticket, taskDir: string | null): string => {
@@ -387,8 +410,7 @@ const renderAttachments = (t: Ticket, taskDir: string | null): string => {
         const where = a.origin === "attachment" ? "" : ` (from ${a.origin === "comment" ? "a comment" : "the description"})`;
         if (a.file) {
             const path = taskDir ? join(taskDir, a.file) : a.file;
-            const kind = a.mime?.startsWith("image/") ? "image — view it with the Read tool" : a.mime?.startsWith("video/") ? "video — Read cannot play it; extract frames with `ffmpeg -i <file> -vf fps=1 frame-%03d.jpg` if you need to see it" : a.mime ?? "file";
-            return `- ${a.name}${where}: \`${path}\` (${[kind, fmtSize(a.size)].filter(Boolean).join(", ")})`;
+            return `- ${a.name}${where}: \`${path}\` (${[kindHint(a.mime), fmtSize(a.size)].filter(Boolean).join(", ")})`;
         }
         return `- ${a.name}${where}: ${a.url} (not downloaded${a.error ? `: ${a.error}` : ""})`;
     });

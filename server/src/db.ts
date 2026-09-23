@@ -409,11 +409,22 @@ export interface MessageRow {
     created_at: string;
     // JSON MessageAnchor when the message belongs to a diff-line thread; NULL for plain chat.
     anchor: string | null;
+    // JSON SharedFile[] — files the human attached to this message (paths under the task dir's shared/); NULL when none.
+    files: string | null;
     // NULL for chat; "instruction" = the human told the agent to do something (Chat → Do), "instruction_result" = its report.
     kind: MessageKind | null;
 }
 
 export type MessageKind = "instruction" | "instruction_result";
+
+// A file the human handed to the agent from the app (Chat, Do, an answer): saved under <taskDir>/shared/ and named to
+// the agent by that path. `file` is relative to the task dir, like a ticket attachment's.
+export interface SharedFile {
+    name: string;
+    file: string;
+    mime: string | null;
+    size: number;
+}
 
 // A diff line a chat message is attached to: the file, which side of the diff, the line number there and the line's
 // text (lines move as the branch evolves; the text is what the UI matches on to place the thread later).
@@ -794,6 +805,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["messages.anchor", `ALTER TABLE messages ADD COLUMN anchor TEXT`],
     // "instruction" / "instruction_result": a Chat message that told the agent to do something, and its report.
     ["messages.kind", `ALTER TABLE messages ADD COLUMN kind TEXT`],
+    // Files the human attached to a Chat message / instruction / answer (JSON SharedFile[]), stored under the task dir's shared/.
+    ["messages.files", `ALTER TABLE messages ADD COLUMN files TEXT`],
 ];
 
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>

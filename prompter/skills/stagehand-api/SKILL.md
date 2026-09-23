@@ -35,11 +35,14 @@ Say what you do in one line first. Re-read `GET /api/tasks/:id` afterwards and r
 - `POST /api/tasks/:id/rerun {"stage": "<stage>"}` — run a stage again from scratch (research, design_proposal,
   qa_baseline, implementation, manual_qa, pr_creation_review, …).
 - `POST /api/tasks/:id/return {"stage": "<stage>"}` — move the task back to an earlier stage.
-- `POST /api/tasks/:id/questions/:qid/answer {"answers": {"<questionId>": "<text>"}}` — answer the agent's open
-  round (`qid` = the round id from `questions` in GET /api/tasks/:id; when a question lists options, answer with the
-  option text verbatim).
-- `POST /api/tasks/:id/messages {"text": "…"}` — ask the task's agent a question (answer lands in Chat).
-- `POST /api/tasks/:id/instructions {"text": "…"}` — an instruction the agent carries out in the worktree now (Do).
+- `POST /api/tasks/:id/questions/:qid/answer {"answers": {"<questionId>": "<text>"}, "files": [...]}` — answer the
+  agent's open round (`qid` = the round id from `questions` in GET /api/tasks/:id; when a question lists options, answer
+  with the option text verbatim; `files` as returned by `/files`).
+- `POST /api/tasks/:id/messages {"text": "…", "files": [...]}` — ask the task's agent a question (answer lands in Chat).
+- `POST /api/tasks/:id/instructions {"text": "…", "files": [...]}` — an instruction the agent carries out in the worktree now (Do).
+- `POST /api/tasks/:id/files` — multipart, field `file`: hands a file to the agent. It lands in `<taskDir>/shared/` and the
+  reply `{name, file, mime, size}` goes verbatim into `files` of a message, an instruction or an answer; the agent gets
+  the absolute path in its prompt (`curl -F "file=@/path/shot.png" …/files`). Never copy files into the worktree for it.
 - `POST /api/tasks/:id/review {"verdict": "approve"}` or `{"verdict": "changes", "notes": "…", "routeTo":
   "implementation"|"design_proposal", "comments": [...], "skipQa": bool, "repo": "<dir>"}` — the human's review at
   Design review, User Review, PR Creation Review (per repo), PR fix.

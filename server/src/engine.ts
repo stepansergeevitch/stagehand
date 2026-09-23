@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PREVIEW, type Config } from "./config.js";
-import { accountBrowserReady, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, componentsOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvComponent, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
+import { accountBrowserReady, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, componentsOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvComponent, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type SharedFile, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
 import { rateLimitHit, ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, openInProfile, QA_CHROME_FLAGS, setChromeTabUrl } from "./chrome-profiles.js";
@@ -18,7 +18,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 import type { Services } from "./services.js";
 import type { ServiceKind } from "./db.js";
-import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
+import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderSharedFiles, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
 import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { applyApprovedStepFixes } from "./qa-fixes.js";
@@ -2467,11 +2467,11 @@ export class Engine extends EventEmitter {
         return this.db.prepare(`SELECT * FROM messages WHERE task_id = ? ORDER BY created_at`).all(taskId) as MessageRow[];
     }
 
-    private addMessage(taskId: string, role: "user" | "agent", text: string, anchor: MessageAnchor | null = null, kind: MessageKind | null = null): MessageRow {
+    private addMessage(taskId: string, role: "user" | "agent", text: string, anchor: MessageAnchor | null = null, kind: MessageKind | null = null, files: SharedFile[] = []): MessageRow {
         const id = randomUUID();
         this.db
-            .prepare(`INSERT INTO messages (id, task_id, role, text, created_at, anchor, kind) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-            .run(id, taskId, role, text, now(), anchor ? JSON.stringify(anchor) : null, kind);
+            .prepare(`INSERT INTO messages (id, task_id, role, text, created_at, anchor, kind, files) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(id, taskId, role, text, now(), anchor ? JSON.stringify(anchor) : null, kind, files.length ? JSON.stringify(files) : null);
         const row = this.db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id) as MessageRow;
         this.emit("message", row);
         return row;
@@ -2495,11 +2495,12 @@ export class Engine extends EventEmitter {
     // Same constraint as the terminal: a headless stage run and an ad-hoc chat turn cannot share the session at once.
     // With an anchor, the question is about one line of the task's diff (asked from Code changes): the prompt names the
     // file, side and line and quotes it, and the reply carries the same anchor so it shows up under that line as a thread.
-    async askAgent(taskId: string, text: string, anchor: MessageAnchor | null = null): Promise<MessageRow> {
+    // `files`: what the human attached (already saved under the task dir's shared/) — named in the prompt by path.
+    async askAgent(taskId: string, text: string, anchor: MessageAnchor | null = null, files: SharedFile[] = []): Promise<MessageRow> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a headless run owns this session right now — ask again once it's idle");
-        this.addMessage(taskId, "user", text, anchor);
+        this.addMessage(taskId, "user", text, anchor, null, files);
         const env = this.env(task.env_id);
         const cd = this.configDirOf(env);
         const usable = this.usableAccounts(cd.path);
@@ -2519,12 +2520,14 @@ export class Engine extends EventEmitter {
               `Answer directly and briefly, drawing on this task's own history (research, design, code, QA) as needed. ` +
               `If they are actually asking for a change, say what you would do and that it happens through the normal stage flow (Return to a stage, or a new review round) — do not make code changes from this chat.`;
         const run = startClaude({
-            prompt,
+            prompt: prompt + renderSharedFiles(files, this.taskDir(taskId)),
             cwd: task.worktree_path ?? env.path,
             configDir: cd.path,
             extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             resume: task.session_id,
             maxTurns: 15,
+            // The task dir holds the files the human shares (and the artifacts a question may be about).
+            addDirs: [this.taskDir(taskId)],
             ...((): { model?: string } => {
                 const m = this.modelForOperation(task, "chat");
                 return m ? { model: m } : {};
@@ -2541,7 +2544,7 @@ export class Engine extends EventEmitter {
     // hook and rules, so commit/push/PR policy still holds — and unlike a stage it has no output contract: the agent's
     // plain-text report lands in Chat when it finishes, and the task's stage/status are restored afterward. Returns as
     // soon as the run has started (the human's message is already in Chat); Stop kills it like any other run.
-    async instruct(taskId: string, text: string): Promise<MessageRow> {
+    async instruct(taskId: string, text: string, files: SharedFile[] = []): Promise<MessageRow> {
         const instructions = text.trim();
         if (!instructions) throw new Error("write what the agent should do first");
         const task = this.getTask(taskId);
@@ -2554,13 +2557,13 @@ export class Engine extends EventEmitter {
         const usable = this.usableAccounts(cd.path);
         const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
-        const message = this.addMessage(taskId, "user", instructions, null, "instruction");
+        const message = this.addMessage(taskId, "user", instructions, null, "instruction", files);
         const prevStatus = task.status;
         const prevLine = task.status_line;
         const rules = rulesOf(cd);
         const taskDir = this.taskDir(taskId);
         const prompt = renderPrompt("instruct.md", {
-            instructions,
+            instructions: instructions + renderSharedFiles(files, taskDir),
             worktree: cwd,
             branch: task.branch ?? "(no branch yet)",
             taskDir,
@@ -4659,7 +4662,7 @@ export class Engine extends EventEmitter {
     }
 
     // Stores the answers and resumes the stage that asked, in the same session, with the answers as notes.
-    answerQuestions(taskId: string, questionRowId: string, answers: Record<string, string>): void {
+    answerQuestions(taskId: string, questionRowId: string, answers: Record<string, string>, files: SharedFile[] = []): void {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress");
@@ -4668,7 +4671,7 @@ export class Engine extends EventEmitter {
         if (row.answers) throw new Error("these questions were already answered");
         const stored = JSON.parse(row.questions) as QuestionsFile & { resume?: { notes: string | null; attempt: number; extraVars: Record<string, string>; operation?: DispatchOpts["operation"] } };
         this.db.prepare(`UPDATE questions SET answers = ?, answered_at = ? WHERE id = ?`).run(JSON.stringify(answers), now(), row.id);
-        this.addMessage(taskId, "user", stored.questions.map((q) => `**${q.id}** ${q.text}\n→ ${answers[q.id]?.trim() || "(no answer — decide yourself)"}`).join("\n\n"));
+        this.addMessage(taskId, "user", stored.questions.map((q) => `**${q.id}** ${q.text}\n→ ${answers[q.id]?.trim() || "(no answer — decide yourself)"}`).join("\n\n"), null, null, files);
         // A corrected scenario step/seed the human approved is written into design.json here (deterministic), so a
         // fresh QA session runs it instead of re-deriving the defect and asking again.
         try {
@@ -4677,7 +4680,7 @@ export class Engine extends EventEmitter {
         } catch (e) {
             console.warn(`[stagehand] applying approved step fixes for ${task.ticket_id}: ${String((e as Error).message ?? e)}`);
         }
-        const answerNotes = renderAnswers(stored.questions, answers);
+        const answerNotes = renderAnswers(stored.questions, answers) + renderSharedFiles(files, this.taskDir(taskId));
         const prior = stored.resume?.notes?.trim();
         this.setStage(taskId, row.stage);
         let extraVars: Record<string, string> = stored.resume?.extraVars ?? {};

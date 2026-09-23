@@ -4,7 +4,7 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { execFile, spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpsServer } from "node:https";
 import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,8 @@ import { z } from "zod";
 import { loadConfig, PREVIEW, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
-import { mimeOf } from "./tickets.js";
+import { mimeOf, sharedFileName } from "./tickets.js";
+import type { SharedFile } from "./db.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
 import { recordUsage, taskUsage, usageReport, windowShares } from "./usage.js";
@@ -1392,10 +1393,39 @@ app.post("/api/tasks/:id/rerun", async (c) => {
 });
 
 // The human answers the agent's questions (by question id); the stage that asked resumes with them.
+// A file the human attached in the app, as returned by POST /api/tasks/:id/files; the text routes below take a list.
+const SharedFileSchema = z.object({ name: z.string().min(1), file: z.string().regex(/^shared\/[A-Za-z0-9._-]+$/), mime: z.string().nullable(), size: z.number().int().nonnegative() });
+const MAX_SHARED_FILE_BYTES = 200 * 1024 * 1024;
+// Only files of this task that the upload route saved: anything else in the list is refused before the agent sees it.
+const sharedFilesOf = (taskId: string, files: SharedFile[] | undefined): SharedFile[] => {
+    for (const f of files ?? []) if (!existsSync(join(engine.taskDir(taskId), f.file))) throw new Error(`${f.name} was not uploaded to this task — attach it again`);
+    return files ?? [];
+};
+
+// Upload one file (multipart, field `file`) to hand to the agent: saved under <taskDir>/shared/ — never the worktree,
+// where it would show up in git status and the diff — and served back by /artifacts/. Returns the descriptor to put
+// in `files` of a Chat message, a Do instruction or an answer.
+app.post("/api/tasks/:id/files", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    const body = await c.req.parseBody();
+    const f = body["file"];
+    if (!(f instanceof File)) return c.json({ error: "send one file in the `file` field (multipart/form-data)" }, 400);
+    if (f.size === 0) return c.json({ error: `${f.name} is empty` }, 400);
+    if (f.size > MAX_SHARED_FILE_BYTES) return c.json({ error: `${f.name} is too large (${Math.round(f.size / 1e6)} MB; the cap is 200 MB)` }, 400);
+    const safe = sharedFileName(f.name);
+    const rel = `shared/${randomUUID().slice(0, 8)}-${safe}`;
+    mkdirSync(join(engine.taskDir(task.id), "shared"), { recursive: true });
+    writeFileSync(join(engine.taskDir(task.id), rel), Buffer.from(await f.arrayBuffer()));
+    // Browsers send octet-stream for anything they do not know (a CSV drop, curl): the extension decides then.
+    const shared: SharedFile = { name: f.name, file: rel, mime: f.type && f.type !== "application/octet-stream" ? f.type : mimeOf(safe), size: f.size };
+    return c.json(shared);
+});
+
 app.post("/api/tasks/:id/questions/:qid/answer", async (c) => {
-    const body = json(z.object({ answers: z.record(z.string()) }), await c.req.json());
+    const body = json(z.object({ answers: z.record(z.string()), files: z.array(SharedFileSchema).optional() }), await c.req.json());
     try {
-        engine.answerQuestions(c.req.param("id"), c.req.param("qid"), body.answers);
+        engine.answerQuestions(c.req.param("id"), c.req.param("qid"), body.answers, sharedFilesOf(c.req.param("id"), body.files));
         return c.json(engine.getTask(c.req.param("id")));
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
@@ -1414,11 +1444,12 @@ app.post("/api/tasks/:id/messages", async (c) => {
         z.object({
             text: z.string().min(1),
             anchor: z.object({ path: z.string().min(1), side: z.enum(["new", "old"]), line: z.number().int().nonnegative(), snippet: z.string() }).nullable().optional(),
+            files: z.array(SharedFileSchema).optional(),
         }),
         await c.req.json(),
     );
     try {
-        return c.json(await engine.askAgent(c.req.param("id"), body.text, body.anchor ?? null));
+        return c.json(await engine.askAgent(c.req.param("id"), body.text, body.anchor ?? null, sharedFilesOf(c.req.param("id"), body.files)));
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }
@@ -1426,9 +1457,9 @@ app.post("/api/tasks/:id/messages", async (c) => {
 
 // Chat → Do: the agent carries the text out in the task's session/worktree; the report lands in Chat when it finishes.
 app.post("/api/tasks/:id/instructions", async (c) => {
-    const body = json(z.object({ text: z.string().min(1) }), await c.req.json());
+    const body = json(z.object({ text: z.string().min(1), files: z.array(SharedFileSchema).optional() }), await c.req.json());
     try {
-        return c.json(await engine.instruct(c.req.param("id"), body.text));
+        return c.json(await engine.instruct(c.req.param("id"), body.text, sharedFilesOf(c.req.param("id"), body.files)));
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }

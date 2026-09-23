@@ -181,7 +181,15 @@ export interface Service {
 // The diff line a chat message hangs on (asked from Code changes); stored as JSON on the message.
 export interface MessageAnchor { path: string; side: "new" | "old"; line: number; snippet: string }
 export type MessageKind = "instruction" | "instruction_result";
-export interface Message { id: string; task_id: string; role: "user" | "agent"; text: string; created_at: string; anchor?: string | null; kind?: MessageKind | null }
+// A file the human attached to a message / instruction / answer: saved under the task dir's shared/, served by artifactUrl.
+export interface SharedFile { name: string; file: string; mime: string | null; size: number }
+export interface Message { id: string; task_id: string; role: "user" | "agent"; text: string; created_at: string; anchor?: string | null; kind?: MessageKind | null; files?: string | null }
+export const filesOf = (m: Pick<Message, "files">): SharedFile[] => {
+    try {
+        const v: unknown = m.files ? JSON.parse(m.files) : null;
+        return Array.isArray(v) ? (v as SharedFile[]) : [];
+    } catch { return []; }
+};
 export const anchorOf = (m: Pick<Message, "anchor">): MessageAnchor | null => {
     try {
         const v: unknown = m.anchor ? JSON.parse(m.anchor) : null;
@@ -386,6 +394,19 @@ const diffQuery = (filter?: { shas: string[] } | { uncommitted: true }, file?: s
 const post = <T,>(url: string, body?: unknown): Promise<T> =>
     fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => j<T>(r));
 
+// One multipart upload per file into the task dir's shared/; the descriptors go on the message that follows.
+const uploadFile = (taskId: string, f: File): Promise<SharedFile> => {
+    const fd = new FormData();
+    fd.append("file", f, f.name);
+    return fetch(`/api/tasks/${taskId}/files`, { method: "POST", body: fd }).then((r) => j<SharedFile>(r));
+};
+const uploadFiles = async (taskId: string, files: File[]): Promise<SharedFile[]> => {
+    const out: SharedFile[] = [];
+    for (const f of files) out.push(await uploadFile(taskId, f));
+    return out;
+};
+const withFiles = (body: Record<string, unknown>, files: SharedFile[] | undefined): Record<string, unknown> => (files?.length ? { ...body, files } : body);
+
 export const api = {
     accounts: () => fetch("/api/accounts").then((r) => j<Account[]>(r)),
     addAccount: (name: string, email?: string) => post<{ account: Account; terminal: string }>("/api/accounts", { name, email }),
@@ -519,11 +540,12 @@ export const api = {
     sessionCommits: (id: string) => fetch(`/api/sessions/${id}/commits`).then((r) => j<{ commits: BranchCommit[]; uncommitted: boolean }>(r)),
     artifactUrl: (id: string, rel: string) => `/api/tasks/${id}/artifacts/${rel}`,
     messages: (id: string) => fetch(`/api/tasks/${id}/messages`).then((r) => j<Message[]>(r)),
-    answerQuestions: (id: string, roundId: string, answers: Record<string, string>) => post<Task>(`/api/tasks/${id}/questions/${roundId}/answer`, { answers }),
+    uploadFiles,
+    answerQuestions: (id: string, roundId: string, answers: Record<string, string>, files?: SharedFile[]) => post<Task>(`/api/tasks/${id}/questions/${roundId}/answer`, withFiles({ answers }, files)),
     // With an anchor the question is about one diff line; the reply carries the same anchor (a thread under that line).
-    sendMessage: (id: string, text: string, anchor?: MessageAnchor) => post<Message>(`/api/tasks/${id}/messages`, { text, ...(anchor ? { anchor } : {}) }),
+    sendMessage: (id: string, text: string, anchor?: MessageAnchor, files?: SharedFile[]) => post<Message>(`/api/tasks/${id}/messages`, withFiles({ text, ...(anchor ? { anchor } : {}) }, files)),
     // Chat → Do: returns the human's message at once; the agent's report arrives as a later message when the run ends.
-    instruct: (id: string, text: string) => post<Message>(`/api/tasks/${id}/instructions`, { text }),
+    instruct: (id: string, text: string, files?: SharedFile[]) => post<Message>(`/api/tasks/${id}/instructions`, withFiles({ text }, files)),
 };
 
 // A CircleCI job gated behind a manual "Approve" click (deploy/db-reset gates) sits pending forever until a human

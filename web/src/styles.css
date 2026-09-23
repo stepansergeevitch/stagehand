@@ -660,3 +660,15 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .timing-stages .chip { margin: 0 4px 4px 0; }
 .prompter-stop { flex: 0 0 auto; min-height: 0; padding: 6px 10px; border-color: var(--bad, #c33); color: var(--bad, #c33); background: transparent; }
 .prompter-stop:hover { background: var(--bad, #c33); color: #fff; }
+
+/* Files attached to a Chat message / instruction / answer: pending chips above the input, sent ones under the text. */
+.file-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.file-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 280px; line-height: 1.6; }
+.file-chip img { width: 22px; height: 22px; object-fit: cover; border-radius: 2px; background: var(--code); }
+.file-chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip.attach { cursor: pointer; border: 1px dashed var(--ink-3); background: transparent; }
+.file-chip.attach.disabled { cursor: default; opacity: .5; }
+.file-chip.attach input { display: none; }
+.msg-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.msg-files img { max-width: 240px; max-height: 180px; object-fit: contain; border-radius: 3px; background: var(--code); display: block; }
+.msg-files .file-tile { display: inline-block; padding: 8px 10px; background: var(--code); border-radius: 3px; }

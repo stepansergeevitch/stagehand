@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { anchorOf, api, type Message, type TaskStatus } from "./api";
+import { anchorOf, api, filesOf, type Message, type TaskStatus } from "./api";
+import { FileChips, MessageFiles, usePendingFiles } from "./FilePicker";
 import { Markdown } from "./Markdown";
 
 type Mode = "ask" | "do";
@@ -15,6 +16,7 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
     const [sending, setSending] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const bottomRef = useRef<HTMLDivElement>(null);
+    const pending = usePendingFiles();
     const idle = status !== "running";
 
     useEffect(() => {
@@ -22,14 +24,17 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
     }, [messages.length]);
 
     const send = async () => {
-        const t = text.trim();
+        // A screenshot alone is a message too: the text then just points at the files.
+        const t = text.trim() || (pending.files.length ? "See the attached file(s)." : "");
         if (!t || sending) return;
         setSending(true);
         setError(null);
         setText("");
         try {
-            if (mode === "do") await api.instruct(taskId, t);
-            else await api.sendMessage(taskId, t);
+            const files = await api.uploadFiles(taskId, pending.files);
+            if (mode === "do") await api.instruct(taskId, t, files);
+            else await api.sendMessage(taskId, t, undefined, files);
+            pending.clear();
             await onSent();
         } catch (e) {
             setError(String((e as Error).message ?? e));
@@ -70,6 +75,7 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
                                 )}
                             </div>
                             <Markdown source={m.text} />
+                            <MessageFiles taskId={taskId} files={filesOf(m)} />
                         </div>
                     );
                 })}
@@ -80,6 +86,7 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
                 <button type="button" role="tab" aria-selected={mode === "ask"} className={mode === "ask" ? "active" : ""} onClick={() => setMode("ask")} title="A question — the agent answers, changes nothing">Ask</button>
                 <button type="button" role="tab" aria-selected={mode === "do"} className={mode === "do" ? "active" : ""} onClick={() => setMode("do")} title="An instruction — the agent carries it out in the worktree and reports back">Do</button>
             </div>
+            <FileChips pending={pending} disabled={!idle || sending} />
             <div className="chat-input">
                 <textarea
                     value={text}
@@ -87,11 +94,14 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
                     onKeyDown={(e) => {
                         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send();
                     }}
+                    onPaste={pending.onPaste}
+                    onDrop={pending.onDrop}
+                    onDragOver={pending.onDragOver}
                     placeholder={placeholder}
                     disabled={!idle || sending}
                     rows={mode === "do" ? 4 : 2}
                 />
-                <button className="primary" disabled={!idle || sending || !text.trim()} onClick={() => void send()}>
+                <button className="primary" disabled={!idle || sending || (!text.trim() && pending.files.length === 0)} onClick={() => void send()}>
                     {sending ? (mode === "do" ? "Starting…" : "Asking…") : mode === "do" ? "Run" : "Send"}
                 </button>
             </div>
