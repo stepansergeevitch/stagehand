@@ -26,7 +26,7 @@ import { fillQaVars, newQaPassId, qaContractProblems, type QaVars } from "./qa-v
 import { mergeQuestions, mergeScenarios, planQaShards, shardFiles, type QaShard } from "./qa-shards.js";
 import { jevAsk, jevEnabled } from "./jev.js";
 import { djangoBatchCommand, djangoBatchEnv, parseBatchOutput, planSeedUnits, type SeedItem } from "./seed-batch.js";
-import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
+import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, ReviewResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
 
 // A comment anchored to one line of the review diff. `line` is the new-file line for add/context lines, the old-file line for deletions.
 export interface LineComment {
@@ -2269,6 +2269,8 @@ export class Engine extends EventEmitter {
     private advance(taskId: string, stage: Stage): void {
         const task = this.getTask(taskId)!;
         let target = stage;
+        // The Code Review stage is optional (config.codeReview); off, Implementation goes straight on to QA.
+        if (target === "code_review" && !this.cfg.codeReview) target = "manual_qa";
         if (target === "qa_baseline" || target === "manual_qa") {
             const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
             // No browser scenarios in the design, or the human asked to skip QA this pass: hop over the QA stage.
@@ -2709,6 +2711,12 @@ export class Engine extends EventEmitter {
             maxTurns: String(def.maxTurns ?? 100),
             outputFile: def.outputFile ?? "",
             shardNote: "",
+            gstackChecklist: ((): string => {
+                const p = join(this.cfg.gstackDir, "review", "checklist.md");
+                return existsSync(p)
+                    ? `Read the checklist at \`${p}\` first (gstack's pre-landing review checklist): its categories, its "DO NOT flag" list and its Fix-First heuristic bind this review. The categories in short:`
+                    : `The gstack checklist is not installed (expected at ${p}; \`git clone --depth 1 https://github.com/garrytan/gstack.git ${this.cfg.gstackDir}\`). Apply these categories from what you know:`;
+            })(),
             seedHints: env.qa_seed_hints?.trim() ? env.qa_seed_hints.trim() : "(none configured for this environment — inspect the repo's configs/ and models to find the local database and API)",
             seedReport: "(no shell seeds were run)",
             resumeHint: "",
@@ -4695,7 +4703,7 @@ export class Engine extends EventEmitter {
     private afterStage(taskId: string, def: StageDef, data: unknown): void {
         const task = this.getTask(taskId)!;
         const env = this.env(task.env_id);
-        if ((def.stage === "implementation" || def.stage === "pr_fix") && env.check_command?.trim() && task.worktree_path) {
+        if ((def.stage === "implementation" || def.stage === "pr_fix" || def.stage === "code_review") && env.check_command?.trim() && task.worktree_path) {
             void this.verifyThenContinue(taskId, def, data, env);
             return;
         }
@@ -5038,6 +5046,35 @@ export class Engine extends EventEmitter {
                 }
             }
             this.stopServicesAfterQa(task);
+        }
+        // Code Review (gstack's checklist, fresh session): fixed findings are already committed; serious open ones
+        // (P0/P1 at confidence ≥ 7) send the task back to Implementation once, with the findings as the brief; the
+        // second review after that goes on regardless, and every finding stays visible at User Review.
+        if (def.stage === "code_review") {
+            const review = ReviewResult.parse(data);
+            const fixed = review.findings.filter((f) => f.status === "fixed");
+            const open = review.findings.filter((f) => f.status === "open");
+            const serious = open.filter((f) => (f.severity === "P0" || f.severity === "P1") && f.confidence >= 7);
+            const line = (f: ReviewResult["findings"][number]): string => `- **${f.severity}** (${f.confidence}/10) \`${f.file}${f.line ? `:${f.line}` : ""}\` — ${f.title}${f.status === "fixed" && f.commit ? ` (fixed in ${f.commit.slice(0, 7)})` : ""}`;
+            this.addMessage(
+                taskId,
+                "agent",
+                `🔎 Code review: ${review.summary}` +
+                    (fixed.length ? `\n\nFixed:\n${fixed.map(line).join("\n")}` : "") +
+                    (open.length ? `\n\nOpen (for you):\n${open.map(line).join("\n")}` : ""),
+            );
+            const marker = join(this.taskDir(taskId), "review-attempt-1.json");
+            if (serious.length && !existsSync(marker)) {
+                copyFileSync(join(this.taskDir(taskId), "review.json"), marker);
+                const notes =
+                    `## Code review found ${serious.length} serious open finding(s) — fix them (attempt 1 of 1; after this the task goes on to QA regardless)\n\n` +
+                    serious.map((f) => `${line(f)}\n  ${f.detail}${f.quote ? `\n  > ${f.quote.replace(/\n/g, " ")}` : ""}`).join("\n") +
+                    `\n\nFix each at its root cause, keep the tests green, commit, and rewrite impl.json. Do not touch anything the review did not raise.`;
+                this.setStage(taskId, "implementation");
+                this.setTaskStatus(taskId, "running", `Code Review · ${serious.length} serious finding(s) — sending back to Implementation`);
+                this.dispatch(taskId, "implementation", { notes });
+                return;
+            }
         }
         if (def.next) this.advance(taskId, def.next);
     }

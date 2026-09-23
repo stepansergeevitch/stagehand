@@ -15,6 +15,10 @@ const ConfigSchema = z.object({
     preflightUtilizationLimit: z.number().default(0.9),
     // QA passes run their scenarios in parallel shards (qa-shards.ts): at most this many runs per pass; 0 = one run.
     qaShards: z.number().int().default(4),
+    // The Code Review stage after Implementation (gstack's review checklist and method); false = skipped.
+    codeReview: z.boolean().default(true),
+    // A checkout of github.com/garrytan/gstack: its review/checklist.md is read by the Code Review prompt at run time.
+    gstackDir: z.string().default(join(homedir(), ".stagehand", "gstack")),
     clickupToken: z.string().nullable().default(null),
     clickupTeamId: z.string().nullable().default(null),
     // Resolved once from GET /user with the token above and cached here.
@@ -44,6 +48,7 @@ const ConfigSchema = z.object({
             design_proposal: z.string().nullable().default(null),
             qa_baseline: z.string().nullable().default("sonnet"),
             implementation: z.string().nullable().default(null),
+            code_review: z.string().nullable().default(null),
             manual_qa: z.string().nullable().default("sonnet"),
             pr_creation_review: z.string().nullable().default("sonnet"),
             pr_fix: z.string().nullable().default(null),
@@ -58,6 +63,7 @@ const ConfigSchema = z.object({
             design_proposal: z.string().nullable().default(null),
             qa_baseline: z.string().nullable().default(null),
             implementation: z.string().nullable().default(null),
+            code_review: z.string().nullable().default(null),
             manual_qa: z.string().nullable().default(null),
             pr_creation_review: z.string().nullable().default(null),
             pr_fix: z.string().nullable().default(null),
@@ -135,6 +141,8 @@ const defaults = (): Config => ({
     maxChromeClonesPerAccount: 3,
     preflightUtilizationLimit: 0.9,
     qaShards: 4,
+    codeReview: true,
+    gstackDir: join(homedir(), ".stagehand", "gstack"),
     clickupToken: null,
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
     clickupUserId: null,
@@ -142,8 +150,8 @@ const defaults = (): Config => ({
     typesafeApiKey: null,
     defaultModel: null,
     notifications: { macos: true, ntfyServer: "https://ntfy.sh", ntfyTopic: null, ntfyToken: null, baseUrl: null, localBaseUrl: "http://localhost:5173" },
-    stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_fix: null, helper: "sonnet" },
-    stageRerunModels: { research: null, design_proposal: null, qa_baseline: null, implementation: null, manual_qa: null, pr_creation_review: null, pr_fix: null },
+    stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, code_review: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_fix: null, helper: "sonnet" },
+    stageRerunModels: { research: null, design_proposal: null, qa_baseline: null, implementation: null, code_review: null, manual_qa: null, pr_creation_review: null, pr_fix: null },
     operationModels: { pr_fix_ci: null, pr_fix_comments: null, chat: null, instruct: null, rebase: null, fix_service: null, git_edit: null },
     prompter: { accountId: null, model: "fable", idleHours: 24, purgeDays: 7, farewell: true, maxTurns: 40, seedFrom: join(homedir(), "code", "northspyre", ".mempalace"), seedWings: ["task-orchestrator=stagehand", "stagehand"] },
     server: { tmuxSession: "stagehand-server", startCommand: null },

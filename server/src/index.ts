@@ -993,6 +993,7 @@ app.get("/api/settings", (c) =>
         defaultModel: cfg.defaultModel,
         models: MODEL_OPTIONS,
         stageModels: cfg.stageModels,
+        codeReview: cfg.codeReview,
         stageRerunModels: cfg.stageRerunModels,
         operationModels: cfg.operationModels,
         notifications: { ...cfg.notifications, ntfyToken: mask(cfg.notifications.ntfyToken) },
@@ -1027,6 +1028,7 @@ app.patch("/api/settings", async (c) => {
             linearApiKey: z.string().nullable().optional(),
             typesafeApiKey: z.string().nullable().optional(),
             defaultModel: z.string().nullable().optional(),
+            codeReview: z.boolean().optional(),
             // Partial maps: only the keys present change; "" or null clears a key (back to the fallback).
             stageModels: z.record(z.string().nullable()).optional(),
             stageRerunModels: z.record(z.string().nullable()).optional(),
@@ -1079,6 +1081,7 @@ app.patch("/api/settings", async (c) => {
         if (n.localBaseUrl !== undefined && n.localBaseUrl.trim()) cfg.notifications.localBaseUrl = n.localBaseUrl.trim();
     }
     if (body.defaultModel !== undefined) cfg.defaultModel = body.defaultModel;
+    if (body.codeReview !== undefined) cfg.codeReview = body.codeReview;
     const applyModels = (target: Record<string, string | null>, patch: Record<string, string | null> | undefined): void => {
         for (const [k, v] of Object.entries(patch ?? {})) if (k in target) target[k] = v?.trim() || null;
     };
@@ -1100,6 +1103,7 @@ app.get("/api/tasks/:id", (c) => {
         research: engine.readArtifactJson(task.id, "research.json"),
         design: engine.readArtifactJson(task.id, "design.json"),
         impl: engine.readArtifactJson(task.id, "impl.json"),
+        review: engine.readArtifactJson(task.id, "review.json"),
         qaBefore: engine.readArtifactJson(task.id, "qa/before.json"),
         qaAfter: engine.readArtifactJson(task.id, "qa/after.json"),
         qaHistory: engine.qaHistory(task.id),

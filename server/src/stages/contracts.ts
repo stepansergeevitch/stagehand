@@ -108,6 +108,29 @@ export const PrDraft = z.object({
 });
 export type PrDraft = z.infer<typeof PrDraft>;
 
+// <taskDir>/review.json — the code review after Implementation (gstack's checklist and method, prompts/code-review.md).
+export const ReviewResult = z.object({
+    summary: z.string(),
+    findings: z
+        .array(
+            z.object({
+                id: z.string(),
+                severity: z.enum(["P0", "P1", "P2", "P3"]),
+                confidence: z.number().int().min(1).max(10),
+                category: z.string().default(""),
+                file: z.string(),
+                line: z.number().int().nullable().default(null),
+                title: z.string(),
+                detail: z.string().default(""),
+                quote: z.string().default(""),
+                status: z.enum(["fixed", "open", "suppressed"]),
+                commit: z.string().nullable().default(null),
+            }),
+        )
+        .default([]),
+});
+export type ReviewResult = z.infer<typeof ReviewResult>;
+
 export const PrFixResult = z.object({
     summary: z.string(),
 });

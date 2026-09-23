@@ -358,7 +358,7 @@ const Linkified = ({ text }: { text: string }) => {
     return <>{parts.map((p, i) => (/^https?:\/\//.test(p) ? <a key={i} href={p} target="_blank" rel="noreferrer">{p}</a> : <span key={i}>{p}</span>))}</>;
 };
 
-const RERUNNABLE: ReadonlySet<Stage> = new Set(["research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "pr_creation_review", "pr_fix"]);
+const RERUNNABLE: ReadonlySet<Stage> = new Set(["research", "design_proposal", "qa_baseline", "implementation", "code_review", "manual_qa", "pr_creation_review", "pr_fix"]);
 const PR_STAGES: ReadonlySet<Stage> = new Set(["pr_waiting", "pr_fix", "pr_green", "pr_approved", "done"]);
 
 const statusChip = (s: string) => {
@@ -581,6 +581,7 @@ const PrWidget = ({ detail, onAction, onOpenInTab }: { detail: TaskDetail; onAct
 
 export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal, onAction, view, onView, onOpenTerminal, onCloseTerminal }: Props) => {
     const { task, runs, design, impl, qaBefore, qaAfter, pr, prFix, research } = detail;
+    const review = detail.review ?? null;
     const tab = view.tab;
     const setTab = (t: Tab) => onView({ tab: t });
     const tickets = detail.tickets ?? [];
@@ -656,6 +657,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             case "design_proposal": return !!design;
             case "qa_baseline": return !!qaBefore;
             case "implementation": return !!impl;
+            case "code_review": return !!review;
             case "manual_qa": return !!qaAfter;
             case "user_review": return detail.reviews.some((r) => r.stage === "user_review") || task.stage === "user_review";
             default: return false;
@@ -793,6 +795,30 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             case "qa_baseline":
             case "manual_qa":
                 return qaPanel ?? <div className="empty">no QA evidence yet</div>;
+            case "code_review":
+                return review ? (
+                    <Card title="Code review" badge={<><span className={`chip ${review.findings.some((f) => f.status === "open" && (f.severity === "P0" || f.severity === "P1")) ? "bad" : "ok"}`}>{review.findings.filter((f) => f.status === "open").length} open</span><span className="chip">{review.findings.filter((f) => f.status === "fixed").length} fixed</span></>}>
+                        <p className="field-hint">{review.summary} — gstack's pre-landing checklist applied by a fresh session; fixed findings are committed on the branch, open ones are yours to judge, suppressed ones are low-confidence and kept for calibration.</p>
+                        {(["open", "fixed", "suppressed"] as const).map((st) => {
+                            const rows = review.findings.filter((f) => f.status === st);
+                            if (!rows.length) return null;
+                            return (
+                                <Sub key={st} title={`${st === "open" ? "Open" : st === "fixed" ? "Fixed" : "Suppressed (low confidence)"} (${rows.length})`} open={st !== "suppressed"}>
+                                    {rows.map((f) => (
+                                        <div key={f.id} className="kv" style={{ marginBottom: 10 }}>
+                                            <b><span className={`chip ${f.severity === "P0" || f.severity === "P1" ? "bad" : f.severity === "P2" ? "warn" : ""}`}>{f.severity}</span> {f.confidence}/10</b>
+                                            <span>
+                                                <div><b>{f.title}</b> <code>{f.file}{f.line ? `:${f.line}` : ""}</code>{f.category ? <span className="chip" style={{ marginLeft: 6 }}>{f.category}</span> : null}{f.commit ? <code style={{ marginLeft: 6 }}>{f.commit.slice(0, 7)}</code> : null}</div>
+                                                {f.detail && <div style={{ fontSize: 13 }}>{f.detail}</div>}
+                                                {f.quote && <pre style={{ fontSize: 12, margin: "4px 0 0", whiteSpace: "pre-wrap" }}>{f.quote}</pre>}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </Sub>
+                            );
+                        })}
+                    </Card>
+                ) : <div className="empty">no review yet</div>;
             case "implementation":
                 return impl ? (
                     // impl.json can be partial while Implementation is still running (the agent writes notes first) — never assume a field.

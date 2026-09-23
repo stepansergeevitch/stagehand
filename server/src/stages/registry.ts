@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ZodTypeAny } from "zod";
 import type { Stage } from "../db.js";
-import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, ResearchResult } from "./contracts.js";
+import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, ResearchResult, ReviewResult } from "./contracts.js";
 
 const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "prompts");
 
@@ -65,6 +65,18 @@ export const STAGE_DEFS: Record<Stage, StageDef> = {
         contract: ImplResult,
         outputFile: "impl.json",
         maxTurns: 200,
+        next: "code_review",
+    },
+    code_review: {
+        stage: "code_review",
+        kind: "auto",
+        label: "Code Review",
+        prompt: "code-review.md",
+        contract: ReviewResult,
+        outputFile: "review.json",
+        // A fresh session: the reviewer did not write the code (gstack's /review method and checklist).
+        freshSession: true,
+        maxTurns: 80,
         next: "manual_qa",
     },
     manual_qa: {

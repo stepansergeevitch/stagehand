@@ -1,5 +1,5 @@
 export type Stage =
-    | "research" | "design_proposal" | "qa_baseline" | "implementation" | "manual_qa" | "user_review"
+    | "research" | "design_proposal" | "qa_baseline" | "implementation" | "code_review" | "manual_qa" | "user_review"
     | "pr_creation_review" | "pr_waiting" | "pr_fix" | "pr_green" | "pr_approved" | "done";
 
 export type TaskStatus = "idle" | "queued" | "running" | "waiting_user" | "blocked" | "rate_limited" | "failed" | "done" | "stopped";
@@ -134,12 +134,14 @@ export interface Notifications { macos: boolean; ntfyServer: string; ntfyTopic: 
 export interface PrompterSettings { accountId: string | null; model: string; idleHours: number; purgeDays: number; farewell: boolean; maxTurns: number; seedFrom: string; seedWings: string[] }
 // Which model a run gets: stageModels for a stage's first run on a task, stageRerunModels for every later run of it,
 // operationModels for the side runs (PR fixes by cause, chat, Do, rebase, service fix, history edit). "" / null = fallback.
-export type ModelStage = "research" | "design_proposal" | "qa_baseline" | "implementation" | "manual_qa" | "pr_creation_review" | "pr_fix";
+export type ModelStage = "research" | "design_proposal" | "qa_baseline" | "implementation" | "code_review" | "manual_qa" | "pr_creation_review" | "pr_fix";
 export type ModelOperation = "pr_fix_ci" | "pr_fix_comments" | "chat" | "instruct" | "rebase" | "fix_service" | "git_edit";
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null; typesafeApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
     stageModels?: Partial<Record<ModelStage, string | null>>;
+    // The Code Review stage after Implementation (gstack's checklist); absent from an older server.
+    codeReview?: boolean;
     stageRerunModels?: Partial<Record<ModelStage, string | null>>;
     operationModels?: Partial<Record<ModelOperation, string | null>>;
     notifications: Notifications;
@@ -252,6 +254,11 @@ export interface BranchCommit { sha: string; short: string; subject: string; aut
 export interface LineComment { path: string; line: number; side: "new" | "old"; snippet: string; text: string }
 export interface MyTicket { id: string; title: string; priority: number | null; priorityLabel: string; status: string; url: string | null; group: string }
 export interface Review { id: string; stage: Stage; verdict: string; route_to: string | null; notes: string | null; comments: string | null; created_at: string }
+export interface ReviewFinding {
+    id: string; severity: "P0" | "P1" | "P2" | "P3"; confidence: number; category?: string; file: string; line?: number | null;
+    title: string; detail?: string; quote?: string; status: "fixed" | "open" | "suppressed"; commit?: string | null;
+}
+export interface ReviewResult { summary: string; findings: ReviewFinding[] }
 export interface TaskDetail {
     task: Task; runs: Run[]; artifacts: Array<{ path: string; size: number }>;
     // Raw research.json as written by the agent — optional fields may be missing when the file predates them or the agent skipped them.
@@ -262,6 +269,8 @@ export interface TaskDetail {
     // One drafted PR per repository (repo "" for a single-repo env); base is shared.
     pr: PrDraft | null;
     prFix: { summary: string } | null;
+    // review.json of the Code Review stage (absent from an older server).
+    review?: ReviewResult | null;
     ticket: Ticket | null;
     // Every stored ticket of the task (one, or several for a batch task), in order.
     // Optional (not `?:`ed as "may be absent forever" but as "may be briefly absent right after a server upgrade" —
@@ -523,10 +532,10 @@ export const isApprovalGateCheck = (c: { name?: string; context?: string }): boo
 
 export const STAGE_LABEL: Record<Stage, string> = {
     research: "Research", design_proposal: "Design Proposal", qa_baseline: "QA baseline", implementation: "Implementation",
-    manual_qa: "Manual QA", user_review: "User Review", pr_creation_review: "PR Creation Review", pr_waiting: "PR Waiting",
+    code_review: "Code Review", manual_qa: "Manual QA", user_review: "User Review", pr_creation_review: "PR Creation Review", pr_waiting: "PR Waiting",
     pr_fix: "PR Fix", pr_green: "PR Green", pr_approved: "PR Approved", done: "Done",
 };
 export const STAGE_ORDER: Stage[] = [
-    "research", "design_proposal", "qa_baseline", "implementation", "manual_qa", "user_review",
+    "research", "design_proposal", "qa_baseline", "implementation", "code_review", "manual_qa", "user_review",
     "pr_creation_review", "pr_waiting", "pr_fix", "pr_green", "pr_approved", "done",
 ];

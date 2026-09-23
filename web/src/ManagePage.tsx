@@ -26,6 +26,7 @@ const MODEL_STAGES: Array<{ key: ModelStage; label: string }> = [
     { key: "design_proposal", label: "Design Proposal" },
     { key: "qa_baseline", label: "QA baseline" },
     { key: "implementation", label: "Implementation" },
+    { key: "code_review", label: "Code Review" },
     { key: "manual_qa", label: "Manual QA" },
     { key: "pr_creation_review", label: "PR draft" },
     { key: "pr_fix", label: "PR Fix (any cause)" },
@@ -51,6 +52,7 @@ const ModelsCard = ({ settings, accounts, act }: { settings: Settings; accounts:
             <h2>Models</h2>
             <p className="field-hint">A task created with its own model uses that everywhere. Otherwise a stage's first run on a task takes its "first run" model, every later run of that stage (a review round sent back, Retry, a contract or unblock retry, a QA return to Implementation) takes its "reruns" model, and the side operations take theirs. A blank falls back along the arrows.</p>
             <div className="env-fields" style={{ maxWidth: 560 }}>
+                <label className="inline"><input type="checkbox" checked={settings.codeReview !== false} onChange={(e) => void act(() => api.patchSettings({ codeReview: e.target.checked }))} /> Code Review stage after Implementation — gstack's pre-landing checklist applied by a fresh session: mechanical findings fixed and committed, serious open ones sent back to Implementation once, everything shown at User Review</label>
                 <label>Global default (the fallback of every blank below)
                     <select value={settings.defaultModel ?? ""} onChange={(e) => void act(() => api.patchSettings({ defaultModel: e.target.value || null }))}>{options(fallback)}</select>
                 </label>

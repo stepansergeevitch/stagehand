@@ -7,6 +7,7 @@ export type Stage =
     | "design_proposal"
     | "qa_baseline"
     | "implementation"
+    | "code_review"
     | "manual_qa"
     | "user_review"
     | "pr_creation_review"
@@ -21,6 +22,7 @@ export const STAGES: readonly Stage[] = [
     "design_proposal",
     "qa_baseline",
     "implementation",
+    "code_review",
     "manual_qa",
     "user_review",
     "pr_creation_review",
