@@ -165,7 +165,8 @@ export interface Ticket {
 export interface TicketAttachment { name: string; url: string; mime: string | null; file: string | null; size: number | null; error: string | null; origin: "attachment" | "description" | "comment" }
 // `state`: starting until the port answers; failed once its command exited, its tmux session vanished, or the start
 // budget ran out — `error` says which. A failed row stays until Stop, Retry, or Fix with agent.
-export type ServiceState = "starting" | "running" | "failed";
+// "stopped" is reported for the env's shared dependency only (kind "dependency", listed even while it is down).
+export type ServiceState = "stopped" | "starting" | "running" | "failed";
 // An optional component of an env (envs.components): an extra per-task service beside the BE/FE, without a port.
 export interface EnvComponent { key: string; label: string; command: string; autoStart: boolean }
 export const componentsOf = (env: Pick<Env, "components"> | undefined): EnvComponent[] => {
@@ -177,6 +178,8 @@ export const componentsOf = (env: Pick<Env, "components"> | undefined): EnvCompo
 export interface Service {
     id: string; task_id: string; kind: string; port: number; url: string; tmux: string; command: string; log_path: string; started_at: string;
     running: boolean; state: ServiceState; failed_at: string | null; error: string | null;
+    // Set on the shared dependency's entry only: "<env name> (shared)", one instance for every task of the env.
+    label?: string; shared?: boolean;
 }
 // The diff line a chat message hangs on (asked from Code changes); stored as JSON on the message.
 export interface MessageAnchor { path: string; side: "new" | "old"; line: number; snippet: string }

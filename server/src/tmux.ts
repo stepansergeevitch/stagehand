@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import * as pty from "node-pty";
 
@@ -14,6 +14,16 @@ const tmux = async (args: string[]): Promise<{ ok: boolean; stdout: string }> =>
 };
 
 export const sessionExists = async (name: string): Promise<boolean> => (await tmux(["has-session", "-t", `=${name}`])).ok;
+
+// For the few sync call sites (prompt text): same check, blocking for the milliseconds tmux takes.
+export const sessionExistsSync = (name: string): boolean => {
+    try {
+        execFileSync("tmux", ["has-session", "-t", `=${name}`], { stdio: "ignore" });
+        return true;
+    } catch {
+        return false;
+    }
+};
 
 export const ensureSession = async (name: string, cwd: string, command: string, env: Record<string, string>): Promise<void> => {
     if (await sessionExists(name)) return;

@@ -42,7 +42,35 @@ export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, on
     const fe = rows.find((r) => r.kind === "fe");
     const configured = { be: !!env?.be_command, fe: !!env?.fe_command };
     const comps = componentsOf(env);
-    if (!configured.be && !configured.fe && comps.length === 0) return <div className="empty">This env has no BE/FE commands configured — edit the env to add them.</div>;
+    // The env's shared dependency (Deal → Core): listed by the server even while stopped, one instance for every task.
+    const dep = rows.find((r) => r.kind === "dependency");
+    if (!configured.be && !configured.fe && comps.length === 0 && !dep) return <div className="empty">This env has no BE/FE commands configured — edit the env to add them.</div>;
+
+    // Run / Stop / Log like a component, plus its URL; Stop ends it for every task of the env.
+    const depRow = (svc: Service) => (
+        <div className={`svc ${svc.state === "failed" ? "failed" : ""}`} key="dependency">
+            <span className="svc-kind" title="Shared dependency of this env — one instance for every task; the BE calls it">{svc.label ?? "dependency"}</span>
+            {svc.state === "stopped" ? (
+                <>
+                    <span className="chip">stopped</span>
+                    <button className="primary" disabled={busy !== null} title={svc.command} onClick={() => act("dependency", () => api.startService(taskId, "dependency"))}>{busy === "dependency" ? "starting…" : "Run"}</button>
+                </>
+            ) : (
+                <>
+                    {svc.state === "running" ? <span className="chip ok">running</span> : svc.state === "failed" ? <span className="chip bad">failed</span> : <span className="chip warn">starting…</span>}
+                    {svc.url && <a href={svc.url} target="_blank" rel="noreferrer">{svc.url}</a>}
+                    {svc.state === "failed" && (
+                        <button disabled={busy !== null} title="Stop and start it again with the same command" onClick={() => act("retry", async () => { await api.stopService(taskId, "dependency"); await api.startService(taskId, "dependency"); })}>
+                            {busy === "retry" ? "restarting…" : "Retry"}
+                        </button>
+                    )}
+                    <button disabled={busy !== null} title="Stops it for every task of this env" onClick={() => act("dependency", () => api.stopService(taskId, "dependency"))}>{svc.state === "failed" ? "Dismiss" : "Stop"}</button>
+                    <button disabled={busy !== null} onClick={() => act("log", () => api.serviceLog(taskId, "dependency").then((text) => setLog({ kind: "dependency", text })))}>Log</button>
+                    {svc.state === "failed" && svc.error && <span className="svc-error">{svc.error}</span>}
+                </>
+            )}
+        </div>
+    );
 
     // An optional component (a worker, a scheduler): Run / Stop / Log, no port, no agent fix.
     const compRow = (c: EnvComponent) => {
@@ -118,6 +146,7 @@ export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, on
 
     return (
         <>
+            {dep && depRow(dep)}
             {configured.be && row("be", be)}
             {configured.fe && row("fe", fe)}
             {comps.map(compRow)}

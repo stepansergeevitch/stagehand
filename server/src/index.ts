@@ -34,7 +34,7 @@ const MODEL_OPTIONS = [
 import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, COMPONENT_KEY, componentsOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, prTemplateOverridesOf, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type EnvRow, type Stage, type TaskRow } from "./db.js";
 import { matchChromeProfiles, openInProfile, restartChrome } from "./chrome-profiles.js";
 import { Engine } from "./engine.js";
-import { Services } from "./services.js";
+import { Services, DEPENDENCY_KIND } from "./services.js";
 import { Sessions } from "./sessions.js";
 import { Prompter } from "./prompter.js";
 import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, probeRateLimits, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
@@ -1473,14 +1473,28 @@ app.post("/api/tasks/:id/account", async (c) => {
 
 // ---------- per-task BE / FE services ----------
 
-app.get("/api/tasks/:id/services", async (c) => c.json(await services.status(c.req.param("id"))));
+// The task's BE/FE and optional components, and — first, since the BE needs it — the env's shared dependency (kind
+// "dependency", listed even while stopped so it can be started from here).
+const taskServices = async (task: TaskRow) => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow | undefined;
+    const dep = env ? await services.dependencyStatus(env, task.id) : null;
+    return [...(dep ? [dep] : []), ...(await services.status(task.id))];
+};
 
-// "be", "fe", or the key of one of the task env's optional components (a worker, a scheduler) — the agents start
-// those on demand through these same routes.
+app.get("/api/tasks/:id/services", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    return c.json(await taskServices(task));
+});
+
+// "be", "fe", "dependency" (the env's shared dependency, when one is configured) or the key of one of the task env's
+// optional components (a worker, a scheduler) — the agents start those on demand through these same routes.
 const serviceKindOf = (task: TaskRow, kind: string): { kind: string; env: EnvRow } | { error: string } => {
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
     if (kind === "be" || kind === "fe" || componentsOf(env).some((c) => c.key === kind)) return { kind, env };
-    return { error: `kind must be be, fe or one of this env's optional components (${componentsOf(env).map((c) => c.key).join(", ") || "none defined"})` };
+    if (kind === DEPENDENCY_KIND && env.depends_on_env_id) return { kind, env };
+    const keys = [...(env.depends_on_env_id ? [DEPENDENCY_KIND] : []), ...componentsOf(env).map((c) => c.key)];
+    return { error: `kind must be be, fe or one of this env's optional components (${keys.join(", ") || "none defined"})` };
 };
 
 app.post("/api/tasks/:id/services/:kind/start", async (c) => {
@@ -1488,8 +1502,12 @@ app.post("/api/tasks/:id/services/:kind/start", async (c) => {
     if (!task) return c.json({ error: "not found" }, 404);
     const k = serviceKindOf(task, c.req.param("kind"));
     if ("error" in k) return c.json({ error: k.error }, 400);
-    const row = await services.start(task, k.env, k.kind);
-    return c.json(row);
+    try {
+        if (k.kind === DEPENDENCY_KIND) return c.json(await services.startDependency(k.env, task.id));
+        return c.json(await services.start(task, k.env, k.kind));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
 });
 
 app.post("/api/tasks/:id/services/:kind/stop", async (c) => {
@@ -1497,8 +1515,9 @@ app.post("/api/tasks/:id/services/:kind/stop", async (c) => {
     if (!task) return c.json({ error: "not found" }, 404);
     const k = serviceKindOf(task, c.req.param("kind"));
     if ("error" in k) return c.json({ error: k.error }, 400);
-    await services.stop(task.id, k.kind);
-    return c.json(await services.status(task.id));
+    if (k.kind === DEPENDENCY_KIND) await services.stopDependency(k.env);
+    else await services.stop(task.id, k.kind);
+    return c.json(await taskServices(task));
 });
 
 // A failed BE/FE start handed to the task's agent; resolves once the run has started, the outcome (and the automatic
@@ -1517,7 +1536,15 @@ app.post("/api/tasks/:id/services/:kind/fix", async (c) => {
 app.get("/api/tasks/:id/services/:kind/log", (c) => {
     const kind = c.req.param("kind");
     if (kind !== "be" && kind !== "fe" && !COMPONENT_KEY.test(kind)) return c.json({ error: "kind must be be, fe or a component key" }, 400);
-    const path = join(engine.taskDir(c.req.param("id")), "logs", `${kind}.log`);
+    let path = join(engine.taskDir(c.req.param("id")), "logs", `${kind}.log`);
+    if (kind === DEPENDENCY_KIND) {
+        // The shared dependency's log lives with its env, not with the task.
+        const task = engine.getTask(c.req.param("id"));
+        const env = task ? (db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow | undefined) : undefined;
+        const depPath = env ? services.dependencyLogPath(env) : null;
+        if (!depPath) return c.json({ error: "this env has no dependency configured" }, 400);
+        path = depPath;
+    }
     if (!existsSync(path)) return new Response("", { headers: { "content-type": "text/plain" } });
     const text = readFileSync(path, "utf8");
     const lines = text.split("\n");

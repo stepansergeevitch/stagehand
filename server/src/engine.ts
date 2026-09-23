@@ -16,7 +16,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import type { Services } from "./services.js";
+import { DEPENDENCY_KIND, type Services } from "./services.js";
 import type { ServiceKind } from "./db.js";
 import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderSharedFiles, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
 import { killSession, taskSessionName } from "./tmux.js";
@@ -3947,20 +3947,30 @@ export class Engine extends EventEmitter {
     // stop one on demand through Stagehand's local API (the design stage learns the `services` declaration instead).
     private describeComponents(task: TaskRow, env: EnvRow, stage: Stage): string {
         const comps = componentsOf(env);
-        if (comps.length === 0) return "";
+        // The env's shared dependency (Deal → Core) is one more component to the agents: the BE is dead without it
+        // (500s / connection errors on every call), and after a host restart nothing else brings it back.
+        const dep = this.services.dependencyEnv(env);
+        if (comps.length === 0 && !dep) return "";
         const keys = comps.map((c) => `\`${c.key}\``).join(", ");
         if (stage === "design_proposal") {
             return (
                 `## Optional components of this environment\n\n` +
-                `Not running by default: ${comps.map((c) => `\`${c.key}\` (${c.label}${c.autoStart ? ", auto-started with the app" : ""})`).join(", ")}. ` +
-                `A QA scenario whose journey depends on one of them — background jobs a worker must process, a scheduler, a relay — lists its key in \`services\` (e.g. \`"services": ["${comps[0]!.key}"]\`); the orchestrator starts it before the seeds of every pass. Only these keys exist: ${keys}.`
+                (comps.length > 0
+                    ? `Not running by default: ${comps.map((c) => `\`${c.key}\` (${c.label}${c.autoStart ? ", auto-started with the app" : ""})`).join(", ")}. ` +
+                      `A QA scenario whose journey depends on one of them — background jobs a worker must process, a scheduler, a relay — lists its key in \`services\` (e.g. \`"services": ["${comps[0]!.key}"]\`); the orchestrator starts it before the seeds of every pass. Only these keys exist: ${keys}.`
+                    : "") +
+                (dep ? `${comps.length > 0 ? "\n\n" : ""}\`${DEPENDENCY_KIND}\` (${dep.name}, shared): the backend this environment's BE calls; the orchestrator starts it before every pass — do not list it in \`services\`.` : "")
             );
         }
         const base = `http://127.0.0.1:${this.cfg.port}/api/tasks/${task.id}/services`;
         const live = new Set(this.services.list(task.id).map((r) => r.kind));
+        const depLine = dep
+            ? `- \`${DEPENDENCY_KIND}\` — ${dep.name} (shared): the backend this environment's BE calls (auth, data); one instance for every task of the environment${this.services.dependencyLooksRunning(env) ? " · **running now**" : " · not running — the BE answers 500 / connection errors until it is up"}: start \`curl -s -X POST ${base}/${DEPENDENCY_KIND}/start\` (returns at once; it is up when the status call below lists it \`running\`, up to 3 min); stop \`curl -s -X POST ${base}/${DEPENDENCY_KIND}/stop\` (stops it for every task — only when nothing else needs it); log \`${this.services.dependencyLogPath(env) ?? ""}\`\n`
+            : "";
         return (
             `## Optional components of this environment\n\n` +
             `Extra services beside the BE/FE, not running unless started. When a journey needs one (e.g. a queued job that only a worker processes), start it yourself from Bash, wait until its log shows it is ready (\`tail -40\` of the log path), then continue — do not report the scenario blocked or needs_human for a missing component.\n` +
+            depLine +
             comps.map((c) => `- \`${c.key}\` — ${c.label}${live.has(c.key) ? " · **running now**" : " · not running"}: start \`curl -s -X POST ${base}/${c.key}/start\`; stop \`curl -s -X POST ${base}/${c.key}/stop\`; log \`${join(this.taskDir(task.id), "logs", `${c.key}.log`)}\``).join("\n") +
             `\n- Status of every service of this task: \`curl -s ${base}\`.`
         );
@@ -4740,7 +4750,8 @@ export class Engine extends EventEmitter {
             const contract = qaContractProblems((parsed.data as DesignResult).qa ?? []);
             if (contract) return { ok: false, error: contract };
             const owner = this.getTask(taskId);
-            const known = owner ? componentsOf(this.env(owner.env_id)).map((c) => c.key) : [];
+            // The shared dependency is always started before a pass; a design that names it anyway is not wrong.
+            const known = owner ? [...componentsOf(this.env(owner.env_id)).map((c) => c.key), ...(this.env(owner.env_id).depends_on_env_id ? [DEPENDENCY_KIND] : [])] : [];
             const unknown = ((parsed.data as DesignResult).qa ?? []).flatMap((s) => (s.services ?? []).filter((k) => !known.includes(k)).map((k) => `${s.id}: "${k}"`));
             if (unknown.length) return { ok: false, error: `QA scenarios name optional components this environment does not define: ${unknown.join(", ")} — available: ${known.length ? known.map((k) => `"${k}"`).join(", ") : "none (drop the services list)"}` };
         }

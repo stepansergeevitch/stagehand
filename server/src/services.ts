@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Config } from "./config.js";
 import { componentsOf, now, parseEnvVars, type CoreServiceKind, type DB, type EnvRow, type EnvServiceRow, type ServiceKind, type ServiceRow, type TaskRow } from "./db.js";
-import { ensureSession, killSession, sessionExists } from "./tmux.js";
+import { ensureSession, killSession, sessionExists, sessionExistsSync } from "./tmux.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -23,8 +23,17 @@ const COMPONENT_READY_MS = 5_000;
 const commandTemplate = (env: EnvRow, kind: ServiceKind): string | null =>
     kind === "be" ? env.be_command : kind === "fe" ? env.fe_command : (componentsOf(env).find((c) => c.key === kind)?.command ?? null);
 
-export type ServiceState = "starting" | "running" | "failed";
-export type ServiceStatus = ServiceRow & { running: boolean; state: ServiceState };
+// "stopped" is only ever reported for the shared dependency (see dependencyStatus): a BE/FE/component that is not
+// running has no row at all.
+export type ServiceState = "stopped" | "starting" | "running" | "failed";
+// `label`/`shared` are set on the dependency's entry only (the App widget and the agents name it by its env).
+export type ServiceStatus = ServiceRow & { running: boolean; state: ServiceState; label?: string; shared?: boolean };
+
+// The env's shared dependency (Deal → Core) shows up as one more optional component under this key — Run / Stop / Log
+// in the App widget, start/stop through the same routes for the agents — while staying one instance for every task of
+// the env (user, 2026-09-23: "make core like a celery in dualentry — a runnable optional component").
+export const DEPENDENCY_KIND = "dependency";
+const DEP_START_TIMEOUT_MS = 180_000;
 
 // The wrapper around every BE/FE command prints these markers into the log: one when it starts, one when the command
 // exits (the pane then sleeps so the log stays readable). "exited" after the latest start marker = the process is gone.
@@ -32,7 +41,7 @@ const startMarker = (kind: ServiceKind): string => `[stagehand] ${kind.toUpperCa
 const exitMarker = (kind: ServiceKind): RegExp => new RegExp(`^\\[stagehand\\] ${kind.toUpperCase()} exited \\((.*)\\)`);
 
 // The log lines written by the current start (after the latest start marker), oldest first.
-const currentRunLog = (row: ServiceRow): string[] => {
+const currentRunLog = (row: Pick<ServiceRow, "kind" | "log_path">): string[] => {
     if (!existsSync(row.log_path)) return [];
     const lines = readFileSync(row.log_path, "utf8").split("\n");
     const start = lines.map((l, i) => (l.startsWith(startMarker(row.kind)) ? i : -1)).filter((i) => i >= 0).pop() ?? -1;
@@ -326,20 +335,152 @@ export class Services {
         return this.db.prepare(`SELECT * FROM env_services WHERE env_id = ?`).get(envId) as EnvServiceRow | undefined;
     }
 
-    // Ensures `env`'s configured dependency (another env's BE, e.g. Deal needing Core for auth) is up, starting it
-    // once and reusing it for every task afterward — it isn't itself under test, so it never gets its own worktree
-    // or a fresh instance per task. Prefers the dependency's own configured port (its app most likely assumes it);
-    // falls back to a free one only when that port is unavailable (occupied by something else, or the dependency has
-    // no fixed port configured), remembering the last port it actually used so a restart tends to land on the same
-    // one. Returns null when `env` has no dependency configured.
-    async ensureDependency(env: EnvRow): Promise<{ url: string } | null> {
+    // The env another env depends on (its BE is the dependency service); null when none is configured.
+    dependencyEnv(env: Pick<EnvRow, "depends_on_env_id">): EnvRow | null {
         if (!env.depends_on_env_id) return null;
         const dep = this.db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.depends_on_env_id) as EnvRow | undefined;
         if (!dep) throw new Error(`dependency env ${env.depends_on_env_id} no longer exists`);
+        return dep;
+    }
+
+    private dependencyTmux(dep: EnvRow): string {
+        return `sh-dep-${dep.id.slice(0, 8)}`;
+    }
+
+    private dependencyLog(dep: EnvRow): string {
+        return join(this.cfg.dataDir, "envs", dep.id, "dependency-be.log");
+    }
+
+    dependencyLogPath(env: EnvRow): string | null {
+        const dep = this.dependencyEnv(env);
+        return dep ? (this.envServiceRow(dep.id)?.log_path ?? this.dependencyLog(dep)) : null;
+    }
+
+    // A row of the dependency, alive or not: listening on its port = running; its pane gone = gone (a host/tmux
+    // restart — today's BE that "doesn't work"); its command exited (log marker) or the start budget spent = failed.
+    private async dependencyState(row: EnvServiceRow): Promise<{ state: "running" | "starting" | "failed" | "gone"; error: string | null }> {
+        if (await portListening(row.port)) return { state: "running", error: null };
+        if (!(await sessionExists(row.tmux))) return { state: "gone", error: `its tmux session ${row.tmux} is gone — the host or tmux server restarted, or it was killed by hand` };
+        const exited = currentRunLog({ kind: DEPENDENCY_KIND, log_path: row.log_path }).map((l) => exitMarker(DEPENDENCY_KIND).exec(l)).find((m) => m);
+        if (exited) return { state: "failed", error: `the dependency's command exited (status ${exited[1]}) without leaving anything listening on port ${row.port}` };
+        if (Date.now() - Date.parse(row.started_at) > DEP_START_TIMEOUT_MS) return { state: "failed", error: `nothing is listening on port ${row.port} after ${Math.round(DEP_START_TIMEOUT_MS / 60_000)} min` };
+        return { state: "starting", error: null };
+    }
+
+    // The dependency as one entry of a task's services list (kind "dependency"), present even when it is not running
+    // so the widget and the agents can offer to start it. Null when the env has no dependency. A row whose pane is
+    // gone reads as stopped; the row itself stays as the memory of the port it ran on (see launchDependencyNow).
+    async dependencyStatus(env: EnvRow, taskId: string): Promise<ServiceStatus | null> {
+        const dep = this.dependencyEnv(env);
+        if (!dep) return null;
+        const row = this.envServiceRow(dep.id);
+        let state: ServiceState = "stopped";
+        let error: string | null = null;
+        if (row) {
+            const s = await this.dependencyState(row);
+            if (s.state !== "gone") {
+                state = s.state;
+                error = s.error;
+            }
+        }
+        return {
+            id: `dependency:${dep.id}`,
+            task_id: taskId,
+            kind: DEPENDENCY_KIND,
+            port: row?.port ?? dep.be_port ?? 0,
+            url: row?.url ?? "",
+            tmux: row?.tmux ?? this.dependencyTmux(dep),
+            command: row?.command ?? dep.be_command ?? "",
+            log_path: row?.log_path ?? this.dependencyLog(dep),
+            started_at: row?.started_at ?? "",
+            stopped_at: null,
+            failed_at: state === "failed" ? now() : null,
+            error,
+            auto_restart: 0,
+            running: state === "running",
+            state,
+            label: `${dep.name} (shared)`,
+            shared: true,
+        };
+    }
+
+    // Sync approximation for prompt text: a row whose pane is alive counts as running (the agent verifies by curl).
+    dependencyLooksRunning(env: EnvRow): boolean {
+        const dep = this.dependencyEnv(env);
+        const row = dep ? this.envServiceRow(dep.id) : undefined;
+        return !!row && sessionExistsSync(row.tmux);
+    }
+
+    // Run (App widget, POST …/services/dependency/start): starts it unless it is up or still starting, and returns at
+    // once — the widget polls the status; ensureDependency below is the blocking form the stages use.
+    async startDependency(env: EnvRow, taskId: string): Promise<ServiceStatus> {
+        const dep = this.dependencyEnv(env);
+        if (!dep) throw new Error(`env "${env.name}" has no dependency configured`);
+        await this.launchDependency(env, dep);
+        return (await this.dependencyStatus(env, taskId))!;
+    }
+
+    // Stop (…/services/dependency/stop): for every task of the env at once — it is one shared instance.
+    async stopDependency(env: EnvRow): Promise<void> {
+        const dep = this.dependencyEnv(env);
+        if (!dep) return;
+        const row = this.envServiceRow(dep.id);
+        if (!row) return;
+        const hadSession = await sessionExists(row.tmux);
+        await killSession(row.tmux);
+        // The listener is ours only when our pane was alive: ensureDependency starts on a port that was free, so
+        // a listener on it with no pane of ours is the user's own instance — left alone.
+        if (hadSession) {
+            await new Promise((r) => setTimeout(r, 1500));
+            try {
+                const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${row.port}`, "-sTCP:LISTEN", "-t"]);
+                for (const pid of stdout.trim().split("\n").filter(Boolean)) process.kill(Number(pid), "SIGTERM");
+            } catch {
+                /* nothing listening */
+            }
+        }
+        // The row stays (its pane is dead, so it reads as stopped): the dependents' worktrees were configured with
+        // its URL at setup time, and the next start must land on the same port.
+    }
+
+    // Ensures `env`'s configured dependency (another env's BE, e.g. Deal needing Core for auth) is up, starting it
+    // once and reusing it for every task afterward — it isn't itself under test, so it never gets its own worktree
+    // or a fresh instance per task. Blocks until it listens (or the start budget is spent). Returns null when `env`
+    // has no dependency configured.
+    async ensureDependency(env: EnvRow): Promise<{ url: string } | null> {
+        const dep = this.dependencyEnv(env);
+        if (!dep) return null;
+        const row = await this.launchDependency(env, dep);
+        if (await portListening(row.port)) return { url: row.url };
+        if (!(await this.waitForPort(row.port, DEP_START_TIMEOUT_MS))) throw new Error(`dependency "${dep.name}" did not come up on port ${row.port} within ${Math.round(DEP_START_TIMEOUT_MS / 60_000)} min — check ${row.log_path}`);
+        return { url: row.url };
+    }
+
+    // One start at a time per dependency: two tasks of the env brought up in the same second otherwise both pass the
+    // "no live row" test and race on the same tmux session and port.
+    private readonly depStarting = new Map<string, Promise<EnvServiceRow>>();
+
+    private launchDependency(env: EnvRow, dep: EnvRow): Promise<EnvServiceRow> {
+        const inflight = this.depStarting.get(dep.id);
+        if (inflight) return inflight;
+        const p = this.launchDependencyNow(env, dep).finally(() => this.depStarting.delete(dep.id));
+        this.depStarting.set(dep.id, p);
+        return p;
+    }
+
+    // The live (running or still starting) row, or a fresh start. Prefers the dependency's own configured port (its
+    // app most likely assumes it), then the port the previous row ran on — the dependents' worktrees have that URL
+    // baked into their config (Deal's stagehand.cfg → https://localhost:7777), so it is kept through stops and host
+    // restarts (2026-09-23: a restart on 19000 left the task's BE calling a dead 7777) — and only then a free one.
+    private async launchDependencyNow(env: EnvRow, dep: EnvRow): Promise<EnvServiceRow> {
         if (!dep.be_command) throw new Error(`dependency env "${dep.name}" has no BE command configured`);
         const existing = this.envServiceRow(dep.id);
-        if (existing && (await sessionExists(existing.tmux)) && (await portListening(existing.port))) return { url: existing.url };
-        if (existing) this.db.prepare(`DELETE FROM env_services WHERE env_id = ?`).run(dep.id);
+        if (existing) {
+            const s = await this.dependencyState(existing);
+            if (s.state === "running" || s.state === "starting") return existing;
+            // Failed or gone: tear the pane down (a crashed command's pane still sleeps there) and start over.
+            await killSession(existing.tmux);
+        }
         let port: number;
         if (dep.be_port && (await portFree(dep.be_port))) port = dep.be_port;
         else if (existing && (await portFree(existing.port))) port = existing.port;
@@ -347,16 +488,17 @@ export class Services {
         const urlTemplate = dep.be_url_template ?? "http://localhost:{{port}}";
         const url = render(urlTemplate, { port: String(port) });
         const command = render(dep.be_command, { port: String(port), url, bePort: "", beUrl: "", worktree: dep.path, taskDir: "" });
-        const logDir = join(this.cfg.dataDir, "envs", dep.id);
-        mkdirSync(logDir, { recursive: true });
-        const logPath = join(logDir, "dependency-be.log");
-        const tmux = `sh-dep-${dep.id.slice(0, 8)}`;
-        const wrapped = `cd ${JSON.stringify(dep.path)}; echo "[stagehand] dependency BE (${dep.name}, for ${env.name}) on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command} ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] dependency BE (${dep.name}) exited" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
+        const logPath = this.dependencyLog(dep);
+        mkdirSync(join(this.cfg.dataDir, "envs", dep.id), { recursive: true });
+        const tmux = this.dependencyTmux(dep);
+        // Same start/exit markers as a task's services (kind DEPENDENCY), so dependencyState reads the log the same way.
+        const kind = DEPENDENCY_KIND.toUpperCase();
+        const wrapped = `cd ${JSON.stringify(dep.path)}; echo "[stagehand] ${kind} on ${url} · ${dep.name}, for ${env.name} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command} ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
         await ensureSession(tmux, dep.path, wrapped, { ...parseEnvVars(dep.env_vars), PORT: String(port), STAGEHAND_PORT: String(port) });
+        this.db.prepare(`DELETE FROM env_services WHERE env_id = ?`).run(dep.id);
         this.db
             .prepare(`INSERT INTO env_services (env_id, port, url, tmux, command, log_path, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
             .run(dep.id, port, url, tmux, command, logPath, now());
-        if (!(await this.waitForPort(port, 180_000))) throw new Error(`dependency "${dep.name}" did not come up on port ${port} within 3 min — check ${logPath}`);
-        return { url };
+        return this.envServiceRow(dep.id)!;
     }
 }
