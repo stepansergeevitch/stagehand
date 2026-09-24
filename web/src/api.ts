@@ -139,6 +139,9 @@ export type ModelOperation = "pr_fix_ci" | "pr_fix_comments" | "chat" | "instruc
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null; typesafeApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
+    // When the model list was last fetched from the Models API (null = the built-in fallback list), and why the last
+    // fetch failed; absent from an older server.
+    modelsFetchedAt?: string | null; modelsError?: string | null;
     stageModels?: Partial<Record<ModelStage, string | null>>;
     // The Code Review stage after Implementation (gstack's checklist); absent from an older server.
     codeReview?: boolean;
@@ -469,6 +472,8 @@ export const api = {
     deleteTask: (id: string, keepWorktree = false, force = false) =>
         fetch(`/api/tasks/${id}?${new URLSearchParams({ ...(keepWorktree ? { worktree: "keep" } : {}), ...(force ? { force: "1" } : {}) })}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     settings: () => fetch("/api/settings").then((r) => j<Settings>(r)),
+    // Fetches the model list from the Models API again; answers like settings().
+    refreshModels: () => post<Settings>("/api/models/refresh"),
     usage: (days: number) => fetch(`/api/usage?days=${days}`).then((r) => j<UsageReport>(r)),
     timing: (days: number) => fetch(`/api/timing?days=${days}`).then((r) => j<TimingReport>(r)),
     taskUsage: (id: string) => fetch(`/api/tasks/${id}/usage`).then((r) => j<TaskUsage>(r)),

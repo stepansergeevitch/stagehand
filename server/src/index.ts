@@ -25,12 +25,7 @@ import { type ResultEvent } from "./claude/runner.js";
 import { desktopNotifier, notify } from "./notify.js";
 import { jevProbe } from "./jev.js";
 
-const MODEL_OPTIONS = [
-    { value: "", label: "Account default" },
-    { value: "fable", label: "Fable 5.1 (claude-fable-5-1)" },
-    { value: "opus", label: "Opus 5 (claude-opus-5)" },
-    { value: "sonnet", label: "Sonnet 5 (claude-sonnet-5)" },
-];
+import { ModelCatalog } from "./claude/models.js";
 import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, COMPONENT_KEY, componentsOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, prTemplateOverridesOf, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type EnvRow, type Stage, type TaskRow } from "./db.js";
 import { matchChromeProfiles, openInProfile, restartChrome } from "./chrome-profiles.js";
 import { Engine } from "./engine.js";
@@ -75,6 +70,9 @@ const configDirsAll = (): ConfigDirRow[] => db.prepare(`SELECT * FROM config_dir
 const configDirById = (id: string): ConfigDirRow | undefined => db.prepare(`SELECT * FROM config_dirs WHERE id = ?`).get(id) as ConfigDirRow | undefined;
 
 // The token never leaves the server; the UI only learns whether one is stored.
+// The model picker's entries come from the Models API, fetched with the first token account and cached for hours.
+const modelCatalog = new ModelCatalog(join(cfg.dataDir, "models.json"), () => accountsAll().find((a) => a.oauth_token)?.oauth_token ?? null);
+
 const publicAccount = (a: AccountRow) => {
     const { oauth_token, ...rest } = a;
     return { ...rest, has_token: !!oauth_token, browsers: chromeBrowsersOf(a), browser_dir: browserDirFor(cfg, a) };
@@ -987,14 +985,18 @@ app.post("/api/server/restart", async (c) => {
 
 const mask = (s: string | null): string | null => (s ? `${s.slice(0, 4)}…${s.slice(-3)}` : null);
 
-app.get("/api/settings", (c) =>
-    c.json({
+const settingsJson = async () => {
+    const models = await modelCatalog.options();
+    const status = modelCatalog.status();
+    return {
         clickupToken: mask(cfg.clickupToken),
         clickupTeamId: cfg.clickupTeamId,
         linearApiKey: mask(cfg.linearApiKey),
         typesafeApiKey: mask(cfg.typesafeApiKey),
         defaultModel: cfg.defaultModel,
-        models: MODEL_OPTIONS,
+        models,
+        modelsFetchedAt: status.fetchedAt,
+        modelsError: status.error,
         stageModels: cfg.stageModels,
         codeReview: cfg.codeReview,
         stageRerunModels: cfg.stageRerunModels,
@@ -1002,8 +1004,16 @@ app.get("/api/settings", (c) =>
         notifications: { ...cfg.notifications, ntfyToken: mask(cfg.notifications.ntfyToken) },
         desktopNotifier: desktopNotifier(),
         prompter: cfg.prompter,
-    }),
-);
+    };
+};
+
+app.get("/api/settings", async (c) => c.json(await settingsJson()));
+
+// Fetches the model list again now (the picker is otherwise refreshed hours apart); answers like GET /api/settings.
+app.post("/api/models/refresh", async (c) => {
+    await modelCatalog.refresh(true);
+    return c.json(await settingsJson());
+});
 
 // Sends one test push through every configured channel.
 app.post("/api/notifications/test", async (c) =>
