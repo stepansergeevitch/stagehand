@@ -20,6 +20,9 @@ export default defineConfig({
         host: "127.0.0.1",
         port: webPort,
         strictPort: true,
+        // The UI also answers as https://stagehand.local:5173 (an /etc/hosts alias of 127.0.0.1); Vite refuses any
+        // other Host header than localhost / the bound address unless it is listed here.
+        allowedHosts: ["stagehand.local"],
         ...(https ? { https } : {}),
         proxy: {
             "/api": { target: `http://localhost:${apiPort}`, changeOrigin: true },

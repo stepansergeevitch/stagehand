@@ -54,10 +54,18 @@ npm install
 npm run dev          # API on http://127.0.0.1:4747, UI on http://localhost:5173
 ```
 
-Or, as in daily use, keep the server in a tmux session so it survives terminal closes:
+Or, as in daily use, keep both in tmux so they survive terminal closes — after a reboot nothing starts by itself:
 
 ```bash
-tmux new-session -d -s stagehand-server -c "$PWD/server" 'npx tsx src/index.ts 2>&1 | tee -a ~/.stagehand/server.log'
+scripts/up.sh            # tmux stagehand-server (scripts/serve.sh, API 4747, public 4748) + stagehand-web (Vite 5173, TLS from ~/.stagehand/tls); waits for /api/health
+scripts/up.sh status     # what runs where (also says whether Docker Desktop is up — the task envs need it, Stagehand does not)
+scripts/up.sh down       # stop both (the server gets its stop file, so serve.sh does not start it again)
+```
+
+By hand, the same thing is:
+
+```bash
+tmux new-session -d -s stagehand-server -c "$PWD" 'scripts/serve.sh'
 tmux new-session -d -s stagehand-web -c "$PWD/web" 'npx vite --port 5173'
 ```
 
