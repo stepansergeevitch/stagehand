@@ -1,3 +1,4 @@
+    curl -skf -m 3 -o /dev/null "https://stagehand.local/" 2>/dev/null && echo "ui: https://stagehand.local (up — pf 443→, scripts/stagehand-local.sh)"
 #!/bin/bash
 # Starts the live Stagehand app after a reboot (or whenever its tmux sessions are gone), in one go:
 #   - tmux stagehand-server → scripts/serve.sh (the restart loop around `npx tsx src/index.ts`, API on 4747, public 4748)
