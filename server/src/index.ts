@@ -457,20 +457,27 @@ app.post("/api/accounts/:id/probe-chrome", async (c) => {
     const keep = acc.chrome_device_id && browsers.some((b) => b.deviceId === acc.chrome_device_id) ? acc.chrome_device_id : browsers.length === 1 ? browsers[0]!.deviceId : null;
     const chosen = browsers.find((b) => b.deviceId === keep);
     // A failed probe keeps the last known browser list and choice: the profile directory in it is what a later
-    // "Relaunch Chrome for QA" / probe restart needs to open the right profile window again.
+    // "Relaunch Chrome for QA" / probe restart needs to open the right profile window again. So does a probe that
+    // answered but listed no browser — the bridge is up while the extension in the QA profile has not connected yet
+    // (Chrome relaunched after a reboot, 2026-09-24): storing its empty list wiped the mapping, and every headless QA
+    // run after that met the login page ("profile is not resolved").
+    const fresh = r.ok && browsers.length > 0;
     db.prepare(`UPDATE accounts SET chrome_capable = ?, chrome_browsers = ?, chrome_device_id = ?, chrome_browser_name = ? WHERE id = ?`).run(
         r.ok ? 1 : 0,
-        r.ok ? JSON.stringify(browsers) : acc.chrome_browsers,
-        r.ok ? (chosen?.deviceId ?? null) : acc.chrome_device_id,
-        r.ok ? (chosen ? chromeBrowserLabel(chosen) : null) : acc.chrome_browser_name,
+        fresh ? JSON.stringify(browsers) : acc.chrome_browsers,
+        fresh ? (chosen?.deviceId ?? null) : acc.chrome_device_id,
+        fresh ? (chosen ? chromeBrowserLabel(chosen) : null) : acc.chrome_browser_name,
         acc.id,
     );
     emitAccount(acc.id);
+    const kept = chromeBrowsersOf(acc).find((b) => b.deviceId === acc.chrome_device_id);
     return c.json({
         ok: r.ok,
-        detail: r.ok
-            ? `Chrome bridge answered as ${acc.email ?? acc.name}${restarted ? " (needed a Chrome restart first)" : ""}; ${browsers.length} connected profile(s): ${browsers.map((b) => `${chromeBrowserLabel(b)}${b.account ? ` (${b.account})` : ""}`).join(", ") || "none listed"}`
-            : `no Chrome bridge under ${acc.email ?? acc.name} even after restarting Chrome — install the Claude extension in a Chrome profile and sign it into this claude.ai account, then probe again`,
+        detail: !r.ok
+            ? `no Chrome bridge under ${acc.email ?? acc.name} even after restarting Chrome — install the Claude extension in a Chrome profile and sign it into this claude.ai account, then probe again`
+            : fresh
+              ? `Chrome bridge answered as ${acc.email ?? acc.name}${restarted ? " (needed a Chrome restart first)" : ""}; ${browsers.length} connected profile(s): ${browsers.map((b) => `${chromeBrowserLabel(b)}${b.account ? ` (${b.account})` : ""}`).join(", ")}`
+              : `Chrome bridge answered as ${acc.email ?? acc.name}${restarted ? " (needed a Chrome restart first)" : ""}, but no browser is connected yet${kept ? ` — kept the last known profile "${chromeBrowserLabel(kept)}"` : ""}; open the QA profile in Chrome, wait for the extension, then probe again`,
         account: publicAccount(accountById(acc.id)!),
     });
 });
