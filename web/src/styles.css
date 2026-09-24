@@ -593,6 +593,11 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .components { display: grid; gap: 6px; }
 .component-row { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 6px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
 .component-row textarea { grid-column: 1 / -1; min-height: 56px; }
+/* env page: code review checklist */
+.review-pass { display: grid; gap: 4px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.review-pass > b { font-size: 13px; }
+.review-cat { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; font-size: 13px; }
+.review-cat-detail { flex-basis: 100%; padding-left: 22px; font-size: 12px; color: var(--ink-3); }
 /* task list: multi-select for bulk delete */
 .row { grid-template-columns: 14px 18px 1fr auto auto; }
 .row .status { grid-column: 3; }

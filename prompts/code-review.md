@@ -14,7 +14,7 @@ For every repository of this task: `git fetch origin {{baseBranch}} --quiet` (th
 
 {{gstackChecklist}}
 
-Two passes. **Pass 1, CRITICAL:** SQL & Data Safety, Race Conditions & Concurrency, LLM Output Trust Boundary, Shell Injection, Enum & Value Completeness. **Pass 2, INFORMATIONAL:** Async/Sync Mixing, Column/Field Name Safety, Dead Code, LLM Prompt Issues, Completeness Gaps, Time Window Safety, Type Coercion at Boundaries, View/Frontend, Distribution & CI/CD. Respect the checklist's "DO NOT flag" list. **Enum & Value Completeness requires reading code outside the diff:** when the diff adds an enum value, status, tier or type constant, grep for the places that handle sibling values and read them.
+{{reviewCategories}}
 
 ## Step 3 — verify before you report
 

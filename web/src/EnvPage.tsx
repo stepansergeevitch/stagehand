@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, componentsOf, type Account, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules } from "./api";
+import { accountOrderOf, accountUsableWith, api, componentsOf, reviewChecklistOf, type Account, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -84,6 +84,16 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     const [comps, setComps] = useState<EnvComponent[]>(() => componentsOf(env));
     const [keepServices, setKeepServices] = useState(env.keep_services === 1);
     const [qaBrowser, setQaBrowser] = useState<"chrome" | "gstack">(env.qa_browser ?? "chrome");
+    // ---- code review: which of gstack's categories run here, points added, extra do-not-flag rules
+    const [cats, setCats] = useState<ReviewCategoryDef[]>([]);
+    useEffect(() => {
+        void api.reviewCategories().then(setCats).catch((e: Error) => onError(e.message));
+    }, [onError]);
+    const [rc, setRc] = useState(() => reviewChecklistOf(env));
+    const [doNotFlagText, setDoNotFlagText] = useState(() => reviewChecklistOf(env).doNotFlag.join("\n"));
+    const toggleCat = (key: string) => setRc((r) => ({ ...r, disabled: r.disabled.includes(key) ? r.disabled.filter((k) => k !== key) : [...r.disabled, key] }));
+    const setPoint = (i: number, patch: Partial<ReviewPoint>) => setRc((r) => ({ ...r, custom: r.custom.map((p, j) => (j === i ? { ...p, ...patch } : p)) }));
+    const rcDefault = rc.disabled.length === 0 && rc.custom.length === 0 && doNotFlagText.trim() === "";
     const setComp = (i: number, patch: Partial<EnvComponent>) => setComps((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
     const set =<T extends object>(setter: React.Dispatch<React.SetStateAction<T>>) => (k: keyof T) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
         setter((prev) => ({ ...prev, [k]: e.target.type === "checkbox" ? (e.target as HTMLInputElement).checked : e.target.value }));
@@ -245,6 +255,43 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                     <button className="tiny" onClick={() => setComps((cs) => [...cs, { key: "", label: "", command: "", autoStart: false }])}>+ component</button>
                 </div>
                 <label>Seeding hints for QA (how agents create test data here: local DB connection and key tables, API auth, seed scripts; given to the Design and QA prompts verbatim) <textarea value={s.qaSeedHints} onChange={ss("qaSeedHints")} className="tall" placeholder={"Local Postgres: PGPASSWORD=… psql -h localhost -p 5433 -U … -d …\nDeals live in deal, pro formas in pro_forma; sources in pro_forma_source (source_type_id …)\nPrefer SQL for numeric inputs; the pro forma table UI is slow to edit."} /></label>
+            </Section>
+
+            <Section title="Code review" hint="What the Code Review stage checks after Implementation: gstack's pre-landing checklist, tuned for this environment. Switch off categories that do not apply here, add the points your team reviews for (each becomes a finding category the reviewer reports under), and list what the reviewer must not flag. Every point still follows the same method: a quoted motivating line, confidence 1–10, mechanical fixes committed, judgment calls left open." saving={saving === "review"} onSave={() => save("review", {
+                reviewChecklist: rcDefault ? null : { disabled: rc.disabled, custom: rc.custom.filter((p) => p.title.trim()).map((p) => ({ ...p, title: p.title.trim(), detail: p.detail.trim() })), doNotFlag: doNotFlagText.split("\n").map((l) => l.trim()).filter(Boolean) },
+            })}>
+                {(["critical", "informational"] as ReviewPass[]).map((pass) => (
+                    <div className="review-pass" key={pass}>
+                        <b>{pass === "critical" ? "Pass 1 — critical" : "Pass 2 — informational"}</b>
+                        <span className="field-hint">{pass === "critical" ? "Run first; findings lean to \"open\" for you to judge." : "Run second; mechanical findings are fixed and committed by the reviewer."}</span>
+                        {cats.filter((c) => c.pass === pass).map((c) => (
+                            <label className="inline review-cat" key={c.key} title={c.detail}>
+                                <input type="checkbox" checked={!rc.disabled.includes(c.key)} onChange={() => toggleCat(c.key)} /> {c.title}
+                                <span className="review-cat-detail">{c.detail}</span>
+                            </label>
+                        ))}
+                        {cats.length === 0 && <span className="field-hint">loading categories…</span>}
+                    </div>
+                ))}
+                <div className="components">
+                    <b>Points added for this environment</b>
+                    <span className="field-hint">Your own review rules — a project convention, an architecture boundary, a recurring bug class. The title is the category the reviewer reports under; the detail tells it what to look for and where.</span>
+                    {rc.custom.map((p, i) => (
+                        <div className="component-row" key={p.key || i}>
+                            <input value={p.title} placeholder="title — e.g. UnitOfWork usage" onChange={(e) => setPoint(i, { title: e.target.value })} />
+                            <select value={p.pass} onChange={(e) => setPoint(i, { pass: e.target.value as ReviewPass })}>
+                                <option value="critical">Pass 1 — critical</option>
+                                <option value="informational">Pass 2 — informational</option>
+                            </select>
+                            <span />
+                            <button className="tiny danger" onClick={() => setRc((r) => ({ ...r, custom: r.custom.filter((_, j) => j !== i) }))}>remove</button>
+                            <textarea value={p.detail} placeholder="what to look for — e.g. every Repository and Service is constructed with uow=, never db=; a db= call site is a finding even outside the diff when the diff touches that file" onChange={(e) => setPoint(i, { detail: e.target.value })} />
+                        </div>
+                    ))}
+                    <button className="tiny" onClick={() => setRc((r) => ({ ...r, custom: [...r.custom, { key: `p${Date.now().toString(36)}`, title: "", pass: "informational", detail: "" }] }))}>+ point</button>
+                </div>
+                <label>Do not flag (one rule per line, added to the checklist's own list) <textarea value={doNotFlagText} onChange={(e) => setDoNotFlagText(e.target.value)} placeholder={"Missing docstrings on private helpers\nTest files longer than 300 lines"} /></label>
+                {rcDefault && <span className="field-hint">Default: gstack's full checklist, nothing added.</span>}
             </Section>
 
         </div>

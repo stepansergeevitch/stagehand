@@ -60,6 +60,8 @@ export interface Env {
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
     rules: string | null; cleanup_command: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
+    // JSON ReviewChecklist: gstack categories switched off, points added, extra do-not-flag rules for Code Review; null = the full checklist.
+    review_checklist?: string | null;
     // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
     pr_draft?: number;
     // Another env whose BE this one needs reachable to work (started once, shared across every task of this env).
@@ -172,6 +174,23 @@ export interface TicketAttachment { name: string; url: string; mime: string | nu
 export type ServiceState = "stopped" | "starting" | "running" | "failed";
 // An optional component of an env (envs.components): an extra per-task service beside the BE/FE, without a port.
 export interface EnvComponent { key: string; label: string; command: string; autoStart: boolean }
+// The Code Review checklist of an env (envs.review_checklist), mirrored from server/src/review-checklist.ts.
+export type ReviewPass = "critical" | "informational";
+export interface ReviewCategoryDef { key: string; title: string; pass: ReviewPass; detail: string }
+export interface ReviewPoint { key: string; title: string; pass: ReviewPass; detail: string }
+export interface ReviewChecklist { disabled: string[]; custom: ReviewPoint[]; doNotFlag: string[] }
+export const reviewChecklistOf = (env: Pick<Env, "review_checklist"> | undefined): ReviewChecklist => {
+    try {
+        const v = env?.review_checklist ? (JSON.parse(env.review_checklist) as Partial<ReviewChecklist>) : null;
+        return {
+            disabled: Array.isArray(v?.disabled) ? v.disabled.filter((k): k is string => typeof k === "string") : [],
+            custom: Array.isArray(v?.custom) ? v.custom.filter((p): p is ReviewPoint => !!p && typeof p.title === "string").map((p) => ({ key: p.key ?? "", title: p.title, pass: p.pass === "critical" ? "critical" : "informational", detail: p.detail ?? "" })) : [],
+            doNotFlag: Array.isArray(v?.doNotFlag) ? v.doNotFlag.filter((x): x is string => typeof x === "string") : [],
+        };
+    } catch {
+        return { disabled: [], custom: [], doNotFlag: [] };
+    }
+};
 export const componentsOf = (env: Pick<Env, "components"> | undefined): EnvComponent[] => {
     try {
         const v: unknown = env?.components ? JSON.parse(env.components) : [];
@@ -448,11 +467,13 @@ export const api = {
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
             qaBrowser?: "chrome" | "gstack";
+            reviewChecklist?: ReviewChecklist | null;
             cleanupCommand?: string | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
     envRules: (id: string) => fetch(`/api/envs/${id}/rules`).then((r) => j<EnvRules>(r)),
+    reviewCategories: () => fetch("/api/review-categories").then((r) => j<ReviewCategoryDef[]>(r)),
     envDependency: (id: string) => fetch(`/api/envs/${id}/dependency`).then((r) => j<EnvDependencyStatus>(r)),
     readiness: () => fetch("/api/readiness").then((r) => j<Readiness[]>(r)),
     refreshLimits: (id: string) => post<{ ok: boolean; detail: string }>(`/api/accounts/${id}/refresh-limits`),

@@ -161,6 +161,9 @@ export interface EnvRow {
     keep_services: number;
     // Which browser the QA runner drives: "chrome" = the account's Chrome profile via claude-in-chrome; "gstack" = gstack's headless Chromium daemon (cookies imported from that profile).
     qa_browser: string;
+    // JSON ReviewChecklist (review-checklist.ts): built-in gstack categories switched off, points added, extra
+    // do-not-flag rules for the Code Review stage. Null = gstack's full checklist.
+    review_checklist: string | null;
     // JSON {"<repo dir or .>": "<template path relative to that repo>"} — per-repository PR template overrides; a repo not listed is auto-detected.
     pr_templates: string | null;
     // Open every PR this env creates as a GitHub draft (0/1). The human marks it ready for review themselves.
@@ -775,6 +778,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.components", `ALTER TABLE envs ADD COLUMN components TEXT`],
     ["envs.keep_services", `ALTER TABLE envs ADD COLUMN keep_services INTEGER NOT NULL DEFAULT 0`],
     ["envs.qa_browser", `ALTER TABLE envs ADD COLUMN qa_browser TEXT NOT NULL DEFAULT 'chrome'`],
+    ["envs.review_checklist", `ALTER TABLE envs ADD COLUMN review_checklist TEXT`],
     ["window_calibration.anchor_u", `ALTER TABLE window_calibration ADD COLUMN anchor_u REAL`],
     ["window_calibration.anchor_resets", `ALTER TABLE window_calibration ADD COLUMN anchor_resets INTEGER`],
     ["window_calibration.anchor_cost", `ALTER TABLE window_calibration ADD COLUMN anchor_cost REAL NOT NULL DEFAULT 0`],

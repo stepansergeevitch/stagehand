@@ -19,6 +19,7 @@ const execFileAsync = promisify(execFile);
 import { DEPENDENCY_KIND, type Services } from "./services.js";
 import type { ServiceKind } from "./db.js";
 import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderSharedFiles, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
+import { describeReviewChecklist } from "./review-checklist.js";
 import { killSession, taskSessionName } from "./tmux.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { applyApprovedStepFixes } from "./qa-fixes.js";
@@ -2882,11 +2883,16 @@ export class Engine extends EventEmitter {
             maxTurns: String(def.maxTurns ?? 100),
             outputFile: def.outputFile ?? "",
             shardNote: "",
-            gstackChecklist: ((): string => {
+            ...((): Record<string, string> => {
                 const p = join(this.cfg.gstackDir, "review", "checklist.md");
-                return existsSync(p)
-                    ? `Read the checklist at \`${p}\` first (gstack's pre-landing review checklist): its categories, its "DO NOT flag" list and its Fix-First heuristic bind this review. The categories in short:`
-                    : `The gstack checklist is not installed (expected at ${p}; \`git clone --depth 1 https://github.com/garrytan/gstack.git ${this.cfg.gstackDir}\`). Apply these categories from what you know:`;
+                const installed = existsSync(p);
+                return {
+                    gstackChecklist: installed
+                        ? `Read the checklist at \`${p}\` first (gstack's pre-landing review checklist): its categories, its "DO NOT flag" list and its Fix-First heuristic bind this review, with the per-environment configuration below.`
+                        : `The gstack checklist is not installed (expected at ${p}; \`git clone --depth 1 https://github.com/garrytan/gstack.git ${this.cfg.gstackDir}\`). Apply the categories below from what you know.`,
+                    // Which categories run here: envs.review_checklist (built-ins switched off, points added, extra do-not-flag rules).
+                    reviewCategories: describeReviewChecklist(env, installed),
+                };
             })(),
             seedHints: env.qa_seed_hints?.trim() ? env.qa_seed_hints.trim() : "(none configured for this environment — inspect the repo's configs/ and models to find the local database and API)",
             seedReport: "(no shell seeds were run)",

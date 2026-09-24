@@ -17,6 +17,7 @@ import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
 import { mimeOf, renderSharedFiles, sharedFileName } from "./tickets.js";
 import type { SharedFile } from "./db.js";
+import { REVIEW_CATEGORIES, reviewChecklistJson } from "./review-checklist.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
 import { recordUsage, taskUsage, usageReport, windowShares } from "./usage.js";
@@ -482,6 +483,8 @@ const badCheckouts = async (env: { path: string; base_branch: string; repos: str
 };
 
 app.get("/api/envs", (c) => c.json(envsAll()));
+// gstack's built-in review categories, for the env page's Code review section (keys are what envs.review_checklist stores).
+app.get("/api/review-categories", (c) => c.json(REVIEW_CATEGORIES));
 
 // Deleting an env is refused while it has tasks (delete those first — each delete offers worktree cleanup).
 app.delete("/api/envs/:id", (c) => {
@@ -565,6 +568,11 @@ const ComponentList = z.array(
         autoStart: z.boolean().optional(),
     }),
 );
+const ReviewChecklistBody = z.object({
+    disabled: z.array(z.string()).optional(),
+    custom: z.array(z.object({ key: z.string().optional(), title: z.string().min(1), pass: z.enum(["critical", "informational"]).optional(), detail: z.string().optional() })).optional(),
+    doNotFlag: z.array(z.string()).optional(),
+});
 const componentsJson = (list: z.infer<typeof ComponentList> | undefined): string | null =>
     list && list.length ? JSON.stringify(list.map((c) => ({ key: c.key, label: c.label?.trim() || c.key, command: c.command, autoStart: c.autoStart === true }))) : null;
 
@@ -668,6 +676,8 @@ app.patch("/api/envs/:id", async (c) => {
             components: ComponentList.optional(),
             keepServices: z.boolean().optional(),
             qaBrowser: z.enum(["chrome", "gstack"]).optional(),
+            // The Code Review checklist for this env (null = gstack's full checklist).
+            reviewChecklist: ReviewChecklistBody.nullable().optional(),
             // Per-repository PR template overrides: {"backend": ".github/pull_request_template.md"}; null/"" removes one.
             prTemplates: z.record(z.string().nullable()).optional(),
             prDraft: z.boolean().optional(),
@@ -734,6 +744,16 @@ app.patch("/api/envs/:id", async (c) => {
         env.id,
     );
     if (body.qaBrowser !== undefined) db.prepare(`UPDATE envs SET qa_browser = ? WHERE id = ?`).run(body.qaBrowser, env.id);
+    if (body.reviewChecklist !== undefined) {
+        const json = reviewChecklistJson(
+            body.reviewChecklist && {
+                disabled: body.reviewChecklist.disabled ?? [],
+                custom: (body.reviewChecklist.custom ?? []).map((p) => ({ key: p.key ?? "", title: p.title, pass: p.pass ?? "informational", detail: p.detail ?? "" })),
+                doNotFlag: body.reviewChecklist.doNotFlag ?? [],
+            },
+        );
+        db.prepare(`UPDATE envs SET review_checklist = ? WHERE id = ?`).run(json, env.id);
+    }
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(env.id));
 });
 
