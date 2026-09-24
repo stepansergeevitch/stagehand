@@ -1,4 +1,3 @@
-    curl -skf -m 3 -o /dev/null "https://stagehand.local/" 2>/dev/null && echo "ui: https://stagehand.local (up — pf 443→, scripts/stagehand-local.sh)"
 #!/bin/bash
 # Starts the live Stagehand app after a reboot (or whenever its tmux sessions are gone), in one go:
 #   - tmux stagehand-server → scripts/serve.sh (the restart loop around `npx tsx src/index.ts`, API on 4747, public 4748)
@@ -29,6 +28,8 @@ status() {
     done
     curl -sf "http://127.0.0.1:$API_PORT/api/health" >/dev/null && echo "api: http://127.0.0.1:$API_PORT (up @ $(git -C "$REPO" rev-parse --short HEAD))" || echo "api: down"
     curl -skf -o /dev/null "https://localhost:$WEB_PORT/" && echo "ui: https://localhost:$WEB_PORT (up)" || echo "ui: down"
+    # https://stagehand.local with no port: the pf redirect 443 → $WEB_PORT that scripts/stagehand-local.sh installs.
+    curl -skf -m 3 -o /dev/null "https://stagehand.local/" 2>/dev/null && echo "ui: https://stagehand.local (up, pf 443 → $WEB_PORT)" || echo "ui: https://stagehand.local down (sudo scripts/stagehand-local.sh)"
     docker info >/dev/null 2>&1 && echo "docker: up" || echo "docker: down (start Docker Desktop by hand for DualEntry / Core envs)"
 }
 
