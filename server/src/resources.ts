@@ -93,7 +93,8 @@ export interface ResourcePolicies {
     maxSessionMb: number;
     // How many tasks may hold a BE/FE at once; the longest-parked ones beyond it are stopped.
     maxDevServerTasks: number;
-    // Below this much available RAM, or above this much swap, grace periods are zero and idle terminals go too.
+    // Below this much available RAM, or above this much swap, grace periods shrink to PRESSURE_GRACE_MS after the last
+    // sign of use and idle terminals go too.
     minAvailableMb: number;
     maxSwapMb: number;
 }
@@ -115,6 +116,9 @@ const CLONES_ROOT = join(process.env["HOME"] ?? "", ".stagehand", "chrome-clones
 const MIN = 60_000;
 const HOUR = 3_600_000;
 const WORKTREE_SAMPLE_MS = 10 * MIN;
+// Under memory pressure a grace period is cut to this, counted from the last sign of use — never to zero: a BE the
+// human had just started from the App widget used to be stopped 20 s later, every time (INV-136, 2026-09-24).
+const PRESSURE_GRACE_MS = 10 * MIN;
 const EVENTS_KEPT = 500;
 
 const inRange = (port: number): boolean => Object.values(PORT_RANGE).some(([lo, hi]) => port >= lo && port <= hi) || (port >= 19000 && port <= 19999) || (port >= 9333 && port <= 9399);
@@ -246,7 +250,8 @@ export class Resources {
                     procs: t.procs,
                     top: t.top,
                     startedAt: row.started_at,
-                    idleMs: task ? Math.max(0, t0 - Math.max(Date.parse(task.updated_at), Date.parse(row.started_at))) : null,
+                    // The pane's last output counts as use: a dev server logs every request the human makes in the app.
+                    idleMs: task ? Math.max(0, t0 - Math.max(Date.parse(task.updated_at), Date.parse(row.started_at), t.session?.activityAt ?? 0)) : null,
                     diskMb: null,
                 },
                 t.pids,
@@ -443,9 +448,9 @@ export class Resources {
     judge(r: Resource, tasks: Map<string, TaskRow>, envs: Map<string, EnvRow>, pressure: { pressure: "ok" | "warn" | "critical" }, p: ResourcePolicies): ResourcePolicy {
         const keep = (reason: string): ResourcePolicy => ({ verdict: "keep", reason, dueAt: null });
         const stopAfter = (reason: string, sinceMs: number, graceMs: number): ResourcePolicy => {
-            const grace = pressure.pressure === "critical" ? 0 : graceMs;
+            const grace = pressure.pressure === "critical" ? Math.min(graceMs, PRESSURE_GRACE_MS) : graceMs;
             const due = sinceMs + grace;
-            return { verdict: "stop", reason: grace === 0 && graceMs > 0 ? `${reason} — memory pressure, no grace` : reason, dueAt: new Date(due).toISOString() };
+            return { verdict: "stop", reason: grace < graceMs ? `${reason} — memory pressure, grace cut to ${Math.round(grace / MIN)} min` : reason, dueAt: new Date(due).toISOString() };
         };
         if (r.pinned) return keep(r.kind === "service" ? "started by you — stays until you stop it or the task is cleaned up" : "pinned by you");
         if (!p.enabled) return keep("automatic cleanup is off");
@@ -460,8 +465,10 @@ export class Resources {
             case "service": {
                 if (!task) return stopAfter("its task no longer exists", Date.now(), 0);
                 if (BUSY.has(task.status)) return keep(BROWSER_STAGES.has(task.stage) ? "task runs a browser stage" : "task is running");
-                if (["done", "stopped", "failed"].includes(task.status) || AFTER_QA_STAGES.has(task.stage)) return stopAfter(`task is ${task.status === "done" ? "done" : `${task.status} at ${task.stage.replace(/_/g, " ")}`} — no QA left`, lastTouch, p.doneServiceMinutes * MIN);
-                return stopAfter(`task parked (${task.status.replace(/_/g, " ")} at ${task.stage.replace(/_/g, " ")}), idle ${Math.round((r.idleMs ?? 0) / MIN)} min`, lastTouch, p.idleServiceMinutes * MIN);
+                // Counted from the last use (task update, start, or the pane's last output), not only from the start.
+                const lastUse = r.idleMs === null ? lastTouch : Math.max(lastTouch, Date.now() - r.idleMs);
+                if (["done", "stopped", "failed"].includes(task.status) || AFTER_QA_STAGES.has(task.stage)) return stopAfter(`task is ${task.status === "done" ? "done" : `${task.status} at ${task.stage.replace(/_/g, " ")}`} — no QA left`, lastUse, p.doneServiceMinutes * MIN);
+                return stopAfter(`task parked (${task.status.replace(/_/g, " ")} at ${task.stage.replace(/_/g, " ")}), idle ${Math.round((r.idleMs ?? 0) / MIN)} min`, lastUse, p.idleServiceMinutes * MIN);
             }
             case "dependency": {
                 const envId = r.owner.id ?? "";

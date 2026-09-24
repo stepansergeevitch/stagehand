@@ -30,14 +30,29 @@ describe("resource policy", () => {
         expect(res.judge(base({}), tasks(running), envs, ok, DEFAULT_POLICIES)).toEqual({ verdict: "keep", reason: "task runs a browser stage", dueAt: null });
     });
 
-    it("past QA (PR stages, done) the grace is the short one; pressure removes it", () => {
+    it("past QA (PR stages, done) the grace is the short one; pressure cuts a long grace to 10 min, never to zero", () => {
         const pr = task({ stage: "pr_waiting", status: "idle", updated_at: new Date(Date.now() - 2 * 60_000).toISOString() });
         const v = res.judge(base({}), tasks(pr), envs, ok, DEFAULT_POLICIES);
         expect(v.verdict).toBe("stop");
         expect(Date.parse(v.dueAt!)).toBeGreaterThan(Date.now()); // 5 min grace, 2 min in
-        const under = res.judge(base({}), tasks(pr), envs, critical, DEFAULT_POLICIES);
+        // The 5 min grace is already under the pressure cap: unchanged.
+        expect(res.judge(base({}), tasks(pr), envs, critical, DEFAULT_POLICIES)).toEqual(v);
+        // A parked task idle 45 min: the 30 min grace is over anyway; under pressure it is 10 min, also over.
+        const under = res.judge(base({}), tasks(task({})), envs, critical, DEFAULT_POLICIES);
         expect(Date.parse(under.dueAt!)).toBeLessThanOrEqual(Date.now());
-        expect(under.reason).toContain("memory pressure");
+        expect(under.reason).toContain("memory pressure, grace cut to 10 min");
+    });
+
+    it("a dev server the human just started on a parked task survives memory pressure for the cut grace", () => {
+        // Started 1 min ago, in use 30 s ago (its pane logged a request); the task row itself is 45 min old.
+        const fresh = base({ startedAt: new Date(Date.now() - 60_000).toISOString(), ageMs: 60_000, idleMs: 30_000 });
+        const v = res.judge(fresh, tasks(task({})), envs, critical, DEFAULT_POLICIES);
+        expect(v.verdict).toBe("stop");
+        expect(v.reason).toContain("idle 1 min");
+        expect(Date.parse(v.dueAt!)).toBeGreaterThan(Date.now() + 9 * 60_000);
+        // Use alone keeps it: an old start whose pane was active 1 min ago is due 29 min from now, not 30 min after the start.
+        const used = res.judge(base({ idleMs: 60_000 }), tasks(task({})), envs, ok, DEFAULT_POLICIES);
+        expect(Date.parse(used.dueAt!)).toBeGreaterThan(Date.now() + 28 * 60_000);
     });
 
     it("a fresh start settles even under pressure; after the settle period the parked rule applies", () => {

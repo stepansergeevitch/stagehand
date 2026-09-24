@@ -296,6 +296,9 @@ export class Services {
     async stop(taskId: string, kind: ServiceKind): Promise<void> {
         const row = this.get(taskId, kind);
         if (!row) return;
+        // Close the row before the pane goes: the watch probes every 15 s and a pane that is gone while its row is
+        // still open reads as "vanished" (a stray notice in Chat, and a needless auto-restart for a running task).
+        this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), row.id);
         const hadSession = await sessionExists(row.tmux);
         await killSession(row.tmux);
         // Only sweep leftover listeners when this service actually owned the port: a process we started, on a port
@@ -309,7 +312,6 @@ export class Services {
                 /* nothing listening */
             }
         }
-        this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), row.id);
     }
 
     async stopAll(taskId: string): Promise<void> {
