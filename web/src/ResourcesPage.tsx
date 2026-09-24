@@ -72,12 +72,13 @@ const Policies = ({ value, onSaved, onError }: { value: ResourcePolicies; onSave
     return (
         <section className="card env-section">
             <h2>Policies</h2>
-            <p className="field-hint">What the reaper does on its own, every 20 s. A pinned resource is never touched. Under memory pressure (swap or available RAM past the thresholds) every grace period becomes zero and idle terminals go after 30 min.</p>
+            <p className="field-hint">What the reaper does on its own, every 20 s. A pinned resource is never touched; a BE/FE you start yourself is pinned until you stop it. Under memory pressure (swap or available RAM past the thresholds) every grace period becomes zero and idle terminals go after 30 min.</p>
             <div className="env-fields">
                 <label className="inline"><input type="checkbox" checked={p.enabled} onChange={(e) => setP((x) => ({ ...x, enabled: e.target.checked }))} /> Automatic cleanup on (off = the page only shows and lets you stop by hand)</label>
                 <div className="two">
                     <label>Parked task keeps its BE/FE for (min) <input type="number" min={0} value={p.idleServiceMinutes} onChange={num("idleServiceMinutes")} /></label>
                     <label>Task past QA (PR stages, done, stopped) keeps them for (min) <input type="number" min={0} value={p.doneServiceMinutes} onChange={num("doneServiceMinutes")} /></label>
+                    <label>A fresh start settles for (min) — never stopped before that, whatever the pressure <input type="number" min={0} value={p.settleMinutes} onChange={num("settleMinutes")} /></label>
                     <label>Tasks that may hold dev servers at once <input type="number" min={1} value={p.maxDevServerTasks} onChange={num("maxDevServerTasks")} /></label>
                     <label>Task terminal idle limit (h) <input type="number" min={0} value={p.terminalIdleHours} onChange={num("terminalIdleHours")} /></label>
                     <label>Session idle limit (h) <input type="number" min={0} value={p.sessionIdleHours} onChange={num("sessionIdleHours")} /></label>

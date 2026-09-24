@@ -150,7 +150,7 @@ export interface Resource {
     policy: { verdict: "keep" | "stop"; reason: string; dueAt: string | null };
 }
 export interface ResourcePolicies {
-    enabled: boolean; idleServiceMinutes: number; doneServiceMinutes: number; terminalIdleHours: number; sessionIdleHours: number; loginMinutes: number; orphanMinutes: number; maxDevServerTasks: number; minAvailableMb: number; maxSwapMb: number;
+    enabled: boolean; idleServiceMinutes: number; doneServiceMinutes: number; settleMinutes: number; terminalIdleHours: number; sessionIdleHours: number; loginMinutes: number; orphanMinutes: number; maxDevServerTasks: number; minAvailableMb: number; maxSwapMb: number;
 }
 export interface ResourceEvent { id: number; at: string; resource_id: string; kind: string; label: string; task_id: string | null; action: string; reason: string; rss_mb: number | null }
 export interface ResourceSnapshot {

@@ -1121,6 +1121,7 @@ app.patch("/api/settings", async (c) => {
                     enabled: z.boolean().optional(),
                     idleServiceMinutes: z.number().min(0).optional(),
                     doneServiceMinutes: z.number().min(0).optional(),
+                    settleMinutes: z.number().min(0).optional(),
                     terminalIdleHours: z.number().min(0).optional(),
                     sessionIdleHours: z.number().min(0).optional(),
                     loginMinutes: z.number().min(0).optional(),
@@ -1605,7 +1606,10 @@ app.post("/api/tasks/:id/services/:kind/start", async (c) => {
     if ("error" in k) return c.json({ error: k.error }, 400);
     try {
         if (k.kind === DEPENDENCY_KIND) return c.json(await services.startDependency(k.env, task.id));
-        return c.json(await services.start(task, k.env, k.kind));
+        const row = await services.start(task, k.env, k.kind);
+        // Started by the human: the resource policy leaves it alone until they stop it or the task is cleaned up.
+        resources.pin(`service:${row.id}`, true);
+        return c.json(row);
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }

@@ -86,6 +86,9 @@ export interface ResourcePolicies {
     loginMinutes: number;
     // A tmux session or a listener in Stagehand's port ranges that no row explains.
     orphanMinutes: number;
+    // A service younger than this is never stopped by policy (not even under memory pressure): the human or a stage
+    // just started it and a Next dev server needs minutes to come up. Starts by the human are pinned on top of this.
+    settleMinutes: number;
     // How many tasks may hold a BE/FE at once; the longest-parked ones beyond it are stopped.
     maxDevServerTasks: number;
     // Below this much available RAM, or above this much swap, grace periods are zero and idle terminals go too.
@@ -156,6 +159,8 @@ export class Resources {
     }
 
     private pins(): Set<string> {
+        // A pin on a service row that has since stopped is spent: drop it so the table does not grow forever.
+        this.db.prepare(`DELETE FROM resource_pins WHERE resource_id LIKE 'service:%' AND substr(resource_id, 9) IN (SELECT id FROM services WHERE stopped_at IS NOT NULL)`).run();
         return new Set((this.db.prepare(`SELECT resource_id FROM resource_pins`).all() as Array<{ resource_id: string }>).map((r) => r.resource_id));
     }
 
@@ -440,8 +445,11 @@ export class Resources {
             const due = sinceMs + grace;
             return { verdict: "stop", reason: grace === 0 && graceMs > 0 ? `${reason} — memory pressure, no grace` : reason, dueAt: new Date(due).toISOString() };
         };
-        if (r.pinned) return keep("pinned by you");
+        if (r.pinned) return keep(r.kind === "service" ? "started by you — stays until you stop it or the task is cleaned up" : "pinned by you");
         if (!p.enabled) return keep("automatic cleanup is off");
+        // A fresh start settles first, whatever the pressure: the reaper used to stop a BE the human had started 8 s
+        // earlier ("idle 0 min — memory pressure, no grace", 2026-09-24) because the host was swapping on Docker's account.
+        if ((r.kind === "service" || r.kind === "dependency") && r.ageMs < p.settleMinutes * MIN) return keep(`started ${Math.max(1, Math.round(r.ageMs / MIN))} min ago — settling in (${p.settleMinutes} min)`);
         const task = r.owner.type === "task" && r.owner.id ? tasks.get(r.owner.id) : undefined;
         const lastTouch = r.startedAt ? Math.max(Date.parse(r.startedAt), task ? Date.parse(task.updated_at) : 0) : Date.now() - r.ageMs;
         switch (r.kind) {
@@ -570,6 +578,7 @@ export const DEFAULT_POLICIES: ResourcePolicies = {
     enabled: true,
     idleServiceMinutes: 30,
     doneServiceMinutes: 5,
+    settleMinutes: 20,
     terminalIdleHours: 6,
     sessionIdleHours: 12,
     loginMinutes: 30,

@@ -40,6 +40,17 @@ describe("resource policy", () => {
         expect(under.reason).toContain("memory pressure");
     });
 
+    it("a fresh start settles even under pressure; after the settle period the parked rule applies", () => {
+        const parked = task({ updated_at: new Date().toISOString() });
+        const fresh = base({ startedAt: new Date(Date.now() - 3 * 60_000).toISOString(), ageMs: 3 * 60_000, idleMs: 0 });
+        const v = res.judge(fresh, tasks(parked), envs, critical, DEFAULT_POLICIES);
+        expect(v.verdict).toBe("keep");
+        expect(v.reason).toContain("settling in");
+        const older = base({ startedAt: new Date(Date.now() - 25 * 60_000).toISOString(), ageMs: 25 * 60_000, idleMs: 25 * 60_000 });
+        expect(res.judge(older, tasks(parked), envs, critical, DEFAULT_POLICIES).verdict).toBe("stop");
+        expect(res.judge(base({ pinned: true, ageMs: 3 * 3_600_000 }), tasks(parked), envs, critical, DEFAULT_POLICIES).reason).toContain("started by you");
+    });
+
     it("pinned wins, disabled policies keep everything, a deleted task's service stops at once", () => {
         expect(res.judge(base({ pinned: true }), tasks(task({})), envs, critical, DEFAULT_POLICIES).verdict).toBe("keep");
         expect(res.judge(base({}), tasks(task({})), envs, ok, { ...DEFAULT_POLICIES, enabled: false }).reason).toBe("automatic cleanup is off");
