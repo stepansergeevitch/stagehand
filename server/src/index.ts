@@ -16,7 +16,8 @@ import { loadConfig, PREVIEW, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
 import { mimeOf, renderSharedFiles, sharedFileName } from "./tickets.js";
-import type { SharedFile } from "./db.js";
+import type { ServiceKind, SharedFile } from "./db.js";
+import { Resources } from "./resources.js";
 import { REVIEW_CATEGORIES, reviewChecklistJson } from "./review-checklist.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
@@ -46,6 +47,16 @@ if (!PREVIEW) services.startWatch();
 const engine = new Engine(db, cfg, services);
 services.onNotice = (taskId, text) => engine.serviceNotice(taskId, text);
 const sessions = new Sessions(db, cfg, engine);
+// Every resource Stagehand started, judged and reaped by policy; the Resources page reads the same snapshot.
+const resources = new Resources(db, cfg, {
+    clones: () => engine.cloneList(),
+    stopService: (taskId, kind) => services.stop(taskId, kind as ServiceKind),
+    stopDependency: (env) => services.stopDependency(env),
+    stopBrowser: (f) => engine.stopGstackBrowser(f),
+    releaseClone: (key) => engine.releaseClone(key),
+    notice: (taskId, text) => engine.serviceNotice(taskId, text),
+});
+if (!PREVIEW) resources.start();
 // The in-app assistant; its events ride the same websocket as everything else (kind "prompter").
 const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev));
 
@@ -485,6 +496,25 @@ const badCheckouts = async (env: { path: string; base_branch: string; repos: str
 app.get("/api/envs", (c) => c.json(envsAll()));
 // gstack's built-in review categories, for the env page's Code review section (keys are what envs.review_checklist stores).
 app.get("/api/review-categories", (c) => c.json(REVIEW_CATEGORIES));
+
+// ---------- resources: everything Stagehand started on this host, with the policy verdict on each ----------
+app.get("/api/resources", async (c) => {
+    const s = c.req.query("refresh") === "1" || !resources.current() ? await resources.refresh() : resources.current()!;
+    return c.json(s);
+});
+app.post("/api/resources/stop", async (c) => {
+    const body = json(z.object({ id: z.string().min(1) }), await c.req.json());
+    const r = resources.current()?.resources.find((x) => x.id === body.id);
+    if (!r) return c.json({ error: "no such resource (refresh the page)" }, 404);
+    await resources.stop(r, "stopped from the Resources page", "human");
+    return c.json({ ok: true });
+});
+app.post("/api/resources/pin", async (c) => {
+    const body = json(z.object({ id: z.string().min(1), pinned: z.boolean() }), await c.req.json());
+    resources.pin(body.id, body.pinned);
+    return c.json({ ok: true });
+});
+app.post("/api/resources/sweep", async (c) => c.json({ stopped: await resources.sweep() }));
 
 // Deleting an env is refused while it has tasks (delete those first — each delete offers worktree cleanup).
 app.delete("/api/envs/:id", (c) => {
@@ -1047,6 +1077,7 @@ const settingsJson = async () => {
         notifications: { ...cfg.notifications, ntfyToken: mask(cfg.notifications.ntfyToken) },
         desktopNotifier: desktopNotifier(),
         prompter: cfg.prompter,
+        resources: cfg.resources,
     };
 };
 
@@ -1085,6 +1116,20 @@ app.patch("/api/settings", async (c) => {
             typesafeApiKey: z.string().nullable().optional(),
             defaultModel: z.string().nullable().optional(),
             codeReview: z.boolean().optional(),
+            resources: z
+                .object({
+                    enabled: z.boolean().optional(),
+                    idleServiceMinutes: z.number().min(0).optional(),
+                    doneServiceMinutes: z.number().min(0).optional(),
+                    terminalIdleHours: z.number().min(0).optional(),
+                    sessionIdleHours: z.number().min(0).optional(),
+                    loginMinutes: z.number().min(0).optional(),
+                    orphanMinutes: z.number().min(0).optional(),
+                    maxDevServerTasks: z.number().int().min(1).optional(),
+                    minAvailableMb: z.number().min(0).optional(),
+                    maxSwapMb: z.number().min(0).optional(),
+                })
+                .optional(),
             // Partial maps: only the keys present change; "" or null clears a key (back to the fallback).
             stageModels: z.record(z.string().nullable()).optional(),
             stageRerunModels: z.record(z.string().nullable()).optional(),
@@ -1138,6 +1183,7 @@ app.patch("/api/settings", async (c) => {
     }
     if (body.defaultModel !== undefined) cfg.defaultModel = body.defaultModel;
     if (body.codeReview !== undefined) cfg.codeReview = body.codeReview;
+    if (body.resources) for (const [k, v] of Object.entries(body.resources)) if (v !== undefined) (cfg.resources as unknown as Record<string, unknown>)[k] = v;
     const applyModels = (target: Record<string, string | null>, patch: Record<string, string | null> | undefined): void => {
         for (const [k, v] of Object.entries(patch ?? {})) if (k in target) target[k] = v?.trim() || null;
     };

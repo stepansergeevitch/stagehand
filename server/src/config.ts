@@ -99,6 +99,22 @@ const ConfigSchema = z.object({
             seedWings: z.array(z.string()).default(["task-orchestrator=stagehand", "stagehand"]),
         })
         .default({}),
+    // Resource policies (resources.ts): when a parked task's BE/FE, an idle terminal, a leftover browser or an orphan
+    // pane is stopped, the dev-server cap, and the memory thresholds that drop every grace period to zero.
+    resources: z
+        .object({
+            enabled: z.boolean().default(true),
+            idleServiceMinutes: z.number().min(0).default(30),
+            doneServiceMinutes: z.number().min(0).default(5),
+            terminalIdleHours: z.number().min(0).default(6),
+            sessionIdleHours: z.number().min(0).default(12),
+            loginMinutes: z.number().min(0).default(30),
+            orphanMinutes: z.number().min(0).default(10),
+            maxDevServerTasks: z.number().int().min(1).default(3),
+            minAvailableMb: z.number().min(0).default(6144),
+            maxSwapMb: z.number().min(0).default(8192),
+        })
+        .default({}),
     // How this server is hosted, for POST /api/server/restart: the tmux session whose pane runs it and the command
     // that starts it (null = the repository's own `npx tsx src/index.ts | tee <dataDir>/server.log`).
     server: z
@@ -154,6 +170,7 @@ const defaults = (): Config => ({
     stageRerunModels: { research: null, design_proposal: null, qa_baseline: null, implementation: null, code_review: null, manual_qa: null, pr_creation_review: null, pr_fix: null },
     operationModels: { pr_fix_ci: null, pr_fix_comments: null, chat: null, instruct: null, rebase: null, fix_service: null, git_edit: null },
     prompter: { accountId: null, model: "fable", idleHours: 24, purgeDays: 7, farewell: true, maxTurns: 40, seedFrom: join(homedir(), "code", "northspyre", ".mempalace"), seedWings: ["task-orchestrator=stagehand", "stagehand"] },
+    resources: { enabled: true, idleServiceMinutes: 30, doneServiceMinutes: 5, terminalIdleHours: 6, sessionIdleHours: 12, loginMinutes: 30, orphanMinutes: 10, maxDevServerTasks: 3, minAvailableMb: 6144, maxSwapMb: 8192 },
     server: { tmuxSession: "stagehand-server", startCommand: null },
     publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },
 });

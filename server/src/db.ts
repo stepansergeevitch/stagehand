@@ -694,6 +694,21 @@ CREATE TABLE IF NOT EXISTS prompter_messages (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS prompter_messages_session ON prompter_messages(session_id, created_at);
+CREATE TABLE IF NOT EXISTS resource_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    task_id TEXT,
+    action TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    rss_mb INTEGER
+);
+CREATE TABLE IF NOT EXISTS resource_pins (
+    resource_id TEXT PRIMARY KEY,
+    pinned_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS task_events (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,

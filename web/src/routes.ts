@@ -13,7 +13,7 @@ import { STAGE_ORDER, type Stage } from "./api";
 //   #/tasks/<taskId>/chat | ticket | cost
 //   #/sessions[/<sessionId>/<terminal|changes>]    #/analytics[?days=<n>]   #/timing[?days=<n>]
 //   #/envs[/<envId>]                               #/config-dirs[/<dirId>]
-//   #/accounts                                     #/integrations
+//   #/accounts                                     #/integrations                #/resources
 // Older shapes (#/env/<id>, #/dir/<id>, #/dirs, #/managers) still parse and are rewritten to the current one.
 
 export const TASK_TABS = ["work", "runs", "design", "code", "pr", "comments", "chat", "ticket", "cost"] as const;
@@ -46,7 +46,8 @@ export type Route =
     | { page: "envs"; env?: string }
     | { page: "config-dirs"; dir?: string }
     | { page: "accounts" }
-    | { page: "integrations" };
+    | { page: "integrations" }
+    | { page: "resources" };
 
 export type Page = Route["page"];
 
@@ -112,6 +113,8 @@ export const parseRoute = (hash: string): Route => {
         case "integrations":
         case "managers":
             return { page: "integrations" };
+        case "resources":
+            return { page: "resources" };
         default:
             return { page: "dashboard" };
     }

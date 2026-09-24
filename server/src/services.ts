@@ -10,7 +10,7 @@ import { ensureSession, killSession, sessionExists, sessionExistsSync } from "./
 
 const execFileAsync = promisify(execFile);
 
-const PORT_RANGE: Record<CoreServiceKind, [number, number]> = { be: [18000, 18999], fe: [13000, 13999] };
+export const PORT_RANGE: Record<CoreServiceKind, [number, number]> = { be: [18000, 18999], fe: [13000, 13999] };
 
 // How long a BE/FE gets to start listening on its port before it counts as failed (a Next/Vite dev server compiles
 // first; a Python backend runs migrations). Same budgets the QA bring-up used to wait with.
@@ -164,6 +164,14 @@ export class Services {
         const task = this.db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(row.task_id) as TaskRow | undefined;
         const env = task ? (this.db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow | undefined) : undefined;
         if (!task || !env) return gone;
+        // Only a task that is working right now gets its pane back. A parked or finished task's service is closed
+        // instead: after a tmux-server death this sweep used to revive every BE/FE of every old task at once (a 4 GB
+        // Next dev server for a task waiting on its PR, 2026-09-24), and the next stage that needs the app starts it anyway.
+        if (!["running", "queued"].includes(task.status as string)) {
+            this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), row.id);
+            this.onNotice?.(row.task_id, `The ${row.kind.toUpperCase()}'s tmux session ${row.tmux} had vanished (host/tmux restart) — not restarted: the task is ${task.status.replace(/_/g, " ")}. The next stage that needs the app starts it again.`);
+            return `${gone}; not restarted while the task is ${task.status.replace(/_/g, " ")}`;
+        }
         // Close the vanished row first so start() allocates a fresh one (pickPort keeps the port); reopen it if the
         // start fails so the failure is recorded on a visible row.
         this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), row.id);

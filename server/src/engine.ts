@@ -891,7 +891,7 @@ export class Engine extends EventEmitter {
         return null;
     }
 
-    private async stopGstackBrowser(stateFile: string): Promise<void> {
+    async stopGstackBrowser(stateFile: string): Promise<void> {
         const bin = this.gstackBin();
         if (!bin || !existsSync(stateFile)) return;
         await execFileAsync(bin, ["stop"], { env: this.gstackEnv(stateFile), cwd: join(stateFile, ".."), timeout: 30_000 }).catch(() => undefined);
@@ -966,7 +966,12 @@ export class Engine extends EventEmitter {
         }
     }
 
-    private async releaseClone(taskId: string): Promise<void> {
+    // For the resource registry (resources.ts): the live clones with their task and map key.
+    cloneList(): Array<{ key: string; taskId: string; slot: string; dir: string; pid: number | null; cdpPort: number }> {
+        return [...this.clones.entries()].map(([key, c]) => ({ key, taskId: key.split(":")[0]!, slot: c.slot, dir: c.dir, pid: c.pid, cdpPort: c.cdpPort }));
+    }
+
+    async releaseClone(taskId: string): Promise<void> {
         const clone = this.clones.get(taskId);
         if (!clone) return;
         this.clones.delete(taskId);

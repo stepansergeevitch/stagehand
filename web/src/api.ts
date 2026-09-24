@@ -138,9 +138,33 @@ export interface PrompterSettings { accountId: string | null; model: string; idl
 // operationModels for the side runs (PR fixes by cause, chat, Do, rebase, service fix, history edit). "" / null = fallback.
 export type ModelStage = "research" | "design_proposal" | "qa_baseline" | "implementation" | "code_review" | "manual_qa" | "pr_creation_review" | "pr_fix";
 export type ModelOperation = "pr_fix_ci" | "pr_fix_comments" | "chat" | "instruct" | "rebase" | "fix_service" | "git_edit";
+// The resource registry (server/src/resources.ts): one row per thing Stagehand runs on the host, with its policy verdict.
+export type ResourceKind = "service" | "dependency" | "run" | "terminal" | "session" | "login" | "browser" | "clone" | "worktree" | "orphan";
+export interface Resource {
+    id: string; kind: ResourceKind; label: string;
+    owner: { type: "task" | "env" | "session" | "account" | "none"; id: string | null; name: string | null; stage?: string; status?: string };
+    tmux: string | null; pid: number | null; port: number | null; path: string | null;
+    rssMb: number; cpuPct: number; procs: number; top: string | null;
+    startedAt: string | null; ageMs: number; idleMs: number | null; diskMb: number | null;
+    pinned: boolean;
+    policy: { verdict: "keep" | "stop"; reason: string; dueAt: string | null };
+}
+export interface ResourcePolicies {
+    enabled: boolean; idleServiceMinutes: number; doneServiceMinutes: number; terminalIdleHours: number; sessionIdleHours: number; loginMinutes: number; orphanMinutes: number; maxDevServerTasks: number; minAvailableMb: number; maxSwapMb: number;
+}
+export interface ResourceEvent { id: number; at: string; resource_id: string; kind: string; label: string; task_id: string | null; action: string; reason: string; rss_mb: number | null }
+export interface ResourceSnapshot {
+    at: string;
+    host: { totalMb: number; availableMb: number; usedMb: number; compressedMb: number; swapUsedMb: number; swapTotalMb: number; pressure: "ok" | "warn" | "critical"; pressureReason: string };
+    stagehand: { rssMb: number; procs: number; devServerTasks: number; runs: number; browsers: number; terminals: number };
+    policies: ResourcePolicies;
+    resources: Resource[];
+    events: ResourceEvent[];
+}
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null; typesafeApiKey: string | null;
     defaultModel: string | null; models: Array<{ value: string; label: string }>;
+    resources?: ResourcePolicies;
     // When the model list was last fetched from the Models API (null = the built-in fallback list), and why the last
     // fetch failed; absent from an older server.
     modelsFetchedAt?: string | null; modelsError?: string | null;
@@ -502,6 +526,10 @@ export const api = {
     // Fetches the model list from the Models API again; answers like settings().
     refreshModels: () => post<Settings>("/api/models/refresh"),
     usage: (days: number) => fetch(`/api/usage?days=${days}`).then((r) => j<UsageReport>(r)),
+    resources: (refresh = false) => fetch(`/api/resources${refresh ? "?refresh=1" : ""}`).then((r) => j<ResourceSnapshot>(r)),
+    stopResource: (id: string) => post<{ ok: boolean }>("/api/resources/stop", { id }),
+    pinResource: (id: string, pinned: boolean) => post<{ ok: boolean }>("/api/resources/pin", { id, pinned }),
+    sweepResources: () => post<{ stopped: number }>("/api/resources/sweep"),
     timing: (days: number) => fetch(`/api/timing?days=${days}`).then((r) => j<TimingReport>(r)),
     taskUsage: (id: string) => fetch(`/api/tasks/${id}/usage`).then((r) => j<TaskUsage>(r)),
     patchSettings: (body: Partial<Omit<Settings, "models" | "notifications" | "prompter">> & { notifications?: Partial<Notifications>; prompter?: Partial<Omit<PrompterSettings, "seedWings">> }) =>
