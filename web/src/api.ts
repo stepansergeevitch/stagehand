@@ -150,7 +150,7 @@ export interface Resource {
     policy: { verdict: "keep" | "stop"; reason: string; dueAt: string | null };
 }
 export interface ResourcePolicies {
-    enabled: boolean; idleServiceMinutes: number; doneServiceMinutes: number; settleMinutes: number; terminalIdleHours: number; sessionIdleHours: number; loginMinutes: number; orphanMinutes: number; maxDevServerTasks: number; minAvailableMb: number; maxSwapMb: number;
+    enabled: boolean; idleServiceMinutes: number; doneServiceMinutes: number; settleMinutes: number; maxSessionMb: number; terminalIdleHours: number; sessionIdleHours: number; loginMinutes: number; orphanMinutes: number; maxDevServerTasks: number; minAvailableMb: number; maxSwapMb: number;
 }
 export interface ResourceEvent { id: number; at: string; resource_id: string; kind: string; label: string; task_id: string | null; action: string; reason: string; rss_mb: number | null }
 export interface ResourceSnapshot {
@@ -532,6 +532,8 @@ export const api = {
     sweepResources: () => post<{ stopped: number }>("/api/resources/sweep"),
     timing: (days: number) => fetch(`/api/timing?days=${days}`).then((r) => j<TimingReport>(r)),
     taskUsage: (id: string) => fetch(`/api/tasks/${id}/usage`).then((r) => j<TaskUsage>(r)),
+    taskSession: (id: string) => fetch(`/api/tasks/${id}/session`).then((r) => j<{ sessionId: string; transcriptMb: number | null; path: string | null; maxMb: number }>(r)),
+    rotateSession: (id: string) => post<{ previous: string; next: string; transcriptMb: number | null }>(`/api/tasks/${id}/session/rotate`),
     patchSettings: (body: Partial<Omit<Settings, "models" | "notifications" | "prompter">> & { notifications?: Partial<Notifications>; prompter?: Partial<Omit<PrompterSettings, "seedWings">> }) =>
         fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<{ ok: true }>(r)),
     // Prompter, the in-app assistant.

@@ -107,6 +107,8 @@ const ConfigSchema = z.object({
             idleServiceMinutes: z.number().min(0).default(30),
             doneServiceMinutes: z.number().min(0).default(5),
             settleMinutes: z.number().min(0).default(20),
+            // A task session whose transcript passes this many MB is rotated before the next resumed run (0 = never).
+            maxSessionMb: z.number().min(0).default(12),
             terminalIdleHours: z.number().min(0).default(6),
             sessionIdleHours: z.number().min(0).default(12),
             loginMinutes: z.number().min(0).default(30),
@@ -171,7 +173,7 @@ const defaults = (): Config => ({
     stageRerunModels: { research: null, design_proposal: null, qa_baseline: null, implementation: null, code_review: null, manual_qa: null, pr_creation_review: null, pr_fix: null },
     operationModels: { pr_fix_ci: null, pr_fix_comments: null, chat: null, instruct: null, rebase: null, fix_service: null, git_edit: null },
     prompter: { accountId: null, model: "fable", idleHours: 24, purgeDays: 7, farewell: true, maxTurns: 40, seedFrom: join(homedir(), "code", "northspyre", ".mempalace"), seedWings: ["task-orchestrator=stagehand", "stagehand"] },
-    resources: { enabled: true, idleServiceMinutes: 30, doneServiceMinutes: 5, settleMinutes: 20, terminalIdleHours: 6, sessionIdleHours: 12, loginMinutes: 30, orphanMinutes: 10, maxDevServerTasks: 3, minAvailableMb: 6144, maxSwapMb: 8192 },
+    resources: { enabled: true, idleServiceMinutes: 30, doneServiceMinutes: 5, settleMinutes: 20, maxSessionMb: 12, terminalIdleHours: 6, sessionIdleHours: 12, loginMinutes: 30, orphanMinutes: 10, maxDevServerTasks: 3, minAvailableMb: 6144, maxSwapMb: 8192 },
     server: { tmuxSession: "stagehand-server", startCommand: null },
     publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },
 });

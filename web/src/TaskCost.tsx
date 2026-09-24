@@ -8,10 +8,25 @@ const stageLabel = (s: string | null, kind: string): string => (s ? (STAGE_LABEL
 
 export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: string }) => {
     const [data, setData] = useState<TaskUsage | null>(null);
+    const [session, setSession] = useState<{ sessionId: string; transcriptMb: number | null; maxMb: number } | null>(null);
+    const [rotating, setRotating] = useState(false);
     const [error, setError] = useState<string | null>(null);
     useEffect(() => {
         void api.taskUsage(taskId).then(setData).catch((e: Error) => setError(e.message));
+        void api.taskSession(taskId).then(setSession).catch(() => setSession(null));
     }, [taskId, refreshKey]);
+    const rotate = async () => {
+        if (!confirm("Start a fresh task session? The agent loses the conversation so far (design.md, impl.json, review.json and Chat stay), and the next resumed run stops paying for the whole transcript.")) return;
+        setRotating(true);
+        try {
+            await api.rotateSession(taskId);
+            setSession(await api.taskSession(taskId));
+        } catch (e) {
+            setError((e as Error).message);
+        } finally {
+            setRotating(false);
+        }
+    };
     if (error) return <div className="blocked-box">{error}</div>;
     if (!data) return <div className="empty">loading…</div>;
     const t = data.totals;
@@ -24,6 +39,13 @@ export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: s
                 <div className="tile"><div className="tile-label">Output tokens</div><div className="tile-value">{tokens(t.output)}</div><div className="tile-sub">{t.turns} turns</div></div>
                 <div className="tile"><div className="tile-label">Cache read</div><div className="tile-value">{tokens(t.cacheRead)}</div><div className="tile-sub">write {tokens(t.cacheWrite)}</div></div>
                 <div className="tile"><div className="tile-label">Agent time</div><div className="tile-value">{hours(t.durationMs)}</div><div className="tile-sub">input {tokens(t.input)}</div></div>
+                {session && (
+                    <div className={`tile${session.transcriptMb != null && session.maxMb > 0 && session.transcriptMb > session.maxMb ? " tile-bad" : session.transcriptMb != null && session.transcriptMb > session.maxMb / 2 ? " tile-warn" : ""}`} title="The task session's transcript on disk. Every Chat, Do, fix, Implementation and PR Fix run resumes it and pays for all of it; above the limit the next run starts a fresh session by itself.">
+                        <div className="tile-label">Task session</div>
+                        <div className="tile-value">{session.transcriptMb == null ? "—" : `${session.transcriptMb} MB`}</div>
+                        <div className="tile-sub">limit {session.maxMb} MB · <button className="tiny" disabled={rotating} onClick={() => void rotate()}>{rotating ? "…" : "New session"}</button></div>
+                    </div>
+                )}
                 {data.byAccount.filter((a) => a.fiveHour != null || a.sevenDay != null).map((a) => (
                     <div className="tile" key={a.accountId} title="This task's cost on the account as a share of its subscription windows, calibrated from how far runs moved the limit">
                         <div className="tile-label">{a.accountName} · window share</div>

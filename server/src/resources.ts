@@ -89,6 +89,8 @@ export interface ResourcePolicies {
     // A service younger than this is never stopped by policy (not even under memory pressure): the human or a stage
     // just started it and a Next dev server needs minutes to come up. Starts by the human are pinned on top of this.
     settleMinutes: number;
+    // Task session transcript size that triggers a rotation before the next resumed run (0 = never).
+    maxSessionMb: number;
     // How many tasks may hold a BE/FE at once; the longest-parked ones beyond it are stopped.
     maxDevServerTasks: number;
     // Below this much available RAM, or above this much swap, grace periods are zero and idle terminals go too.
@@ -579,6 +581,7 @@ export const DEFAULT_POLICIES: ResourcePolicies = {
     idleServiceMinutes: 30,
     doneServiceMinutes: 5,
     settleMinutes: 20,
+    maxSessionMb: 12,
     terminalIdleHours: 6,
     sessionIdleHours: 12,
     loginMinutes: 30,

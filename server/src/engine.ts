@@ -21,6 +21,7 @@ import type { ServiceKind } from "./db.js";
 import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderSharedFiles, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
 import { describeReviewChecklist } from "./review-checklist.js";
 import { killSession, taskSessionName } from "./tmux.js";
+import { findTranscript } from "./transcripts.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { applyApprovedStepFixes } from "./qa-fixes.js";
 import { fillQaVars, newQaPassId, qaContractProblems, type QaVars } from "./qa-vars.js";
@@ -964,6 +965,53 @@ export class Engine extends EventEmitter {
         } finally {
             release();
         }
+    }
+
+    // ---------- the task session (shared by Research, Design, Implementation, PR Fix, Chat, Do, fixes) ----------
+
+    // Every config dir a task's session may have been written under.
+    private transcriptDirs(task: TaskRow): string[] {
+        const dirs = [this.configDirOf(this.env(task.env_id)).path, this.cfg.mainConfigDir];
+        if (existsSync(this.cfg.accountsDir)) for (const d of readdirSync(this.cfg.accountsDir)) dirs.push(join(this.cfg.accountsDir, d));
+        return dirs;
+    }
+
+    sessionInfo(taskId: string): { sessionId: string; transcriptMb: number | null; path: string | null; maxMb: number } {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        const t = findTranscript(this.transcriptDirs(task), task.session_id);
+        return { sessionId: task.session_id, transcriptMb: t?.sizeMb ?? null, path: t?.path ?? null, maxMb: this.cfg.resources.maxSessionMb };
+    }
+
+    // Gives the task a fresh session id. The old transcript stays on disk; the agent's next run starts without the
+    // conversation and is told so through the task notes (every prompt carries them).
+    rotateSession(taskId: string, reason: string): { previous: string; next: string; transcriptMb: number | null } {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        const t = findTranscript(this.transcriptDirs(task), task.session_id);
+        const next = randomUUID();
+        const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+        const handover = `Session rotated ${stamp} UTC (${reason}): the earlier conversation is gone. Before acting, read ${this.taskDir(taskId)}/design.md, impl.json, review.json and the Chat tab for what was decided and done.`;
+        const notes = task.notes?.trim() ? `${task.notes.trim().replace(/\n?Session rotated [^\n]*/g, "")}\n${handover}`.trim() : handover;
+        this.db.prepare(`UPDATE tasks SET session_id = ?, notes = ?, updated_at = ? WHERE id = ?`).run(next, notes, now(), taskId);
+        this.addMessage(taskId, "agent", `♻️ New task session: ${reason}. The previous transcript (${t ? `${t.sizeMb} MB` : "not found on disk"}, session ${task.session_id.slice(0, 8)}…) is kept on disk but no longer resumed — every resumed run was paying for the whole conversation.`);
+        this.emitTask(taskId);
+        return { previous: task.session_id, next, transcriptMb: t?.sizeMb ?? null };
+    }
+
+    // How the next run joins the task session: resume it, or — when there is no transcript yet, or it has grown past
+    // resources.maxSessionMb (a 32 MB session cost ~$230 per resumed run, even for a one-turn chat, 2026-09-24) — a
+    // fresh session under the task's name.
+    private sessionArgs(task: TaskRow): { resume: string } | { sessionId: string; name: string } {
+        const cur = this.getTask(task.id) ?? task;
+        const t = findTranscript(this.transcriptDirs(cur), cur.session_id);
+        if (!t) return { sessionId: cur.session_id, name: cur.ticket_id };
+        const max = this.cfg.resources.maxSessionMb;
+        if (max > 0 && t.sizeMb > max) {
+            const r = this.rotateSession(cur.id, `the transcript reached ${t.sizeMb} MB (limit ${max} MB)`);
+            return { sessionId: r.next, name: cur.ticket_id };
+        }
+        return { resume: cur.session_id };
     }
 
     // For the resource registry (resources.ts): the live clones with their task and map key.
@@ -2587,7 +2635,7 @@ export class Engine extends EventEmitter {
             cwd: task.worktree_path ?? env.path,
             configDir: cd.path,
             extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
-            resume: task.session_id,
+            ...this.sessionArgs(task),
             maxTurns: 15,
             // The task dir holds the files the human shares (and the artifacts a question may be about).
             addDirs: [this.taskDir(taskId)],
@@ -2648,7 +2696,7 @@ export class Engine extends EventEmitter {
             extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
-            resume: task.session_id,
+            ...this.sessionArgs(task),
             maxTurns: Engine.INSTRUCT_MAX_TURNS,
             addDirs: [taskDir],
             eventLogPath: join(taskDir, "instructions", `${message.id}.ndjson`),
@@ -2768,7 +2816,7 @@ export class Engine extends EventEmitter {
             cwd,
             configDir: cd.path,
             extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
-            resume: task.session_id,
+            ...this.sessionArgs(task),
             maxTurns: 60,
             ...((): { model?: string } => {
                 const m = this.modelForOperation(task, "git_edit");
@@ -3285,9 +3333,7 @@ export class Engine extends EventEmitter {
                     : { sessionId: shard.sessionId, name: `${task.ticket_id}-${shard.id || "root"}` }
                 : fresh
                   ? {}
-                  : priorRuns.n === 0
-                    ? { sessionId: task.session_id, name: task.ticket_id }
-                    : { resume: task.session_id }),
+                  : this.sessionArgs(task)),
             chrome: chromeNeeded,
             ...(explicitModel ? { model: explicitModel } : {}),
             ...(def.maxTurns ? { maxTurns: def.maxTurns } : {}),
@@ -4117,7 +4163,7 @@ export class Engine extends EventEmitter {
             extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
-            resume: task.session_id,
+            ...this.sessionArgs(task),
             maxTurns: 80,
             addDirs: [this.taskDir(taskId)],
             ...((): { model?: string } => {
@@ -4537,7 +4583,7 @@ export class Engine extends EventEmitter {
             cwd,
             configDir: cd.path,
             extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
-            resume: task.session_id,
+            ...this.sessionArgs(task),
             maxTurns: 60,
             ...((): { model?: string } => {
                 const m = this.modelForOperation(task, "fix_service");

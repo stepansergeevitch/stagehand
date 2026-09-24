@@ -1122,6 +1122,7 @@ app.patch("/api/settings", async (c) => {
                     idleServiceMinutes: z.number().min(0).optional(),
                     doneServiceMinutes: z.number().min(0).optional(),
                     settleMinutes: z.number().min(0).optional(),
+                    maxSessionMb: z.number().min(0).optional(),
                     terminalIdleHours: z.number().min(0).optional(),
                     sessionIdleHours: z.number().min(0).optional(),
                     loginMinutes: z.number().min(0).optional(),
@@ -1366,6 +1367,19 @@ app.post("/api/tasks/:id/relaunch-chrome", async (c) => {
     await restartChrome("browser" in picked ? (picked.browser.browser ?? "Google") : "Google", "browser" in picked ? picked.browser.profileDir : undefined);
     engine.retry(task.id);
     return c.json(engine.getTask(task.id));
+});
+
+// The task session: its id and transcript size (what every resumed run pays for), and a way to start a fresh one.
+app.get("/api/tasks/:id/session", (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    return c.json(engine.sessionInfo(task.id));
+});
+app.post("/api/tasks/:id/session/rotate", (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    if (["running", "queued"].includes(task.status as string)) return c.json({ error: "the task is running — stop it or wait for the run to end" }, 409);
+    return c.json(engine.rotateSession(task.id, "started by you"));
 });
 
 app.get("/api/tasks/:id/usage", (c) => {

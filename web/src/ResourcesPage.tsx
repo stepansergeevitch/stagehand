@@ -79,6 +79,7 @@ const Policies = ({ value, onSaved, onError }: { value: ResourcePolicies; onSave
                     <label>Parked task keeps its BE/FE for (min) <input type="number" min={0} value={p.idleServiceMinutes} onChange={num("idleServiceMinutes")} /></label>
                     <label>Task past QA (PR stages, done, stopped) keeps them for (min) <input type="number" min={0} value={p.doneServiceMinutes} onChange={num("doneServiceMinutes")} /></label>
                     <label>A fresh start settles for (min) — never stopped before that, whatever the pressure <input type="number" min={0} value={p.settleMinutes} onChange={num("settleMinutes")} /></label>
+                    <label>Task session rotates above (MB of transcript; 0 = never) — a resumed run pays for the whole conversation every time <input type="number" min={0} value={p.maxSessionMb} onChange={num("maxSessionMb")} /></label>
                     <label>Tasks that may hold dev servers at once <input type="number" min={1} value={p.maxDevServerTasks} onChange={num("maxDevServerTasks")} /></label>
                     <label>Task terminal idle limit (h) <input type="number" min={0} value={p.terminalIdleHours} onChange={num("terminalIdleHours")} /></label>
                     <label>Session idle limit (h) <input type="number" min={0} value={p.sessionIdleHours} onChange={num("sessionIdleHours")} /></label>
