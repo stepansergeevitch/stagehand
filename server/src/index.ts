@@ -326,18 +326,29 @@ app.patch("/api/accounts/:id", async (c) => {
     return c.json(publicAccount(accountById(acc.id)!));
 });
 
-// Deleting an account only forgets it in Stagehand (its token and auth dir go, config dirs stay); refused while an env or task still points at it.
+// Deleting an account only forgets it in Stagehand (its token and auth dir go, config dirs stay); refused while an env,
+// task, session or running run still points at it. Past runs and usage keep the id as history (no foreign key); the
+// account's rate-limit and calibration rows go with it, and it leaves every env's failover order.
 app.delete("/api/accounts/:id", (c) => {
     const acc = accountById(c.req.param("id"));
     if (!acc) return c.json({ error: "not found" }, 404);
     const envs = db.prepare(`SELECT name FROM envs WHERE default_account_id = ?`).all(acc.id) as Array<{ name: string }>;
     const tasks = db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE account_id = ?`).get(acc.id) as { n: number };
     const sess = db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE account_id = ?`).get(acc.id) as { n: number };
-    if (envs.length || tasks.n || sess.n) return c.json({ error: `in use by ${envs.map((e) => `env ${e.name}`).concat(tasks.n ? [`${tasks.n} task(s)`] : [], sess.n ? [`${sess.n} session(s)`] : []).join(", ")} — reassign first` }, 400);
+    const running = db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE account_id = ? AND status = 'running'`).get(acc.id) as { n: number };
+    const uses = envs.map((e) => `env ${e.name}`).concat(tasks.n ? [`${tasks.n} task(s)`] : [], sess.n ? [`${sess.n} session(s)`] : [], running.n ? [`${running.n} running run(s)`] : []);
+    if (uses.length) return c.json({ error: `in use by ${uses.join(", ")} — reassign first` }, 400);
     clearInterval(tokenCaptures.get(acc.id));
     tokenCaptures.delete(acc.id);
-    db.prepare(`DELETE FROM rate_limits WHERE account_id = ?`).run(acc.id);
-    db.prepare(`DELETE FROM accounts WHERE id = ?`).run(acc.id);
+    db.transaction(() => {
+        db.prepare(`DELETE FROM rate_limits WHERE account_id = ?`).run(acc.id);
+        db.prepare(`DELETE FROM window_calibration WHERE account_id = ?`).run(acc.id);
+        for (const env of envsAll()) {
+            const order = accountOrderOf(env);
+            if (order.includes(acc.id)) db.prepare(`UPDATE envs SET account_order = ? WHERE id = ?`).run(JSON.stringify(order.filter((id) => id !== acc.id)), env.id);
+        }
+        db.prepare(`DELETE FROM accounts WHERE id = ?`).run(acc.id);
+    })();
     return c.json({ deleted: acc.id });
 });
 

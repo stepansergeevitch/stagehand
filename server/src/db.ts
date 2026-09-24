@@ -538,13 +538,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at TEXT NOT NULL,
     UNIQUE(env_id, ticket_id)
 );
+-- runs and usage are history: their account_id is a plain id, not a foreign key, so an AI account can be deleted
+-- and its past runs and costs stay (the usage report labels them "deleted account").
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id),
     stage TEXT NOT NULL,
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
-    account_id TEXT NOT NULL REFERENCES accounts(id),
+    account_id TEXT NOT NULL,
     pid INTEGER,
     started_at TEXT,
     finished_at TEXT,
@@ -838,6 +840,10 @@ const MIGRATIONS: Array<[string, string]> = [
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>
     (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === column);
 
+// True while the table still declares a foreign key to accounts (see the runs/usage rebuild in openDb).
+const referencesAccounts = (db: Database.Database, table: string): boolean =>
+    (db.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{ table: string }>).some((f) => f.table === "accounts");
+
 // Accounts used to BE config dirs (accounts.config_dir). Now an account is a login and a config dir is its own thing;
 // the old column becomes auth_dir (where that legacy browser login lives) and each distinct real dir becomes a config_dirs
 // row. Environments point at the dir their default account used (or `<env>/.claude` when that was registered), and the
@@ -929,6 +935,70 @@ export const openDb = (dataDir: string): DB => {
                  SELECT task_id, '', number, url, checks_json, review_decision, merged_at, pushed_at, updated_at, updated_at FROM pr_state_old`);
         db.exec(`DROP TABLE pr_state_old`);
     }
+    // runs.account_id and usage.account_id used to be foreign keys to accounts, which made deleting an AI account fail
+    // with "FOREIGN KEY constraint failed" as soon as it had run anything. SQLite cannot drop a constraint in place:
+    // rebuild each table once without it, carrying every row over (the tables have no children, so the drop is safe).
+    // Foreign keys are off for the rebuild, as SQLite's table-rebuild procedure asks: the copy must not fail on a row
+    // whose task is already gone, and the pragma only takes effect outside a transaction (openDb runs in none).
+    const rebuild = referencesAccounts(db, "runs") || referencesAccounts(db, "usage");
+    if (rebuild) db.pragma("foreign_keys = OFF");
+    if (referencesAccounts(db, "runs")) {
+        db.exec(`ALTER TABLE runs RENAME TO runs_old`);
+        db.exec(`CREATE TABLE runs (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id),
+            stage TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            pid INTEGER,
+            started_at TEXT,
+            finished_at TEXT,
+            resume_at TEXT,
+            error TEXT,
+            result_json TEXT,
+            cost_usd REAL,
+            num_turns INTEGER,
+            last_event TEXT,
+            attempt INTEGER NOT NULL DEFAULT 1,
+            model TEXT,
+            shard TEXT,
+            group_id TEXT
+        )`);
+        db.exec(`INSERT INTO runs (id, task_id, stage, kind, status, account_id, pid, started_at, finished_at, resume_at, error, result_json, cost_usd, num_turns, last_event, attempt, model, shard, group_id)
+                 SELECT id, task_id, stage, kind, status, account_id, pid, started_at, finished_at, resume_at, error, result_json, cost_usd, num_turns, last_event, attempt, model, shard, group_id FROM runs_old`);
+        db.exec(`DROP TABLE runs_old`);
+        db.exec(`CREATE INDEX IF NOT EXISTS runs_task ON runs(task_id, started_at)`);
+    }
+    if (referencesAccounts(db, "usage")) {
+        db.exec(`ALTER TABLE usage RENAME TO usage_old`);
+        db.exec(`CREATE TABLE usage (
+            id TEXT PRIMARY KEY,
+            at TEXT NOT NULL,
+            account_id TEXT,
+            env_id TEXT,
+            task_id TEXT,
+            run_id TEXT,
+            kind TEXT NOT NULL,
+            stage TEXT,
+            model TEXT,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd REAL NOT NULL DEFAULT 0,
+            duration_ms INTEGER,
+            turns INTEGER,
+            ticket_id TEXT,
+            task_title TEXT
+        )`);
+        db.exec(`INSERT INTO usage (id, at, account_id, env_id, task_id, run_id, kind, stage, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, turns, ticket_id, task_title)
+                 SELECT id, at, account_id, env_id, task_id, run_id, kind, stage, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, turns, ticket_id, task_title FROM usage_old`);
+        db.exec(`DROP TABLE usage_old`);
+        db.exec(`CREATE INDEX IF NOT EXISTS usage_at ON usage(at)`);
+        db.exec(`CREATE INDEX IF NOT EXISTS usage_run ON usage(run_id)`);
+    }
+    if (rebuild) db.pragma("foreign_keys = ON");
     // Stage identifiers are just data, not schema — renaming one (pr_red -> pr_fix, 2026-09-09: the same stage now also
     // triggers from picked PR comments, not just failing CI, so "red" stopped being accurate) means rewriting any
     // existing row that still has the old value, not adding a column. Safe to run every startup: a no-op once done.
