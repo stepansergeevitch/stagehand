@@ -43,9 +43,9 @@ describe("resource policy", () => {
         expect(under.reason).toContain("memory pressure, grace cut to 10 min");
     });
 
-    it("a dev server the human just started on a parked task survives memory pressure for the cut grace", () => {
-        // Started 1 min ago, in use 30 s ago (its pane logged a request); the task row itself is 45 min old.
-        const fresh = base({ startedAt: new Date(Date.now() - 60_000).toISOString(), ageMs: 60_000, idleMs: 30_000 });
+    it("a dev server in use on a parked task survives memory pressure for the cut grace, once it has settled", () => {
+        // Started 25 min ago (past the settle window), in use 30 s ago (its pane logged a request); the task row itself is 45 min old.
+        const fresh = base({ startedAt: new Date(Date.now() - 25 * 60_000).toISOString(), ageMs: 25 * 60_000, idleMs: 30_000 });
         const v = res.judge(fresh, tasks(task({})), envs, critical, DEFAULT_POLICIES);
         expect(v.verdict).toBe("stop");
         expect(v.reason).toContain("idle 1 min");
