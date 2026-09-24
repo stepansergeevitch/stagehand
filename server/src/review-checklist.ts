@@ -130,7 +130,8 @@ export const describeReviewChecklist = (env: Pick<EnvRow, "review_checklist">, c
     if (a.custom.length) {
         out.push(
             `**Points added for this environment** (apply them with the same rigour as the checklist's own: quote the motivating line, confidence 1–10, fix-first where mechanical; report them under the category name given):\n` +
-                a.custom.map((p) => `- **${p.title}** (${p.pass === "critical" ? "Pass 1, CRITICAL" : "Pass 2, INFORMATIONAL"})${p.detail ? ` — ${p.detail}` : ""}`).join("\n"),
+                // A multi-line detail stays inside its list item: continuation lines (and its own bullets) are indented.
+                a.custom.map((p) => `- **${p.title}** (${p.pass === "critical" ? "Pass 1, CRITICAL" : "Pass 2, INFORMATIONAL"})${p.detail ? ` — ${p.detail.replace(/\n/g, "\n  ")}` : ""}`).join("\n"),
         );
     }
     out.push(

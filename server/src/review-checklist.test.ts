@@ -72,6 +72,8 @@ describe("describeReviewChecklist", () => {
         expect(text).toContain("UnitOfWork usage (added for this environment, below)");
         expect(text).toContain("- **UnitOfWork usage** (Pass 1, CRITICAL) — Repositories and services take uow=, never db=.");
         expect(text).toContain("**Also do not flag, for this environment:**\n- Missing docstrings");
+        const multi = describeReviewChecklist({ review_checklist: JSON.stringify({ disabled: [], custom: [{ key: "cr", title: "Code reviewer", pass: "critical", detail: "ALWAYS flag:\n- Swallowed error\n- Race" }], doNotFlag: [] }) }, true);
+        expect(multi).toContain("- **Code reviewer** (Pass 1, CRITICAL) — ALWAYS flag:\n  - Swallowed error\n  - Race");
     });
 
     it("a pass with nothing left says so; without the checklist file the built-ins get their one-liners", () => {
