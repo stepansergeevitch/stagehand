@@ -15,7 +15,7 @@ import { z } from "zod";
 import { loadConfig, PREVIEW, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
-import { mimeOf, sharedFileName } from "./tickets.js";
+import { mimeOf, renderSharedFiles, sharedFileName } from "./tickets.js";
 import type { SharedFile } from "./db.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
 import { inspectConfigDir } from "./config-dirs.js";
@@ -864,12 +864,15 @@ app.patch("/api/tasks/:id", async (c) => {
             notes: z.string().nullable().optional(),
             labels: z.array(z.object({ text: z.string().min(1).max(60), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) })).max(20).optional(),
             baseBranch: z.union([z.string(), z.record(z.string())]).nullable().optional(),
+            // Files attached to the instructions: listed by path at the end of the notes, so every stage sees them.
+            files: z.array(SharedFileSchema).optional(),
         }),
         await c.req.json(),
     );
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
-    if (body.notes !== undefined) engine.setNotes(task.id, body.notes);
+    const files = sharedFilesOf(task.id, body.files);
+    if (body.notes !== undefined || files.length) engine.setNotes(task.id, `${body.notes === undefined ? (task.notes ?? "") : (body.notes ?? "")}${renderSharedFiles(files, engine.taskDir(task.id))}`.trim() || null);
     if (body.labels !== undefined) engine.setLabels(task.id, body.labels);
     if (body.baseBranch !== undefined) engine.setBaseBranch(task.id, body.baseBranch);
     return c.json(engine.getTask(task.id));
@@ -894,10 +897,11 @@ app.post("/api/tasks/:id/return", async (c) => {
             comments: z.array(z.object({ path: z.string().min(1), line: z.number().int().positive(), side: z.enum(["new", "old"]), snippet: z.string(), text: z.string().min(1) })).optional(),
             // Skip the browser QA stages on the way back to User Review this once.
             skipQa: z.boolean().optional(),
+            files: z.array(SharedFileSchema).optional(),
         }),
         await c.req.json(),
     );
-    engine.returnTo(c.req.param("id"), body.stage, body.notes, body.comments, body.skipQa === true);
+    engine.returnTo(c.req.param("id"), body.stage, body.notes, body.comments, body.skipQa === true, sharedFilesOf(c.req.param("id"), body.files));
     return c.json(engine.getTask(c.req.param("id")));
 });
 
@@ -933,12 +937,31 @@ app.get("/api/prompter/sessions/:id/messages", (c) => {
 });
 // The turn runs in the background; its text streams over the websocket and `done` carries the stored answer. Sent
 // while a turn runs, the message is stacked (`queued: true`) and goes out with the next turn.
-app.post("/api/prompter/sessions/:id/messages", async (c) => {
-    const body = json(z.object({ text: z.string().min(1), path: z.string().nullable().optional() }), await c.req.json());
+// A file for Prompter (a screenshot, an export): saved under <prompter home>/files/<session>/, named on the message.
+const PrompterFileSchema = z.object({ name: z.string().min(1), file: z.string().regex(/^files\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/), mime: z.string().nullable(), size: z.number().int().nonnegative() });
+app.post("/api/prompter/sessions/:id/files", async (c) => {
     const id = c.req.param("id");
     if (!prompter.session(id)) return c.json({ error: "not found" }, 404);
+    const body = await c.req.parseBody();
+    const f = body["file"];
+    if (!(f instanceof File)) return c.json({ error: "send one file in the `file` field (multipart/form-data)" }, 400);
+    if (f.size === 0) return c.json({ error: `${f.name} is empty` }, 400);
+    if (f.size > MAX_SHARED_FILE_BYTES) return c.json({ error: `${f.name} is too large (${Math.round(f.size / 1e6)} MB; the cap is 200 MB)` }, 400);
+    const safe = sharedFileName(f.name);
+    const rel = `files/${id}/${randomUUID().slice(0, 8)}-${safe}`;
+    mkdirSync(join(prompter.home, "files", id), { recursive: true });
+    writeFileSync(join(prompter.home, rel), Buffer.from(await f.arrayBuffer()));
+    const shared: SharedFile = { name: f.name, file: rel, mime: f.type && f.type !== "application/octet-stream" ? f.type : mimeOf(safe), size: f.size };
+    return c.json(shared);
+});
+
+app.post("/api/prompter/sessions/:id/messages", async (c) => {
+    const body = json(z.object({ text: z.string().min(1), path: z.string().nullable().optional(), files: z.array(PrompterFileSchema).optional() }), await c.req.json());
+    const id = c.req.param("id");
+    if (!prompter.session(id)) return c.json({ error: "not found" }, 404);
+    for (const f of body.files ?? []) if (!f.file.startsWith(`files/${id}/`) || !existsSync(join(prompter.home, f.file))) return c.json({ error: `${f.name} was not uploaded to this chat — attach it again` }, 400);
     try {
-        return c.json({ ok: true, ...prompter.submit(id, body.text, body.path ?? null) }, 202);
+        return c.json({ ok: true, ...prompter.submit(id, body.text, body.path ?? null, body.files ?? []) }, 202);
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }
@@ -1164,10 +1187,11 @@ app.post("/api/tasks/:id/review", async (c) => {
                 .optional(),
             // Request changes only: skip the browser QA stages on the way back to User Review this once.
             skipQa: z.boolean().optional(),
+            files: z.array(SharedFileSchema).optional(),
         }),
         await c.req.json(),
     );
-    engine.review(c.req.param("id"), body);
+    engine.review(c.req.param("id"), { ...body, files: sharedFilesOf(c.req.param("id"), body.files) });
     return c.json(engine.getTask(c.req.param("id")));
 });
 
@@ -1236,9 +1260,9 @@ app.post("/api/tasks/:id/commits/:sha/reword", async (c) => {
 // Remove: a real rewrite (everything after the commit is replayed without it) — goes through the agent in the task's
 // own session so it can resolve conflicts; never pushes. Starts in the background; the result lands in Chat.
 app.post("/api/tasks/:id/commits/:sha/remove", async (c) => {
-    const body = json(z.object({ repo: z.string().optional(), note: z.string().optional() }), await c.req.json().catch(() => ({})));
+    const body = json(z.object({ repo: z.string().optional(), note: z.string().optional(), files: z.array(SharedFileSchema).optional() }), await c.req.json().catch(() => ({})));
     try {
-        await engine.removeCommit(c.req.param("id"), body.repo ?? "", c.req.param("sha"), body.note);
+        await engine.removeCommit(c.req.param("id"), body.repo ?? "", c.req.param("sha"), body.note, sharedFilesOf(c.req.param("id"), body.files));
         return c.json({ started: true });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
@@ -1365,11 +1389,12 @@ app.post("/api/tasks/:id/pr-jobs", async (c) => {
             fixCi: z.object({ repos: z.array(z.string()).optional() }).nullable().optional(),
             comments: z.array(z.object({ repo: z.string(), ids: z.array(z.number().int()) })).optional(),
             instructions: z.string().optional(),
+            files: z.array(SharedFileSchema).optional(),
         }),
         await c.req.json(),
     );
     try {
-        return c.json(await engine.startPrJobs(c.req.param("id"), body));
+        return c.json(await engine.startPrJobs(c.req.param("id"), { ...body, files: sharedFilesOf(c.req.param("id"), body.files) }));
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }

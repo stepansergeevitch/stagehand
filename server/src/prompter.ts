@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { renderSharedFiles } from "./tickets.js";
+import type { SharedFile } from "./db.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -228,9 +230,11 @@ export class Prompter {
     // The human's message. While a turn runs it is stacked (state "queued") and goes to the assistant, together with
     // anything else stacked, as the next turn the moment the current one ends; otherwise a turn starts now (taking any
     // messages left stacked from before a restart with it).
-    submit(id: string, text: string, path: string | null): { message: PrompterMessageRow; queued: boolean } {
+    submit(id: string, text: string, path: string | null, files: SharedFile[] = []): { message: PrompterMessageRow; queued: boolean } {
         const s = this.session(id);
         if (!s || s.closed_at) throw new Error("session not found or closed");
+        // Files ride in the text by absolute path (the assistant reads them; the human sees the same list).
+        text += renderSharedFiles(files, this.home);
         if (this.active.has(id)) {
             const message = this.addMessage(id, "user", text, path, "queued");
             this.emit({ sessionId: id, kind: "queued", message });

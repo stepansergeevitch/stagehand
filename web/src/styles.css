@@ -607,7 +607,12 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .chat-mode button + button { border-left: 1px solid var(--line); }
 .chat-mode button.active { background: var(--accent-soft); color: var(--ink); }
 .chat-input { display: flex; gap: 8px; align-items: flex-end; }
-.chat-input textarea { flex: 1; min-height: 44px; }
+.chat-input .agent-input { flex: 1; }
+.chat-input textarea { min-height: 44px; }
+/* AgentInput: chips above (or below) the text box; the wrapper is what flex rows and grids size */
+.agent-input { display: flex; flex-direction: column; min-width: 0; }
+.agent-input textarea { width: 100%; }
+.agent-input .file-chips:empty { display: none; }
 @media (max-width: 760px) { .chat-msg { max-width: 100%; } }
 
 /* Prompter — the assistant window, bottom-right */
@@ -635,7 +640,8 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .prompter-queued-row button:hover { color: var(--ink); }
 .prompter-activity { font-size: 12px; color: var(--ink-3); padding: 0 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .prompter-input { display: flex; gap: 6px; align-items: flex-end; padding: 8px 10px; border-top: 1px solid var(--line); }
-.prompter-input textarea { flex: 1; min-height: 40px; resize: vertical; }
+.prompter-input .agent-input { flex: 1; }
+.prompter-input textarea { min-height: 40px; resize: vertical; }
 @media (max-width: 760px) {
     .prompter, .prompter.wide { right: 0; bottom: 0; width: 100vw; height: 100vh; border-radius: 0; }
 }

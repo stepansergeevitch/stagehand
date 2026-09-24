@@ -4,6 +4,7 @@ import { Markdown } from "./Markdown";
 import { storage } from "./storage";
 import { prompterBus } from "./prompterBus";
 import { formatRoute, type Route } from "./routes";
+import { AgentInput, usePendingFiles } from "./AgentInput";
 
 // Prompter — the assistant in the bottom-right corner. Every chat is a claude session on the server; several can be
 // open at once and the strip under the header switches between them (the list is the server's, so a reload or a
@@ -39,6 +40,7 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
     const [activeId, setActiveId] = useState<string | null>(() => storage.get(SESSION_KEY) || null);
     const [chats, setChats] = useState<Record<string, ChatState>>({});
     const [text, setText] = useState("");
+    const attach = usePendingFiles();
     const [error, setError] = useState<string | null>(null);
     const [model, setModel] = useState("");
     const [where, setWhere] = useState("");
@@ -177,12 +179,14 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
 
     // Sends now, or stacks the message behind the running turn (the server decides; the dashed bubble says which).
     const send = async () => {
-        const t = text.trim();
+        const t = text.trim() || (attach.files.length ? "See the attached file(s)." : "");
         if (!t || !session) return;
         setText("");
         setError(null);
         try {
-            const r = await api.prompterSend(session.id, t, path);
+            const files = await api.prompterUploadFiles(session.id, attach.files);
+            const r = await api.prompterSend(session.id, t, path, files);
+            attach.clear();
             patchChat(session.id, (c) => ({ ...c, busy: c.busy || !r.queued, messages: c.messages.some((x) => x.id === r.message.id) ? c.messages : [...c.messages, r.message] }));
         } catch (e) {
             setText(t);
@@ -290,10 +294,11 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
             </div>
             {error && <div className="blocked-box" style={{ margin: "0 10px 6px" }}>{error}</div>}
             <div className="prompter-input">
-                <textarea
+                <AgentInput
                     ref={input}
                     value={text}
-                    onChange={(e) => setText(e.target.value)}
+                    onChange={setText}
+                    pending={attach}
                     onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                             e.preventDefault();
@@ -311,7 +316,7 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
                     rows={2}
                 />
                 {chat.busy && <button className="prompter-stop" title={`Stop this turn (Esc)${queued.length ? `; the ${queued.length} stacked message${queued.length === 1 ? "" : "s"} go out next` : ""}`} onClick={() => void stop()}>■ Stop</button>}
-                <button className="primary" disabled={!session || !text.trim()} title={chat.busy ? "Stacks behind the running turn" : "Send"} onClick={() => void send()}>{chat.busy ? "Stack" : "Send"}</button>
+                <button className="primary" disabled={!session || (!text.trim() && attach.files.length === 0)} title={chat.busy ? "Stacks behind the running turn" : "Send"} onClick={() => void send()}>{chat.busy ? "Stack" : "Send"}</button>
             </div>
         </aside>
     );

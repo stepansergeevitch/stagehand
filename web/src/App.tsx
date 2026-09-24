@@ -16,6 +16,7 @@ import { SessionsPage } from "./SessionsPage";
 import { storage } from "./storage";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { LazyTerminal } from "./LazyTerminal";
+import { AgentInput } from "./AgentInput";
 
 // Where the user is lives in the URL hash only (see routes.ts): reloads, back/forward, pasted links and anything that
 // reads the path see the same screen.
@@ -637,7 +638,7 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                     </select>
                 </label>
             )}
-            <label>Extra instructions for the agents (optional; every stage sees them) <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Constraints, where the code lives, what to skip, how to test…" style={{ minHeight: 60 }} /></label>
+            <label>Extra instructions for the agents (optional; every stage sees them) <AgentInput value={notes} onChange={setNotes} placeholder="Constraints, where the code lives, what to skip, how to test…" style={{ minHeight: 60 }} /></label>
             {repoKeys.map((repo) => (
                 <label key={repo}>Base branch{repo ? ` · ${repo}` : ""}
                     <BranchPicker envId={env.id} repo={repo} value={bases[repo] ?? ""} onChange={(v) => setBases((b) => ({ ...b, [repo]: v }))} placeholder={env.base_branch} />

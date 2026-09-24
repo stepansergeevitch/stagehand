@@ -6,7 +6,7 @@ import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
 import type { TaskTab, TaskView } from "./routes";
 import { Chat } from "./Chat";
-import { FileChips, usePendingFiles } from "./FilePicker";
+import { AgentInput, FileChips, usePendingFiles } from "./AgentInput";
 import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
@@ -220,19 +220,20 @@ const TicketCard = ({ taskId, ticket, source }: { taskId: string; ticket: Ticket
 };
 
 // The human's own instructions for the task, editable at any time (the next stage run picks the new text up).
-const NotesCard = ({ detail, onSave }: { detail: TaskDetail; onSave: (notes: string) => Promise<void> }) => {
+const NotesCard = ({ detail, onSave }: { detail: TaskDetail; onSave: (notes: string, files: File[]) => Promise<void> }) => {
     const [text, setText] = useState(detail.task.notes ?? "");
     const [editing, setEditing] = useState(false);
+    const attach = usePendingFiles();
     useEffect(() => setText(detail.task.notes ?? ""), [detail.task.id, detail.task.notes]);
     return (
         <section className="card">
             <h2>Your instructions {detail.task.notes ? <span className="chip accent">given to every stage</span> : <span className="chip">none</span>}</h2>
             {!editing && (detail.task.notes ? <div className="md">{detail.task.notes}</div> : <div className="quiet">Extra context for the agents: constraints, where to look, what to skip. Applies to every stage that runs after you save.</div>)}
-            {editing && <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="e.g. Only touch the backend; the FE change ships separately. Use the existing BidRepository." />}
+            {editing && <AgentInput value={text} onChange={setText} pending={attach} placeholder="e.g. Only touch the backend; the FE change ships separately. Use the existing BidRepository." />}
             <div className="actions" style={{ marginBottom: 0 }}>
                 {!editing && <button onClick={() => setEditing(true)}>{detail.task.notes ? "Edit" : "Add instructions"}</button>}
-                {editing && <button className="primary" onClick={async () => { await onSave(text); setEditing(false); }}>Save</button>}
-                {editing && <button onClick={() => { setText(detail.task.notes ?? ""); setEditing(false); }}>Cancel</button>}
+                {editing && <button className="primary" onClick={async () => { await onSave(text, attach.files); attach.clear(); setEditing(false); }}>Save</button>}
+                {editing && <button onClick={() => { setText(detail.task.notes ?? ""); attach.clear(); setEditing(false); }}>Cancel</button>}
             </div>
         </section>
     );
@@ -285,12 +286,13 @@ const TicketView = ({ detail, onFetch }: { detail: TaskDetail; onFetch: () => Pr
 
 // Stages a task can be sent back to with notes (from any non-running state — e.g. after an accidental Approve).
 const RETURNABLE: Stage[] = ["design_proposal", "implementation", "user_review", "pr_creation_review"];
-const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"]; pending: LineComment[]; onSend: (stage: Stage, notes: string, withComments: boolean, skipQa: boolean) => Promise<void>; onClose: () => void }) => {
+const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"]; pending: LineComment[]; onSend: (stage: Stage, notes: string, withComments: boolean, skipQa: boolean, files: File[]) => Promise<void>; onClose: () => void }) => {
     const idx = STAGE_ORDER.indexOf(task.stage);
     const options = RETURNABLE.filter((s) => STAGE_ORDER.indexOf(s) <= idx);
     const [stage, setStage] = useState<Stage>(options[options.length - 1] ?? "design_proposal");
     const [notes, setNotes] = useState("");
     const [skipQa, setSkipQa] = useState(false);
+    const attach = usePendingFiles();
     if (options.length === 0) return null;
     const runs = stage !== "user_review";
     // Returning to a stage before User Review means the QA stages would run again on the way back; offer to skip them once.
@@ -305,7 +307,7 @@ const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"
                 </select>
                 <span className="field-hint">{runs ? `${STAGE_LABEL[stage]} runs again with your notes as reviewer notes.` : "User Review waits for you again; no agent runs."}</span>
             </label>
-            <textarea placeholder={runs ? "What should change (required)" : "Notes for yourself (optional)"} value={notes} onChange={(e) => setNotes(e.target.value)} />
+            <AgentInput placeholder={runs ? "What should change (required)" : "Notes for yourself (optional)"} value={notes} onChange={setNotes} pending={attach} />
             {stage === "implementation" && pending.length > 0 && <div className="field-hint">{pending.length} draft line comment(s) from Code changes go along.</div>}
             {qaAhead && (
                 <label className="inline" style={{ display: "block", margin: "6px 0" }}>
@@ -313,7 +315,7 @@ const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"
                 </label>
             )}
             <div className="actions" style={{ marginBottom: 0 }}>
-                <button className="primary" disabled={runs && !notes.trim() && !(stage === "implementation" && pending.length > 0)} onClick={() => void onSend(stage, notes, stage === "implementation", qaAhead && skipQa)}>Send back to {STAGE_LABEL[stage]}</button>
+                <button className="primary" disabled={runs && !notes.trim() && attach.files.length === 0 && !(stage === "implementation" && pending.length > 0)} onClick={() => void onSend(stage, notes, stage === "implementation", qaAhead && skipQa, attach.files)}>Send back to {STAGE_LABEL[stage]}</button>
                 <button onClick={onClose}>Cancel</button>
             </div>
         </div>
@@ -345,7 +347,7 @@ const QuestionsBox = ({ round, onSend }: { round: QuestionRound; onSend: (answer
                             {q.options.map((o) => <button key={o} className={answers[q.id] === o ? "on" : ""} onClick={() => set(q.id, answers[q.id] === o ? "" : o)}>{o}</button>)}
                         </div>
                     )}
-                    <textarea value={answers[q.id] ?? ""} onChange={(e) => set(q.id, e.target.value)} onPaste={pending.onPaste} onDrop={pending.onDrop} onDragOver={pending.onDragOver} placeholder={q.options.length ? "Pick an option above or write your own answer" : "Your answer"} style={{ minHeight: 48 }} />
+                    <AgentInput value={answers[q.id] ?? ""} onChange={(v) => set(q.id, v)} pending={pending} chips="none" placeholder={q.options.length ? "Pick an option above or write your own answer" : "Your answer"} style={{ minHeight: 48 }} />
                 </div>
             ))}
             <FileChips pending={pending} disabled={sending} />
@@ -602,6 +604,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const [comments, changeComment, clearComments] = useDraftComments(task.id);
     const pending = Object.entries(comments);
     const canComment = task.status === "waiting_user" && task.stage === "user_review";
+    const attach = usePendingFiles();
     const currentIdx = STAGE_ORDER.indexOf(task.stage);
     // QA stages that will not run: no browser scenarios in the design, or the human asked to skip QA this pass.
     const skipped = new Set<Stage>(design && design.qa.length === 0 ? ["qa_baseline", "manual_qa"] : task.skip_qa ? ["manual_qa", ...(STAGE_ORDER.indexOf(task.stage) < STAGE_ORDER.indexOf("implementation") ? ["qa_baseline" as Stage] : [])] : []);
@@ -705,7 +708,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     <input type="checkbox" checked={skipQa} onChange={(e) => setSkipQa(e.target.checked)} /> Skip Manual QA this pass — come straight back here after the agent's changes (you QA by hand)
                 </label>
             )}
-            <textarea placeholder={canComment ? "General comments (optional if you left line comments in Code changes)" : "Notes for Claude (required for 'Request changes')"} value={notes} onChange={(e) => setNotes(e.target.value)} />
+            <AgentInput placeholder={canComment ? "General comments (optional if you left line comments in Code changes)" : "Notes for Claude (required for 'Request changes')"} value={notes} onChange={setNotes} pending={attach} />
             {canComment && pending.length > 0 && (
                 <div className="pending-comments">
                     {pending.length} line comment{pending.length === 1 ? "" : "s"} to send:
@@ -719,21 +722,24 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             <div className="actions">
                 <button
                     className="primary"
-                    onClick={() => onAction(async () => { await api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}) }); clearComments(); setNotes(""); })}
+                    onClick={() => onAction(async () => { const files = await api.uploadFiles(task.id, attach.files); await api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}), ...(files.length ? { files } : {}) }); clearComments(); setNotes(""); attach.clear(); })}
                 >
                     {task.stage === "pr_fix" ? "Approve & push" : "Approve"}
                 </button>
                 <button
-                    disabled={!notes.trim() && !(canComment && pending.length > 0)}
+                    disabled={!notes.trim() && attach.files.length === 0 && !(canComment && pending.length > 0)}
                     onClick={() =>
                         onAction(async () => {
+                            const files = await api.uploadFiles(task.id, attach.files);
                             await api.review(task.id, {
                                 verdict: "changes",
                                 ...(notes.trim() ? { notes } : {}),
+                                ...(files.length ? { files } : {}),
                                 ...(task.stage === "user_review" ? { routeTo, comments: pending.map(([, c]) => c), ...(skipQa ? { skipQa: true } : {}) } : {}),
                             });
                             clearComments();
                             setNotes("");
+                            attach.clear();
                         })
                     }
                 >
@@ -964,9 +970,10 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     task={task}
                     pending={pending.map(([, c]) => c)}
                     onClose={() => setReturning(false)}
-                    onSend={async (stage, text, withComments, skipQa) => {
+                    onSend={async (stage, text, withComments, skipQa, fileList) => {
                         await onAction(async () => {
-                            await api.returnTo(task.id, { stage, ...(text.trim() ? { notes: text } : {}), ...(withComments ? { comments: pending.map(([, c]) => c) } : {}), ...(skipQa ? { skipQa: true } : {}) });
+                            const files = await api.uploadFiles(task.id, fileList);
+                            await api.returnTo(task.id, { stage, ...(text.trim() ? { notes: text } : {}), ...(files.length ? { files } : {}), ...(withComments ? { comments: pending.map(([, c]) => c) } : {}), ...(skipQa ? { skipQa: true } : {}) });
                             if (withComments) clearComments();
                         });
                         setReturning(false);
@@ -1134,7 +1141,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             onError={onError}
                             threads={(detail.messages ?? []).filter((m) => m.anchor)}
                             canAsk={task.status !== "running"}
-                            onAsk={(anchor, text) => onAction(() => api.sendMessage(task.id, text, anchor))}
+                            onAsk={(anchor, text, files) => onAction(async () => api.sendMessage(task.id, text, anchor, await api.uploadFiles(task.id, files)))}
                             onRebase={task.branch ? startRebase : undefined}
                         />
                     </Card>
@@ -1234,7 +1241,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
             {tab === "ticket" && (
                 <>
-                    <NotesCard detail={detail} onSave={(text) => onAction(() => api.patchTask(task.id, { notes: text.trim() || null }))} />
+                    <NotesCard detail={detail} onSave={(text, files) => onAction(async () => api.patchTask(task.id, { notes: text.trim() || null, files: await api.uploadFiles(task.id, files) }))} />
                     <TicketView detail={detail} onFetch={async () => { await api.fetchTicket(task.id); await onAction(async () => undefined); }} />
                 </>
             )}
@@ -1261,6 +1268,7 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
     const [saving, setSaving] = useState(false);
     const [notes, setNotes] = useState("");
     const [changes, setChanges] = useState(false);
+    const attach = usePendingFiles();
     useEffect(() => {
         if (!editing) {
             setTitle(entry.title);
@@ -1331,9 +1339,9 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
                     {approved && <div className="field-hint" style={{ marginTop: 6 }}>Approved. {task.status_line}</div>}
                     {changes && (
                         <>
-                            <textarea placeholder={`What should change in the ${repoName(entry.repo)} description (required)`} value={notes} onChange={(e) => setNotes(e.target.value)} />
+                            <AgentInput placeholder={`What should change in the ${repoName(entry.repo)} description (required)`} value={notes} onChange={setNotes} pending={attach} />
                             <div className="actions" style={{ marginBottom: 0 }}>
-                                <button className="primary" disabled={!notes.trim()} onClick={() => onAction(async () => { await api.review(task.id, { verdict: "changes", repo: entry.repo, notes }); setNotes(""); setChanges(false); })}>Send back to the drafting agent</button>
+                                <button className="primary" disabled={!notes.trim()} onClick={() => onAction(async () => { const files = await api.uploadFiles(task.id, attach.files); await api.review(task.id, { verdict: "changes", repo: entry.repo, notes, ...(files.length ? { files } : {}) }); setNotes(""); attach.clear(); setChanges(false); })}>Send back to the drafting agent</button>
                                 <span className="field-hint">The agent redrafts this repository's PR (others are copied through unchanged); drafts not yet approved go back to pending.</span>
                             </div>
                         </>
@@ -1396,6 +1404,7 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
     const [rebaseRepos, setRebaseRepos] = useState<string[]>(repos);
     const [fixCi, setFixCi] = useState(false);
     const [instructions, setInstructions] = useState("");
+    const attach = usePendingFiles();
     const [comments, setComments] = useState<Record<string, PrComments | null>>({});
     const [picked, setPicked] = useState<Set<string>>(() => new Set());
     const [busy, setBusy] = useState(false);
@@ -1410,7 +1419,7 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
     }, [task.id, withPr.join(",")]);
     const commentKey = (repo: string, id: number) => `${repo}:${id}`;
     const allComments = withPr.flatMap((r) => [...(comments[r]?.human ?? []), ...(comments[r]?.automation ?? [])].filter((c) => !(c.kind === "line" && c.resolved)).map((c) => ({ repo: r, c })));
-    const jobs = (rebase ? 1 : 0) + (fixCi && failing.length ? 1 : 0) + (picked.size ? 1 : 0) + (instructions.trim() ? 1 : 0);
+    const jobs = (rebase ? 1 : 0) + (fixCi && failing.length ? 1 : 0) + (picked.size ? 1 : 0) + (instructions.trim() || attach.files.length ? 1 : 0);
     const run = async () => {
         setBusy(true);
         setNote(null);
@@ -1421,16 +1430,19 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
         }
         try {
             await onAction(async () => {
+                const files = await api.uploadFiles(task.id, attach.files);
                 const r = await api.prJobs(task.id, {
                     rebase: rebase ? { repos: rebaseRepos.length === repos.length ? undefined : rebaseRepos } : null,
                     fixCi: fixCi ? {} : null,
                     comments: [...byRepo].map(([repo, ids]) => ({ repo, ids })),
                     ...(instructions.trim() ? { instructions: instructions.trim() } : {}),
+                    ...(files.length ? { files } : {}),
                 });
                 setNote(r.started ? `started: ${r.note}` : r.note);
                 if (r.started) {
                     setPicked(new Set());
                     setInstructions("");
+                    attach.clear();
                 }
             });
         } finally {
@@ -1479,7 +1491,7 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
                     })}
                 </div>
                 <label>Custom instructions (optional)
-                    <textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Anything else the agent should do in the same run…" rows={3} />
+                    <AgentInput value={instructions} onChange={setInstructions} pending={attach} placeholder="Anything else the agent should do in the same run…" rows={3} />
                 </label>
                 <div className="pr-jobs-actions">
                     <button className="primary" disabled={!idle || busy || jobs === 0} onClick={() => void run()}>{busy ? "Starting…" : `Run ${jobs || ""} job${jobs === 1 ? "" : "s"} in one session`}</button>

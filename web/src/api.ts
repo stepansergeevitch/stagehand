@@ -401,14 +401,20 @@ const post = <T,>(url: string, body?: unknown): Promise<T> =>
     fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => j<T>(r));
 
 // One multipart upload per file into the task dir's shared/; the descriptors go on the message that follows.
-const uploadFile = (taskId: string, f: File): Promise<SharedFile> => {
+const uploadFileTo = (url: string, f: File): Promise<SharedFile> => {
     const fd = new FormData();
     fd.append("file", f, f.name);
-    return fetch(`/api/tasks/${taskId}/files`, { method: "POST", body: fd }).then((r) => j<SharedFile>(r));
+    return fetch(url, { method: "POST", body: fd }).then((r) => j<SharedFile>(r));
 };
 const uploadFiles = async (taskId: string, files: File[]): Promise<SharedFile[]> => {
     const out: SharedFile[] = [];
-    for (const f of files) out.push(await uploadFile(taskId, f));
+    for (const f of files) out.push(await uploadFileTo(`/api/tasks/${taskId}/files`, f));
+    return out;
+};
+// Prompter has no task: its files live under the Prompter home, per session.
+const uploadPrompterFiles = async (sessionId: string, files: File[]): Promise<SharedFile[]> => {
+    const out: SharedFile[] = [];
+    for (const f of files) out.push(await uploadFileTo(`/api/prompter/sessions/${sessionId}/files`, f));
     return out;
 };
 const withFiles = (body: Record<string, unknown>, files: SharedFile[] | undefined): Record<string, unknown> => (files?.length ? { ...body, files } : body);
@@ -463,9 +469,9 @@ export const api = {
     // Remote branch names of one repository of an env ("" = the single repo), for the base-branch pickers.
     branches: (envId: string, repo = "") => fetch(`/api/envs/${envId}/branches?repo=${encodeURIComponent(repo)}`).then((r) => j<{ branches: string[] }>(r)),
     labelSuggestions: () => fetch("/api/labels").then((r) => j<Array<TaskLabel & { count: number }>>(r)),
-    patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[]; baseBranch?: string | Record<string, string> | null }) =>
+    patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[]; baseBranch?: string | Record<string, string> | null; files?: SharedFile[] }) =>
         fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Task>(r)),
-    returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[]; skipQa?: boolean }) => post<Task>(`/api/tasks/${id}/return`, body),
+    returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[]; skipQa?: boolean; files?: SharedFile[] }) => post<Task>(`/api/tasks/${id}/return`, body),
     patchPrDraft: (id: string, body: { repo: string; title?: string; body?: string; base?: string }) =>
         fetch(`/api/tasks/${id}/pr-draft`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<PrDraft>(r)),
     cleanup: (id: string, force = false) => post<{ done: string[]; skipped: string[] }>(`/api/tasks/${id}/cleanup${force ? "?force=1" : ""}`),
@@ -486,7 +492,8 @@ export const api = {
     prompterDescribe: (path: string) => fetch(`/api/prompter/describe?path=${encodeURIComponent(path)}`).then((r) => j<{ summary: string; context: string }>(r)),
     prompterCreate: (model: string | null) => post<PrompterSession>("/api/prompter/sessions", { model }),
     prompterMessages: (id: string) => fetch(`/api/prompter/sessions/${id}/messages`).then((r) => j<{ session: PrompterSession; busy: boolean; messages: PrompterMessage[] }>(r)),
-    prompterSend: (id: string, text: string, path: string) => post<{ ok: true; message: PrompterMessage; queued: boolean }>(`/api/prompter/sessions/${id}/messages`, { text, path }),
+    prompterSend: (id: string, text: string, path: string, files?: SharedFile[]) => post<{ ok: true; message: PrompterMessage; queued: boolean }>(`/api/prompter/sessions/${id}/messages`, withFiles({ text, path }, files)),
+    prompterUploadFiles: uploadPrompterFiles,
     prompterUnqueue: (id: string, messageId: string) => fetch(`/api/prompter/sessions/${id}/messages/${messageId}`, { method: "DELETE" }).then((r) => j<{ ok: true }>(r)),
     prompterPing: (id: string) => post<{ ok: true }>(`/api/prompter/sessions/${id}/ping`),
     prompterStop: (id: string) => post<{ stopped: boolean }>(`/api/prompter/sessions/${id}/stop`),
@@ -494,7 +501,7 @@ export const api = {
     restartServer: (force = false) => post<{ ok: boolean; detail: string }>("/api/server/restart", { force }),
     testNotification: () => post<{ macos: boolean; ntfy: boolean | null; error?: string }>("/api/notifications/test"),
     testJev: () => post<{ ok: true; model: string; ms: number; inputTokens: number; summary: string } | { ok: false; error: string }>("/api/jev/test"),
-    review: (id: string, body: { verdict: "approve" | "changes"; repo?: string; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[]; skipQa?: boolean }) =>
+    review: (id: string, body: { verdict: "approve" | "changes"; repo?: string; routeTo?: "implementation" | "design_proposal"; notes?: string; comments?: LineComment[]; skipQa?: boolean; files?: SharedFile[] }) =>
         post<Task>(`/api/tasks/${id}/review`, body),
     // filter: a set of commit shas (contiguous runs become one group each) or "uncommitted"; none = everything vs the base.
     // `file`: only that path, with its hunks even when it would normally be collapsed.
@@ -504,7 +511,7 @@ export const api = {
     // Reword resolves once the (fast, conflict-free) rewrite is done. Remove only resolves once the agent run has
     // *started* — it can take a while and may hit conflicts; the outcome lands in Chat.
     rewordCommit: (id: string, sha: string, repo: string, message: string) => post<{ newSha: string }>(`/api/tasks/${id}/commits/${sha}/reword`, { repo, message }),
-    removeCommit: (id: string, sha: string, repo: string, note?: string) => post<{ started: true }>(`/api/tasks/${id}/commits/${sha}/remove`, { repo, ...(note ? { note } : {}) }),
+    removeCommit: (id: string, sha: string, repo: string, note?: string, files?: SharedFile[]) => post<{ started: true }>(`/api/tasks/${id}/commits/${sha}/remove`, withFiles({ repo, ...(note ? { note } : {}) }, files)),
     forcePush: (id: string, repo: string, force = false) => post<{ ok: true; result: string }>(`/api/tasks/${id}/commits/force-push`, { repo, force }),
     prComments: (id: string, repo: string) => fetch(`/api/tasks/${id}/pr-comments?repo=${encodeURIComponent(repo)}`).then((r) => j<PrComments | null>(r)),
     resolvePrComment: (id: string, repo: string, commentId: number, resolved: boolean) => post<PrComments | null>(`/api/tasks/${id}/pr-comments/${commentId}/resolve`, { repo, resolved }),
@@ -522,7 +529,7 @@ export const api = {
     mergePr: (id: string, body: { repo: string; method: MergeMethod; deleteBranch: boolean }) => post<{ ok: true; result: string; task: Task }>(`/api/tasks/${id}/pr/merge`, body),
     fixComments: (id: string, repo: string, commentIds: number[]) => post<{ started: true }>(`/api/tasks/${id}/fix-comments`, { repo, commentIds }),
     // Batched PR jobs in one agent run (rebase first, then failing CI, picked comments, instructions).
-    prJobs: (id: string, spec: { rebase?: { repos?: string[] } | null; fixCi?: { repos?: string[] } | null; comments?: Array<{ repo: string; ids: number[] }>; instructions?: string }) =>
+    prJobs: (id: string, spec: { rebase?: { repos?: string[] } | null; fixCi?: { repos?: string[] } | null; comments?: Array<{ repo: string; ids: number[] }>; instructions?: string; files?: SharedFile[] }) =>
         post<{ started: boolean; note: string }>(`/api/tasks/${id}/pr-jobs`, spec),
     fetchTicket: (id: string) => post<Ticket>(`/api/tasks/${id}/fetch-ticket`),
     openApp: (id: string) => post<{ opened: string; profile: string }>(`/api/tasks/${id}/open-app`),

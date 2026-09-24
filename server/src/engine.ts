@@ -61,6 +61,8 @@ export interface ReviewInput {
     comments?: LineComment[] | undefined;
     // "changes" only: skip the browser QA stages on the way back to User Review this once (the human QA'd by hand).
     skipQa?: boolean | undefined;
+    // Files the human attached to the verdict (a screenshot of what is wrong): listed by path in the reviewer notes.
+    files?: SharedFile[] | undefined;
 }
 
 // Every archived attempt file matching qa/<prefix>-N.json so far (oldest first): { N, path }. The CURRENT qa/<pass>.json
@@ -1435,7 +1437,7 @@ export class Engine extends EventEmitter {
     // "I approved by mistake" / "I want this redone": send the task back to an earlier stage with notes, from any
     // non-running state. Stages with a prompt run again with the notes as reviewer notes (like Request changes);
     // User Review just waits for the human again.
-    returnTo(taskId: string, stage: Stage, notes?: string, comments?: LineComment[], skipQa = false): void {
+    returnTo(taskId: string, stage: Stage, notes?: string, comments?: LineComment[], skipQa = false, files: SharedFile[] = []): void {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
@@ -1454,10 +1456,10 @@ export class Engine extends EventEmitter {
             this.setTaskStatus(taskId, "waiting_user", `${def.label} · returned by you — needs you`);
             return;
         }
-        const hasContent = !!notes?.trim() || cs.length > 0;
+        const hasContent = !!notes?.trim() || cs.length > 0 || files.length > 0;
         this.dispatch(taskId, stage, {
             notes: hasContent
-                ? `${renderReviewNotes(prior.n + 1, notes, cs, stage)}\n\n(The task was sent back to this stage by the human after a later stage; later stages will run again after you.)`
+                ? `${renderReviewNotes(prior.n + 1, notes, cs, stage)}${renderSharedFiles(files, this.taskDir(taskId))}\n\n(The task was sent back to this stage by the human after a later stage; later stages will run again after you.)`
                 : "The human sent the task back to this stage without notes; re-examine the work and improve it. Later stages will run again after you.",
         });
     }
@@ -1565,9 +1567,10 @@ export class Engine extends EventEmitter {
             const target: Stage = task.stage === "design_proposal" || task.stage === "pr_fix" ? task.stage : (input.routeTo ?? "implementation");
             if (task.stage === "user_review") this.setSkipQa(taskId, input.skipQa === true);
             this.setStage(taskId, target);
-            const hasContent = !!input.notes?.trim() || comments.length > 0;
+            const files = input.files ?? [];
+            const hasContent = !!input.notes?.trim() || comments.length > 0 || files.length > 0;
             this.dispatch(taskId, target, {
-                notes: hasContent ? renderReviewNotes(prior.n + 1, input.notes, comments, target) : "The reviewer requested changes without notes; re-examine the work and improve it.",
+                notes: hasContent ? renderReviewNotes(prior.n + 1, input.notes, comments, target) + renderSharedFiles(files, this.taskDir(taskId)) : "The reviewer requested changes without notes; re-examine the work and improve it.",
             });
             return;
         }
@@ -1773,7 +1776,7 @@ export class Engine extends EventEmitter {
         if (input.verdict === "changes") {
             this.db.prepare(`UPDATE pr_state SET approved_at = NULL, updated_at = ? WHERE task_id = ? AND number IS NULL`).run(now(), task.id);
             const scope = repo !== undefined && repos.length > 1 ? `\n\nRevise the draft for repository \`${repo}\` only; copy every other repository's draft from the current pr.json unchanged.` : "";
-            const notes = input.notes?.trim() ? renderReviewNotes(round, input.notes, [], "pr_creation_review") : "The reviewer requested changes without notes; re-examine the draft and improve it.";
+            const notes = (input.notes?.trim() ? renderReviewNotes(round, input.notes, [], "pr_creation_review") : "The reviewer requested changes without notes; re-examine the draft and improve it.") + renderSharedFiles(input.files ?? [], this.taskDir(task.id));
             this.dispatch(task.id, "pr_creation_review", { notes: `${notes}${scope}` });
             return;
         }
@@ -2736,7 +2739,7 @@ export class Engine extends EventEmitter {
     // are restored afterward — this is a side operation, not a pipeline stage. Validates and starts synchronously
     // (so a bad request — dirty worktree, task busy, unknown commit — surfaces to the button that triggered it) and
     // returns once the run has started; the result (success or failure) lands in Chat when it finishes.
-    async removeCommit(taskId: string, repo: string, sha: string, note: string | undefined): Promise<void> {
+    async removeCommit(taskId: string, repo: string, sha: string, note: string | undefined, files: SharedFile[] = []): Promise<void> {
         const { task, env, cwd } = await this.gitEditPreflight(taskId, repo, sha);
         const subject = (await this.git(cwd, ["log", "-1", "--format=%s", sha], env).catch(() => "")).trim();
         const cd = this.configDirOf(env);
@@ -2752,7 +2755,7 @@ export class Engine extends EventEmitter {
             branch: task.branch ?? "",
             sha,
             subject,
-            humanNote: note?.trim() ? `\nThe human's note on why: ${note.trim()}` : "",
+            humanNote: (note?.trim() ? `\nThe human's note on why: ${note.trim()}` : "") + renderSharedFiles(files, this.taskDir(taskId)),
         });
         const run = startClaude({
             prompt,
@@ -4217,7 +4220,7 @@ export class Engine extends EventEmitter {
     // rebase rewrote history). Returns a note when nothing needed an agent at all.
     async startPrJobs(
         taskId: string,
-        spec: { rebase?: { repos?: string[] | undefined } | null | undefined; fixCi?: { repos?: string[] | undefined } | null | undefined; comments?: Array<{ repo: string; ids: number[] }> | undefined; instructions?: string | undefined },
+        spec: { rebase?: { repos?: string[] | undefined } | null | undefined; fixCi?: { repos?: string[] | undefined } | null | undefined; comments?: Array<{ repo: string; ids: number[] }> | undefined; instructions?: string | undefined; files?: SharedFile[] | undefined },
     ): Promise<{ started: boolean; note: string }> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
@@ -4265,9 +4268,9 @@ export class Engine extends EventEmitter {
                 summary.push(`${t.count} comment(s) on ${repoLabel(c.repo)}`);
             }
         }
-        if (spec.instructions?.trim()) {
+        if (spec.instructions?.trim() || spec.files?.length) {
             // Instructions go with every repository that has work; alone, they are one job on the task root.
-            const text = `Instructions from the human (do exactly this, nothing more):\n\n${spec.instructions.trim()}`;
+            const text = `Instructions from the human (do exactly this, nothing more):\n\n${(spec.instructions ?? "").trim() || "See the attached file(s)."}${renderSharedFiles(spec.files ?? [], this.taskDir(taskId))}`;
             if (byRepo.size === 0) addJob("", text);
             else for (const repo of [...byRepo.keys()]) addJob(repo, text);
             summary.push("instructions");

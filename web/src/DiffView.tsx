@@ -3,6 +3,7 @@ import { anchorOf, api, repoColorClass, repoName, type BranchCommit, type DiffFi
 import { Markdown } from "./Markdown";
 import { storage } from "./storage";
 import type { CodeScope } from "./routes";
+import { AgentInput, usePendingFiles } from "./AgentInput";
 
 // A file belongs to a repository when its path is exactly that repo's directory or starts with "<repo>/".
 const inRepo = (path: string, repo: string): boolean => !repo || path === repo || path.startsWith(`${repo}/`);
@@ -28,6 +29,7 @@ const CommitManager = ({ taskId, repo, commits, busy: taskBusy, onError }: { tas
     const [text, setText] = useState("");
     const [removing, setRemoving] = useState<string | null>(null);
     const [note, setNote] = useState("");
+    const attach = usePendingFiles();
     const [started, setStarted] = useState<Set<string>>(new Set());
     const [busy, setBusy] = useState<string | null>(null);
     const [pushing, setPushing] = useState(false);
@@ -50,9 +52,10 @@ const CommitManager = ({ taskId, repo, commits, busy: taskBusy, onError }: { tas
     const remove = async (sha: string) => {
         setBusy(sha);
         try {
-            await api.removeCommit(taskId, sha, repo, note.trim() || undefined);
+            await api.removeCommit(taskId, sha, repo, note.trim() || undefined, await api.uploadFiles(taskId, attach.files));
             setStarted((s) => new Set(s).add(sha));
             setNote("");
+            attach.clear();
         } catch (e) {
             onError(String((e as Error).message ?? e));
         } finally {
@@ -85,7 +88,7 @@ const CommitManager = ({ taskId, repo, commits, busy: taskBusy, onError }: { tas
                     {removing === c.sha && !started.has(c.sha) && (
                         <div className="commit-remove">
                             <p className="field-hint">Removes this commit from history entirely (not a revert) — the agent replays everything after it and resolves any conflicts, then re-runs tests. Nothing is pushed; you review the result and push it yourself.</p>
-                            <textarea placeholder="Optional note for the agent: why remove it" value={note} onChange={(e) => setNote(e.target.value)} />
+                            <AgentInput placeholder="Optional note for the agent: why remove it" value={note} onChange={setNote} pending={attach} />
                             <div className="actions" style={{ margin: 0 }}>
                                 <button className="danger" disabled={disabled} onClick={() => void remove(c.sha)}>{busy === c.sha ? "Starting…" : "Remove this commit"}</button>
                                 <button disabled={disabled} onClick={() => { setRemoving(null); setNote(""); }}>Cancel</button>
@@ -187,22 +190,27 @@ const lineAnchor = (path: string, l: DiffLine): Pick<LineComment, "path" | "side
 
 // One editor for both things a line takes: a review comment (Save — kept as a draft until the review is sent) and a
 // question for the agent (Ask — sent right away, answered in place). Either button is offered only when allowed.
-const CommentEditor = ({ initial, placeholder, onSave, onAsk, onCancel, onDelete }: { initial: string; placeholder: string; onSave?: (t: string) => void; onAsk?: (t: string) => void; onCancel: () => void; onDelete?: () => void }) => {
+// Files go with a question (the agent gets them with the anchored message); a saved draft comment is text only.
+const CommentEditor = ({ initial, placeholder, onSave, onAsk, onCancel, onDelete }: { initial: string; placeholder: string; onSave?: (t: string) => void; onAsk?: (t: string, files: File[]) => void; onCancel: () => void; onDelete?: () => void }) => {
     const [text, setText] = useState(initial);
+    const attach = usePendingFiles();
+    const ask = () => onAsk?.(text.trim() || "See the attached file(s).", attach.files);
     return (
         <div className="line-comment editing">
-            <textarea
+            <AgentInput
                 autoFocus
                 value={text}
-                onChange={(e) => setText(e.target.value)}
+                onChange={setText}
                 placeholder={placeholder}
+                pending={onAsk ? attach : undefined}
+                chips="below"
                 onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) (onSave ?? onAsk)?.(text.trim());
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) onSave ? onSave(text.trim()) : ask();
                 }}
             />
             <div className="actions">
                 {onSave && <button className="primary" disabled={!text.trim()} onClick={() => onSave(text.trim())}>Save comment</button>}
-                {onAsk && <button className={onSave ? "" : "primary"} disabled={!text.trim()} title="Ask the task's agent about this line; the answer appears here and in Chat" onClick={() => onAsk(text.trim())}>Ask agent</button>}
+                {onAsk && <button className={onSave ? "" : "primary"} disabled={!text.trim() && attach.files.length === 0} title="Ask the task's agent about this line; the answer appears here and in Chat" onClick={ask}>Ask agent</button>}
                 <button onClick={onCancel}>Cancel</button>
                 {onDelete && <button className="danger" onClick={onDelete}>Delete</button>}
             </div>
@@ -284,7 +292,7 @@ const FileDiff = ({
     canComment: boolean;
     canAsk: boolean;
     onChange: (key: string, c: LineComment | null) => void;
-    onAsk: (anchor: MessageAnchor, text: string) => Promise<void>;
+    onAsk: (anchor: MessageAnchor, text: string, files: File[]) => Promise<void>;
     // Fetches a collapsed file's hunks (generated / very large files are sent without them).
     onExpand: (path: string) => Promise<void>;
 }) => {
@@ -301,11 +309,11 @@ const FileDiff = ({
     const priorCount = prior.filter((p) => p.path === file.path).length;
     const threadCount = Object.keys(placedThreads.byKey).length + placedThreads.outdated.length;
     const interactive = canComment || canAsk;
-    const ask = async (key: string, anchor: MessageAnchor, text: string) => {
+    const ask = async (key: string, anchor: MessageAnchor, text: string, files: File[]) => {
         setEditing(null);
         setAsking((s) => new Set(s).add(key));
         try {
-            await onAsk(anchor, text);
+            await onAsk(anchor, text, files);
         } finally {
             setAsking((s) => { const n = new Set(s); n.delete(key); return n; });
         }
@@ -389,7 +397,7 @@ const FileDiff = ({
                                         initial={existing?.text ?? ""}
                                         placeholder={canComment && canAsk ? "What should change here? — or a question for the agent (⌘/Ctrl+Enter saves the comment)" : canComment ? "What should change here?" : "Ask the agent about this line…"}
                                         {...(canComment ? { onSave: (text: string) => { onChange(existingKey, { ...(existing ?? anchor), snippet: l.text, text }); setEditing(null); } } : {})}
-                                        {...(canAsk ? { onAsk: (text: string) => void ask(key, fullAnchor, text) } : {})}
+                                        {...(canAsk ? { onAsk: (text: string, files: File[]) => void ask(key, fullAnchor, text, files) } : {})}
                                         onCancel={() => setEditing(null)}
                                         {...(existing && canComment ? { onDelete: () => { onChange(existingKey, null); setEditing(null); } } : {})}
                                     />
@@ -464,7 +472,7 @@ export const DiffView = ({
     canComment?: boolean;
     canAsk?: boolean;
     onChange?: (key: string, c: LineComment | null) => void;
-    onAsk?: (anchor: MessageAnchor, text: string) => Promise<void>;
+    onAsk?: (anchor: MessageAnchor, text: string, files: File[]) => Promise<void>;
     // The env's sub-repository directories, for a repo-tabbed view; [] shows the single repo with no tabs.
     repos?: string[];
     // A stage/agent run already owns the worktree — disables Change message / Remove / force-push until it's done.

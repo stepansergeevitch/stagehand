@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { anchorOf, api, filesOf, type Message, type TaskStatus } from "./api";
-import { FileChips, MessageFiles, usePendingFiles } from "./FilePicker";
+import { MessageFiles } from "./FilePicker";
+import { AgentInput, usePendingFiles } from "./AgentInput";
 import { Markdown } from "./Markdown";
 
 type Mode = "ask" | "do";
@@ -86,17 +87,14 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
                 <button type="button" role="tab" aria-selected={mode === "ask"} className={mode === "ask" ? "active" : ""} onClick={() => setMode("ask")} title="A question — the agent answers, changes nothing">Ask</button>
                 <button type="button" role="tab" aria-selected={mode === "do"} className={mode === "do" ? "active" : ""} onClick={() => setMode("do")} title="An instruction — the agent carries it out in the worktree and reports back">Do</button>
             </div>
-            <FileChips pending={pending} disabled={!idle || sending} />
             <div className="chat-input">
-                <textarea
+                <AgentInput
                     value={text}
-                    onChange={(e) => setText(e.target.value)}
+                    onChange={setText}
+                    pending={pending}
                     onKeyDown={(e) => {
                         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send();
                     }}
-                    onPaste={pending.onPaste}
-                    onDrop={pending.onDrop}
-                    onDragOver={pending.onDragOver}
                     placeholder={placeholder}
                     disabled={!idle || sending}
                     rows={mode === "do" ? 4 : 2}
