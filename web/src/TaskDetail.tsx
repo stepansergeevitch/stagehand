@@ -1199,7 +1199,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         <>
                             {selectedComments.size > 0 && (
                                 <div className="review-box" style={{ marginBottom: 10 }}>
-                                    <b>{selectedComments.size} comment(s) picked.</b> The agent addresses just these, commits locally, and you review the diff before it's pushed — no re-run of QA or User Review.
+                                    <b>{selectedComments.size} comment(s) picked.</b> Address: the agent fixes just these, commits locally, and you review the diff before it's pushed — no re-run of QA or User Review. Ask: the agent only says what it thinks of them (sense, already addressed, fix size and risk) in Chat.
                                     <div className="actions" style={{ marginBottom: 0 }}>
                                         <button
                                             className="primary"
@@ -1207,6 +1207,17 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                             onClick={() => void onAction(async () => { await api.fixComments(task.id, ghRepo ?? "", [...selectedComments]); setSelectedComments(new Set()); })}
                                         >
                                             Ask agent to address {selectedComments.size} comment(s)
+                                        </button>
+                                        <button
+                                            disabled={task.status === "running"}
+                                            title="Chat question about the picked comments: does each make sense, is it already addressed, what would a fix take — no code change"
+                                            onClick={() => {
+                                                const question = window.prompt("Question for the agent about the picked comments (leave blank for the standard assessment):", "");
+                                                if (question === null) return;
+                                                void onAction(async () => { await api.askComments(task.id, ghRepo ?? "", [...selectedComments], question.trim() || undefined); setSelectedComments(new Set()); });
+                                            }}
+                                        >
+                                            Ask agent about {selectedComments.size} comment(s)
                                         </button>
                                         <button onClick={() => setSelectedComments(new Set())}>Clear selection</button>
                                     </div>

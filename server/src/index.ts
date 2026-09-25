@@ -1520,6 +1520,16 @@ app.post("/api/tasks/:id/fix-comments", async (c) => {
     }
 });
 
+// Human picks PR comments and asks the agent what it thinks of them (Chat answer, no code change, no fix round).
+app.post("/api/tasks/:id/ask-comments", async (c) => {
+    const body = json(z.object({ repo: z.string().optional(), commentIds: z.array(z.number()).min(1), question: z.string().optional() }), await c.req.json());
+    try {
+        return c.json(await engine.askAboutPrComments(c.req.param("id"), body.repo ?? "", body.commentIds, body.question));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/rerun", async (c) => {
     const body = json(z.object({ stage: z.enum(STAGES as [Stage, ...Stage[]]) }), await c.req.json());
     engine.rerun(c.req.param("id"), body.stage);

@@ -44,6 +44,13 @@ export type PrComment =
     // `threadId` is the GraphQL review-thread node id (what resolve/unresolve take); `resolved` is the thread's state.
     | { kind: "line"; id: number; author: string; path: string; line: number | null; side: "old" | "new"; outdated: boolean; body: string; at: string; url: string; replyTo: number | null; snippet: string; threadId: string | null; resolved: boolean }
     | { kind: "general"; id: number; author: string; body: string; at: string; url: string };
+// One PR comment as a prompt line: where it sits, who wrote it, what it says.
+export const describePrComment = (c: PrComment): string =>
+    c.kind === "line"
+        ? `- \`${c.path}:${c.line ?? "?"}\`${c.outdated ? " (outdated diff position)" : ""} — ${c.author}: ${c.body.trim()}`
+        : c.kind === "review"
+          ? `- Review by ${c.author}${c.state !== "COMMENTED" ? ` (${c.state.toLowerCase().replace("_", " ")})` : ""}: ${c.body.trim() || "(no body text)"}`
+          : `- ${c.author}: ${c.body.trim()}`;
 export interface PrComments {
     number: number;
     // GitHub owner/name of the repository the PR lives in, and the task's sub-repo directory ("" for a single repo).
@@ -2360,6 +2367,15 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        const { number, picked } = await this.pickedPrComments(taskId, repo, commentIds);
+        const failureOutput = `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${number} picked by the human to address (this is not necessarily a CI failure):\n${picked.map(describePrComment).join("\n")}`;
+        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
+        this.setStage(taskId, "pr_fix");
+        this.startPrRound(taskId, { [repo]: failureOutput }, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
+    }
+
+    // The picked comments of one PR, freshly fetched so a stale checkbox never addresses a comment that changed.
+    private async pickedPrComments(taskId: string, repo: string, commentIds: number[]): Promise<{ number: number; picked: PrComment[] }> {
         const row = this.prRow(taskId, repo);
         if (!row?.number) throw new Error(`no PR recorded for ${repoLabel(repo)} yet`);
         const comments = await this.prComments(taskId, repo);
@@ -2367,16 +2383,20 @@ export class Engine extends EventEmitter {
         const wanted = new Set(commentIds);
         const picked = [...comments.human, ...comments.automation].filter((c) => wanted.has(c.id));
         if (!picked.length) throw new Error("none of the selected comments were found — they may be stale, refresh and re-select");
-        const describe = (c: PrComment): string =>
-            c.kind === "line"
-                ? `- \`${c.path}:${c.line ?? "?"}\`${c.outdated ? " (outdated diff position)" : ""} — ${c.author}: ${c.body.trim()}`
-                : c.kind === "review"
-                  ? `- Review by ${c.author}${c.state !== "COMMENTED" ? ` (${c.state.toLowerCase().replace("_", " ")})` : ""}: ${c.body.trim() || "(no body text)"}`
-                  : `- ${c.author}: ${c.body.trim()}`;
-        const failureOutput = `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (this is not necessarily a CI failure):\n${picked.map(describe).join("\n")}`;
-        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
-        this.setStage(taskId, "pr_fix");
-        this.startPrRound(taskId, { [repo]: failureOutput }, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
+        return { number: row.number, picked };
+    }
+
+    // Human-triggered only: the picked comments go to the task's chat as a question, not a fix round. The agent assesses
+    // each one (does it make sense, is it already addressed on the branch, what a fix would take) and changes nothing;
+    // the human then decides between "address" and a reply on GitHub. Answers land in Chat like any Ask.
+    async askAboutPrComments(taskId: string, repo: string, commentIds: number[], question: string | undefined): Promise<MessageRow> {
+        const { number, picked } = await this.pickedPrComments(taskId, repo, commentIds);
+        const ask =
+            question?.trim() ||
+            "For each comment: does it make sense — agree or disagree, and why? Is it already addressed on this branch (cite the commit or path:line)? " +
+                "If not, what would the fix be, how big is it, and what is the risk? Recommend address / reply-and-decline / needs-human-decision per comment.";
+        const text = `About ${picked.length} comment(s) on PR #${number}${repo ? ` (${repoLabel(repo)})` : ""}:\n${picked.map(describePrComment).join("\n")}\n\n${ask}`;
+        return this.askAgent(taskId, text);
     }
 
     // After the human approves a PR Fix (already committed locally, never pushed): push every checkout that has
@@ -4260,13 +4280,7 @@ export class Engine extends EventEmitter {
         const wanted = new Set(commentIds);
         const picked = [...comments.human, ...comments.automation].filter((c) => wanted.has(c.id));
         if (!picked.length) return { text: "", count: 0 };
-        const describe = (c: PrComment): string =>
-            c.kind === "line"
-                ? `- \`${c.path}:${c.line ?? "?"}\`${c.outdated ? " (outdated diff position)" : ""} — ${c.author}: ${c.body.trim()}`
-                : c.kind === "review"
-                  ? `- Review by ${c.author}${c.state !== "COMMENTED" ? ` (${c.state.toLowerCase().replace("_", " ")})` : ""}: ${c.body.trim() || "(no body text)"}`
-                  : `- ${c.author}: ${c.body.trim()}`;
-        return { count: picked.length, text: `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (not necessarily a CI failure):\n${picked.map(describe).join("\n")}` };
+        return { count: picked.length, text: `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (not necessarily a CI failure):\n${picked.map(describePrComment).join("\n")}` };
     }
 
     // Batched PR jobs — the user's ask (2026-09-21): "batch jobs for agent after PR creation - e.g. rebase onto latest

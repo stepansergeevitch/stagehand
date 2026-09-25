@@ -579,6 +579,8 @@ export const api = {
     createApprovedPrs: (id: string) => post<{ ok: true; done: string[]; task: Task; prStates: PrState[] }>(`/api/tasks/${id}/pr/create`),
     mergePr: (id: string, body: { repo: string; method: MergeMethod; deleteBranch: boolean }) => post<{ ok: true; result: string; task: Task }>(`/api/tasks/${id}/pr/merge`, body),
     fixComments: (id: string, repo: string, commentIds: number[]) => post<{ started: true }>(`/api/tasks/${id}/fix-comments`, { repo, commentIds }),
+    // The agent's take on picked comments, answered in Chat — nothing committed, no PR round.
+    askComments: (id: string, repo: string, commentIds: number[], question?: string) => post<Message>(`/api/tasks/${id}/ask-comments`, { repo, commentIds, ...(question ? { question } : {}) }),
     // Batched PR jobs in one agent run (rebase first, then failing CI, picked comments, instructions).
     prJobs: (id: string, spec: { rebase?: { repos?: string[] } | null; fixCi?: { repos?: string[] } | null; comments?: Array<{ repo: string; ids: number[] }>; instructions?: string; files?: SharedFile[] }) =>
         post<{ started: boolean; note: string }>(`/api/tasks/${id}/pr-jobs`, spec),

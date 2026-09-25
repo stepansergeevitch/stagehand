@@ -53,7 +53,8 @@ Say what you do in one line first. Re-read `GET /api/tasks/:id` afterwards and r
 - `POST /api/tasks/:id/relaunch-chrome` — asks first: closes the human's whole Chrome.
 - `POST /api/tasks/:id/rebase {"repos": [...]}` — rebase onto the latest base (agent on conflicts).
 - `POST /api/tasks/:id/pr/create`, `POST /api/tasks/:id/pr/refresh`, `POST /api/tasks/:id/fix-ci`,
-  `POST /api/tasks/:id/fix-comments {"repo": "...", "ids": [...]}`, `POST /api/tasks/:id/pr-jobs {…}`,
+  `POST /api/tasks/:id/fix-comments {"repo": "...", "commentIds": [...]}`, `POST /api/tasks/:id/pr-jobs {…}`,
+  `POST /api/tasks/:id/ask-comments {"repo": "...", "commentIds": [...], "question": "optional"}` — the agent's take on picked comments in Chat, no code change,
   `POST /api/tasks/:id/pr-comments/:commentId/resolve {"resolved": true}`, `PATCH /api/tasks/:id/pr-draft {…}`.
 - `POST /api/tasks/:id/pr/merge {"method": "squash", "deleteBranch": true}` — ask first (irreversible).
 - `POST /api/tasks/:id/commits/:sha/reword {"repo": "", "message": "…"}`, `POST /api/tasks/:id/commits/:sha/remove`,
