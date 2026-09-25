@@ -238,3 +238,27 @@ export const startClaude = (spec: RunSpec): ClaudeRun => {
     };
     return emitter;
 };
+
+// A headless run cannot grant a permission: the CLI must come up in the "auto" mode every run asks for, and every
+// tool call must be allowed. Haiku silently falls back to "default" (INV-136, 2026-09-24: 70 turns, every Edit
+// answered "Claude requested permissions to write … but you haven't granted it yet", nothing written, the stale
+// impl.json taken for the run's). The run's error text when the event shows that; null when the event says nothing
+// about permissions.
+export const permissionProblem = (ev: Record<string, unknown>): string | null => {
+    if (ev["type"] === "system" && ev["subtype"] === "init") {
+        const mode = ev["permissionMode"];
+        return mode === "default" || mode === "plan" ? `the CLI started in "${mode}" permission mode instead of auto` : null;
+    }
+    if (ev["type"] !== "user") return null;
+    const content = (ev["message"] as { content?: unknown } | undefined)?.content;
+    if (!Array.isArray(content)) return null;
+    for (const block of content as Array<Record<string, unknown>>) {
+        if (block["type"] !== "tool_result") continue;
+        const text = resultText(block["content"]);
+        if (/^Claude requested permissions to /.test(text)) return `a tool call was refused: ${text.split("\n")[0]!.slice(0, 200)}`;
+    }
+    return null;
+};
+
+const resultText = (content: unknown): string =>
+    typeof content === "string" ? content : Array.isArray(content) ? content.map((c) => (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : "")).join("\n") : "";

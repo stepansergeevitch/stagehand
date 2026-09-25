@@ -4,7 +4,8 @@ import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PREVIEW, type Config } from "./config.js";
 import { accountBrowserReady, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, componentsOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvComponent, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type SharedFile, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
-import { rateLimitHit, ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
+import { permissionProblem, rateLimitHit, ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
+import { renderHumanDirectives, type HumanDirective } from "./human-directives.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, openInProfile, QA_CHROME_FLAGS, setChromeTabUrl } from "./chrome-profiles.js";
 import { activateCloneTab, cloneProfile, launchClone, pickCdpPort, quitClone, sweepClones, type ChromeClone } from "./chrome-clones.js";
@@ -2928,6 +2929,50 @@ export class Engine extends EventEmitter {
         return out;
     }
 
+    // Everything the human told the agent about this task, oldest first: the task notes, every Request-changes /
+    // Return-to round (notes and line comments), the answers to the agent's questions, chat messages and Do
+    // instructions. The reviewer checks the diff against it — the implementer's own account cannot be trusted for
+    // that (INV-136, 2026-09-24: a round said "remove the serial_number parameter — TOTALLY", the agent kept it and
+    // argued the point in impl.json notes; the review, seeing only the diff and the design, passed it).
+    private humanDirectives(task: TaskRow): string {
+        const items: HumanDirective[] = [];
+        if (task.notes?.trim()) items.push({ at: task.created_at, source: "Task notes", text: task.notes.trim() });
+        const label = (s: string | null): string => (s && s in STAGE_DEFS ? STAGE_DEFS[s as Stage].label : (s ?? ""));
+        const rounds = this.db.prepare(`SELECT stage, route_to, notes, comments, created_at FROM reviews WHERE task_id = ? AND verdict = 'changes' ORDER BY created_at`).all(task.id) as Array<{
+            stage: string;
+            route_to: string | null;
+            notes: string | null;
+            comments: string | null;
+            created_at: string;
+        }>;
+        for (const r of rounds) {
+            let comments: LineComment[] = [];
+            try {
+                comments = r.comments ? (JSON.parse(r.comments) as LineComment[]) : [];
+            } catch {
+                comments = [];
+            }
+            const to = r.route_to && r.route_to !== r.stage ? ` → ${label(r.route_to)}` : "";
+            items.push({ at: r.created_at, source: `Request changes at ${label(r.stage)}${to}`, text: r.notes ?? "", comments });
+        }
+        const answered = this.db.prepare(`SELECT questions, answers, answered_at FROM questions WHERE task_id = ? AND answered_at IS NOT NULL ORDER BY answered_at`).all(task.id) as Array<{ questions: string; answers: string | null; answered_at: string }>;
+        for (const q of answered) {
+            try {
+                const qs = (JSON.parse(q.questions) as { questions?: AgentQuestion[] }).questions ?? [];
+                const as = q.answers ? (JSON.parse(q.answers) as Record<string, string>) : {};
+                const lines = qs.filter((x) => as[x.id]?.trim()).map((x) => `Q: ${x.text}\nA: ${as[x.id]!.trim()}`);
+                if (lines.length) items.push({ at: q.answered_at, source: "Answers to the agent's questions", text: lines.join("\n") });
+            } catch {
+                /* an unreadable row says nothing */
+            }
+        }
+        for (const m of this.listMessages(task.id)) {
+            if (m.role !== "user") continue;
+            items.push({ at: m.created_at, source: m.kind === "instruction" ? "Chat → Do" : m.anchor ? "Chat, on a line of the diff" : "Chat", text: m.text });
+        }
+        return renderHumanDirectives(items);
+    }
+
     private promptVars(task: TaskRow, def: StageDef, opts: DispatchOpts): Record<string, string> {
         const env = this.env(task.env_id);
         const taskDir = this.taskDir(task.id);
@@ -2964,6 +3009,7 @@ export class Engine extends EventEmitter {
             branch: task.branch ?? "",
             taskDir,
             reviewerNotes: opts.notes ?? "",
+            humanDirectives: this.humanDirectives(task),
             askHuman: askHumanBlock(taskDir),
             attempt: String(opts.attempt ?? 1),
             maxTurns: String(def.maxTurns ?? 100),
@@ -3380,11 +3426,27 @@ export class Engine extends EventEmitter {
         // new tab active in front of it — from then on every popover opens into a throttled, hidden document.
         const tabKeeper = chromeNeeded ? this.startTabKeeper(task, env, cloneKey) : null;
 
+        let seenModel: string | null = null;
         run.on("activity", (ev: ActivityEvent) => {
             // A run without --model tells us what this account's default really is.
             if (ev.kind === "init" && !explicitModel) {
                 const model = (ev.raw as { model?: unknown }).model;
                 if (typeof model === "string" && model) this.db.prepare(`UPDATE accounts SET default_model = ? WHERE id = ?`).run(model, account.id);
+            }
+            const rawModel = (ev.raw as { model?: unknown; message?: { model?: unknown } }).model ?? (ev.raw as { message?: { model?: unknown } }).message?.model;
+            if (typeof rawModel === "string" && rawModel) seenModel = rawModel;
+            // The CLI came up in a permission mode that refuses edits, or refused one (Haiku falls back to "default"
+            // silently): kill the run at once — every edit after this is refused too, the turns are wasted, and the
+            // stale output file would pass for this run's (INV-136, 2026-09-24: 70 turns of refused edits, "done").
+            const problem = ev.raw && typeof ev.raw === "object" ? permissionProblem(ev.raw as Record<string, unknown>) : null;
+            if (problem && !this.permissionFailures.has(runId)) {
+                const model = seenModel ?? explicitModel ?? account.default_model ?? "the account's default";
+                this.permissionFailures.set(
+                    runId,
+                    `${problem} (model: ${model}). A headless run cannot grant a permission, so nothing it edits lands; Haiku does not honour --permission-mode auto. Give this stage (Settings → models) or the task a Sonnet, Opus or Fable model, then Retry.`,
+                );
+                run.kill();
+                return;
             }
             if (ev.kind === "tool_use" || ev.kind === "text") {
                 this.db.prepare(`UPDATE runs SET last_event = ? WHERE id = ?`).run(ev.summary, runId);
@@ -3413,6 +3475,8 @@ export class Engine extends EventEmitter {
 
     // ---------- PR Fix rounds: one run per repository, in parallel ----------
 
+    // Runs killed at their first refused permission (see permissionProblem): run id → the error the closer records.
+    private readonly permissionFailures = new Map<string, string>();
     private readonly prGroups = new Map<string, PrGroup>();
     // Rounds parked on a rate limit: replayed by the next dispatch of pr_fix for the task (tick).
     private readonly queuedPrRounds = new Map<string, PrRoundSpec>();
@@ -3492,7 +3556,12 @@ export class Engine extends EventEmitter {
         const asked = this.questionsAskedDuringRun(taskId, runId, questionsFile);
         const written = this.outputWrittenDuringRun(taskId, outputFile, runId);
         const parsed = written ? PrFixResult.safeParse(this.readArtifactJson<unknown>(taskId, outputFile)) : null;
-        if (limited && outcome.lastRateLimit?.resetsAt) {
+        const refused = this.permissionFailures.get(runId);
+        if (refused) {
+            this.permissionFailures.delete(runId);
+            finish("failed", refused);
+            result = { kind: "failed", error: `${repoLabel(shard.repo)}: ${refused.slice(0, 500)}` };
+        } else if (limited && outcome.lastRateLimit?.resetsAt) {
             finish("rate_limited", "rate limited");
             result = { kind: "rate_limited", resetsAt: outcome.lastRateLimit.resetsAt };
         } else if (asked && !parsed?.success) {
@@ -3716,7 +3785,12 @@ export class Engine extends EventEmitter {
         let result: ShardResult;
         // A run that ended with a successful result did its work, whatever the last window event said.
         const limited = rateLimitHit(outcome.lastRateLimit) && !(outcome.result && !outcome.result.is_error);
-        if (limited && outcome.lastRateLimit?.resetsAt) {
+        const refused = this.permissionFailures.get(runId);
+        if (refused) {
+            this.permissionFailures.delete(runId);
+            finish("failed", refused);
+            result = { kind: "failed", error: `${shard.id}: ${refused.slice(0, 300)}` };
+        } else if (limited && outcome.lastRateLimit?.resetsAt) {
             finish("rate_limited", "rate limited");
             result = { kind: "rate_limited", resetsAt: outcome.lastRateLimit.resetsAt };
         } else {
@@ -4684,6 +4758,14 @@ export class Engine extends EventEmitter {
             calibrateWindows(this.db, account.id, outcome.firstRateLimit, outcome.lastRateLimit, outcome.result?.total_cost_usd);
         };
 
+        const refused = this.permissionFailures.get(runId);
+        if (refused) {
+            this.permissionFailures.delete(runId);
+            finish("failed", refused);
+            this.addMessage(taskId, "agent", `⛔ ${def.label} stopped at its first refused edit — ${refused}`);
+            this.setTaskStatus(taskId, "failed", `${def.label} · ${refused.slice(0, 160)}`);
+            return;
+        }
         // A run that ended with a successful result did its work, whatever the last window event said.
         const limited = rateLimitHit(outcome.lastRateLimit) && !(outcome.result && !outcome.result.is_error);
         if (limited && outcome.lastRateLimit?.resetsAt) {
@@ -4740,12 +4822,17 @@ export class Engine extends EventEmitter {
             const written = this.outputWrittenDuringRun(taskId, def.outputFile, runId);
             const pending = stoppedBackground > 0 && !written ? backgroundNote(stoppedBackground) : "";
             const free = !!pending && !opts.backgroundResumed;
-            // A PR fix resumes the task session: an agent that "remembers" fixing CI may reply DONE without touching
-            // anything, and the stale pr-fix.json from the previous fix then validates as if it were this run's
-            // (INV-131, 2026-09-18: attempt 3 for a Query-budget failure returned attempt 2's migration summary).
-            // Each fix must write its own output.
-            if (def.stage === "pr_fix" && !written) {
-                this.retryContract(taskId, def, opts, `${pending}${def.outputFile} was not written by this run — it still describes the previous fix. This run is about the check(s) named in the instructions above: make the fix, commit it, then write ${def.outputFile} fresh with what you did.`, finish, free);
+            // Every run must write its own output. A PR fix resumes the task session: an agent that "remembers" fixing
+            // CI may reply DONE without touching anything, and the stale pr-fix.json from the previous fix then validates
+            // as if it were this run's (INV-131, 2026-09-18: attempt 3 for a Query-budget failure returned attempt 2's
+            // migration summary). The same for an Implementation round whose edits never landed (INV-136, 2026-09-24:
+            // every write refused, impl.json of the previous round taken for the result, the task went on to review).
+            if (!written) {
+                const why =
+                    def.stage === "pr_fix"
+                        ? `it still describes the previous fix. This run is about the check(s) named in the instructions above: make the fix, commit it, then write ${def.outputFile} fresh with what you did.`
+                        : `it still describes an earlier run of this stage. Do this run's work (the notes above say what), then write ${def.outputFile} fresh for what THIS run did.`;
+                this.retryContract(taskId, def, opts, `${pending}${def.outputFile} was not written by this run — ${why}`, finish, free);
                 return;
             }
             const validation = await this.validateOutput(taskId, def);

@@ -10,6 +10,12 @@ You are a staff engineer doing the pre-landing review of ticket {{ticketId}} in 
 
 For every repository of this task: `git fetch origin {{baseBranch}} --quiet` (the base of that repository), `DIFF_BASE=$(git merge-base origin/<base> HEAD)`, then `git diff "$DIFF_BASE" --stat` and the full diff. Read `{{taskDir}}/design.md` for the intent. Compare the files changed against that intent: anything outside it is scope drift — a finding, not something to revert.
 
+## Step 1b — the human's instructions
+
+{{humanDirectives}}
+
+Read `{{taskDir}}/impl.json` `notes` — the implementer's own account of how each point was resolved — then check every instruction above against the diff itself, not against that account. A later instruction supersedes an earlier one on the same point: check the latest. An instruction the diff does not deliver — skipped, delivered another way than asked, narrowed, or "resolved" by argument in the notes — is a finding: severity P1, confidence 9, category `human_instruction`, status `open`, `quote` = the instruction's own words, `detail` = what the diff does instead, `file`/`line` = where. Never fix these yourself and never argue an instruction away: the human decides. A delivered instruction needs no finding; a question the human asked in chat is not an instruction unless it tells the agent to do something.
+
 ## Step 2 — the checklist
 
 {{gstackChecklist}}
