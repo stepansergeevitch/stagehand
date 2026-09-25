@@ -10,6 +10,8 @@ You are a staff engineer doing the pre-landing review of ticket {{ticketId}} in 
 
 For every repository of this task: `git fetch origin {{baseBranch}} --quiet` (the base of that repository), `DIFF_BASE=$(git merge-base origin/<base> HEAD)`, then `git diff "$DIFF_BASE" --stat` and the full diff. Read `{{taskDir}}/design.md` for the intent. Compare the files changed against that intent: anything outside it is scope drift — a finding, not something to revert.
 
+**Scope of findings: the lines this diff adds or changes, and nothing else.** Code the diff did not touch is out of scope even when it sits in the same file, next to a changed line, or would fail the checklist — an inlined constant, a missing guard, a stale docstring, a `db=` call that was already there: not a finding, not a fix, not a suggestion. The implementer never worked on that code and must not be sent to change it. The one exception is a defect the diff *causes* in old code (a new enum value with a sibling switch that does not handle it, a new caller that makes an old query run in a loop): then the `quote` is the new line that causes it, and the fix touches the old code only as far as that new line requires. When you are unsure whether a line is new, check it against `git diff "$DIFF_BASE"` before you write the finding.
+
 ## Step 1b — the human's instructions
 
 {{humanDirectives}}
@@ -33,6 +35,7 @@ Every finding with confidence ≥ 7 gets an action. **Fix it yourself** (status 
 - {{commitRule}} One commit per fix, message naming the finding.
 - Do **not** push, and do not open, comment on or review anything on GitHub — the human sees your findings first.
 - Do not refactor, rename or "clean up" beyond a finding. Do not add tests unless a finding is a completeness gap you fix.
+- Never change a line the diff did not touch, except as the one exception under Scope of findings says.
 
 ## Turn budget
 
