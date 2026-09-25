@@ -323,7 +323,11 @@ export const wrapPsqlInRollback = (cmd: string): string =>
 
 // Two chat anchors point at the same diff line thread: same file, same side, same text (line numbers drift as the
 // branch evolves, the quoted line is what identifies it).
-const sameAnchor = (a: MessageAnchor, b: MessageAnchor): boolean => a.path === b.path && a.side === b.side && a.snippet.trim() === b.snippet.trim();
+// A PR-comment thread is keyed by the comment itself; a diff-line thread by where the line sits and what it says.
+const sameAnchor = (a: MessageAnchor, b: MessageAnchor): boolean =>
+    a.prComment || b.prComment
+        ? !!a.prComment && !!b.prComment && a.prComment.repo === b.prComment.repo && a.prComment.id === b.prComment.id
+        : a.path === b.path && a.side === b.side && a.snippet.trim() === b.snippet.trim();
 // "backend: " in front of a per-repo status fragment, only when the task spans several repositories.
 const repoPrefix = (repo: string, repos: string[]): string => (repos.length > 1 && repo ? `${repo}: ` : "");
 const repoScopeNote = (repo: string): string => (repo ? `Repository: \`${repo}/\` inside the worktree — every git and gh command below runs inside that directory.\n` : "");
@@ -2639,7 +2643,16 @@ export class Engine extends EventEmitter {
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
         const quoted = `"${text.replace(/"/g, '\\"')}"`;
         const earlier = anchor ? this.listMessages(taskId).filter((m) => m.anchor && sameAnchor(JSON.parse(m.anchor) as MessageAnchor, anchor)).slice(0, -1) : [];
-        const prompt = anchor
+        const prompt = anchor?.prComment
+            ? `The human is looking at ONE review comment on this task's pull request #${anchor.prComment.number}${anchor.prComment.repo ? ` (repository \`${anchor.prComment.repo}/\` inside the worktree)` : ""}, ` +
+              `by ${anchor.prComment.author}${anchor.path ? ` on \`${anchor.path}${anchor.line ? `:${anchor.line}` : ""}\`` : ""} (${anchor.prComment.url}), which says:\n\n` +
+              `${anchor.snippet.trim().split("\n").map((l) => `    ${l}`).join("\n")}\n\n` +
+              (earlier.length ? `Earlier in this same thread:\n${earlier.map((m) => `- ${m.role === "user" ? "Human" : "You"}: ${m.text.replace(/\s+/g, " ").slice(0, 400)}`).join("\n")}\n\n` : "") +
+              `Their question: ${quoted}\n\n` +
+              `Answer directly and briefly about that comment. Read the code it points at (in ${task.worktree_path ?? env.path}) and this branch's commits as needed: say whether the point makes sense and why, ` +
+              `whether the branch already addresses it (cite the commit or path:line), and if not what a fix would take and its risk. ` +
+              `If they are actually asking for a change, say what you would do and that it happens through "Ask agent to address" on the PR comments tab or a review round — do not make code changes from this chat.`
+            : anchor
             ? `The human is looking at this task's diff (branch vs base) and asked about ONE specific line of it — ` +
               `file \`${anchor.path}\`, ${anchor.side === "old" ? `the removed line at old line ${anchor.line}` : `line ${anchor.line} of the current file`}, which reads:\n\n` +
               `    ${anchor.snippet}\n\n` +

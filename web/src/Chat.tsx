@@ -69,7 +69,12 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
                                 {m.kind === "instruction" && <span className="chip accent">instruction</span>}
                                 {m.kind === "instruction_result" && <span className="chip ok">report</span>}
                                 <span className="field-hint">{new Date(m.created_at).toLocaleString()}</span>
-                                {a && (
+                                {a && a.prComment && (
+                                    <a className="chip accent anchor-chip" href={a.prComment.url} target="_blank" rel="noreferrer" title={`About a PR comment — ${a.snippet.trim().slice(0, 120)}`}>
+                                        PR #{a.prComment.number} · {a.prComment.author}{a.path ? ` · ${a.path}${a.line ? `:${a.line}` : ""}` : ""}
+                                    </a>
+                                )}
+                                {a && !a.prComment && (
                                     <button className="chip accent anchor-chip" title={`About this line of the diff — ${a.snippet.trim().slice(0, 120)}`} onClick={onOpenCode}>
                                         {a.path}:{a.line}{a.side === "old" ? " (removed)" : ""}
                                     </button>

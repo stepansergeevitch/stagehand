@@ -1587,7 +1587,18 @@ app.post("/api/tasks/:id/messages", async (c) => {
     const body = json(
         z.object({
             text: z.string().min(1),
-            anchor: z.object({ path: z.string().min(1), side: z.enum(["new", "old"]), line: z.number().int().nonnegative(), snippet: z.string() }).nullable().optional(),
+            anchor: z
+                .object({
+                    path: z.string(),
+                    side: z.enum(["new", "old"]),
+                    line: z.number().int().nonnegative(),
+                    snippet: z.string(),
+                    prComment: z.object({ repo: z.string(), number: z.number().int().positive(), id: z.number().int().positive(), author: z.string(), url: z.string() }).optional(),
+                })
+                // A diff-line thread needs a file; a PR-comment thread may hang under a review verdict with no path.
+                .refine((a) => !!a.prComment || a.path.length > 0, { message: "anchor.path is required for a diff-line thread" })
+                .nullable()
+                .optional(),
             files: z.array(SharedFileSchema).optional(),
         }),
         await c.req.json(),

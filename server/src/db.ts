@@ -440,6 +440,10 @@ export interface MessageAnchor {
     side: "new" | "old";
     line: number;
     snippet: string;
+    // Set when the thread hangs under a GitHub PR comment instead of a diff line (the PR comments tab): the comment's
+    // repository directory, PR number, GitHub comment id, author and link. `path`/`line` then hold the comment's own
+    // position when it has one ("" / 0 for a review verdict or a general comment) and `snippet` the comment text.
+    prComment?: { repo: string; number: number; id: number; author: string; url: string } | undefined;
 }
 
 // A free-form interactive `claude` session the human opens from the Sessions page: an env (its config dir, env vars,

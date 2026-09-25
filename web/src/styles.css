@@ -699,3 +699,5 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .msg-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
 .msg-files img { max-width: 240px; max-height: 180px; object-fit: contain; border-radius: 3px; background: var(--code); display: block; }
 .msg-files .file-tile { display: inline-block; padding: 8px 10px; background: var(--code); border-radius: 3px; }
+.gh-comment .pr-thread { margin-top: 6px; display: grid; gap: 6px; }
+.gh-comment .pr-thread > button.tiny { justify-self: start; }

@@ -228,7 +228,8 @@ export interface Service {
     label?: string; shared?: boolean;
 }
 // The diff line a chat message hangs on (asked from Code changes); stored as JSON on the message.
-export interface MessageAnchor { path: string; side: "new" | "old"; line: number; snippet: string }
+// `prComment` marks a thread under a GitHub PR comment (PR comments tab) instead of a diff line.
+export interface MessageAnchor { path: string; side: "new" | "old"; line: number; snippet: string; prComment?: { repo: string; number: number; id: number; author: string; url: string } }
 export type MessageKind = "instruction" | "instruction_result";
 // A file the human attached to a message / instruction / answer: saved under the task dir's shared/, served by artifactUrl.
 export interface SharedFile { name: string; file: string; mime: string | null; size: number }

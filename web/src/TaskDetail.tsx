@@ -11,14 +11,87 @@ import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
-import type { Env, LineComment, PrComment, PrComments, Review } from "./api";
+import { anchorOf, type Env, type LineComment, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
 
 const isResolved = (c: PrComment): boolean => c.kind === "line" && c.resolved;
 
+// The chat anchor of a thread under a GitHub PR comment: keyed by the comment id, carrying its position and text.
+const prCommentAnchor = (c: PrComment, repo: string, number: number): MessageAnchor => ({
+    path: c.kind === "line" ? c.path : "",
+    side: "new",
+    line: c.kind === "line" ? (c.line ?? 0) : 0,
+    snippet: c.body.trim().slice(0, 600) || (c.kind === "review" ? `Review: ${c.state.toLowerCase().replace("_", " ")}` : ""),
+    prComment: { repo, number, id: c.id, author: c.author, url: c.url },
+});
+
+// A collapsible chat with the agent right under one PR comment: its earlier exchanges, a question box, the reply
+// arrives through the task's messages (same thread key, see MessageAnchor.prComment).
+const PrCommentThread = ({ items, canAsk, onAsk }: { items: Message[]; canAsk: boolean; onAsk: (text: string) => Promise<void> }) => {
+    const [open, setOpen] = useState(items.length > 0);
+    const [text, setText] = useState("");
+    const [asking, setAsking] = useState(false);
+    useEffect(() => {
+        if (items.length > 0) setOpen(true);
+    }, [items.length]);
+    const send = async (): Promise<void> => {
+        const t = text.trim();
+        if (!t) return;
+        setAsking(true);
+        setText("");
+        try {
+            await onAsk(t);
+        } finally {
+            setAsking(false);
+        }
+    };
+    return (
+        <div className="pr-thread">
+            <button className="tiny" onClick={() => setOpen((o) => !o)} title="Ask the agent about this comment — a chat, nothing is changed">
+                {open ? "▾" : "▸"} Ask agent{items.length ? ` (${items.length})` : ""}
+            </button>
+            {open && (
+                <div className="line-thread" style={{ marginLeft: 0 }}>
+                    {items.map((msg) => (
+                        <div key={msg.id} className={`thread-msg ${msg.role}`}>
+                            <div className="chat-msg-head">
+                                <b>{msg.role === "user" ? "You" : "Agent"}</b>
+                                <span className="field-hint">{new Date(msg.created_at).toLocaleString()}</span>
+                            </div>
+                            {msg.role === "agent" ? <Markdown source={msg.text} /> : <div>{msg.text}</div>}
+                        </div>
+                    ))}
+                    {asking && <div className="thread-msg agent pending">Agent is answering…</div>}
+                    {canAsk && !asking && (
+                        <>
+                            <AgentInput
+                                placeholder="Does this make sense? Is it already addressed? What would a fix take? (⌘/Ctrl+Enter sends)"
+                                value={text}
+                                onChange={setText}
+                                rows={2}
+                                onKeyDown={(e) => {
+                                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                                        e.preventDefault();
+                                        void send();
+                                    }
+                                }}
+                            />
+                            <div className="actions" style={{ marginBottom: 0 }}>
+                                <button className="primary" disabled={!text.trim()} onClick={() => void send()}>Ask</button>
+                            </div>
+                        </>
+                    )}
+                    {!canAsk && !asking && <div className="field-hint">A run owns the agent's session right now — ask once it is idle.</div>}
+                </div>
+            )}
+        </div>
+    );
+};
+
 // GitHub PR comments of one kind (human or automation): review verdicts, line comments (path:line), general comments.
 // Open ones first (oldest first), resolved threads sink to the bottom; a line comment's thread can be resolved/reopened here.
-const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, onRefresh, selected, onToggle, onResolve }: { title: string; items: PrComment[] | null; loading: boolean; error: string | null; hasPr: boolean; url: string | null; fetchedAt: string | null; onRefresh: () => void; selected: Set<number>; onToggle: (id: number) => void; onResolve: (id: number, resolved: boolean) => Promise<void> }) => {
+const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, onRefresh, selected, onToggle, onResolve, repo, prNumber, threads, canAsk, onAsk }: { title: string; items: PrComment[] | null; loading: boolean; error: string | null; hasPr: boolean; url: string | null; fetchedAt: string | null; onRefresh: () => void; selected: Set<number>; onToggle: (id: number) => void; onResolve: (id: number, resolved: boolean) => Promise<void>; repo: string; prNumber: number | null; threads: Message[]; canAsk: boolean; onAsk: (anchor: MessageAnchor, text: string) => Promise<void> }) => {
     const [busy, setBusy] = useState<number | null>(null);
+    const threadOf = (c: PrComment): Message[] => threads.filter((m) => { const a = anchorOf(m)?.prComment; return !!a && a.id === c.id && a.repo === repo; });
     const sorted = items ? [...items].sort((a, b) => Number(isResolved(a)) - Number(isResolved(b)) || a.at.localeCompare(b.at)) : [];
     const resolvedCount = items ? items.filter(isResolved).length : 0;
     return (
@@ -63,6 +136,7 @@ const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, on
                                     )}
                                 </div>
                                 {c.body && <Markdown source={c.body} />}
+                                {prNumber !== null && <PrCommentThread items={threadOf(c)} canAsk={canAsk} onAsk={(text) => onAsk(prCommentAnchor(c, repo, prNumber), text)} />}
                             </div>
                         </Fragment>
                     ))}
@@ -1139,7 +1213,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             repos={envRepos(env)}
                             taskBusy={task.status === "running"}
                             onError={onError}
-                            threads={(detail.messages ?? []).filter((m) => m.anchor)}
+                            threads={(detail.messages ?? []).filter((m) => m.anchor && !anchorOf(m)?.prComment)}
                             canAsk={task.status !== "running"}
                             onAsk={(anchor, text, files) => onAction(async () => api.sendMessage(task.id, text, anchor, await api.uploadFiles(task.id, files)))}
                             onRebase={task.branch ? startRebase : undefined}
@@ -1199,7 +1273,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         <>
                             {selectedComments.size > 0 && (
                                 <div className="review-box" style={{ marginBottom: 10 }}>
-                                    <b>{selectedComments.size} comment(s) picked.</b> Address: the agent fixes just these, commits locally, and you review the diff before it's pushed — no re-run of QA or User Review. Ask: the agent only says what it thinks of them (sense, already addressed, fix size and risk) in Chat.
+                                    <b>{selectedComments.size} comment(s) picked.</b> The agent addresses just these, commits locally, and you review the diff before it's pushed — no re-run of QA or User Review. To only ask what it thinks of a comment, use "Ask agent" under that comment.
                                     <div className="actions" style={{ marginBottom: 0 }}>
                                         <button
                                             className="primary"
@@ -1207,17 +1281,6 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                             onClick={() => void onAction(async () => { await api.fixComments(task.id, ghRepo ?? "", [...selectedComments]); setSelectedComments(new Set()); })}
                                         >
                                             Ask agent to address {selectedComments.size} comment(s)
-                                        </button>
-                                        <button
-                                            disabled={task.status === "running"}
-                                            title="Chat question about the picked comments: does each make sense, is it already addressed, what would a fix take — no code change"
-                                            onClick={() => {
-                                                const question = window.prompt("Question for the agent about the picked comments (leave blank for the standard assessment):", "");
-                                                if (question === null) return;
-                                                void onAction(async () => { await api.askComments(task.id, ghRepo ?? "", [...selectedComments], question.trim() || undefined); setSelectedComments(new Set()); });
-                                            }}
-                                        >
-                                            Ask agent about {selectedComments.size} comment(s)
                                         </button>
                                         <button onClick={() => setSelectedComments(new Set())}>Clear selection</button>
                                     </div>
@@ -1234,6 +1297,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                 onRefresh={() => void loadGh()}
                                 selected={selectedComments}
                                 onToggle={toggleComment}
+                                repo={ghRepo ?? ""}
+                                prNumber={gh?.number ?? null}
+                                threads={(detail.messages ?? []).filter((m) => !!anchorOf(m)?.prComment)}
+                                canAsk={task.status !== "running"}
+                                onAsk={(anchor, text) => onAction(async () => { await api.sendMessage(task.id, text, anchor); })}
                                 onResolve={async (id, resolved) => {
                                     try {
                                         const next = await api.resolvePrComment(task.id, ghRepo ?? "", id, resolved);
