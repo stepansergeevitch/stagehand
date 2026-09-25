@@ -178,6 +178,10 @@ const renderAnswers = (questions: AgentQuestion[], answers: Record<string, strin
 
 interface DispatchOpts {
     notes?: string;
+    // Run on this model whatever the settings say: the automatic retry after a refused permission pins a real model.
+    model?: string;
+    // The run was already dispatched once more with a pinned model after a refused permission.
+    modelRetried?: boolean;
     // The round the agent is told about ("fix round N" for a PR Fix); also the run row's attempt column.
     attempt?: number;
     // Contract retries within one round: how many times this run has been dispatched because its output file was
@@ -373,6 +377,8 @@ type BlockerKind = "bridge_or_auth" | "seed_or_design_defect" | "environment" | 
 // A stage whose output file fails its contract is re-run with the validation error as notes; outside the fresh-session
 // QA stages each retry resumes the same session, so it is cheap. After this many attempts the task fails for the human.
 const MAX_CONTRACT_ATTEMPTS = 5;
+// The model a run is repeated on after the CLI refused its edits and no global default is set (see permissionProblem).
+const REFUSAL_RETRY_MODEL = "sonnet";
 const LOGIN_WAIT_MS = 15 * 60_000;
 type ChromeTabLike = { url: string; title: string };
 const tabKey = (t: { window: number; tab: number; url: string }): string => `${t.window}:${t.tab}:${t.url}`;
@@ -2583,6 +2589,7 @@ export class Engine extends EventEmitter {
     // started as one (PR Fix for checks / for comments), else the stage's rerun model once the stage already ran on
     // this task, else the stage's first-run model; then the global default; null = the account's default.
     private modelForStage(task: TaskRow, stage: Stage, opts: DispatchOpts): string | null {
+        if (opts.model) return opts.model;
         if (task.model) return task.model;
         const op = opts.operation ? this.cfg.operationModels[opts.operation] : null;
         if (op) return op;
@@ -3387,6 +3394,11 @@ export class Engine extends EventEmitter {
         const prompt = renderPrompt(def.prompt, vars);
         const eventLogPath = join(this.cfg.dataDir, "runs", `${runId}.ndjson`);
         const explicitModel = this.modelForStage(task, def.stage, opts);
+        // A resumed session answers on the model of the run that last spoke in it: a side run on another model (the
+        // service fix on Haiku that rotated INV-136's session, 2026-09-24) would otherwise set the model of every stage
+        // run after it — and Haiku refuses every edit (permissionProblem). A task-session run therefore always names
+        // its model: the account's known default when the settings leave the stage open.
+        const pinnedModel = explicitModel ?? (fresh ? null : account.default_model);
 
         this.db
             .prepare(
@@ -3414,7 +3426,7 @@ export class Engine extends EventEmitter {
                   ? {}
                   : this.sessionArgs(task)),
             chrome: chromeNeeded,
-            ...(explicitModel ? { model: explicitModel } : {}),
+            ...(pinnedModel ? { model: pinnedModel } : {}),
             ...(def.maxTurns ? { maxTurns: def.maxTurns } : {}),
             addDirs: [this.taskDir(taskId)],
             eventLogPath,
@@ -3427,11 +3439,18 @@ export class Engine extends EventEmitter {
         const tabKeeper = chromeNeeded ? this.startTabKeeper(task, env, cloneKey) : null;
 
         let seenModel: string | null = null;
+        let learned = false;
         run.on("activity", (ev: ActivityEvent) => {
-            // A run without --model tells us what this account's default really is.
-            if (ev.kind === "init" && !explicitModel) {
-                const model = (ev.raw as { model?: unknown }).model;
-                if (typeof model === "string" && model) this.db.prepare(`UPDATE accounts SET default_model = ? WHERE id = ?`).run(model, account.id);
+            // A FRESH session without --model shows what this account's default really is (the first assistant message
+            // names the model; init may leave it null). A resumed session only repeats the model it was created with —
+            // learning from it recorded Haiku as the personal account's default (INV-136, 2026-09-24).
+            if (fresh && !pinnedModel && !learned) {
+                const raw = ev.raw as { type?: unknown; model?: unknown; message?: { model?: unknown } };
+                const model = raw.type === "assistant" ? raw.message?.model : ev.kind === "init" ? raw.model : undefined;
+                if (typeof model === "string" && model) {
+                    learned = true;
+                    this.db.prepare(`UPDATE accounts SET default_model = ? WHERE id = ?`).run(model, account.id);
+                }
             }
             const rawModel = (ev.raw as { model?: unknown; message?: { model?: unknown } }).model ?? (ev.raw as { message?: { model?: unknown } }).message?.model;
             if (typeof rawModel === "string" && rawModel) seenModel = rawModel;
@@ -3440,7 +3459,7 @@ export class Engine extends EventEmitter {
             // stale output file would pass for this run's (INV-136, 2026-09-24: 70 turns of refused edits, "done").
             const problem = ev.raw && typeof ev.raw === "object" ? permissionProblem(ev.raw as Record<string, unknown>) : null;
             if (problem && !this.permissionFailures.has(runId)) {
-                const model = seenModel ?? explicitModel ?? account.default_model ?? "the account's default";
+                const model = seenModel ?? pinnedModel ?? "the account's default";
                 this.permissionFailures.set(
                     runId,
                     `${problem} (model: ${model}). A headless run cannot grant a permission, so nothing it edits lands; Haiku does not honour --permission-mode auto. Give this stage (Settings → models) or the task a Sonnet, Opus or Fable model, then Retry.`,
@@ -4762,6 +4781,14 @@ export class Engine extends EventEmitter {
         if (refused) {
             this.permissionFailures.delete(runId);
             finish("failed", refused);
+            // Once more, on a model known to honour auto mode: a session stuck on Haiku heals itself (the retry resumes
+            // it with --model, which the session keeps from then on). A second refusal is for the human.
+            const retryModel = opts.modelRetried ? null : (this.cfg.defaultModel ?? REFUSAL_RETRY_MODEL);
+            if (retryModel) {
+                this.addMessage(taskId, "agent", `⛔ ${def.label} stopped at its first refused edit — ${refused}\n\nRunning it again once on ${retryModel}.`);
+                this.dispatch(taskId, def.stage, { ...opts, model: retryModel, modelRetried: true });
+                return;
+            }
             this.addMessage(taskId, "agent", `⛔ ${def.label} stopped at its first refused edit — ${refused}`);
             this.setTaskStatus(taskId, "failed", `${def.label} · ${refused.slice(0, 160)}`);
             return;
