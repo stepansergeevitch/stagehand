@@ -52,6 +52,18 @@ export const describePrComment = (c: PrComment): string =>
         : c.kind === "review"
           ? `- Review by ${c.author}${c.state !== "COMMENTED" ? ` (${c.state.toLowerCase().replace("_", " ")})` : ""}: ${c.body.trim() || "(no body text)"}`
           : `- ${c.author}: ${c.body.trim()}`;
+// The GitHub replies under a line comment, indented under it in a fix brief.
+const renderReplies = (c: PrComment, all: PrComment[]): string => {
+    const replies = all.filter((r): r is Extract<PrComment, { kind: "line" }> => r.kind === "line" && r.replyTo === c.id).sort((a, b) => a.at.localeCompare(b.at));
+    return replies.length ? `\n  Replies on GitHub:\n${replies.map((r) => `    - ${r.author}: ${r.body.trim().replace(/\n/g, "\n      ")}`).join("\n")}` : "";
+};
+// What the human and the agent said about a comment in Stagehand (the Ask chat under it), indented under it in a fix
+// brief: the human's questions there are instructions, the agent's answers are its own earlier reading of the point.
+const renderAskThread = (thread: MessageRow[]): string => {
+    if (!thread.length) return "";
+    const line = (m: MessageRow): string => `    - ${m.role === "user" ? "Human" : "Agent"}: ${m.text.trim().slice(0, 1500).replace(/\n/g, "\n      ")}`;
+    return `\n  Discussed in Stagehand under this comment (oldest first):\n${thread.map(line).join("\n")}`;
+};
 export interface PrComments {
     number: number;
     // GitHub owner/name of the repository the PR lives in, and the task's sub-repo directory ("" for a single repo).
@@ -2378,15 +2390,19 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
-        const { number, picked } = await this.pickedPrComments(taskId, repo, commentIds);
-        const failureOutput = `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${number} picked by the human to address (this is not necessarily a CI failure):\n${picked.map(describePrComment).join("\n")}`;
+        const { number, picked, all } = await this.pickedPrComments(taskId, repo, commentIds);
+        const threads = this.prCommentThreads(taskId);
+        const failureOutput =
+            `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${number} picked by the human to address (this is not necessarily a CI failure). ` +
+            `Where a comment carries replies or a Stagehand discussion below it, that discussion is the brief: the human's last word there wins over the comment's original wording.\n` +
+            picked.map((c) => describePrComment(c) + renderReplies(c, all) + renderAskThread(threads.get(c.id) ?? [])).join("\n");
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         this.setStage(taskId, "pr_fix");
         this.startPrRound(taskId, { [repo]: failureOutput }, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
     }
 
     // The picked comments of one PR, freshly fetched so a stale checkbox never addresses a comment that changed.
-    private async pickedPrComments(taskId: string, repo: string, commentIds: number[]): Promise<{ number: number; picked: PrComment[] }> {
+    private async pickedPrComments(taskId: string, repo: string, commentIds: number[]): Promise<{ number: number; picked: PrComment[]; all: PrComment[] }> {
         const row = this.prRow(taskId, repo);
         if (!row?.number) throw new Error(`no PR recorded for ${repoLabel(repo)} yet`);
         const comments = await this.prComments(taskId, repo);
@@ -2394,7 +2410,24 @@ export class Engine extends EventEmitter {
         const wanted = new Set(commentIds);
         const picked = [...comments.human, ...comments.automation].filter((c) => wanted.has(c.id));
         if (!picked.length) throw new Error("none of the selected comments were found — they may be stale, refresh and re-select");
-        return { number: row.number, picked };
+        return { number: row.number, picked, all: [...comments.human, ...comments.automation] };
+    }
+
+    // The Ask threads under PR comments (messages anchored by MessageAnchor.prComment), by comment id, oldest first.
+    private prCommentThreads(taskId: string): Map<number, MessageRow[]> {
+        const out = new Map<number, MessageRow[]>();
+        for (const m of this.listMessages(taskId)) {
+            if (!m.anchor) continue;
+            let id: number | undefined;
+            try {
+                id = (JSON.parse(m.anchor) as MessageAnchor).prComment?.id;
+            } catch {
+                continue;
+            }
+            if (id === undefined) continue;
+            out.set(id, [...(out.get(id) ?? []), m]);
+        }
+        return out;
     }
 
     // Human-triggered only: the picked comments go to the task's chat as a question, not a fix round. The agent assesses
