@@ -51,3 +51,14 @@ describe("applyApprovedStepFixes", () => {
         expect(design.qa[0]!.seed[0]).toBe("shell: psql -c 'new'");
     });
 });
+
+describe("cutTrailingCommentary", () => {
+    it("drops commentary after the closing quote of -c and keeps shell continuations", async () => {
+        const { cutTrailingCommentary } = await import("./qa-fixes.js");
+        const cmd = `cd backend && poetry run python dualentry/manage.py shell -c "x=1; print(f'a={x}')"`;
+        expect(cutTrailingCommentary(`${cmd} (and add the same line to S1 teardown 1, before its Item delete)`)).toBe(cmd);
+        expect(cutTrailingCommentary(`${cmd} && echo done`)).toBe(`${cmd} && echo done`);
+        expect(cutTrailingCommentary(cmd)).toBe(cmd);
+        expect(cutTrailingCommentary("echo hi (no -c here)")).toBe("echo hi (no -c here)");
+    });
+});

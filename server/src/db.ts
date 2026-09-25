@@ -150,6 +150,8 @@ export interface EnvRow {
     rules: string | null;
     // Runs from the worktree before it is removed by "Clean up" (drop a per-task database, free caches, …); {{worktree}} / {{envPath}} placeholders.
     cleanup_command: string | null;
+    // Runs from the worktree after every successful rebase (plain or agent-resolved): rebuild what the rebase made stale.
+    rebase_command: string | null;
     // Runs from the worktree after every implementation / PR-fix run; non-zero = the run goes back to the agent with the
     // output (e.g. Django `check --database default` + `makemigrations --check`, which tests and a dev server never run).
     check_command: string | null;
@@ -816,6 +818,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.pr_templates", `ALTER TABLE envs ADD COLUMN pr_templates TEXT`],
     ["envs.pr_draft", `ALTER TABLE envs ADD COLUMN pr_draft INTEGER NOT NULL DEFAULT 0`],
     ["envs.depends_on_env_id", `ALTER TABLE envs ADD COLUMN depends_on_env_id TEXT REFERENCES envs(id)`],
+    ["envs.rebase_command", `ALTER TABLE envs ADD COLUMN rebase_command TEXT`],
     // Prompter: a message sent while a turn ran is "queued" until the next turn takes it (editable until then).
     ["prompter_messages.state", `ALTER TABLE prompter_messages ADD COLUMN state TEXT NOT NULL DEFAULT 'sent'`],
     // Prompter: the chat's name in the session strip — the first message, trimmed.

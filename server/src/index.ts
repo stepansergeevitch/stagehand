@@ -767,6 +767,7 @@ app.patch("/api/envs/:id", async (c) => {
             ticketSource: z.enum(["clickup", "linear"]).optional(),
             envVars: z.string().nullable().optional(),
             cleanupCommand: z.string().nullable().optional(),
+            rebaseCommand: z.string().nullable().optional(),
             checkCommand: z.string().nullable().optional(),
             components: ComponentList.optional(),
             keepServices: z.boolean().optional(),
@@ -806,7 +807,7 @@ app.patch("/api/envs/:id", async (c) => {
         return Object.keys(merged).length ? JSON.stringify(merged) : null;
     })();
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, check_command = ?, components = ?, keep_services = ?, pr_templates = ?, pr_draft = ?, depends_on_env_id = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, check_command = ?, components = ?, keep_services = ?, pr_templates = ?, pr_draft = ?, depends_on_env_id = ?, rebase_command = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         order[0] ?? null,
@@ -836,6 +837,7 @@ app.patch("/api/envs/:id", async (c) => {
         prTemplates,
         body.prDraft === undefined ? env.pr_draft : body.prDraft ? 1 : 0,
         pick(body.dependsOnEnvId, env.depends_on_env_id),
+        pick(body.rebaseCommand, env.rebase_command),
         env.id,
     );
     if (body.qaBrowser !== undefined) db.prepare(`UPDATE envs SET qa_browser = ? WHERE id = ?`).run(body.qaBrowser, env.id);

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PREVIEW, type Config } from "./config.js";
@@ -27,6 +27,7 @@ import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
 import { applyApprovedStepFixes } from "./qa-fixes.js";
 import { fillQaVars, newQaPassId, qaContractProblems, type QaVars } from "./qa-vars.js";
 import { mergeQuestions, mergeScenarios, planQaShards, shardFiles, type QaShard } from "./qa-shards.js";
+import { flagSubstitutions, isNetworkError } from "./qa-grade.js";
 import { jevAsk, jevEnabled } from "./jev.js";
 import { djangoBatchCommand, djangoBatchEnv, parseBatchOutput, planSeedUnits, type SeedItem } from "./seed-batch.js";
 import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, ReviewResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
@@ -190,6 +191,8 @@ const renderAnswers = (questions: AgentQuestion[], answers: Record<string, strin
 
 interface DispatchOpts {
     notes?: string;
+    // The run was already repeated once after the CLI could not reach its API (isNetworkError).
+    netRetried?: boolean;
     // Run on this model whatever the settings say: the automatic retry after a refused permission pins a real model.
     model?: string;
     // The run was already dispatched once more with a pinned model after a refused permission.
@@ -247,6 +250,8 @@ type PrShardResult =
     | { kind: "rate_limited"; resetsAt: number | null }
     | { kind: "stopped" };
 interface PrGroup {
+    // Shards already repeated once after a network failure of the run itself.
+    netRetried?: Set<string>;
     id: string;
     taskId: string;
     attempt: number;
@@ -285,6 +290,8 @@ type ShardResult =
     | { kind: "rate_limited"; resetsAt: number | null }
     | { kind: "stopped" };
 interface QaGroup {
+    // Shards already repeated once after a network failure of the run itself.
+    netRetried?: Set<string>;
     id: string;
     taskId: string;
     stage: Stage;
@@ -2332,14 +2339,18 @@ export class Engine extends EventEmitter {
         // A repository whose PR merged releases the children stacked on it in that repository right away — the other
         // repositories' PRs may stay open for days (INV-132, 2026-09-21: backend merged, frontend still in review).
         for (const s of summaries) if (s.kind === "merged") this.onParentRepoMerged(cur, env, s.repo);
-        // Only re-announce a blocked/idle line when it actually changed, so a still-red PR does not re-notify every poll.
+        // The poll runs every two minutes and the line moves with every check that finishes. The human hears only the
+        // two transitions that matter: a check failed (blocked — once, not again while the failing set changes) and
+        // every check passed (green — once). Intermediate states are recorded, not pushed (2026-09-25: a push per poll
+        // for a PR waiting on checks).
         const set = (stage: Stage, status: TaskStatus, text: string): void => {
             if (cur.stage !== stage) this.setStage(taskId, stage);
             if (cur.status === status && cur.status_line === text) {
                 this.emitTask(taskId);
                 return;
             }
-            this.setTaskStatus(taskId, status, text);
+            this.setTaskStatus(taskId, status, text, { notify: status === "blocked" && cur.status !== "blocked" });
+            if ((stage === "pr_green" || stage === "pr_approved") && cur.stage === "pr_waiting") this.notifyChecksPassed(cur, text);
         };
         if (all("merged")) {
             if (cur.stage !== "done") {
@@ -2500,7 +2511,7 @@ export class Engine extends EventEmitter {
         if (prev && prev.stage !== stage) this.recordTaskEvent(taskId, stage, prev.status);
     }
 
-    private setTaskStatus(taskId: string, status: TaskStatus, line?: string): void {
+    private setTaskStatus(taskId: string, status: TaskStatus, line?: string, opts: { notify?: boolean } = {}): void {
         const prev = this.getTask(taskId);
         this.db
             .prepare(`UPDATE tasks SET status = ?, status_line = COALESCE(?, status_line), updated_at = ? WHERE id = ?`)
@@ -2508,7 +2519,20 @@ export class Engine extends EventEmitter {
         const next = this.getTask(taskId);
         if (next && prev && prev.status !== status) this.recordTaskEvent(taskId, next.stage, status);
         this.emit("task", next);
-        if (next && prev && NEEDS_HUMAN.has(status) && (prev.status !== status || prev.status_line !== next.status_line)) this.notifyNeedsHuman(next);
+        if (opts.notify !== false && next && prev && NEEDS_HUMAN.has(status) && (prev.status !== status || prev.status_line !== next.status_line)) this.notifyNeedsHuman(next);
+    }
+
+    // The one push a PR's checks earn when they all pass; failures go through notifyNeedsHuman (blocked), once.
+    private notifyChecksPassed(task: TaskRow, text: string): void {
+        void notify(this.cfg, {
+            title: `${task.ticket_id} checks passed`,
+            message: text,
+            priority: "default",
+            tags: ["white_check_mark"],
+            ...(taskLink(this.cfg, task.id) ? { url: taskLink(this.cfg, task.id)! } : {}),
+            localUrl: localTaskLink(this.cfg, task.id),
+            group: `stagehand-${task.id}`,
+        });
     }
 
     // Every change of (stage, status) is one row for the timing analytics (timing.ts); "queued" is written straight
@@ -3636,6 +3660,13 @@ export class Engine extends EventEmitter {
         } else {
             const stderrTail = outcome.stderr.trim().split("\n").slice(-3).join(" ").trim();
             const err = (stoppedBackground > 0 ? backgroundNote(stoppedBackground) : "") + (outcome.result?.result?.trim() || (outcome.result ? `ended with ${outcome.result.subtype} before writing ${outputFile}` : stderrTail || `exit ${outcome.exitCode}`));
+            if (isNetworkError(err) && g && !(g.netRetried ??= new Set()).has(shard.id)) {
+                g.netRetried.add(shard.id);
+                finish("failed", `${err} — network failure of the run itself; running it once more`);
+                g.starting.add(shard.id);
+                this.dispatch(taskId, "pr_fix", { ...opts, shard });
+                return;
+            }
             finish("failed", err);
             result = { kind: "failed", error: `${repoLabel(shard.repo)}: ${err.slice(0, 500)}` };
         }
@@ -3885,6 +3916,13 @@ export class Engine extends EventEmitter {
                         : outcome.result
                           ? `ended with ${outcome.result.subtype}`
                           : stderrTail || `exit ${outcome.exitCode}`);
+                if (isNetworkError(err) && g && !(g.netRetried ??= new Set()).has(shard.id)) {
+                    g.netRetried.add(shard.id);
+                    finish("failed", `${err} — network failure of the run itself; the shard runs once more`);
+                    g.starting.add(shard.id);
+                    this.dispatch(taskId, g.stage, { ...g.opts, shard });
+                    return;
+                }
                 finish("failed", err);
                 result = { kind: "failed", error: `${shard.id}: ${err.slice(0, 300)}` };
             }
@@ -3922,7 +3960,7 @@ export class Engine extends EventEmitter {
         const all = mergeScenarios(this.readPartial(taskId, pass), recorded);
         const remaining = g.allIds.filter((id) => !all.some((s) => s.id === id));
         if (remaining.length === 0 && asked.length === 0) {
-            const qa: QaPassResult = { pass, scenarios: all, blockers: [...new Set(blockers)] };
+            const qa: QaPassResult = flagSubstitutions({ pass, scenarios: all, blockers: [...new Set(blockers)] });
             writeFileSync(join(this.taskDir(taskId), def.outputFile!), JSON.stringify(qa, null, 2));
             const validation = await this.validateOutput(taskId, def);
             if (!validation.ok) {
@@ -4565,6 +4603,16 @@ export class Engine extends EventEmitter {
                 lines.push(`❌ ${repoLabel(repo)}: rebased, but the push failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
             }
         }
+        // The env's rebase command: what a rebase makes stale in the worktree — per-task test databases built for
+        // the old migration graph (INV-135, 2026-09-25: DuplicateColumn under --reuse-db, so Code Review ran no tests).
+        if (env.rebase_command?.trim() && task.worktree_path && repos.length) {
+            try {
+                await runWorktreeSetup(task.worktree_path, env.path, env.rebase_command, parseEnvVars(env.env_vars));
+                lines.push("🧹 rebase command ran");
+            } catch (e) {
+                lines.push(`❌ rebase command failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
+            }
+        }
         const resync = await this.resyncAfterHistoryChange(task, env, headsBefore);
         if (resync) lines.push(resync);
         if (pushed) {
@@ -4871,6 +4919,13 @@ export class Engine extends EventEmitter {
                     : outcome.result
                       ? `ended with ${outcome.result.subtype}`
                       : stderrTail || `exit ${outcome.exitCode}`);
+            // The CLI could not reach its API (DNS, refused connection): the work is untouched, the run goes once more
+            // before the task parks (INV-136 and two INV-133 shards, 2026-09-25).
+            if (isNetworkError(err) && !opts.netRetried) {
+                finish("failed", `${err} — network failure of the run itself; running it once more`);
+                this.dispatch(taskId, def.stage, { ...opts, netRetried: true });
+                return;
+            }
             finish("failed", err);
             this.setTaskStatus(taskId, "failed", `${def.label} · ${err.slice(0, 160)}`);
             return;
@@ -5180,11 +5235,27 @@ export class Engine extends EventEmitter {
                 })
                 .then(async (qa) => {
                     await this.classifyQaBlockers(taskId, env, qa).catch((e: unknown) => console.warn(`[stagehand] jev blocker sorting ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+                    this.archiveQaPass(taskId, def.stage === "qa_baseline" ? "before" : "after");
                     this.afterStageChecked(taskId, def, qa);
                 });
             return;
         }
+        if (def.stage === "manual_qa" || def.stage === "qa_baseline") this.archiveQaPass(taskId, def.stage === "qa_baseline" ? "before" : "after");
         this.afterStageChecked(taskId, def, data);
+    }
+
+    // Every finished pass is kept under qa/history/<pass>-<time>/: the merged result (with Jev's grades), the seed log
+    // and the screenshots — qa/<pass>.json, seed-<pass>.log and qa/<pass>/ are overwritten by the next pass.
+    private archiveQaPass(taskId: string, pass: "before" | "after"): void {
+        const qaDir = join(this.taskDir(taskId), "qa");
+        const dest = join(qaDir, "history", `${pass}-${now().replace(/[:.]/g, "-")}`);
+        try {
+            mkdirSync(dest, { recursive: true });
+            for (const f of [`${pass}.json`, `seed-${pass}.log`]) if (existsSync(join(qaDir, f))) copyFileSync(join(qaDir, f), join(dest, f));
+            if (existsSync(join(qaDir, pass))) cpSync(join(qaDir, pass), join(dest, pass), { recursive: true });
+        } catch (e) {
+            console.warn(`[stagehand] qa history ${taskId}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+        }
     }
 
     // Jev's verdict per blocked scenario of the pass just finished (task id → scenario id → kind), read once by afterStageChecked.
@@ -5243,7 +5314,7 @@ export class Engine extends EventEmitter {
     private async gradeQaWithJev(taskId: string, env: EnvRow, qa: QaPassResult): Promise<QaPassResult> {
         type Scenario = QaPassResult["scenarios"][number];
         const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
-        const grades: Record<string, { grade: number; verdict: "pass" | "fail"; runner: string }> = {};
+        const grades: Record<string, { grade: number; verdict: "pass" | "fail"; runner: string; reason?: string }> = {};
         const scenarios: Scenario[] = await Promise.all(
             qa.scenarios.map(async (s): Promise<Scenario> => {
                 if (s.outcome !== "pass" && s.outcome !== "fail") return s;
@@ -5264,14 +5335,29 @@ export class Engine extends EventEmitter {
                                     false: "An expected result is contradicted, unverified or skipped, holds only through a workaround, or the runner reports a blocker or an error",
                                 },
                             },
+                            // Jev answers with probabilities, never prose: the reason is a second, categorical question, so a
+                            // low grade tells the human what to look at (INV-135, 2026-09-25: 24/100 and 41/100 with nothing to go on).
+                            reason: {
+                                type: "choice",
+                                instructions: "The main thing that keeps this run from being a clean pass",
+                                criteria: {
+                                    clean: "every expected result is confirmed with concrete evidence, nothing skipped, no workaround",
+                                    contradicted: "an observed value or state contradicts an expected result",
+                                    unverified: "an expected result is asserted without concrete evidence (no value, state or message quoted)",
+                                    skipped: "a step or an expected result is not covered by the observation at all",
+                                    workaround: "the runner changed data, route or input to get past something (a substitution, a manual seed, a different record)",
+                                    blocker: "the runner reports a blocker or an error along the way",
+                                },
+                            },
                         },
                         { db: this.db, ctx: { accountId: null, envId: env.id, taskId, runId: null, stage: "manual_qa" } },
                     );
                     const grade = Math.round(r.answers.passed.noul * 100);
                     const verdict: "pass" | "fail" = grade >= Engine.JEV_PASS_GRADE ? "pass" : "fail";
-                    grades[s.id] = { grade, verdict, runner: s.outcome };
+                    const reason = r.answers.reason.choice;
+                    grades[s.id] = { grade, verdict, runner: s.outcome, reason };
                     if (s.outcome === "pass" && verdict === "fail") {
-                        return { ...s, outcome: "needs_human", observation: `Jev grades this run ${grade}/100 (a pass needs ${Engine.JEV_PASS_GRADE}) — check it yourself. Runner: ${s.observation}` };
+                        return { ...s, outcome: "needs_human", observation: `Jev grades this run ${grade}/100 (a pass needs ${Engine.JEV_PASS_GRADE}; reason: ${reason}) — check it yourself. Runner: ${s.observation}` };
                     }
                     return s;
                 } catch (e) {
@@ -5302,7 +5388,7 @@ export class Engine extends EventEmitter {
             taskId,
             "agent",
             `🎯 Jev graded Manual QA (pass ≥ ${Engine.JEV_PASS_GRADE}/100): ${Object.entries(grades)
-                .map(([id, g]) => `${id} ${g.grade}/100 → ${g.verdict}${g.runner !== g.verdict ? ` (runner said ${g.runner}${g.runner === "pass" ? " → needs your check" : ""})` : ""}`)
+                .map(([id, g]) => `${id} ${g.grade}/100 → ${g.verdict}${g.reason && g.reason !== "clean" ? ` (${g.reason})` : ""}${g.runner !== g.verdict ? ` (runner said ${g.runner}${g.runner === "pass" ? " → needs your check" : ""})` : ""}`)
                 .join(" · ")}`,
         );
         return { ...qa, scenarios };

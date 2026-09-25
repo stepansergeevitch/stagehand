@@ -21,12 +21,31 @@ const REF = /\bS(\d+)\s+(step|seed|teardown)\s+(\d+)\b/i;
 // 2026-09-21: "apply corrected teardown: cd backend …" was written into design.json label included → "command not found: corrected").
 const PREFIX = /^\s*(apply|use|run)\b[^:\n]{0,200}:\s*/i;
 
+// Commentary after the command is not part of it: an option like `… item={item.id}')" (and add the same line to S1
+// teardown 1)` written whole into design.json gave bash "syntax error near unexpected token '('" (INV-133,
+// 2026-09-25). Everything after the closing quote of a `-c "…"` / `-c '…'` argument goes, unless it continues the
+// shell command (&&, ||, |, ;, >, 2>).
+export const cutTrailingCommentary = (command: string): string => {
+    const m = /\s-c\s+(["'])/.exec(command);
+    if (!m) return command;
+    const q = m[1]!;
+    let i = m.index + m[0].length;
+    for (; i < command.length; i++) {
+        if (command[i] === "\\" && q === '"') i += 1;
+        else if (command[i] === q) break;
+    }
+    if (i >= command.length) return command;
+    const rest = command.slice(i + 1);
+    if (!rest.trim() || /^\s*(&&|\|\||\||;|>|2>|<)/.test(rest)) return command;
+    return command.slice(0, i + 1);
+};
+
 export const parseStepFixAnswer = (text: string, answer: string | undefined): { scenario: string; kind: "step" | "seed" | "teardown"; index: number; command: string } | null => {
     const m = REF.exec(text);
     if (!m) return null;
     const raw = (answer ?? "").trim();
     if (!raw || /^keep\b/i.test(raw) || /^(no|skip)\b/i.test(raw)) return null;
-    const command = raw.replace(PREFIX, "").trim();
+    const command = cutTrailingCommentary(raw.replace(PREFIX, "").trim());
     if (!command) return null;
     // An option that only points at a command ("apply the corrected N command above") carries no command to apply:
     // writing that text into design.json turned INV-133's S4 steps into placeholders (2026-09-22). Nothing to apply.
