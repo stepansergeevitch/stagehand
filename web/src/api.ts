@@ -86,6 +86,15 @@ export type PrComment =
 // `repo` = GitHub owner/name, `repoDir` = the task's sub-repo directory ("" for a single-repo env).
 export interface PrComments { number: number; repo: string; repoDir: string; human: PrComment[]; automation: PrComment[]; fetchedAt: string }
 export interface TaskManager { source: "clickup" | "linear"; label: string; configured: boolean; token: string | null; teamId: string | null; envs: string[] }
+export interface ClaudeMdFile {
+    id: string;
+    label: string;
+    path: string;
+    scope: "config-dir" | "repo";
+    exists: boolean;
+    content: string;
+}
+
 export interface EnvRules {
     rules: Rules; prTemplates: Array<{ dir: string; path: string | null; detected: string | null; source: "env" | "dir" | "detected" | "none"; missing: string | null; overridden: boolean }>;
     configDir: { id: string; name: string; path: string }; usableAccounts: string[]; browserAccounts: string[];
@@ -498,6 +507,9 @@ export const api = {
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
     envRules: (id: string) => fetch(`/api/envs/${id}/rules`).then((r) => j<EnvRules>(r)),
+    envClaudeMd: (id: string) => fetch(`/api/envs/${id}/claude-md`).then((r) => j<{ files: ClaudeMdFile[] }>(r)),
+    saveClaudeMd: (id: string, fileId: string, content: string) =>
+        fetch(`/api/envs/${id}/claude-md`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: fileId, content }) }).then((r) => j<{ file: ClaudeMdFile }>(r)),
     reviewCategories: () => fetch("/api/review-categories").then((r) => j<ReviewCategoryDef[]>(r)),
     envDependency: (id: string) => fetch(`/api/envs/${id}/dependency`).then((r) => j<EnvDependencyStatus>(r)),
     readiness: () => fetch("/api/readiness").then((r) => j<Readiness[]>(r)),

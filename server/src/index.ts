@@ -35,7 +35,7 @@ import { Services, DEPENDENCY_KIND } from "./services.js";
 import { Sessions } from "./sessions.js";
 import { Prompter } from "./prompter.js";
 import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, probeRateLimits, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
-import { collapseLargeFiles, isGitRepo, repoPaths, type DiffGroup } from "./git.js";
+import { collapseLargeFiles, envRepos, isGitRepo, repoPaths, type DiffGroup } from "./git.js";
 import { attach, capturePane, ensureSession, killSession, loginSessionName, pipePane, sessionExists, taskSessionName } from "./tmux.js";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -594,6 +594,53 @@ app.get("/api/envs/:id/rules", (c) => {
         usableAccounts: engine.usableAccounts(cd.path).map((a) => a.id),
         browserAccounts: engine.browserAccounts(env).map((a) => a.id),
     });
+});
+
+// The CLAUDE.md files an environment's runs read: the config dir's (every run, at once) and the repository's — the
+// root and each sub-repository (committed in git: a task sees it once it is on the base branch). Read live from disk.
+interface ClaudeMdFile {
+    id: string;
+    label: string;
+    path: string;
+    scope: "config-dir" | "repo";
+    exists: boolean;
+    content: string;
+}
+const claudeMdFiles = (env: EnvRow): ClaudeMdFile[] => {
+    const cd = engine.configDirOf(env);
+    const entries: Array<Omit<ClaudeMdFile, "exists" | "content">> = [
+        { id: "config-dir", label: `Config dir · ${cd.name}`, path: join(cd.path, "CLAUDE.md"), scope: "config-dir" },
+        { id: "repo", label: "Repository root", path: join(env.path, "CLAUDE.md"), scope: "repo" },
+        ...envRepos(env).map((r) => ({ id: `repo:${r}`, label: `Repository · ${r}`, path: join(env.path, r, "CLAUDE.md"), scope: "repo" as const })),
+    ];
+    return entries.map((e) => {
+        const exists = existsSync(e.path);
+        let content = "";
+        if (exists) {
+            try {
+                content = readFileSync(e.path, "utf8");
+            } catch {
+                content = "";
+            }
+        }
+        return { ...e, exists, content };
+    });
+};
+app.get("/api/envs/:id/claude-md", (c) => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
+    if (!env) return c.json({ error: "not found" }, 404);
+    return c.json({ files: claudeMdFiles(env) });
+});
+// Writes one of the files listed above (only those: the id is resolved server-side, never a path from the client).
+app.put("/api/envs/:id/claude-md", async (c) => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
+    if (!env) return c.json({ error: "not found" }, 404);
+    const body = json(z.object({ id: z.string().min(1), content: z.string().max(200_000) }), await c.req.json());
+    const file = claudeMdFiles(env).find((f) => f.id === body.id);
+    if (!file) return c.json({ error: "no such CLAUDE.md for this environment" }, 400);
+    if (!existsSync(dirname(file.path))) return c.json({ error: `${dirname(file.path)} does not exist` }, 400);
+    writeFileSync(file.path, body.content);
+    return c.json({ file: { ...file, exists: true, content: body.content } });
 });
 
 // Tickets assigned to the configured user in this env's task system, for the new-task dropdown.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, componentsOf, reviewChecklistOf, type Account, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
+import { accountOrderOf, accountUsableWith, api, componentsOf, reviewChecklistOf, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -24,6 +24,60 @@ const Section = ({ title, hint, children, onSave, saving }: { title: string; hin
         </div>
     </section>
 );
+
+// The CLAUDE.md files this environment's runs read, each editable in place: the config dir's applies to every run at
+// once; a repository's is committed in git, so a task sees an edit once it is on the base branch.
+const ClaudeMdCard = ({ envId, configDirId, onError }: { envId: string; configDirId: string | null; onError: (m: string) => void }) => {
+    const [files, setFiles] = useState<ClaudeMdFile[] | null>(null);
+    const [drafts, setDrafts] = useState<Record<string, string>>({});
+    const [saving, setSaving] = useState<string | null>(null);
+    useEffect(() => {
+        setFiles(null);
+        setDrafts({});
+        void api.envClaudeMd(envId).then((r) => setFiles(r.files)).catch((e: Error) => onError(e.message));
+    }, [envId, configDirId, onError]);
+    const save = async (f: ClaudeMdFile) => {
+        setSaving(f.id);
+        try {
+            const r = await api.saveClaudeMd(envId, f.id, drafts[f.id] ?? f.content);
+            setFiles((fs) => (fs ?? []).map((x) => (x.id === f.id ? r.file : x)));
+            setDrafts((d) => {
+                const { [f.id]: _gone, ...rest } = d;
+                return rest;
+            });
+        } catch (e) {
+            onError(String((e as Error).message ?? e));
+        } finally {
+            setSaving(null);
+        }
+    };
+    return (
+        <section className="card env-section">
+            <h2>CLAUDE.md</h2>
+            <p className="field-hint">What every agent run here reads first. The config dir's file applies to the next run at once. A repository's file is committed in git: a task sees an edit once it is on the base branch, and editing it here changes the working tree of the main checkout.</p>
+            <div className="env-fields">
+                {files === null && <span className="field-hint">reading…</span>}
+                {files?.map((f) => {
+                    const draft = drafts[f.id];
+                    const dirty = draft !== undefined && draft !== f.content;
+                    return (
+                        <label key={f.id}>
+                            <span>
+                                <b>{f.label}</b> <code>{f.path}</code>{" "}
+                                {f.exists ? <span className="chip">{f.scope === "config-dir" ? "applies at once" : "committed in git"}</span> : <span className="chip warn">none yet — saving creates it</span>}
+                            </span>
+                            <textarea className="tall" value={draft ?? f.content} onChange={(e) => setDrafts((d) => ({ ...d, [f.id]: e.target.value }))} placeholder={f.exists ? "" : "# Instructions for every agent run in this environment"} spellCheck={false} />
+                            <div className="actions" style={{ marginBottom: 0 }}>
+                                <button className="primary" disabled={saving === f.id || (!dirty && f.exists)} onClick={() => void save(f)}>{saving === f.id ? "Saving…" : f.exists ? "Save" : "Create"}</button>
+                                {dirty && <button onClick={() => setDrafts((d) => { const { [f.id]: _gone, ...rest } = d; return rest; })}>Discard</button>}
+                            </div>
+                        </label>
+                    );
+                })}
+            </div>
+        </section>
+    );
+};
 
 export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, onChanged, onError }: {
     env: Env; envs: Env[]; accounts: Account[]; configDirs: ConfigDir[]; onBack: () => void; onOpenDir: (id: string) => void; onChanged: () => Promise<void>; onError: (m: string) => void;
@@ -188,6 +242,8 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                     </div>
                 )}
             </Section>
+
+            <ClaudeMdCard envId={env.id} configDirId={env.config_dir_id} onError={onError} />
 
             <Section title="Pull requests" hint="Applies once a repository's PR is approved and Stagehand opens it." saving={saving === "pr"} onSave={() => save("pr", { prDraft })}>
                 <label className="inline"><input type="checkbox" checked={prDraft} onChange={(e) => setPrDraft(e.target.checked)} /> Open every PR as a draft (mark it ready for review yourself)</label>
