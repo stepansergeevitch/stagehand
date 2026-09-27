@@ -5794,8 +5794,12 @@ export class Engine extends EventEmitter {
                 const prefix = `${pass}-blocked-attempt`;
                 const priorAttempts = attemptFiles(taskDir, prefix).length;
                 const reason = qa.blockers[0] ?? blocked[0]!.observation;
-                // Jev says a seed/design defect or an environment problem: a retry would only repeat it — go to the human now.
-                const forHuman = blocked.filter((s) => verdicts[s.id] === "seed_or_design_defect" || verdicts[s.id] === "environment");
+                // Jev says an environment problem: a retry would only repeat it — go to the human now. A seed/design defect
+                // goes the same way unless this environment lets Jev approve seed corrections: then the unblock attempt is
+                // where the runner proposes the corrected command and the gate (parkOrAutoAnswer) applies it without the
+                // human (INV-150, 2026-09-27: "Only one top level company allowed" went straight to the human instead).
+                const seedFixesAllowed = autoFixKinds(this.env(task.env_id).qa_auto_fix ?? DEFAULT_QA_AUTO_FIX).has("seed") && jevEnabled(this.cfg);
+                const forHuman = blocked.filter((s) => verdicts[s.id] === "environment" || (verdicts[s.id] === "seed_or_design_defect" && (!seedFixesAllowed || priorAttempts >= MAX_UNBLOCK_ATTEMPTS)));
                 if (forHuman.length) {
                     this.setTaskStatus(
                         taskId,
