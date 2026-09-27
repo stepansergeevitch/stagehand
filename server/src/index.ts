@@ -772,6 +772,7 @@ app.patch("/api/envs/:id", async (c) => {
             components: ComponentList.optional(),
             keepServices: z.boolean().optional(),
             qaBrowser: z.enum(["chrome", "gstack"]).optional(),
+            qaAutoFix: z.enum(["off", "seeds", "seeds+steps", "seeds+steps+asserts"]).optional(),
             // The Code Review checklist for this env (null = gstack's full checklist).
             reviewChecklist: ReviewChecklistBody.nullable().optional(),
             // Per-repository PR template overrides: {"backend": ".github/pull_request_template.md"}; null/"" removes one.
@@ -841,6 +842,7 @@ app.patch("/api/envs/:id", async (c) => {
         env.id,
     );
     if (body.qaBrowser !== undefined) db.prepare(`UPDATE envs SET qa_browser = ? WHERE id = ?`).run(body.qaBrowser, env.id);
+    if (body.qaAutoFix !== undefined) db.prepare(`UPDATE envs SET qa_auto_fix = ? WHERE id = ?`).run(body.qaAutoFix, env.id);
     if (body.reviewChecklist !== undefined) {
         const json = reviewChecklistJson(
             body.reviewChecklist && {
@@ -1620,6 +1622,20 @@ app.post("/api/tasks/:id/questions/:qid/answer", async (c) => {
     try {
         engine.answerQuestions(c.req.param("id"), c.req.param("qid"), body.answers, sharedFilesOf(c.req.param("id"), body.files));
         return c.json(engine.getTask(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
+// QA corrections applied to design.json (by the human's answers or Jev), and their revert.
+app.get("/api/tasks/:id/qa-changes", (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    return c.json({ changes: engine.listQaChanges(task.id) });
+});
+app.post("/api/tasks/:id/qa-changes/:cid/revert", (c) => {
+    try {
+        return c.json({ change: engine.revertQaChangeById(c.req.param("id"), c.req.param("cid")) });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }

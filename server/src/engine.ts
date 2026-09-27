@@ -24,7 +24,8 @@ import { describeReviewChecklist } from "./review-checklist.js";
 import { killSession, taskSessionName } from "./tmux.js";
 import { findTranscript } from "./transcripts.js";
 import { STAGE_DEFS, renderPrompt, type StageDef } from "./stages/registry.js";
-import { applyApprovedStepFixes } from "./qa-fixes.js";
+import { applyQaFixes, applyFixToScenario, guardQaFix, parseStepFixAnswer, proposedOption, revertQaChange, type FixKind, type FixRequest, type QaChange } from "./qa-fixes.js";
+import { autoFixKinds, decideQaFix, DEFAULT_QA_AUTO_FIX, jevQaFixVerdict } from "./qa-autofix.js";
 import { fillQaVars, newQaPassId, qaContractProblems, type QaVars } from "./qa-vars.js";
 import { mergeQuestions, mergeScenarios, planQaShards, shardFiles, type QaShard } from "./qa-shards.js";
 import { flagSubstitutions, isNetworkError } from "./qa-grade.js";
@@ -393,6 +394,15 @@ const MAX_AUTO_QA_RETURNS = 2;
 const MAX_UNBLOCK_ATTEMPTS = 2;
 // Jev's sorting of a blocked QA scenario (classifyQaBlockers): what a retry can and cannot fix.
 type BlockerKind = "bridge_or_auth" | "seed_or_design_defect" | "environment" | "app_bug" | "other";
+// qa/baseline-rerun.json: scenarios whose baseline a change made stale; `active` while the re-run pass drives them on the
+// base commit (heads = the branch tips to return to, per repository).
+interface BaselineRerun {
+    ids: string[];
+    active: boolean;
+    heads: Record<string, string>;
+    next: Stage;
+    startedAt?: string;
+}
 // A stage whose output file fails its contract is re-run with the validation error as notes; outside the fresh-session
 // QA stages each retry resumes the same session, so it is cheap. After this many attempts the task fails for the human.
 const MAX_CONTRACT_ATTEMPTS = 5;
@@ -3976,7 +3986,7 @@ export class Engine extends EventEmitter {
         delete extraVars["seedReport"];
         if (asked.length) {
             const questions = mergeQuestions(asked).slice(0, 10);
-            this.parkOnQuestions(taskId, null, def, { questions }, { ...base, extraVars });
+            await this.parkOrAutoAnswer(taskId, null, def, { questions }, { ...base, extraVars });
             return;
         }
         if (rateLimit !== null) {
@@ -4886,7 +4896,7 @@ export class Engine extends EventEmitter {
         const asked = this.questionsAskedDuringRun(taskId, runId);
         if (asked && !(def.contract && def.outputFile && this.outputWrittenDuringRun(taskId, def.outputFile, runId) && (await this.validateOutput(taskId, def)).ok)) {
             finish("blocked", `asked the human ${asked.questions.length} question(s)`);
-            this.parkOnQuestions(taskId, runId, def, asked, opts);
+            await this.parkOrAutoAnswer(taskId, runId, def, asked, opts);
             return;
         }
         if (!outcome.result || outcome.result.is_error || (outcome.exitCode ?? 1) !== 0) {
@@ -5051,37 +5061,284 @@ export class Engine extends EventEmitter {
         const stored = JSON.parse(row.questions) as QuestionsFile & { resume?: { notes: string | null; attempt: number; contractAttempt?: number; extraVars: Record<string, string>; operation?: DispatchOpts["operation"] } };
         this.db.prepare(`UPDATE questions SET answers = ?, answered_at = ? WHERE id = ?`).run(JSON.stringify(answers), now(), row.id);
         this.addMessage(taskId, "user", stored.questions.map((q) => `**${q.id}** ${q.text}\n→ ${answers[q.id]?.trim() || "(no answer — decide yourself)"}`).join("\n\n"), null, null, files);
-        // A corrected scenario step/seed the human approved is written into design.json here (deterministic), so a
-        // fresh QA session runs it instead of re-deriving the defect and asking again.
+        // A corrected scenario step/seed/assert the human approved is written into design.json here (deterministic),
+        // so a fresh QA session runs it instead of re-deriving the defect and asking again.
         try {
-            const applied = applyApprovedStepFixes(join(this.taskDir(taskId), "design.json"), stored.questions, answers);
-            if (applied.length) this.addAgentNote(taskId, `🛠 Applied to design.json from your answers:\n${applied.map((a) => `- ${a}`).join("\n")}`);
+            const requests: FixRequest[] = [];
+            for (const q of stored.questions) {
+                const fix = parseStepFixAnswer(q.text, answers[q.id]);
+                if (fix) requests.push({ fix, by: "human", question: q.text, reason: q.context });
+            }
+            const applied = applyQaFixes(join(this.taskDir(taskId), "design.json"), requests);
+            if (applied.lines.length) this.addAgentNote(taskId, `🛠 Applied to design.json from your answers:\n${applied.lines.map((a) => `- ${a}`).join("\n")}`);
+            if (applied.changes.length) this.onQaChanges(taskId, row.stage, applied.changes);
         } catch (e) {
             console.warn(`[stagehand] applying approved step fixes for ${task.ticket_id}: ${String((e as Error).message ?? e)}`);
         }
-        const answerNotes = renderAnswers(stored.questions, answers) + renderSharedFiles(files, this.taskDir(taskId));
-        const prior = stored.resume?.notes?.trim();
-        this.setStage(taskId, row.stage);
-        let extraVars: Record<string, string> = stored.resume?.extraVars ?? {};
-        // A QA runner that asked mid-pass left qa/<pass>.partial.json with the scenarios it finished: resume from there.
-        if (row.stage === "qa_baseline" || row.stage === "manual_qa") {
-            const pass = row.stage === "qa_baseline" ? "before" : "after";
+        this.resumeAfterAnswers(taskId, row.stage, renderAnswers(stored.questions, answers) + renderSharedFiles(files, this.taskDir(taskId)), stored.resume);
+    }
+
+    // The resumed run after the answers (the human's or Jev's): the same brief the asking run had, the answers on top,
+    // and — for a QA pass that asked mid-way — only the scenarios still open.
+    private resumeAfterAnswers(taskId: string, stage: Stage, answerNotes: string, resume: { notes: string | null; attempt: number; contractAttempt?: number | undefined; extraVars: Record<string, string>; operation?: DispatchOpts["operation"] | undefined } | undefined): void {
+        const prior = resume?.notes?.trim();
+        this.setStage(taskId, stage);
+        let extraVars: Record<string, string> = resume?.extraVars ?? {};
+        if (stage === "qa_baseline" || stage === "manual_qa") {
+            const pass = stage === "qa_baseline" ? "before" : "after";
             const recorded = this.readPartial(taskId, pass);
             if (recorded.length) {
                 const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
-                const remaining = this.qaScenariosForPass(design, row.stage).map((s) => s.id).filter((id) => !recorded.some((r) => r.id === id));
+                const remaining = this.qaScenariosForPass(design, stage).map((s) => s.id).filter((id) => !recorded.some((r) => r.id === id));
                 extraVars = { ...extraVars, ...this.resumeVars(taskId, pass, recorded, remaining) };
                 delete extraVars["seedReport"];
             }
         }
-        this.dispatch(taskId, row.stage, {
+        this.dispatch(taskId, stage, {
             notes: prior ? `${answerNotes}\n\n---\n\n${prior}` : answerNotes,
-            attempt: stored.resume?.attempt ?? 1,
-            contractAttempt: stored.resume?.contractAttempt ?? 1,
-            ...(stored.resume?.operation ? { operation: stored.resume.operation } : {}),
+            attempt: resume?.attempt ?? 1,
+            contractAttempt: resume?.contractAttempt ?? 1,
+            ...(resume?.operation ? { operation: resume.operation } : {}),
             ...(Object.keys(extraVars).length ? { extraVars } : {}),
         });
     }
+
+    // ---------- QA corrections: Jev's approval, the change log, the baseline that a change makes stale ----------
+
+    // Every QA question that proposes a correction goes past Jev before it reaches the human (qa-autofix.ts): the
+    // mechanical kinds the environment allows are applied at once, the rest wait for the human with Jev's reading shown.
+    // When nothing is left to ask, the pass resumes right away.
+    private async parkOrAutoAnswer(taskId: string, runId: string | null, def: StageDef, asked: QuestionsFile, opts: DispatchOpts): Promise<void> {
+        if (def.stage !== "qa_baseline" && def.stage !== "manual_qa") {
+            this.parkOnQuestions(taskId, runId, def, asked, opts);
+            return;
+        }
+        let outcome: { remaining: AgentQuestion[]; answers: Record<string, string>; notes: string[] };
+        try {
+            outcome = await this.autoApproveQaFixes(taskId, def, asked);
+        } catch (e) {
+            console.warn(`[stagehand] qa auto-fix ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`);
+            this.parkOnQuestions(taskId, runId, def, asked, opts);
+            return;
+        }
+        if (outcome.notes.length) this.addMessage(taskId, "agent", outcome.notes.join("\n"));
+        if (outcome.remaining.length) {
+            this.parkOnQuestions(taskId, runId, def, { questions: outcome.remaining }, opts);
+            return;
+        }
+        // Everything answered by Jev: record the round as answered, consume the file, resume.
+        const auto = asked.questions.filter((q) => outcome.answers[q.id] !== undefined);
+        this.db
+            .prepare(`INSERT INTO questions (id, task_id, run_id, stage, questions, answers, created_at, answered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(randomUUID(), taskId, runId, def.stage, JSON.stringify({ questions: auto }), JSON.stringify(outcome.answers), now(), now());
+        const p = join(this.taskDir(taskId), "questions.json");
+        if (existsSync(p)) renameSync(p, join(this.taskDir(taskId), `questions-${Date.now()}.json`));
+        const answerNotes = `## Corrections applied by Stagehand (approved by Jev, no human involved) — continue from where you stopped\n\n${auto.map((q) => `- **${q.id}** ${q.text}\n  → applied: ${outcome.answers[q.id]!.slice(0, 300)}`).join("\n")}`;
+        this.resumeAfterAnswers(taskId, def.stage, answerNotes, { notes: opts.notes ?? null, attempt: opts.attempt ?? 1, contractAttempt: opts.contractAttempt ?? 1, extraVars: opts.extraVars ?? {}, ...(opts.operation ? { operation: opts.operation } : {}) });
+    }
+
+    private async autoApproveQaFixes(taskId: string, def: StageDef, asked: QuestionsFile): Promise<{ remaining: AgentQuestion[]; answers: Record<string, string>; notes: string[] }> {
+        const task = this.getTask(taskId)!;
+        const env = this.env(task.env_id);
+        const scope = env.qa_auto_fix ?? DEFAULT_QA_AUTO_FIX;
+        const allowed = autoFixKinds(scope);
+        const remaining: AgentQuestion[] = [];
+        const answers: Record<string, string> = {};
+        const notes: string[] = [];
+        if (allowed.size === 0 || !jevEnabled(this.cfg)) return { remaining: asked.questions, answers, notes };
+        const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+        const pass: "before" | "after" = def.stage === "qa_baseline" ? "before" : "after";
+        const ticket = renderTicketsForPrompt(this.tickets(task), this.taskDir(taskId));
+        const contract = this.designContract(taskId);
+        const partial = this.readPartial(taskId, pass);
+        const approved: FixRequest[] = [];
+        for (const q of asked.questions) {
+            const option = proposedOption(q);
+            const fix = option ? parseStepFixAnswer(q.text, option) : null;
+            const scenario = fix ? design?.qa.find((s) => s.id.toUpperCase() === fix.scenario) : undefined;
+            if (!fix || !scenario) {
+                remaining.push(q);
+                continue;
+            }
+            const label = `${fix.scenario} ${fix.kind}${fix.index >= 0 ? ` ${fix.index + 1}` : ""}`;
+            if (!allowed.has(fix.kind)) {
+                remaining.push(q);
+                notes.push(`🧭 ${label}: a ${fix.kind} correction waits for you (this environment lets Jev approve ${scope})`);
+                continue;
+            }
+            const dry = applyFixToScenario(scenario as Parameters<typeof applyFixToScenario>[0], fix);
+            if (!dry) {
+                remaining.push(q);
+                continue;
+            }
+            const guard = guardQaFix(scenario as Parameters<typeof guardQaFix>[0], dry.after, fix.kind);
+            if (!guard.ok) {
+                remaining.push({ ...q, context: `${q.context ? `${q.context} ` : ""}[Stagehand: not auto-approved — ${guard.reason}]` });
+                notes.push(`🧭 ${label}: left for you — ${guard.reason}`);
+                continue;
+            }
+            const observation = partial.find((s) => s.id === scenario.id)?.observation ?? "";
+            let verdict;
+            try {
+                verdict = await jevQaFixVerdict(this.cfg, this.db, { accountId: null, envId: env.id, taskId, runId: null, stage: def.stage }, { ticket, contract, pass, fixKind: fix.kind, question: q.text, reason: q.context ?? "", observation, before: scenario, after: dry.after });
+            } catch (e) {
+                remaining.push(q);
+                notes.push(`🧭 ${label}: left for you — Jev did not answer (${String((e as Error).message ?? e).slice(0, 120)})`);
+                continue;
+            }
+            const decision = decideQaFix(verdict, fix.kind, scope);
+            if (!decision.approve) {
+                remaining.push({ ...q, context: `${q.context ? `${q.context} ` : ""}[Jev: ${decision.why}]` });
+                notes.push(`🧭 ${label}: left for you — ${decision.why}`);
+                continue;
+            }
+            approved.push({ fix, by: "jev", question: q.text, reason: q.context, jev: { legit: verdict.legit, weakens: verdict.weakens, kind: verdict.kind } });
+            answers[q.id] = option!;
+            notes.push(`🧭 Jev approved ${label} (${decision.why})${q.context ? ` — ${q.context.slice(0, 160)}` : ""}`);
+        }
+        if (approved.length) {
+            const applied = applyQaFixes(join(this.taskDir(taskId), "design.json"), approved);
+            if (applied.changes.length) this.onQaChanges(taskId, def.stage, applied.changes);
+            if (applied.lines.length) notes.push(`🛠 Applied to design.json:\n${applied.lines.map((l) => `- ${l}`).join("\n")}`);
+        }
+        return { remaining, answers, notes };
+    }
+
+    // The design's Contract section (what the change must do), the acceptance Jev judges corrections against.
+    private designContract(taskId: string): string {
+        const p = join(this.taskDir(taskId), "design.md");
+        if (!existsSync(p)) return "";
+        const md = readFileSync(p, "utf8");
+        const m = /^##[^\n]*contract[^\n]*\n([\s\S]*?)(?=^## |\s*$)/im.exec(md);
+        return (m?.[1] ?? md).trim().slice(0, 4000);
+    }
+
+    // Every applied correction is logged; a step, assert, seed or scenario change during Manual QA also makes that
+    // scenario's baseline stale: the before.json entry is marked superseded and a baseline re-run is queued for it.
+    private onQaChanges(taskId: string, stage: Stage, changes: QaChange[]): void {
+        const dir = join(this.taskDir(taskId), "qa");
+        mkdirSync(dir, { recursive: true });
+        const path = join(dir, "changes.json");
+        const log = this.readArtifactJson<QaChange[]>(taskId, "qa/changes.json") ?? [];
+        writeFileSync(path, JSON.stringify([...log, ...changes], null, 2));
+        if (stage !== "manual_qa") return;
+        const stale = changes.filter((c) => c.kind !== "teardown");
+        if (!stale.length) return;
+        for (const c of stale) this.supersedeBaseline(taskId, c.scenario, c.id);
+        const marker = this.readArtifactJson<BaselineRerun>(taskId, "qa/baseline-rerun.json") ?? { ids: [], active: false, heads: {}, next: "user_review" as Stage };
+        if (marker.active) return;
+        marker.ids = [...new Set([...marker.ids, ...stale.map((c) => c.scenario)])];
+        writeFileSync(join(dir, "baseline-rerun.json"), JSON.stringify(marker, null, 2));
+        this.emitTask(taskId);
+    }
+
+    private supersedeBaseline(taskId: string, scenarioId: string, changeId: string): void {
+        const path = join(this.taskDir(taskId), "qa", "before.json");
+        const before = this.readArtifactJson<QaPassResult>(taskId, "qa/before.json");
+        if (!before) return;
+        const scenarios = before.scenarios.map((s) => (s.id === scenarioId && !s.superseded ? { ...s, superseded: changeId, observation: `superseded — the scenario changed after this baseline (change ${changeId}). ${s.observation}` } : s));
+        writeFileSync(path, JSON.stringify({ ...before, scenarios }, null, 2));
+    }
+
+    listQaChanges(taskId: string): QaChange[] {
+        return this.readArtifactJson<QaChange[]>(taskId, "qa/changes.json") ?? [];
+    }
+
+    // Puts the scenario back as it was before the change; the next QA pass runs the original again.
+    revertQaChangeById(taskId: string, changeId: string): QaChange {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        const log = this.listQaChanges(taskId);
+        const change = log.find((c) => c.id === changeId);
+        if (!change) throw new Error("no such change");
+        if (change.revertedAt) throw new Error("already reverted");
+        if (!revertQaChange(join(this.taskDir(taskId), "design.json"), change)) throw new Error("the scenario is no longer in design.json");
+        const reverted = { ...change, revertedAt: now() };
+        writeFileSync(join(this.taskDir(taskId), "qa", "changes.json"), JSON.stringify(log.map((c) => (c.id === changeId ? reverted : c)), null, 2));
+        this.addMessage(taskId, "agent", `↩️ Reverted the ${change.kind} correction on ${change.scenario} (${change.by === "jev" ? "Jev-approved" : "your answer"}); design.json holds the original again.`);
+        this.emitTask(taskId);
+        return reverted;
+    }
+
+    // A scenario changed after its baseline: drive it once more against the base commit — every checkout of the task
+    // detached at its merge-base with the base branch, BE/FE restarted from there — and merge the result into
+    // qa/before.json in place of the superseded entry. The branch and the services come back afterwards.
+    private async startBaselineRerun(taskId: string, marker: BaselineRerun): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task || !task.worktree_path || !task.branch) return this.advance(taskId, marker.next);
+        const env = this.env(task.env_id);
+        const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+        const ids = marker.ids.filter((id) => design?.qa.some((s) => s.id === id && s.baseline !== false));
+        const taskDir = this.taskDir(taskId);
+        const clear = () => rmSync(join(taskDir, "qa", "baseline-rerun.json"), { force: true });
+        if (!ids.length) {
+            clear();
+            return this.advance(taskId, marker.next);
+        }
+        const checkouts = this.prRepos(env).map((repo) => ({ repo, cwd: this.checkoutOf(task, env, repo), base: this.baseBranchOf(task, env, repo) }));
+        for (const c of checkouts) {
+            const dirty = await this.git(c.cwd, ["status", "--porcelain"], env).catch(() => "dirty");
+            if (dirty.trim()) {
+                this.addMessage(taskId, "agent", `🔁 Baseline re-run for ${ids.join(", ")} skipped: ${repoLabel(c.repo)} has uncommitted changes. The baseline entry stays marked superseded.`);
+                clear();
+                return this.advance(taskId, marker.next);
+            }
+        }
+        const heads: Record<string, string> = {};
+        const bases: string[] = [];
+        for (const c of checkouts) {
+            await this.git(c.cwd, ["fetch", "origin", c.base, "--quiet"], env).catch(() => "");
+            heads[c.repo] = (await this.headSha(c.cwd, env)) ?? "";
+            const mergeBase = (await this.git(c.cwd, ["merge-base", `origin/${c.base}`, "HEAD"], env)).trim();
+            await this.git(c.cwd, ["checkout", "--detach", mergeBase], env);
+            bases.push(`${repoLabel(c.repo)} ${mergeBase.slice(0, 10)}`);
+        }
+        await this.services.stopAll(taskId).catch(() => undefined);
+        const before = this.readArtifactJson<QaPassResult>(taskId, "qa/before.json");
+        const keep = (before?.scenarios ?? []).filter((s) => !ids.includes(s.id));
+        mkdirSync(join(taskDir, "qa"), { recursive: true });
+        writeFileSync(join(taskDir, "qa", "before.partial.json"), JSON.stringify({ pass: "before", scenarios: keep, blockers: before?.blockers ?? [] }, null, 2));
+        const active: BaselineRerun = { ...marker, ids, active: true, heads, startedAt: now() };
+        writeFileSync(join(taskDir, "qa", "baseline-rerun.json"), JSON.stringify(active, null, 2));
+        this.setStage(taskId, "qa_baseline");
+        this.addMessage(taskId, "agent", `🔁 Baseline re-run for ${ids.join(", ")} on the base commit (${bases.join(", ")}): the scenario changed after the baseline pass. The worktree is detached at the merge-base until the pass ends; the branch comes back by itself.`);
+        this.dispatch(taskId, "qa_baseline", {
+            extraVars: { resumeOnly: ids.join(",") },
+            notes: `## Baseline re-run\n\nScenario(s) ${ids.join(", ")} changed after the baseline pass. This pass drives only them, against the base commit (the worktree is checked out at the merge-base with the base branch, before the change). Record what the app does there.`,
+        });
+    }
+
+    private async finishBaselineRerun(taskId: string, marker: BaselineRerun): Promise<void> {
+        const task = this.getTask(taskId);
+        const taskDir = this.taskDir(taskId);
+        rmSync(join(taskDir, "qa", "baseline-rerun.json"), { force: true });
+        if (!task) return;
+        const env = this.env(task.env_id);
+        const lines: string[] = [];
+        if (task.branch) {
+            for (const repo of this.prRepos(env)) {
+                const cwd = this.checkoutOf(task, env, repo);
+                try {
+                    await this.git(cwd, ["checkout", task.branch], env);
+                    const head = await this.headSha(cwd, env);
+                    if (marker.heads[repo] && head !== marker.heads[repo]) lines.push(`⚠️ ${repoLabel(repo)}: back on ${task.branch} but at ${(head ?? "?").slice(0, 10)}, not ${marker.heads[repo].slice(0, 10)}`);
+                } catch (e) {
+                    lines.push(`❌ ${repoLabel(repo)}: could not return to ${task.branch}: ${String((e as Error).message ?? e).slice(0, 160)} — run \`git checkout ${task.branch}\` there`);
+                }
+            }
+        }
+        await this.services.stopAll(taskId).catch(() => undefined);
+        const before = this.readArtifactJson<QaPassResult>(taskId, "qa/before.json");
+        const results = marker.ids.map((id) => {
+            const s = before?.scenarios.find((x) => x.id === id);
+            return `${id} → ${s?.outcome ?? "?"}${s?.observation ? ` (${s.observation.slice(0, 120)})` : ""}`;
+        });
+        this.addMessage(taskId, "agent", `🔁 Baseline re-run done: ${results.join(" · ")}. Worktree back on ${task.branch ?? "the branch"}.${lines.length ? `\n${lines.join("\n")}` : ""}`);
+        this.advance(taskId, marker.next);
+    }
+
+
 
     // True when the stage's output file was (re)written after this run started — a stale file from an earlier pass doesn't count.
     private outputWrittenDuringRun(taskId: string, outputFile: string, runId: string): boolean {
@@ -5596,6 +5853,17 @@ export class Engine extends EventEmitter {
                 }
             }
             this.stopServicesAfterQa(task);
+        }
+        if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
+            const marker = this.readArtifactJson<BaselineRerun>(taskId, "qa/baseline-rerun.json");
+            if (def.stage === "qa_baseline" && marker?.active) {
+                void this.finishBaselineRerun(taskId, marker).catch((e: unknown) => console.warn(`[stagehand] baseline re-run finish ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+                return;
+            }
+            if (def.stage === "manual_qa" && marker && !marker.active && marker.ids.length) {
+                void this.startBaselineRerun(taskId, { ...marker, next: def.next ?? "user_review" }).catch((e: unknown) => console.warn(`[stagehand] baseline re-run start ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+                return;
+            }
         }
         // Code Review (gstack's checklist, fresh session): fixed findings are already committed; serious open ones
         // (P0/P1 at confidence ≥ 7) send the task back to Implementation once, with the findings as the brief; the

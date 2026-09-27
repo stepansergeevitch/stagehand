@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LabelEditor } from "./Labels";
 import { BranchPicker } from "./BranchPicker";
-import { api, baseLabel, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseBaseBranch, parseChecks, pendingQuestions, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
+import { api, baseLabel, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseBaseBranch, parseChecks, pendingQuestions, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaChange, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
 import type { TaskTab, TaskView } from "./routes";
@@ -850,6 +850,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     ))}
                 </Sub>
             )}
+            <QaChanges taskId={task.id} running={task.status === "running"} onAction={onAction} />
             <QaGallery taskId={task.id} design={design} before={qaBefore} after={qaAfter} />
         </Card>
     );
@@ -1758,6 +1759,37 @@ const Lightbox = ({ src, caption, onClose }: { src: string; caption: string; onC
     );
 };
 
+// The corrections applied to design.json during QA (a seed, step, assert or whole scenario), by the human's answer or by
+// Jev, each revertible: the next pass then runs the original again.
+const QaChanges = ({ taskId, running, onAction }: { taskId: string; running: boolean; onAction: (fn: () => Promise<unknown>) => Promise<void> }) => {
+    const [changes, setChanges] = useState<QaChange[]>([]);
+    const load = () => void api.qaChanges(taskId).then((r) => setChanges(r.changes)).catch(() => setChanges([]));
+    useEffect(load, [taskId, running]);
+    if (!changes.length) return null;
+    const what = (c: QaChange): string => (c.kind === "scenario" ? "scenario rewritten" : `${c.kind} ${c.index + 1}`);
+    return (
+        <Sub title={<>Scenario changes during QA <span className="chip">{changes.length}</span></>} open={false}>
+            <div className="qa-changes">
+                {changes.map((c) => (
+                    <div className="qa-change" key={c.id}>
+                        <span className="chip accent">{c.scenario}</span> <b>{what(c)}</b>{" "}
+                        <span className={`chip ${c.by === "jev" ? "ok" : ""}`} title={c.jev ? `legit ${Math.round(c.jev.legit * 100)} %, weakens ${Math.round(c.jev.weakens * 100)} %, read as ${c.jev.kind}` : "approved by you"}>{c.by === "jev" ? "Jev-approved" : "your answer"}</span>{" "}
+                        <span className="field-hint">{new Date(c.at).toLocaleString()}</span>
+                        {c.revertedAt && <span className="chip warn">reverted</span>}
+                        {c.reason && <div className="field-hint">{c.reason}</div>}
+                        <details>
+                            <summary>before / after</summary>
+                            <pre className="qa-change-diff">{JSON.stringify(c.before, null, 2)}</pre>
+                            <pre className="qa-change-diff">{JSON.stringify(c.after, null, 2)}</pre>
+                        </details>
+                        {!c.revertedAt && <button className="tiny" disabled={running} onClick={() => void onAction(async () => { await api.revertQaChange(taskId, c.id); load(); })}>Revert</button>}
+                    </div>
+                ))}
+            </div>
+        </Sub>
+    );
+};
+
 const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: NonNullable<TaskDetail["design"]>; before: QaPass | null; after: QaPass | null }) => {
     const [zoom, setZoom] = useState<{ src: string; caption: string } | null>(null);
     const shot = (file: string | undefined, caption: string, missing: string) =>
@@ -1781,7 +1813,7 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                 <details className="scenario" key={s.id} open>
                     <summary>
                         <h3>
-                            <span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip">API</span>}<span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}</span> <span>after {chip(a?.outcome)}</span>
+                            <span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip">API</span>}<span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}{b?.superseded && <span className="chip warn" title={`The scenario changed after the baseline pass (change ${b.superseded}); this before result no longer pairs with the after pass until the baseline re-run replaces it`}>baseline superseded</span>}</span> <span>after {chip(a?.outcome)}</span>
                             {a?.jev && <span className={`chip ${a.jev.verdict === "pass" ? "ok" : "warn"}`} title={`Jev's grade of the runner's observation against the asserts (pass needs 85); the runner said ${a.jev.runner}`}>Jev {a.jev.grade}/100</span>}
                             {(suspicious(b) || suspicious(a)) && <span className="chip warn" title="The runner marked this pass but its observation mentions an error — check the screenshots">⚠ observation mentions an error</span>}
                         </h3>

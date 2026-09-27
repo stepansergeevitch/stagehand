@@ -163,6 +163,8 @@ export interface EnvRow {
     keep_services: number;
     // Which browser the QA runner drives: "chrome" = the account's Chrome profile via claude-in-chrome; "gstack" = gstack's headless Chromium daemon (cookies imported from that profile).
     qa_browser: string;
+    // Which QA corrections Jev may approve without the human: off | seeds | seeds+steps | seeds+steps+asserts (qa-autofix.ts).
+    qa_auto_fix: string | null;
     // JSON ReviewChecklist (review-checklist.ts): built-in gstack categories switched off, points added, extra
     // do-not-flag rules for the Code Review stage. Null = gstack's full checklist.
     review_checklist: string | null;
@@ -819,6 +821,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.pr_draft", `ALTER TABLE envs ADD COLUMN pr_draft INTEGER NOT NULL DEFAULT 0`],
     ["envs.depends_on_env_id", `ALTER TABLE envs ADD COLUMN depends_on_env_id TEXT REFERENCES envs(id)`],
     ["envs.rebase_command", `ALTER TABLE envs ADD COLUMN rebase_command TEXT`],
+    ["envs.qa_auto_fix", `ALTER TABLE envs ADD COLUMN qa_auto_fix TEXT`],
     // Prompter: a message sent while a turn ran is "queued" until the next turn takes it (editable until then).
     ["prompter_messages.state", `ALTER TABLE prompter_messages ADD COLUMN state TEXT NOT NULL DEFAULT 'sent'`],
     // Prompter: the chat's name in the session strip — the first message, trimmed.

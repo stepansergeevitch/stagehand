@@ -70,6 +70,8 @@ export const QaPassResult = z.object({
             observation: z.string(),
             // A blocked or needs_human scenario legitimately has no screenshots.
             shots: z.array(z.object({ step: z.number().int(), file: z.string() })).default([]),
+            // Baseline only: the scenario changed after this pass (qa/changes.json id) — the entry no longer pairs with the after pass.
+            superseded: z.string().optional(),
             // API scenarios: the exact command(s) run and their trimmed output — the evidence a screenshot is for a browser step.
             log: z.string().default(""),
         }),

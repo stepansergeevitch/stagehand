@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, componentsOf, reviewChecklistOf, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
+import { accountOrderOf, accountUsableWith, api, componentsOf, reviewChecklistOf, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -138,6 +138,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     const [comps, setComps] = useState<EnvComponent[]>(() => componentsOf(env));
     const [keepServices, setKeepServices] = useState(env.keep_services === 1);
     const [qaBrowser, setQaBrowser] = useState<"chrome" | "gstack">(env.qa_browser ?? "chrome");
+    const [qaAutoFix, setQaAutoFix] = useState<QaAutoFixScope>((env.qa_auto_fix as QaAutoFixScope | null | undefined) ?? "seeds+steps");
     // ---- code review: which of gstack's categories run here, points added, extra do-not-flag rules
     const [cats, setCats] = useState<ReviewCategoryDef[]>([]);
     useEffect(() => {
@@ -275,6 +276,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 components: comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
                 keepServices,
                 qaBrowser,
+                qaAutoFix,
             })}>
                 <div className="two">
                     <label>QA app URL <input value={s.appUrl} onChange={ss("appUrl")} placeholder="{{feUrl}} or {{beUrl}} or a fixed URL" /></label>
@@ -294,6 +296,14 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                     <select value={qaBrowser} onChange={(e) => setQaBrowser(e.target.value as "chrome" | "gstack")}>
                         <option value="chrome">Chrome profile of the QA account (claude-in-chrome: windows, copies per run, browser login)</option>
                         <option value="gstack">gstack headless Chromium (no windows; the session is imported from that Chrome profile's cookies per run; runs on a token account)</option>
+                    </select>
+                </label>
+                <label>QA corrections Jev may approve without you (a runner that finds a seed, step or assert wrong as written proposes the correction; Jev judges it against the ticket's acceptance criteria — approve needs legit ≥ 85 % and weakens ≤ 15 % — and the mechanical kinds in this scope are applied at once; the rest, and every removal, wait for you with Jev's reading shown)
+                    <select value={qaAutoFix} onChange={(e) => setQaAutoFix(e.target.value as QaAutoFixScope)}>
+                        <option value="off">off — every correction waits for you</option>
+                        <option value="seeds">seeds — seed and teardown commands</option>
+                        <option value="seeds+steps">seeds + steps — also a step's action (route, control, selector); the assert stays</option>
+                        <option value="seeds+steps+asserts">seeds + steps + asserts — also assert text and whole-scenario rewrites</option>
                     </select>
                 </label>
                 <label className="inline"><input type="checkbox" checked={keepServices} onChange={(e) => setKeepServices(e.target.checked)} /> Keep a task's BE/FE running between stages (QA baseline → Implementation → Manual QA → User Review) instead of stopping them after every QA pass — saves the cold start (a Next dev server compiles for minutes) at the cost of RAM; they stop when the task is done or cleaned up</label>

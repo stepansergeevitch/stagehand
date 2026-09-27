@@ -700,4 +700,7 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .msg-files img { max-width: 240px; max-height: 180px; object-fit: contain; border-radius: 3px; background: var(--code); display: block; }
 .msg-files .file-tile { display: inline-block; padding: 8px 10px; background: var(--code); border-radius: 3px; }
 .gh-comment .pr-thread { margin-top: 6px; display: grid; gap: 6px; }
+.qa-changes { display: grid; gap: 8px; }
+.qa-change { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+.qa-change .qa-change-diff { max-height: 220px; overflow: auto; font-size: 11.5px; margin: 4px 0; }
 .gh-comment .pr-thread > button.tiny { justify-self: start; }
