@@ -678,6 +678,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const [comments, changeComment, clearComments] = useDraftComments(task.id);
     const pending = Object.entries(comments);
     const canComment = task.status === "waiting_user" && task.stage === "user_review";
+    // At a PR stage, Code-changes line comments go to a PR-fix round of their own (the box above the diff).
+    const canCommentPr = task.status !== "running" && ["pr_waiting", "pr_fix", "pr_green", "pr_approved"].includes(task.stage);
+    const [localNotes, setLocalNotes] = useState("");
     const attach = usePendingFiles();
     const currentIdx = STAGE_ORDER.indexOf(task.stage);
     // QA stages that will not run: no browser scenarios in the design, or the human asked to skip QA this pass.
@@ -1199,9 +1202,24 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 task.branch && task.worktree_path ? (
                     <Card title="Code changes" badge={pending.length > 0 ? <span className="chip wait">{pending.length} 💬</span> : undefined}>
                         <p className="field-hint">
-                            {canComment ? "Tap a line to leave a review comment (sent from the PR comments tab or the review box), or ask the agent about it" : "Tap a line to ask the agent about it"}
+                            {canComment ? "Tap a line to leave a review comment (sent from the PR comments tab or the review box), or ask the agent about it" : canCommentPr ? "Tap a line to leave a comment for the agent to address in a PR-fix round (nothing is posted to GitHub), or ask the agent about it" : "Tap a line to ask the agent about it"}
                             {task.status === "running" ? " — questions wait until the current run is over." : " — the answer appears under the line and in Chat."}
                         </p>
+                        {canCommentPr && pending.length > 0 && (
+                            <div className="review-box" style={{ marginBottom: 10 }}>
+                                <b>{pending.length} line comment{pending.length === 1 ? "" : "s"} for the agent.</b> It addresses them, commits locally, and you review the diff before it's pushed.
+                                <ul className="plain">{pending.map(([k, c]) => <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>)}</ul>
+                                <AgentInput placeholder="General notes (optional)" value={localNotes} onChange={setLocalNotes} />
+                                <div className="actions" style={{ marginBottom: 0 }}>
+                                    <button
+                                        className="primary"
+                                        onClick={() => void onAction(async () => { await api.fixLocalComments(task.id, { ...(localNotes.trim() ? { notes: localNotes } : {}), comments: pending.map(([, c]) => c) }); clearComments(); setLocalNotes(""); })}
+                                    >
+                                        Ask agent to address {pending.length} comment{pending.length === 1 ? "" : "s"}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                         <DiffView
                             taskId={task.id}
                             refreshKey={task.updated_at}
@@ -1209,7 +1227,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             onView={(v) => onView({ tab: "code", ...(v.repo ? { repo: v.repo } : {}), ...(v.filter.kind !== "all" ? { scope: v.filter } : {}) })}
                             comments={comments}
                             prior={prior}
-                            canComment={canComment}
+                            canComment={canComment || canCommentPr}
                             onChange={changeComment}
                             repos={envRepos(env)}
                             taskBusy={task.status === "running"}
@@ -1261,7 +1279,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             <Card title="Your comments before the PR">
                                 {pending.length > 0 && (
                                     <div className="pending-comments">
-                                        Draft line comments (sent with the next "Request changes" in User Review):
+                                        Draft line comments ({canCommentPr ? "sent from the box on Code changes" : "sent with the next \"Request changes\" in User Review"}):
                                         <ul className="plain">{pending.map(([k, c]) => <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>)}</ul>
                                     </div>
                                 )}

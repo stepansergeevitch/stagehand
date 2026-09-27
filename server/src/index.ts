@@ -1560,6 +1560,23 @@ app.post("/api/tasks/:id/fix-ci", async (c) => {
     }
 });
 
+// Line comments / notes left in Stagehand's own Code changes view at a PR stage → a PR-fix round (nothing posted to GitHub).
+app.post("/api/tasks/:id/fix-local-comments", async (c) => {
+    const body = json(
+        z.object({
+            notes: z.string().optional(),
+            comments: z.array(z.object({ path: z.string().min(1), line: z.number().int().positive(), side: z.enum(["new", "old"]), snippet: z.string(), text: z.string().min(1) })).default([]),
+        }),
+        await c.req.json(),
+    );
+    try {
+        await engine.startLocalCommentFix(c.req.param("id"), body.notes, body.comments ?? []);
+        return c.json({ started: true });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 // Human picks specific PR comments (checkboxes) and asks the agent to address just those, without the full pipeline.
 app.post("/api/tasks/:id/fix-comments", async (c) => {
     const body = json(z.object({ repo: z.string().optional(), commentIds: z.array(z.number()).min(1) }), await c.req.json());

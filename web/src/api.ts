@@ -610,6 +610,8 @@ export const api = {
     createApprovedPrs: (id: string) => post<{ ok: true; done: string[]; task: Task; prStates: PrState[] }>(`/api/tasks/${id}/pr/create`),
     mergePr: (id: string, body: { repo: string; method: MergeMethod; deleteBranch: boolean }) => post<{ ok: true; result: string; task: Task }>(`/api/tasks/${id}/pr/merge`, body),
     fixComments: (id: string, repo: string, commentIds: number[]) => post<{ started: true }>(`/api/tasks/${id}/fix-comments`, { repo, commentIds }),
+    // Line comments left on Code changes at a PR stage → a PR-fix round (nothing posted to GitHub).
+    fixLocalComments: (id: string, body: { notes?: string; comments: LineComment[] }) => post<{ started: true }>(`/api/tasks/${id}/fix-local-comments`, body),
     // The agent's take on picked comments, answered in Chat — nothing committed, no PR round.
     askComments: (id: string, repo: string, commentIds: number[], question?: string) => post<Message>(`/api/tasks/${id}/ask-comments`, { repo, commentIds, ...(question ? { question } : {}) }),
     // Batched PR jobs in one agent run (rebase first, then failing CI, picked comments, instructions).

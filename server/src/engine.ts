@@ -153,6 +153,9 @@ const renderUnblockHint = (qa: QaPassResult, blocked: QaPassResult["scenarios"],
 // line, then where THIS stage records how each point was resolved — the closing line names the stage's own output
 // file, because a design revision told to "list it in impl.json notes" wrote an impl.json (with an array of notes)
 // that the task page then rendered as an Implementation result (INV-131, 2026-09-17).
+// Stages at which Code-changes line comments go to a PR-fix round instead of User Review's "Request changes".
+const LOCAL_COMMENT_FIX_STAGES: ReadonlySet<Stage> = new Set(["pr_waiting", "pr_fix", "pr_green", "pr_approved"]);
+
 const renderReviewNotes = (round: number, notes: string | undefined, comments: LineComment[], stage: Stage): string => {
     const parts: string[] = [`## Reviewer notes — review round ${round} (address every point)`];
     if (notes?.trim()) parts.push(notes.trim());
@@ -2403,6 +2406,25 @@ export class Engine extends EventEmitter {
         const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");
         this.setStage(taskId, "pr_fix");
         this.startPrRound(taskId, { [repo]: `${repoScopeNote(repo)}Failing checks on PR #${row.number}: ${names}. Read their logs with \`gh pr checks ${row.number}\` and \`gh run view --log-failed <run-id>\` (run inside that repository) before changing anything.` }, { attempt: rounds.n + 1, operation: "pr_fix_ci" });
+    }
+
+    // Line comments and notes the human left on Code changes while the task sits at a PR stage (nothing posted to
+    // GitHub): a PR-fix round with them as the reviewer notes — the same path User Review's "Request changes" takes
+    // before the PR exists. Recorded as a review row so the round shows in the history.
+    async startLocalCommentFix(taskId: string, notes: string | undefined, comments: LineComment[]): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        if (!LOCAL_COMMENT_FIX_STAGES.has(task.stage)) throw new Error("this is for a task at a PR stage — use Request changes at User Review");
+        if (!notes?.trim() && comments.length === 0) throw new Error("leave a line comment on Code changes or write notes first");
+        const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE task_id = ? AND stage = 'pr_fix' AND verdict = 'changes'`).get(taskId) as { n: number };
+        this.db
+            .prepare(`INSERT INTO reviews (id, task_id, stage, verdict, route_to, notes, comments, created_at) VALUES (?, ?, 'pr_fix', 'changes', 'pr_fix', ?, ?, ?)`)
+            .run(randomUUID(), taskId, notes?.trim() || null, comments.length ? JSON.stringify(comments) : null, now());
+        const failureOutput = `${comments.length} line comment(s) and notes the human left on the task's Code changes (not a CI failure — the PR itself is untouched):\n\n${renderReviewNotes(prior.n + 1, notes, comments, "pr_fix")}`;
+        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
+        this.setStage(taskId, "pr_fix");
+        this.startPrRound(taskId, { "": failureOutput }, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
     }
 
     // Human-triggered only (checkbox picks on the PR comments tab). Same commit-locally-then-review-the-diff cycle as
