@@ -41,6 +41,9 @@ export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, on
     const be = rows.find((r) => r.kind === "be");
     const fe = rows.find((r) => r.kind === "fe");
     const configured = { be: !!env?.be_command, fe: !!env?.fe_command };
+    // An env whose app URL does not use the FE (Northspyre Core: the backend serves the page, webpack on the FE port
+    // only writes the bundle to disk and answers with a directory listing) — the FE URL is not a link to click.
+    const feNotTheApp = !!env?.app_url && !env.app_url.includes("{{feUrl}}");
     const comps = componentsOf(env);
     // The env's shared dependency (Deal → Core): listed by the server even while stopped, one instance for every task.
     const dep = rows.find((r) => r.kind === "dependency");
@@ -104,7 +107,11 @@ export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, on
             {svc ? (
                 <>
                     {stateChip(svc)}
-                    <a href={svc.url} target="_blank" rel="noreferrer">{svc.url}</a>
+                    {kind === "fe" && feNotTheApp ? (
+                        <span className="mono" title="This env's app is served by the BE (its app URL is {{beUrl}}); this port only builds the bundle">{svc.url} <span className="hint">(bundle only — use Open app)</span></span>
+                    ) : (
+                        <a href={svc.url} target="_blank" rel="noreferrer">{svc.url}</a>
+                    )}
                     {svc.state === "failed" && (
                         <>
                             {fixing.has(kind) || (taskBusy && fixing.size > 0) ? (
