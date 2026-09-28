@@ -290,22 +290,37 @@ const checkoutsOf = (env: RepoLayout, worktree: string): Array<{ checkout: strin
     return subs.filter((dir) => existsSync(join(worktree, dir))).map((dir) => ({ checkout: join(worktree, dir), prefix: `${dir}/`, repo: dir }));
 };
 
-// Commits on the task branch that are not on the base branch, newest first, plus whether anything is uncommitted.
-export const branchCommits = async (env: RepoLayout, worktree: string, vars: Vars = {}): Promise<{ commits: BranchCommit[]; uncommitted: boolean }> => {
+// What `git status` counts as uncommitted in a checkout — tracked changes and untracked files, one path each, the
+// untracked ones marked. Named wherever a dirty checkout matters: the Code changes diff (the branch against its base)
+// can hide it, e.g. a working-tree edit that puts a committed file back to the base's content (INV-135, 2026-09-28:
+// a rebase was refused over "uncommitted changes" the view did not show).
+export const dirtyPaths = async (checkout: string, vars: Vars = {}): Promise<string[]> => {
+    const raw = await git(checkout, ["-c", "core.quotepath=off", "status", "--porcelain"], vars);
+    // `git` trims the output, so the first line may have lost the leading space of its status column.
+    return raw.split("\n").filter(Boolean).map((l) => {
+        const m = /^([ MADRCTU?!]{1,2}) (.*)$/.exec(l);
+        if (!m) return l;
+        return m[1]!.includes("?") ? `${m[2]} (untracked)` : m[2]!;
+    });
+};
+
+// A path list for a message: the first few, then how many in all.
+export const describePaths = (paths: string[], max = 8): string => paths.slice(0, max).join(", ") + (paths.length > max ? `, … (${paths.length} in all)` : "");
+
+// Commits on the task branch that are not on the base branch, newest first, plus what is uncommitted (paths prefixed
+// with their checkout's directory).
+export const branchCommits = async (env: RepoLayout, worktree: string, vars: Vars = {}): Promise<{ commits: BranchCommit[]; uncommitted: boolean; dirty: string[] }> => {
     const commits: BranchCommit[] = [];
-    let uncommitted = false;
-    for (const { checkout, repo } of checkoutsOf(env, worktree)) {
+    const dirty: string[] = [];
+    for (const { checkout, repo, prefix } of checkoutsOf(env, worktree)) {
         const raw = await git(checkout, ["log", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI", `origin/${baseOf(env, repo)}..HEAD`], vars).catch(() => "");
         for (const line of raw.split("\n").filter(Boolean)) {
             const [sha = "", short = "", subject = "", author = "", at = ""] = line.split("\x1f");
             commits.push({ sha, short, subject, author, at, repo });
         }
-        if (!uncommitted) {
-            const status = await git(checkout, ["status", "--porcelain"], vars).catch(() => "");
-            uncommitted = status.trim() !== "";
-        }
+        dirty.push(...(await dirtyPaths(checkout, vars).catch(() => [])).map((p) => `${prefix}${p}`));
     }
-    return { commits: commits.sort((a, b) => b.at.localeCompare(a.at)), uncommitted };
+    return { commits: commits.sort((a, b) => b.at.localeCompare(a.at)), uncommitted: dirty.length > 0, dirty };
 };
 
 export interface DiffGroup {

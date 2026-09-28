@@ -16,7 +16,7 @@ export type DiffFilter = CodeScope;
 export interface DiffSource {
     // `file`: one path in full — how a collapsed (generated / very large) file's hunks are fetched on request.
     diff: (filter?: { shas: string[] } | { uncommitted: true }, file?: string) => Promise<DiffResponse>;
-    commits: () => Promise<{ commits: BranchCommit[]; uncommitted: boolean }>;
+    commits: () => Promise<{ commits: BranchCommit[]; uncommitted: boolean; dirty?: string[] }>;
 }
 const taskSource = (taskId: string): DiffSource => ({ diff: (f, file) => api.diff(taskId, f, file), commits: () => api.commits(taskId) });
 export const sessionSource = (sessionId: string): DiffSource => ({ diff: (f, file) => api.sessionDiff(sessionId, f, file), commits: () => api.sessionCommits(sessionId) });
@@ -485,7 +485,7 @@ export const DiffView = ({
     const [diff, setDiff] = useState<DiffResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [localFilter, setLocalFilter] = useState<DiffFilter>({ kind: "all" });
-    const [branch, setBranch] = useState<{ commits: BranchCommit[]; uncommitted: boolean }>({ commits: [], uncommitted: false });
+    const [branch, setBranch] = useState<{ commits: BranchCommit[]; uncommitted: boolean; dirty?: string[] }>({ commits: [], uncommitted: false });
     const [localRepo, setLocalRepo] = useState(repos[0] ?? "");
     const controlled = !!onView;
     const filter: DiffFilter = controlled ? (view?.filter ?? { kind: "all" }) : localFilter;
@@ -592,6 +592,9 @@ export const DiffView = ({
     const adds = files.reduce((n, f) => n + f.additions, 0);
     const dels = files.reduce((n, f) => n + f.deletions, 0);
     const drifted = (diff.baseDrift ?? []).includes(repo);
+    // Everything `git status` counts as uncommitted here — the diff below compares with the base, so a working-tree
+    // change that matches the base (or sits outside the diffed files) would otherwise be invisible.
+    const dirty = (branch.dirty ?? []).filter((p) => inRepo(p, repo));
     return (
         <>
             {tabs}
@@ -603,6 +606,11 @@ export const DiffView = ({
                         {onRebase && !taskBusy && <> <button className="tiny" onClick={onRebase}>Rebase onto latest base</button></>}
                         {onRebase && taskBusy && <span className="hint"> Rebase once the current run finishes.</span>}
                     </div>
+                )}
+                {dirty.length > 0 && (
+                    <p className="field-hint">
+                        Uncommitted in this checkout ({dirty.length}): <span className="mono">{dirty.slice(0, 12).join(", ")}{dirty.length > 12 ? ", …" : ""}</span>. A rebase sets them aside and puts them back.
+                    </p>
                 )}
                 <div className="diff-summary mono">
                     {picker}

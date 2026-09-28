@@ -589,7 +589,7 @@ export const api = {
     // `file`: only that path, with its hunks even when it would normally be collapsed.
     diff: (id: string, filter?: { shas: string[] } | { uncommitted: true }, file?: string) =>
         fetch(`/api/tasks/${id}/diff?${diffQuery(filter, file)}`).then((r) => j<DiffResponse>(r)),
-    commits: (id: string) => fetch(`/api/tasks/${id}/commits`).then((r) => j<{ commits: BranchCommit[]; uncommitted: boolean }>(r)),
+    commits: (id: string) => fetch(`/api/tasks/${id}/commits`).then((r) => j<{ commits: BranchCommit[]; uncommitted: boolean; dirty?: string[] }>(r)),
     // Reword resolves once the (fast, conflict-free) rewrite is done. Remove only resolves once the agent run has
     // *started* — it can take a while and may hit conflicts; the outcome lands in Chat.
     rewordCommit: (id: string, sha: string, repo: string, message: string) => post<{ newSha: string }>(`/api/tasks/${id}/commits/${sha}/reword`, { repo, message }),
@@ -638,7 +638,7 @@ export const api = {
         fetch(`/api/sessions/${id}?${new URLSearchParams({ ...(removeWorktree ? { worktree: "remove" } : {}), ...(force ? { force: "1" } : {}) })}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     sessionDiff: (id: string, filter?: { shas: string[] } | { uncommitted: true }, file?: string) =>
         fetch(`/api/sessions/${id}/diff?${diffQuery(filter, file)}`).then((r) => j<DiffResponse>(r)),
-    sessionCommits: (id: string) => fetch(`/api/sessions/${id}/commits`).then((r) => j<{ commits: BranchCommit[]; uncommitted: boolean }>(r)),
+    sessionCommits: (id: string) => fetch(`/api/sessions/${id}/commits`).then((r) => j<{ commits: BranchCommit[]; uncommitted: boolean; dirty?: string[] }>(r)),
     artifactUrl: (id: string, rel: string) => `/api/tasks/${id}/artifacts/${rel}`,
     messages: (id: string) => fetch(`/api/tasks/${id}/messages`).then((r) => j<Message[]>(r)),
     uploadFiles,

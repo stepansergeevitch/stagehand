@@ -11,7 +11,7 @@ import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, o
 import { activateCloneTab, cloneProfile, launchClone, pickCdpPort, quitClone, sweepClones, type ChromeClone } from "./chrome-clones.js";
 import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stampTaskOnUsage } from "./usage.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
-import { baseDrift, baseOf, branchCommits, commitsDiff, createWorktree, type RepoLayout, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
+import { baseDrift, baseOf, branchCommits, commitsDiff, createWorktree, describePaths, dirtyPaths, type RepoLayout, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -1515,9 +1515,9 @@ export class Engine extends EventEmitter {
         return "uncommitted" in filter ? [await uncommittedGroup(layout, task.worktree_path, vars)] : commitsDiff(layout, task.worktree_path, filter.shas, vars);
     }
 
-    async commits(taskId: string): Promise<{ commits: BranchCommit[]; uncommitted: boolean }> {
+    async commits(taskId: string): Promise<{ commits: BranchCommit[]; uncommitted: boolean; dirty: string[] }> {
         const task = this.getTask(taskId);
-        if (!task?.worktree_path) return { commits: [], uncommitted: false };
+        if (!task?.worktree_path) return { commits: [], uncommitted: false, dirty: [] };
         const env = this.env(task.env_id);
         return branchCommits(this.layoutOf(task, env), task.worktree_path, parseEnvVars(env.env_vars));
     }
@@ -2879,8 +2879,8 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         const cwd = this.checkoutOf(task, env, repo);
         if (!existsSync(cwd)) throw new Error(`${repoLabel(repo)}: no worktree checkout yet`);
-        const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
-        if (dirty.trim()) throw new Error(`${repoLabel(repo)}: the worktree has uncommitted changes — commit or discard them first`);
+        const dirty = await dirtyPaths(cwd, parseEnvVars(env.env_vars)).catch(() => []);
+        if (dirty.length) throw new Error(`${repoLabel(repo)}: the worktree has uncommitted changes — commit or discard them first: ${describePaths(dirty)}`);
         const own = await this.ownCommitShas(cwd, this.layoutOf(task, env));
         const full = own.has(sha) ? sha : [...own].find((s) => s.startsWith(sha));
         if (!full) throw new Error(`${repoLabel(repo)}: ${sha.slice(0, 10)} is not one of this task's own commits on ${task.branch}`);
@@ -4337,7 +4337,7 @@ export class Engine extends EventEmitter {
     // "Rebase onto latest base" (task page): the task's own agent rebases the branch onto origin/<base> in the worktree,
     // resolving conflicts and re-running the fast checks under the normal guard (no force-push, no interactive rebase);
     // Stagehand then force-pushes with lease itself where the env allows pushes and the branch is on GitHub, resets the
-    // PR checks and re-polls. Refuses while a run is in progress, with uncommitted changes, or when already up to date.
+    // PR checks and re-polls. Refuses while a run is in progress or when already up to date; uncommitted changes are set aside for the plain pass.
     // Plain `git rebase` first: the task's own commits (on neither the base nor the trunk) are replayed onto the new
     // base with `--onto`, so a base that was rewritten under the branch (a stacked parent force-pushed) replays only
     // this task's work. The agent is brought in only for a checkout where that conflicts — the user's rule (2026-09-18):
@@ -4359,9 +4359,10 @@ export class Engine extends EventEmitter {
         const { repos, behind, fastForwarded, headsBefore, plain, conflicted } = await this.rebasePlainPass(task, env, opts.repos);
         const header = opts.auto ? `🔀 Auto-rebase onto origin/${base} (${opts.auto}):` : `🔀 Rebase onto origin/${base}:`;
         if (repos.length === 0) {
-            if (fastForwarded.length === 0) throw new Error(`already up to date with origin/${base}`);
+            const warnings = plain.filter((l) => l.startsWith("⚠️"));
+            if (fastForwarded.length === 0) throw new Error(`already up to date with origin/${base}${warnings.length ? ` — ${warnings.join("; ")}` : ""}`);
             const resync = await this.resyncAfterHistoryChange(task, env, headsBefore);
-            this.addMessage(taskId, "agent", `${header}\n\n${fastForwarded.map((l) => `✅ ${l}`).join("\n")}${resync ? `\n${resync}` : ""}\n\nNothing to replay — no agent run needed.`);
+            this.addMessage(taskId, "agent", `${header}\n\n${plain.join("\n")}${resync ? `\n${resync}` : ""}\n\nNothing to replay — no agent run needed.`);
             this.emitTask(taskId);
             return;
         }
@@ -4410,9 +4411,10 @@ export class Engine extends EventEmitter {
         });
     }
 
-    // Preflight + mechanical pass shared by "Rebase onto latest base" and the batched PR jobs: refuses dirty checkouts,
-    // fetches each repository's base, resets checkouts with no commits of their own, and plain-rebases the rest;
-    // `conflicted` names the checkouts left for the agent (restored to where they were).
+    // Preflight + mechanical pass shared by "Rebase onto latest base" and the batched PR jobs: sets uncommitted changes
+    // aside for the pass (put back at its end), fetches each repository's base, resets checkouts with no commits of
+    // their own, and plain-rebases the rest; `conflicted` names the checkouts left for the agent (restored to where
+    // they were).
     private async rebasePlainPass(task: TaskRow, env: EnvRow, only?: string[]): Promise<{ allRepos: string[]; repos: string[]; behind: string[]; fastForwarded: string[]; headsBefore: Map<string, string>; plain: string[]; conflicted: string[] }> {
         const wanted = only?.length ? new Set(only) : null;
         const allRepos = this.prRepos(env).filter((r) => existsSync(this.checkoutOf(task, env, r)) && (!wanted || wanted.has(r)));
@@ -4423,41 +4425,71 @@ export class Engine extends EventEmitter {
         // Each checkout's HEAD before anything moves: a rebase that changes a lockfile leaves node_modules / .venv stale
         // (setup only ran at worktree creation), so the env's setup command is re-run afterwards when one did.
         const headsBefore = new Map<string, string>();
-        for (const repo of allRepos) {
-            const base = this.baseBranchOf(task, env, repo);
-            const cwd = this.checkoutOf(task, env, repo);
-            const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
-            if (dirty.trim()) throw new Error(`${repoLabel(repo)} has uncommitted changes — commit or discard them first`);
-            headsBefore.set(repo, (await this.git(cwd, ["rev-parse", "HEAD"], env).catch(() => "")).trim());
-            await this.git(cwd, ["fetch", "origin", base], env);
-            const n = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${base}`], env).catch(() => "0")) || 0;
-            if (n === 0) continue;
-            // Commits of this checkout's own: on neither the base nor the env's trunk (a stacked task forked from a
-            // newer trunk than its parent carries trunk commits its parent lacks — those are not "its own").
-            await this.git(cwd, ["fetch", "origin", env.base_branch], env).catch(() => "");
-            const own = Number(await this.git(cwd, ["rev-list", "--count", "HEAD", `^origin/${base}`, `^origin/${env.base_branch}`], env).catch(() => "0")) || 0;
-            // A checkout with nothing of its own (a multi-repo task that only touched the other repository) has no
-            // history to replay: move it to the base outright, so a stacked task's untouched repository matches its
-            // parent. Nothing is lost — every commit here is on the base or the trunk.
-            if (own === 0) {
-                await this.git(cwd, ["reset", "--hard", `origin/${base}`], env);
-                fastForwarded.push(`${repoLabel(repo)}: moved to origin/${base} (no commits of its own)`);
-                continue;
-            }
-            behind.push(`${repoLabel(repo)}: ${n} commit(s)`);
-            repos.push(repo);
-        }
-        // Mechanical pass per checkout; the ones that conflict go to the agent.
-        const plain: string[] = fastForwarded.map((l) => `✅ ${l}`);
+        const plain: string[] = [];
         const conflicted: string[] = [];
-        for (const repo of repos) {
-            const cwd = this.checkoutOf(task, env, repo);
-            const repoBase = this.baseBranchOf(task, env, repo);
-            const r = await this.plainRebase(cwd, env, repoBase, headsBefore.get(repo) ?? "");
-            if (r.ok) plain.push(`✅ ${repoLabel(repo)}: plain rebase onto origin/${repoBase}, no conflicts (${r.replayed} commit(s) replayed)`);
-            else {
-                conflicted.push(repo);
-                plain.push(`⚠️ ${repoLabel(repo)}: plain rebase conflicted in ${r.conflict} — handed to the agent`);
+        const notes: string[] = [];
+        // Uncommitted changes (untracked files too) are set aside in a labelled stash for the rebase and put back
+        // after it instead of refusing the rebase — the user's ask (2026-09-28) after INV-135's rebase was refused
+        // over a change the Code changes view did not show. The finally puts every stash back, whatever happened.
+        const stashed: Array<{ repo: string; cwd: string; label: string }> = [];
+        try {
+            for (const repo of allRepos) {
+                const base = this.baseBranchOf(task, env, repo);
+                const cwd = this.checkoutOf(task, env, repo);
+                const dirty = await dirtyPaths(cwd, parseEnvVars(env.env_vars)).catch(() => []);
+                if (dirty.length) {
+                    const label = `stagehand: set aside for the rebase of ${task.branch} at ${now()}`;
+                    try {
+                        await this.git(cwd, ["stash", "push", "--include-untracked", "-m", label], env);
+                    } catch (e) {
+                        throw new Error(`${repoLabel(repo)} has uncommitted changes that could not be set aside for the rebase (${gitErrorTail(e)}) — commit or discard them first: ${describePaths(dirty)}`);
+                    }
+                    stashed.push({ repo, cwd, label });
+                    notes.push(`📦 ${repoLabel(repo)}: uncommitted changes set aside for the rebase and put back after it — ${describePaths(dirty)}`);
+                }
+                headsBefore.set(repo, (await this.git(cwd, ["rev-parse", "HEAD"], env).catch(() => "")).trim());
+                await this.git(cwd, ["fetch", "origin", base], env);
+                const n = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${base}`], env).catch(() => "0")) || 0;
+                if (n === 0) continue;
+                // Commits of this checkout's own: on neither the base nor the env's trunk (a stacked task forked from a
+                // newer trunk than its parent carries trunk commits its parent lacks — those are not "its own").
+                await this.git(cwd, ["fetch", "origin", env.base_branch], env).catch(() => "");
+                const own = Number(await this.git(cwd, ["rev-list", "--count", "HEAD", `^origin/${base}`, `^origin/${env.base_branch}`], env).catch(() => "0")) || 0;
+                // A checkout with nothing of its own (a multi-repo task that only touched the other repository) has no
+                // history to replay: move it to the base outright, so a stacked task's untouched repository matches its
+                // parent. Nothing is lost — every commit here is on the base or the trunk.
+                if (own === 0) {
+                    await this.git(cwd, ["reset", "--hard", `origin/${base}`], env);
+                    fastForwarded.push(`${repoLabel(repo)}: moved to origin/${base} (no commits of its own)`);
+                    continue;
+                }
+                behind.push(`${repoLabel(repo)}: ${n} commit(s)`);
+                repos.push(repo);
+            }
+            // Mechanical pass per checkout; the ones that conflict go to the agent.
+            plain.push(...fastForwarded.map((l) => `✅ ${l}`), ...notes);
+            for (const repo of repos) {
+                const cwd = this.checkoutOf(task, env, repo);
+                const repoBase = this.baseBranchOf(task, env, repo);
+                const r = await this.plainRebase(cwd, env, repoBase, headsBefore.get(repo) ?? "");
+                if (r.ok) plain.push(`✅ ${repoLabel(repo)}: plain rebase onto origin/${repoBase}, no conflicts (${r.replayed} commit(s) replayed)`);
+                else {
+                    conflicted.push(repo);
+                    plain.push(`⚠️ ${repoLabel(repo)}: plain rebase conflicted in ${r.conflict} — handed to the agent`);
+                }
+            }
+        } finally {
+            for (const st of stashed) {
+                try {
+                    // The stash list is shared by every worktree of the repository: pop this rebase's entry by its label.
+                    const list = await this.git(st.cwd, ["stash", "list", "--format=%gd%x1f%gs"], env);
+                    const ref = list.split("\n").map((l) => l.split("\x1f")).find(([, subject]) => subject?.endsWith(st.label))?.[0];
+                    if (!ref) throw new Error("the stash entry is gone");
+                    await this.git(st.cwd, ["stash", "pop", ref], env);
+                } catch (e) {
+                    console.warn(`[stagehand] ${task.ticket_id}: stash "${st.label}" not put back: ${gitErrorTail(e)}`);
+                    plain.push(`⚠️ ${repoLabel(st.repo)}: the uncommitted changes set aside for the rebase did not go back cleanly (${gitErrorTail(e)}) — they are kept in \`git stash list\` as "${st.label}"`);
+                }
             }
         }
         return { allRepos, repos, behind, fastForwarded, headsBefore, plain, conflicted };
@@ -4524,12 +4556,13 @@ export class Engine extends EventEmitter {
                 const bases = `${repoLabel(conflictedRepo)}: origin/${this.baseBranchOf(task, env, conflictedRepo)}`;
                 addJob(
                     conflictedRepo,
-                    `Rebase onto the latest base. Stagehand already tried a plain \`git rebase --onto\` of this branch's own commits: ${done.length ? `it went through in ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}; ` : ""}it CONFLICTED in ${pass.conflicted.map(repoLabel).join(", ")} and was aborted there (those checkouts are exactly as they were). In each of those repositories run \`git fetch origin <base>\` and \`git rebase origin/<base>\` (${bases}), resolve the conflicts in the spirit of this task's change (keep this task's behaviour, take the base's changes for everything else; drop a commit of this branch that the base now already provides, e.g. a duplicate merge migration), \`git add\` + \`git rebase --continue\` until done — never \`--abort\` and leave it, never \`-i\`. Do the rebase BEFORE the other jobs so they are made on top of the rebased history.`,
+                    `Rebase onto the latest base. Stagehand already tried a plain \`git rebase --onto\` of this branch's own commits: ${done.length ? `it went through in ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}; ` : ""}it CONFLICTED in ${pass.conflicted.map(repoLabel).join(", ")} and was aborted there (those checkouts are exactly as they were). In each of those repositories run \`git fetch origin <base>\` and \`git rebase origin/<base>\` (${bases}) — a checkout with uncommitted changes or untracked files: \`git stash push --include-untracked\` before the rebase and \`git stash pop\` after it, never commit or discard them — resolve the conflicts in the spirit of this task's change (keep this task's behaviour, take the base's changes for everything else; drop a commit of this branch that the base now already provides, e.g. a duplicate merge migration), \`git add\` + \`git rebase --continue\` until done — never \`--abort\` and leave it, never \`-i\`. Do the rebase BEFORE the other jobs so they are made on top of the rebased history.`,
                 );
             }
             if (pass.conflicted.length) summary.push(`rebase (conflicts in ${pass.conflicted.map(repoLabel).join(", ")})`);
             else if (pass.repos.length || pass.fastForwarded.length) summary.push("rebase (done mechanically)");
-            if (done.length) this.addMessage(taskId, "agent", `🔀 Rebase (batched): ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}${pass.conflicted.length ? ` — conflicts in ${pass.conflicted.map(repoLabel).join(", ")} go to the agent` : ""}`);
+            const setAside = pass.plain.filter((l) => l.startsWith("📦") || (l.startsWith("⚠️") && l.includes("set aside")));
+            if (done.length || setAside.length) this.addMessage(taskId, "agent", `🔀 Rebase (batched): ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}${pass.conflicted.length ? ` — conflicts in ${pass.conflicted.map(repoLabel).join(", ")} go to the agent` : ""}${setAside.length ? `\n${setAside.join("\n")}` : ""}`);
         }
         if (spec.fixCi) {
             const repos = spec.fixCi.repos?.length ? spec.fixCi.repos : this.prRepos(env);
@@ -4639,7 +4672,8 @@ export class Engine extends EventEmitter {
         // the old migration graph (INV-135, 2026-09-25: DuplicateColumn under --reuse-db, so Code Review ran no tests).
         if (env.rebase_command?.trim() && task.worktree_path && repos.length) {
             try {
-                await runWorktreeSetup(task.worktree_path, env.path, env.rebase_command, parseEnvVars(env.env_vars));
+                const wt = task.worktree_path;
+                await this.serialSetup(wt, () => runWorktreeSetup(wt, env.path, env.rebase_command!, parseEnvVars(env.env_vars)));
                 lines.push("🧹 rebase command ran");
             } catch (e) {
                 lines.push(`❌ rebase command failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
@@ -4740,6 +4774,19 @@ export class Engine extends EventEmitter {
     // run the env's setup command again (it is idempotent — the DualEntry one compares the lockfile sha and runs
     // `npm ci` only when it moved) so node_modules / .venv match the code the checkout now holds. Otherwise the FE/BE
     // start with "Can't resolve '<package>'" (INV-131 after being moved onto INV-130's frontend, 2026-09-18).
+    // One setup / rebase command at a time per worktree: two rebases of one task's repositories started seconds apart
+    // each re-ran the setup command, and the two \`npm ci\` runs collided (ENOTEMPTY in node_modules, INV-135,
+    // 2026-09-28). Queued behind each other, the second finds the lockfile sha already current and does nothing.
+    private readonly worktreeSetups = new Map<string, Promise<unknown>>();
+    private serialSetup<T>(worktree: string, fn: () => Promise<T>): Promise<T> {
+        const next = (this.worktreeSetups.get(worktree) ?? Promise.resolve()).catch(() => undefined).then(fn);
+        this.worktreeSetups.set(worktree, next);
+        void next.catch(() => undefined).then(() => {
+            if (this.worktreeSetups.get(worktree) === next) this.worktreeSetups.delete(worktree);
+        });
+        return next;
+    }
+
     private async resyncAfterHistoryChange(task: TaskRow, env: EnvRow, headsBefore: Map<string, string>): Promise<string | null> {
         if (!env.setup_command || !task.worktree_path) return null;
         const manifests = ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "pyproject.toml", "poetry.lock", "uv.lock", "requirements.txt"];
@@ -4752,7 +4799,8 @@ export class Engine extends EventEmitter {
         }
         if (changed.length === 0) return null;
         try {
-            const out = await runWorktreeSetup(task.worktree_path, env.path, env.setup_command, parseEnvVars(env.env_vars));
+            const wt = task.worktree_path;
+            const out = await this.serialSetup(wt, () => runWorktreeSetup(wt, env.path, env.setup_command!, parseEnvVars(env.env_vars)));
             console.error(`[setup] ${task.ticket_id} (after rebase) ${task.worktree_path}\n${out.slice(-1500)}`);
             // Build caches compiled against the old dependency tree must go too: Next's Turbopack dev cache (.next)
             // built before an `npm ci` crashed the dev server with "turbo-tasks: an internal panic occurred outside
