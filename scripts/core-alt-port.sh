@@ -3,7 +3,8 @@
 # tasks (and the user's own dev servers on 7777/9000) can run at once. Applied per worktree, never committed:
 #   be: etc/northspyre_stagehand.cfg gets hostname_port=localhost:<port> (the backend binds from the cfg, PORT is
 #       ignored); NorthSpyre/config.py serves the bundle from the backend's own origin (/static/js/react/…) instead of
-#       //localhost:9000 (skip-worktree so git ignores the edit)
+#       //localhost:9000 (skip-worktree so git ignores the edit); the Auth0 PKCE pages send the allowed callback
+#       https://localhost:7777/auth/callback (skip-worktree), which Stagehand's hop watcher moves back to this port
 #   fe: src/services/getEnvironmentalVariables.ts derives the API base from window.location.origin when the page is
 #       served by the backend (webpack's own :9000 keeps https://localhost:7777; skip-worktree); a git-excluded
 #       webpack.stagehand.config.js wraps the dev config with Stagehand's port and writeToDisk, so the bundle lands in
@@ -37,6 +38,17 @@ be)
         grep -q "$MARK" "$f" || { echo "$f: northspyre_frontend_path default not found — update this script"; exit 1; }
     fi
     skip "$f"
+    # Auth0 accepts only https://localhost:7777/auth/callback: the PKCE pages send that as redirect_uri on any other
+    # port, and Stagehand's callback-hop watcher re-opens the landed callback on this backend's origin (same tab, so the
+    # SDK's transaction in sessionStorage is there to finish the exchange).
+    for f in NorthSpyre/templates/auth/pkce_login.html NorthSpyre/templates/auth/pkce_callback.html; do
+        [ -f "$f" ] || continue
+        if ! grep -q "$MARK" "$f"; then
+            sed -i '' "s|window.location.origin + '/auth/callback'|(window.location.port === '7777' ? window.location.origin : 'https://localhost:7777') + '/auth/callback' /* $MARK: Auth0 allows only this callback */|" "$f"
+            grep -q "$MARK" "$f" || { echo "$f: callback URL line not found — update this script"; exit 1; }
+        fi
+        skip "$f"
+    done
     ;;
 fe)
     f=NorthSpyre/front_end/react/src/services/getEnvironmentalVariables.ts

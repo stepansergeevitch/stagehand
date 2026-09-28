@@ -1322,9 +1322,10 @@ export class Engine extends EventEmitter {
 
     // ---------- the login callback hop, always on ----------
     //
-    // Identity providers (Auth0, WorkOS) typically only accept https://localhost:3000 as a callback, so an FE on a Stagehand port
-    // pins that redirect and the browser lands on whatever holds :3000 after logging in (an error page, or another
-    // app). The QA prompt and the login helper move such a tab to the right port themselves — but a human who opens
+    // Identity providers (Auth0, WorkOS) typically only accept the app's usual port as a callback — https://localhost:3000
+    // (Deal, DualEntry FEs), https://localhost:7777 (Northspyre Core, whose backend serves the page) — so an app on a
+    // Stagehand port pins that redirect and the browser lands on whatever holds that port after logging in (an error
+    // page, or another app). Below, ":3000" stands for either callback origin. The QA prompt and the login helper move such a tab to the right port themselves — but a human who opens
     // the app from the App widget or a Session and logs in by hand had nobody doing it, and the login failed. This
     // watcher does it for every Chrome tab (all profiles) as long as any task's FE is up on a port other than 3000.
     // It remembers which Stagehand FE origin each tab was on, and handles both ways a login can end on :3000:
@@ -1342,7 +1343,7 @@ export class Engine extends EventEmitter {
     private readonly tabHoppedAt = new Map<string, number>();
     private hopSeen = "";
     private startCallbackHopWatcher(): void {
-        const on3000 = (u: string) => /^https?:\/\/localhost:3000(\/|$)/.test(u);
+        const on3000 = (u: string) => /^https?:\/\/localhost:(3000|7777)(\/|$)/.test(u);
         const isCallback = (u: string) => on3000(u) && /\?(?=.*\bcode=)(?=.*\bstate=)/.test(u);
         const isIdp = (u: string) => /^https:\/\/[^/]*(auth0\.com|authkit\.app|workos\.com|okta\.com|login\.microsoftonline\.com|accounts\.google\.com)\//.test(u);
         const pathAndQuery = (u: string): string => {
@@ -1350,8 +1351,15 @@ export class Engine extends EventEmitter {
             return `${x.pathname}${x.search}${x.hash}`;
         };
         const tick = async (): Promise<void> => {
-            const rows = this.db.prepare(`SELECT url FROM services WHERE kind = 'fe' AND stopped_at IS NULL AND failed_at IS NULL`).all() as Array<{ url: string }>;
-            const origins = rows.map((r) => new URL(r.url).origin).filter((o) => !/^https?:\/\/localhost:3000$/.test(o));
+            // The app of each running task: its FE, or its BE where the env's app URL is the BE (Core serves the page itself).
+            const rows = this.db
+                .prepare(
+                    `SELECT s.url FROM services s JOIN tasks t ON t.id = s.task_id JOIN envs e ON e.id = t.env_id
+                     WHERE s.stopped_at IS NULL AND s.failed_at IS NULL
+                       AND (s.kind = 'fe' OR (s.kind = 'be' AND e.app_url LIKE '%{{beUrl}}%'))`,
+                )
+                .all() as Array<{ url: string }>;
+            const origins = [...new Set(rows.map((r) => new URL(r.url).origin))].filter((o) => !on3000(`${o}/`));
             if (origins.length === 0) {
                 this.tabOrigins.clear();
                 this.tabPrevUrl.clear();
