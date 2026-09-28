@@ -18,6 +18,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 import { DEPENDENCY_KIND, type Services } from "./services.js";
+import { CallbackRelay } from "./callback-relay.js";
 import type { ServiceKind } from "./db.js";
 import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderSharedFiles, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
 import { describeReviewChecklist } from "./review-checklist.js";
@@ -593,6 +594,7 @@ export class Engine extends EventEmitter {
             void this.reapClones();
         }, 15_000);
         this.startCallbackHopWatcher();
+        this.startCallbackRelay();
         // No run survives a restart, so no cloned Chrome profile should either.
         void sweepClones(new Set()).then((n) => n && console.log(`[stagehand] ${n} leftover cloned Chrome profile(s) removed`));
         void this.sweepGstackBrowsers();
@@ -1338,6 +1340,32 @@ export class Engine extends EventEmitter {
     //   to the same path on the origin it came from, where it is now logged in. Recognised by the sequence
     //   task FE → identity provider → localhost:3000, and done at most once a minute per tab so an app whose login is
     //   per-origin (an SPA with tokens in storage) cannot ping-pong between the two ports.
+    // Any browser (Safari too): while a task app that the backend serves is up (Northspyre Core, app URL {{beUrl}}),
+    // Stagehand holds Auth0's fixed callback port 7777 and redirects the callback to that app — see CallbackRelay. TLS
+    // from the same locally trusted pair the dev UI uses.
+    private startCallbackRelay(): void {
+        const tlsDir = join(this.cfg.dataDir, "tls");
+        const relay = new CallbackRelay(
+            7777,
+            () => {
+                const cert = join(tlsDir, "cert.pem");
+                const key = join(tlsDir, "key.pem");
+                return existsSync(cert) && existsSync(key) ? { cert: readFileSync(cert), key: readFileSync(key) } : null;
+            },
+            () => {
+                const rows = this.db
+                    .prepare(
+                        `SELECT s.url FROM services s JOIN tasks t ON t.id = s.task_id JOIN envs e ON e.id = t.env_id
+                         WHERE s.kind = 'be' AND s.stopped_at IS NULL AND s.failed_at IS NULL AND e.app_url LIKE '%{{beUrl}}%'`,
+                    )
+                    .all() as Array<{ url: string }>;
+                return [...new Set(rows.map((r) => new URL(r.url).origin))].filter((o) => !/:7777$/.test(o));
+            },
+        );
+        relay.sync();
+        setInterval(() => relay.sync(), 5_000).unref();
+    }
+
     private readonly tabOrigins = new Map<string, { origin: string; at: number }>();
     private readonly tabPrevUrl = new Map<string, string>();
     private readonly tabHoppedAt = new Map<string, number>();

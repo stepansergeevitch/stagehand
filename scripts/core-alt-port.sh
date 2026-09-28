@@ -49,6 +49,14 @@ be)
         fi
         skip "$f"
     done
+    # The login page names its own origin in a cookie (per host, so :7777 gets it too): Stagehand's callback relay on
+    # :7777 sends the callback back to this port in any browser, even with several tasks' apps up.
+    f=NorthSpyre/templates/auth/pkce_login.html
+    if [ -f "$f" ] && ! grep -q "stagehand_app_origin" "$f"; then
+        sed -i '' "s|^\(.*var callbackUrl = .*$MARK.*\)$|\1\
+            document.cookie = 'stagehand_app_origin=' + encodeURIComponent(window.location.origin) + '; path=/; secure; samesite=lax'; // $MARK: read by Stagehand's :7777 callback relay|" "$f"
+        grep -q "stagehand_app_origin" "$f" || { echo "$f: callbackUrl line not found — update this script"; exit 1; }
+    fi
     ;;
 fe)
     f=NorthSpyre/front_end/react/src/services/getEnvironmentalVariables.ts
