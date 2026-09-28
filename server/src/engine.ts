@@ -2336,8 +2336,8 @@ export class Engine extends EventEmitter {
     private syncPrTaskState(taskId: string, opts: { force?: boolean } = {}): void {
         const cur = this.getTask(taskId);
         if (!cur) return;
-        if (!["pr_waiting", "pr_green", "pr_approved"].includes(cur.stage)) return;
-        if (!opts.force && cur.status !== "idle" && cur.status !== "blocked") {
+        if (!["pr_waiting", "pr_green", "pr_approved", "pr_fix"].includes(cur.stage)) return;
+        if (!opts.force && cur.stage !== "pr_fix" && cur.status !== "idle" && cur.status !== "blocked") {
             // Something else took the task over meanwhile (a PR Fix run, a return to an earlier stage) — only record, don't steer.
             this.emitTask(taskId);
             return;
@@ -2349,6 +2349,13 @@ export class Engine extends EventEmitter {
         const line = summaries.map((s) => `${repoPrefix(s.repo, repos)}${s.text}`).join(" · ");
         const kinds = new Set(summaries.map((s) => s.kind));
         const all = (k: string) => summaries.every((s) => s.kind === k);
+        // PR Fix is left alone — except when every PR merged meanwhile (on GitHub, by hand) and no run is going: the
+        // round waiting for review is moot then, and the task is done (INV-136, 2026-09-28: both PRs merged while the
+        // task sat in PR Fix · needs you, and no refresh ever finished it).
+        if (cur.stage === "pr_fix" && (cur.status === "running" || !all("merged"))) {
+            this.emitTask(taskId);
+            return;
+        }
         // A repository whose PR merged releases the children stacked on it in that repository right away — the other
         // repositories' PRs may stay open for days (INV-132, 2026-09-21: backend merged, frontend still in review).
         for (const s of summaries) if (s.kind === "merged") this.onParentRepoMerged(cur, env, s.repo);
