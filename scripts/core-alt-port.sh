@@ -53,8 +53,8 @@ be)
     # :7777 sends the callback back to this port in any browser, even with several tasks' apps up.
     f=NorthSpyre/templates/auth/pkce_login.html
     if [ -f "$f" ] && ! grep -q "stagehand_app_origin" "$f"; then
-        sed -i '' "s|^\(.*var callbackUrl = .*$MARK.*\)$|\1\
-            document.cookie = 'stagehand_app_origin=' + encodeURIComponent(window.location.origin) + '; path=/; secure; samesite=lax'; // $MARK: read by Stagehand's :7777 callback relay|" "$f"
+        # Appended to the callbackUrl line itself (a newline in a BSD sed replacement is not worth the quoting).
+        sed -i '' "s|^\(.*var callbackUrl = .*$MARK.*\)$|\1 document.cookie = 'stagehand_app_origin=' + encodeURIComponent(window.location.origin) + '; path=/; secure; samesite=lax'; // $MARK: read by Stagehand's :7777 callback relay|" "$f"
         grep -q "stagehand_app_origin" "$f" || { echo "$f: callbackUrl line not found — update this script"; exit 1; }
     fi
     ;;
