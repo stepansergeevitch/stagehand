@@ -49,6 +49,34 @@ be)
         fi
         skip "$f"
     done
+    # Auth0's CORS list has only :7777 too, so on any other port the SDK's token calls go through Stagehand's relay on
+    # :7777 (a fetch shim ahead of the SDK) — and without refresh tokens, whose Web Worker a page-level shim can't reach
+    # (the login only needs the access token it hands to /api/v2/auth/exchange-token).
+    python3 - "$MARK" NorthSpyre/templates/auth/pkce_login.html NorthSpyre/templates/auth/pkce_callback.html <<'PY'
+import os, sys
+mark, files = sys.argv[1], sys.argv[2:]
+tag = '<script src="{{ AUTH0_SPA_SDK_URL }}"></script>'
+shim = ("<script>/* " + mark + ": Auth0 token calls via Stagehand's :7777 relay */ (function () {"
+        " if (window.location.port === '7777' || window.__stagehandFetch) return; window.__stagehandFetch = true;"
+        " var realFetch = window.fetch.bind(window);"
+        " window.fetch = function (input, init) {"
+        " var url = typeof input === 'string' ? input : (input && input.url) || String(input);"
+        r" var m = /^https:\/\/([^\/]+\.auth0\.com)\/(.*)$/.exec(url);"
+        " return m ? realFetch('https://localhost:7777/__auth0/' + m[1] + '/' + m[2], init) : realFetch(input, init); };"
+        " })();</script>")
+for f in files:
+    if not os.path.exists(f):
+        continue
+    s = open(f).read()
+    if "__stagehandFetch" in s:
+        continue
+    if tag not in s or "useRefreshTokens: true," not in s:
+        sys.exit(f"{f}: SDK script tag or useRefreshTokens not found — update core-alt-port.sh")
+    indent = s[: s.index(tag)].rsplit("\n", 1)[-1]
+    s = s.replace(tag, shim + "\n" + indent + tag, 1)
+    s = s.replace("useRefreshTokens: true,", "useRefreshTokens: window.location.port === '7777', /* " + mark + ": no token Web Worker, so the fetch shim sees the token call */", 1)
+    open(f, "w").write(s)
+PY
     # The login page names its own origin in a cookie (per host, so :7777 gets it too): Stagehand's callback relay on
     # :7777 sends the callback back to this port in any browser, even with several tasks' apps up.
     f=NorthSpyre/templates/auth/pkce_login.html

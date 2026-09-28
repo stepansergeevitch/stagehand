@@ -46,8 +46,54 @@ export class CallbackRelay {
         this.servers = [];
     }
 
+    // /__auth0/<tenant>.auth0.com/<path>: the patched login pages send their Auth0 token calls here, because Auth0's
+    // CORS list has only the fixed port (a token response to https://localhost:18003 carries no
+    // Access-Control-Allow-Origin, so the browser drops it and the login page says "Authentication failed"). Forwarded
+    // with Origin set to this port's origin, which Auth0 allows; answered with CORS for the task app that asked.
+    private async proxyAuth0(req: IncomingMessage, res: ServerResponse, apps: string[]): Promise<void> {
+        const origin = req.headers.origin ?? "";
+        const cors: Record<string, string> = apps.includes(origin)
+            ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true", Vary: "Origin" }
+            : {};
+        if (req.method === "OPTIONS") {
+            res.writeHead(204, {
+                ...cors,
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": String(req.headers["access-control-request-headers"] ?? "content-type, auth0-client"),
+                "Access-Control-Max-Age": "600",
+            });
+            res.end();
+            return;
+        }
+        const m = /^\/__auth0\/([a-z0-9.-]+\.auth0\.com)(\/.*)$/i.exec(req.url ?? "");
+        if (!m || !apps.includes(origin)) {
+            res.writeHead(403, { ...cors, "Content-Type": "text/plain" });
+            res.end("not an Auth0 call from a running task app");
+            return;
+        }
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        const headers: Record<string, string> = { Origin: `https://localhost:${this.port}` };
+        for (const h of ["content-type", "auth0-client", "accept"]) {
+            const v = req.headers[h];
+            if (typeof v === "string") headers[h] = v;
+        }
+        const upstream = await fetch(`https://${m[1]}${m[2]}`, { method: req.method ?? "GET", headers, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
+        const body = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(upstream.status, { ...cors, "Content-Type": upstream.headers.get("content-type") ?? "application/json", "Cache-Control": "no-store" });
+        res.end(body);
+    }
+
     private handle(req: IncomingMessage, res: ServerResponse): void {
         const apps = this.apps();
+        if ((req.url ?? "").startsWith("/__auth0/")) {
+            void this.proxyAuth0(req, res, apps).catch((e: unknown) => {
+                console.warn(`[stagehand] callback relay: Auth0 proxy failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
+                res.end("Auth0 proxy failed");
+            });
+            return;
+        }
         const cookie = /(?:^|;\s*)stagehand_app_origin=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
         const fromCookie = cookie ? decodeURIComponent(cookie) : null;
         const target = fromCookie && apps.includes(fromCookie) ? fromCookie : apps.length === 1 ? apps[0] : null;
