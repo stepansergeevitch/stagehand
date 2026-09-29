@@ -13,7 +13,7 @@ import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stam
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
 import { baseDrift, baseOf, branchCommits, commitsDiff, createWorktree, describePaths, dirtyPaths, type RepoLayout, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -1759,7 +1759,7 @@ export class Engine extends EventEmitter {
         if (remote) {
             const remoteOnly = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${branch}`], env).catch(() => "0")) || 0;
             if (remoteOnly > 0) {
-                const unique = (await this.git(cwd, ["cherry", "HEAD", `origin/${branch}`], env).catch(() => "+ unknown")).split("\n").filter((l) => l.startsWith("+")).length;
+                const unique = await this.remoteOnlyByContent(cwd, env, `origin/${branch}`);
                 const ownOldPush = !!lastPushed && remote === lastPushed;
                 if (unique === 0 || ownOldPush) {
                     await this.git(cwd, ["push", `--force-with-lease=${branch}:${remote}`, "-u", "origin", branch], env);
@@ -1780,6 +1780,38 @@ export class Engine extends EventEmitter {
         }
         await this.git(cwd, ["push", "-u", "origin", branch], env);
         return "pushed";
+    }
+
+    // How many commits of `remote` (not on HEAD) have no local counterpart by content. Like `git cherry`, but the
+    // patch-ids come from diffs without context lines (-U0): a commit replayed next to a line the new base added still
+    // adds and removes exactly the same lines, yet its default patch-id differs (INV-151, 2026-09-29: the rebase put
+    // dev's new import beside the import the commit removes, `git cherry` called it new, and the push fell through to
+    // a `pull --rebase` that conflicted). Any failure counts as "unknown", never as "all here".
+    private async remoteOnlyByContent(cwd: string, env: EnvRow, remote: string): Promise<number> {
+        const ids = async (range: string[]): Promise<{ ids: Set<string>; commits: number }> => {
+            const log = await this.git(cwd, ["log", "-p", "-U0", "--no-merges", "--format=commit %H", ...range], env);
+            const commits = (await this.git(cwd, ["rev-list", "--count", "--no-merges", ...range], env).then(Number)) || 0;
+            const out = await new Promise<string>((resolve, reject) => {
+                const p = spawn("git", ["-C", cwd, "patch-id", "--stable"], { env: { ...process.env, ...parseEnvVars(env.env_vars) } });
+                let text = "";
+                p.stdout.on("data", (d: Buffer) => (text += d.toString()));
+                p.on("error", reject);
+                p.on("close", (code) => (code === 0 ? resolve(text) : reject(new Error(`git patch-id exited ${code}`))));
+                p.stdin.end(`${log}\n`);
+            });
+            return { ids: new Set(out.split("\n").map((l) => l.split(" ")[0]).filter((x): x is string => !!x)), commits };
+        };
+        try {
+            const theirs = await ids(["HEAD.." + remote]);
+            const ours = await ids([remote + "..HEAD"]);
+            // A remote commit with an empty diff gets no patch-id: it cannot be matched, so it counts as not here.
+            // A merge commit on the remote carries its own resolution: never "here by content".
+            const merges = (await this.git(cwd, ["rev-list", "--count", "--merges", "HEAD.." + remote], env).then(Number)) || 0;
+            const unmatched = [...theirs.ids].filter((id) => !ours.ids.has(id)).length;
+            return unmatched + merges + Math.max(0, theirs.commits - theirs.ids.size);
+        } catch {
+            return Number.MAX_SAFE_INTEGER;
+        }
     }
 
     // The checkout's current commit, recorded as `pushed_sha` right after a push so a later push can tell Stagehand's
