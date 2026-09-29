@@ -977,6 +977,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {(task.status === "failed" || task.status === "stopped" || task.status === "blocked") && (
                     <button className="primary" onClick={() => onAction(() => api.retry(task.id))}>{task.status === "blocked" ? "Re-run stage" : "Retry stage"}</button>
                 )}
+                {task.stage === "manual_qa" && task.status !== "running" && (
+                    <button title="Go on to User Review without this Manual QA pass (no after-state evidence) — for a pass stuck on the environment; you QA by hand there" onClick={() => onAction(() => api.skipManualQa(task.id))}>
+                        Skip Manual QA
+                    </button>
+                )}
                 <button onClick={() => onAction(() => api.pin(task.id))}>{task.pinned ? "Unpin" : "Pin"}</button>
                 {terminal ? <button onClick={onCloseTerminal}>Close terminal</button> : <button disabled={task.status === "running"} onClick={onOpenTerminal}>Open terminal</button>}
                 {task.status !== "running" && currentIdx > 0 && <button onClick={() => setReturning((v) => !v)} title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)">{returning ? "Cancel return" : "Return to a stage…"}</button>}

@@ -601,6 +601,7 @@ export const api = {
     stop: (id: string) => post<Task>(`/api/tasks/${id}/stop`),
     retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),
     rerun: (id: string, stage: Stage) => post<Task>(`/api/tasks/${id}/rerun`, { stage }),
+    skipManualQa: (id: string) => post<Task>(`/api/tasks/${id}/skip-manual-qa`),
     qaLogin: (id: string) => post<{ started: true }>(`/api/tasks/${id}/qa-login`),
     relaunchChrome: (id: string) => post<Task>(`/api/tasks/${id}/relaunch-chrome`),
     fixCi: (id: string, repo: string) => post<{ started: true }>(`/api/tasks/${id}/fix-ci`, { repo }),

@@ -1488,6 +1488,21 @@ export class Engine extends EventEmitter {
         return "timeout";
     }
 
+    // "Skip Manual QA": the human's way out of a Manual QA pass that cannot finish on its own — blocked on the
+    // environment (a migration not applied, a seed that cannot run) with nothing left to retry but the same wall
+    // (2026-09-29: "these types of situations are deadlocks from my end"). The task goes on to User Review without an
+    // after-state for this pass; the human QAs by hand there. Open questions of the pass are dismissed.
+    skipManualQa(taskId: string): void {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.stage !== "manual_qa") throw new Error("the task is not at Manual QA");
+        if (task.status === "running") throw new Error("Manual QA is running — stop it first");
+        this.killTaskRuns(taskId);
+        this.dismissPendingQuestions(taskId);
+        this.addAgentNote(taskId, `Manual QA skipped by you (it was ${task.status}: ${(task.status_line ?? "").slice(0, 200)}) — no after-state for this pass; QA by hand in User Review`);
+        this.advance(taskId, "user_review");
+    }
+
     rerun(taskId: string, stage: Stage): void {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");

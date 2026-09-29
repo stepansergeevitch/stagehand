@@ -1598,6 +1598,16 @@ app.post("/api/tasks/:id/ask-comments", async (c) => {
     }
 });
 
+// A Manual QA pass stuck on the environment: move on to User Review without it.
+app.post("/api/tasks/:id/skip-manual-qa", (c) => {
+    try {
+        engine.skipManualQa(c.req.param("id"));
+        return c.json(engine.getTask(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/rerun", async (c) => {
     const body = json(z.object({ stage: z.enum(STAGES as [Stage, ...Stage[]]) }), await c.req.json());
     engine.rerun(c.req.param("id"), body.stage);
