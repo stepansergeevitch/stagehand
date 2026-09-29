@@ -1752,7 +1752,11 @@ export class Engine extends EventEmitter {
     // still held the 7 old commits, and the plain push was rejected as non-fast-forward. Seen on INV-133 (2026-09-23):
     // the backend fix rebased onto dev with a resolved conflict and a merge migration, so `git cherry` saw new content,
     // `pull --rebase` replayed 23 stale remote commits onto the rewritten branch and conflicted, and the task failed
-    // although nothing but Stagehand's own old push was on the remote.
+    // although nothing but Stagehand's own old push was on the remote. A third safe case (INV-151, 2026-09-29): the
+    // remote tip is somebody else's commit that this checkout already pulled (the human's review fixes, pulled by the
+    // PR poll), then a rebase with a resolved conflict rewrote everything — neither of the two checks above matched,
+    // but the tip is in the local branch's own history (its reflog), so the remote holds nothing this checkout has
+    // not already incorporated.
     private async pushBranch(cwd: string, env: EnvRow, branch: string, lastPushed: string | null = null): Promise<string> {
         await this.git(cwd, ["fetch", "origin", branch], env).catch(() => "");
         const remote = (await this.git(cwd, ["rev-parse", "-q", "--verify", `origin/${branch}`], env).catch(() => "")).trim();
@@ -1761,12 +1765,15 @@ export class Engine extends EventEmitter {
             if (remoteOnly > 0) {
                 const unique = (await this.git(cwd, ["cherry", "HEAD", `origin/${branch}`], env).catch(() => "+ unknown")).split("\n").filter((l) => l.startsWith("+")).length;
                 const ownOldPush = !!lastPushed && remote === lastPushed;
-                if (unique === 0 || ownOldPush) {
+                const seenHere = unique > 0 && !ownOldPush && (await this.wasInLocalHistory(cwd, env, branch, remote));
+                if (unique === 0 || ownOldPush || seenHere) {
                     await this.git(cwd, ["push", `--force-with-lease=${branch}:${remote}`, "-u", "origin", branch], env);
                     this.onBranchRewritten(env, branch);
                     return unique === 0
                         ? `force-pushed with lease — the ${remoteOnly} remote commit(s) were already here by content (history rewritten locally)`
-                        : `force-pushed with lease — the ${remoteOnly} remote commit(s) were Stagehand's own last push (${remote.slice(0, 7)}), replaced by the rewritten local history`;
+                        : ownOldPush
+                          ? `force-pushed with lease — the ${remoteOnly} remote commit(s) were Stagehand's own last push (${remote.slice(0, 7)}), replaced by the rewritten local history`
+                          : `force-pushed with lease — the remote tip ${remote.slice(0, 7)} was already part of this branch before its history was rewritten locally (${remoteOnly} old commit(s) replaced)`;
                 }
                 try {
                     await this.git(cwd, ["pull", "--rebase", "origin", branch], env);
@@ -1780,6 +1787,17 @@ export class Engine extends EventEmitter {
         }
         await this.git(cwd, ["push", "-u", "origin", branch], env);
         return "pushed";
+    }
+
+    // Whether `sha` was ever reachable from the local branch — any entry of the branch's reflog (the newest 200) has it
+    // as an ancestor. Reflog entries are local and pruned only after 90 days, so a tip found here was pulled or made
+    // in this checkout and every commit under it is already accounted for.
+    private async wasInLocalHistory(cwd: string, env: EnvRow, branch: string, sha: string): Promise<boolean> {
+        const entries = (await this.git(cwd, ["log", "-g", "-n", "200", "--format=%H", `refs/heads/${branch}`], env).catch(() => "")).split("\n").filter(Boolean);
+        for (const entry of new Set(entries)) {
+            if (await this.git(cwd, ["merge-base", "--is-ancestor", sha, entry], env).then(() => true, () => false)) return true;
+        }
+        return false;
     }
 
     // The checkout's current commit, recorded as `pushed_sha` right after a push so a later push can tell Stagehand's
