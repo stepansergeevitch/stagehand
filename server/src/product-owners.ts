@@ -9,7 +9,7 @@ import { authEnv } from "./claude/accounts.js";
 import { startClaude, type ActivityEvent, type ClaudeRun } from "./claude/runner.js";
 import { recordUsage } from "./usage.js";
 import type { Palace } from "./palace.js";
-import { createClickUpTask, createLinearIssue, fetchScope, fetchSource, ticketScopeId } from "./sources.js";
+import { createClickUpTask, createLinearIssue, fetchScope, fetchSource, findIssue, ticketScopeId } from "./sources.js";
 import { sharedFileName } from "./tickets.js";
 
 // Product Owners — one per project of the product (a Linear project, a ClickUp epic). The human plans the project with
@@ -42,6 +42,8 @@ export const PoTicket = z.object({
     estimate: z.number().nullable().default(null),
     dependsOn: z.array(z.string()).default([]),
     labels: z.array(z.string()).default([]),
+    // The identifier of an issue that already exists for this ticket (INV-154): Stagehand links it and never creates it.
+    existing: z.string().nullable().default(null),
 });
 export const PoTickets = z.object({ tickets: z.array(PoTicket) });
 export type PoTicket = z.infer<typeof PoTicket>;
@@ -76,6 +78,7 @@ export class ProductOwners {
         private readonly palace: Palace,
         private readonly emit: (ev: PoEvent) => void,
         private readonly apiUrl: string,
+        private readonly onTaskChanged: (taskId: string) => void = () => undefined,
     ) {
         this.root = join(cfg.dataDir, "product-owners");
         this.configDir = join(this.root, "claude");
@@ -233,7 +236,9 @@ export class ProductOwners {
 
     // ---------- creation ----------
 
-    async create(url: string, accountId: string | null): Promise<ProductOwnerRow> {
+    // `planned`: the project was planned elsewhere (its tickets exist): the first turn imports the plan from the sources
+    // instead of starting at Context, and the PO goes Live. `files`: local files to add as sources first (an export).
+    async create(url: string, accountId: string | null, opts: { planned?: boolean; files?: string[] } = {}): Promise<ProductOwnerRow> {
         const scope = await fetchScope(this.cfg, url);
         const existing = this.db.prepare(`SELECT * FROM product_owners WHERE source = ? AND scope_id = ?`).get(scope.source, scope.id) as ProductOwnerRow | undefined;
         if (existing) return existing;
@@ -262,8 +267,26 @@ export class ProductOwners {
         mkdirSync(join(this.dir(row.id), "artifacts"), { recursive: true });
         writeFileSync(join(this.dir(row.id), "context.md"), "");
         this.addArtifactText(row.id, scope.source, `${scope.kind === "project" ? "Linear project" : "ClickUp epic"}: ${scope.title}`, scope.url, scope.markdown);
-        void this.send(row.id, `Start the Context phase. Read the ${scope.kind === "project" ? "Linear project" : "ClickUp epic"} artifact and the product context. Write a first context.md. Then tell me in a few bullets what this project is, what is still unclear, and which sources you need from me.`, { system: true });
-        return row;
+        for (const f of opts.files ?? []) {
+            if (!existsSync(f)) throw new Error(`${f} does not exist`);
+            this.uploadArtifact(row.id, f.split("/").pop() ?? "source.md", readFileSync(f), /\.(md|txt)$/i.test(f) ? "text/markdown" : null);
+        }
+        void this.assignExistingTasks(row);
+        const what = scope.kind === "project" ? "Linear project" : "ClickUp epic";
+        const brief = opts.planned
+            ? [
+                  `This project was already planned in another session, and its tickets already exist in the ${what}. Import that plan; do not plan it again.`,
+                  `1. **Read** every artifact: the ${what} (its issues) and the session record.`,
+                  `2. **context.md** — write the project context from them: goal, users, constraints, what exists today, decisions with their reasons, open questions, glossary.`,
+                  `3. **design.md** — write the design the session settled on, in the sections of your CLAUDE.md.`,
+                  `4. **tickets.json** — one ticket per issue of the plan, with its scope and acceptance criteria. Set \`existing\` to the identifier of the issue that already exists (e.g. \`INV-154\`). Every ticket of the plan has one.`,
+                  `5. **Palace** — file the product knowledge in your wing's features, users, decisions and glossary rooms; add knowledge-graph facts for product entities; write a diary entry for this import.`,
+                  `Then answer with a short summary: what you filed, and anything in the sources that contradicts itself.`,
+              ].join("\n\n")
+            : `Start the Context phase. Read the ${what} artifact and the product context. Write a first context.md. Then tell me in a few bullets what this project is, what is still unclear, and which sources you need from me.`;
+        if (opts.planned) this.touch(row.id, { phase: "live" });
+        void this.send(row.id, brief, { system: true });
+        return this.get(row.id) ?? row;
     }
 
     async remove(poId: string): Promise<void> {
@@ -454,6 +477,38 @@ export class ProductOwners {
             }
         }
         if (po.phase === "context" && existsSync(join(this.dir(poId), "design.md"))) this.touch(poId, { phase: "design" });
+        await this.linkExisting(po);
+    }
+
+    // Tickets that name an existing issue get their link (id, url) once, so the Tickets page and task assignment see them.
+    private async linkExisting(po: ProductOwnerRow): Promise<void> {
+        const p = join(this.dir(po.id), "tickets.json");
+        if (!existsSync(p)) return;
+        const parsed = PoTickets.safeParse(JSON.parse(readFileSync(p, "utf8")));
+        if (!parsed.success) return;
+        const have = new Set(this.links(po.id).map((l) => l.key));
+        for (const t of parsed.data.tickets) {
+            if (!t.existing || have.has(t.key)) continue;
+            const found = await findIssue(this.cfg, po.source, t.existing).catch(() => null);
+            if (!found) {
+                this.addMessage(po.id, "system", `${t.key} names ${t.existing}, which Stagehand cannot find in ${po.source === "linear" ? "Linear" : "ClickUp"}.`);
+                continue;
+            }
+            this.db.prepare(`INSERT OR IGNORE INTO po_ticket_links (po_id, key, remote_id, identifier, url, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(po.id, t.key, found.id, found.identifier, found.url, now());
+        }
+        this.emit({ poId: po.id, kind: "updated" });
+    }
+
+    // Open Stagehand tasks whose ticket belongs to this PO's project or epic get it as their Product Owner.
+    private async assignExistingTasks(po: ProductOwnerRow): Promise<void> {
+        const tasks = this.db.prepare(`SELECT id, source, ticket_id FROM tasks WHERE source = ? AND stage != 'done' AND product_owner_id IS NULL`).all(po.source) as Array<{ id: string; source: "linear" | "clickup"; ticket_id: string }>;
+        for (const t of tasks) {
+            const scope = await ticketScopeId(this.cfg, t.source, t.ticket_id);
+            if (scope === po.scope_id) {
+                this.db.prepare(`UPDATE tasks SET product_owner_id = ?, updated_at = ? WHERE id = ?`).run(po.id, now(), t.id);
+                this.onTaskChanged(t.id);
+            }
+        }
     }
 
     // ---------- approvals and ticket creation ----------
@@ -482,6 +537,14 @@ export class ProductOwners {
         try {
             for (const t of order) {
                 if (done.has(t.key)) continue;
+                if (t.existing) {
+                    const found = await findIssue(this.cfg, po.source, t.existing);
+                    if (!found) throw new Error(`${t.key} names ${t.existing}, which does not exist`);
+                    const link: PoTicketLinkRow = { po_id: poId, key: t.key, remote_id: found.id, identifier: found.identifier, url: found.url, created_at: now() };
+                    this.db.prepare(`INSERT OR IGNORE INTO po_ticket_links (po_id, key, remote_id, identifier, url, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(link.po_id, link.key, link.remote_id, link.identifier, link.url, link.created_at);
+                    done.set(t.key, link);
+                    continue;
+                }
                 const parent = t.parent ? done.get(t.parent) : undefined;
                 const byKey = new Map(tickets.map((x) => [x.key, x]));
                 const deps = t.dependsOn.map((k) => done.get(k)?.identifier ?? byKey.get(k)?.title ?? k);

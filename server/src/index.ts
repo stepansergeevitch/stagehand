@@ -66,7 +66,7 @@ const palace = new Palace(cfg.dataDir);
     if (migrated) console.log(`[stagehand] palace: the Prompter's palace copied to ${palace.home} (the old one stays as a backup)`);
 }
 const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev), palace);
-const productOwners = new ProductOwners(db, cfg, palace, (ev) => engine.emit("po", ev), `http://127.0.0.1:${cfg.port}`);
+const productOwners = new ProductOwners(db, cfg, palace, (ev) => engine.emit("po", ev), `http://127.0.0.1:${cfg.port}`, (taskId) => engine.touchTask(taskId));
 productOwners.ensureHome();
 
 const app = new Hono();
@@ -1978,9 +1978,10 @@ app.get("/api/product-owners", (c) =>
     ),
 );
 app.post("/api/product-owners", async (c) => {
-    const body = json(z.object({ url: z.string().min(8), accountId: z.string().nullable().optional() }), await c.req.json());
+    // `planned` + `files`: import a project planned elsewhere (see ProductOwners.create); files are local paths.
+    const body = json(z.object({ url: z.string().min(8), accountId: z.string().nullable().optional(), planned: z.boolean().optional(), files: z.array(z.string()).optional() }), await c.req.json());
     try {
-        return c.json(await productOwners.create(body.url, body.accountId ?? null));
+        return c.json(await productOwners.create(body.url, body.accountId ?? null, { ...(body.planned ? { planned: true } : {}), ...(body.files ? { files: body.files } : {}) }));
     } catch (e) {
         return poErr(c, e);
     }

@@ -19,9 +19,9 @@ Apply them to everything you write: chat replies, `context.md`, `design.md`, tic
 - **`design.md`** — the project design, from the Design phase on. Exactly these `## ` sections: `Goal`, `Problem and users`, `Scope` (with `### In` and `### Out`), `Solution outline`, `Decisions`, `Open questions`, `Risks`.
 - **`tickets.json`** — the ticket proposal, from the Tickets phase on:
   ```json
-  { "tickets": [ { "key": "T1", "type": "epic|story|task|bug", "title": "…", "parent": null, "summary": "one line", "description": "markdown", "acceptanceCriteria": ["…"], "estimate": 3, "dependsOn": ["T2"], "labels": [] } ] }
+  { "tickets": [ { "key": "T1", "type": "epic|story|task|bug", "title": "…", "parent": null, "summary": "one line", "description": "markdown", "acceptanceCriteria": ["…"], "estimate": 3, "dependsOn": ["T2"], "labels": [], "existing": null } ] }
   ```
-  `key` is stable (`T1`, `T2`, …): keep a ticket's key when you change it. `parent` is the key of its epic or `null`. `estimate` is points or `null`.
+  `key` is stable (`T1`, `T2`, …): keep a ticket's key when you change it. `parent` is the key of its epic or `null`. `estimate` is points or `null`. `existing` is the identifier of an issue that already exists for the ticket (`INV-154`), else `null`: Stagehand links it and never creates it again.
 - **`product-context-proposal.md`** — only when this project changes the product-wide picture: the full new text of the product context. The human accepts or rejects it. Never edit the product context another way.
 
 Never create, edit or close tickets in Linear or ClickUp yourself. Stagehand creates them from `tickets.json` after the human approves.

@@ -280,3 +280,13 @@ export const ticketScopeId = async (cfg: Config, source: "linear" | "clickup", t
         return null;
     }
 };
+
+// An issue that already exists, by its identifier (INV-154, or a ClickUp custom id / task id): its id and URL.
+export const findIssue = async (cfg: Config, source: "linear" | "clickup", identifier: string): Promise<{ id: string; identifier: string; url: string } | null> => {
+    if (source === "linear") {
+        const d = await linear<{ issue: { id: string; identifier: string; url: string } | null }>(cfg, `query($id: String!) { issue(id: $id) { id identifier url } }`, { id: identifier });
+        return d.issue ?? null;
+    }
+    const t = await clickupTask(cfg, identifier);
+    return { id: t.id, identifier: t.custom_id ?? t.id, url: t.url };
+};
