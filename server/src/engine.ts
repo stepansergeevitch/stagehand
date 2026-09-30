@@ -398,13 +398,21 @@ const MAX_UNBLOCK_ATTEMPTS = 2;
 // baseline runs them on the unchanged app, the agent corrects the wrong ones, and the proposal reaches the reviewer only
 // with a baseline behind it. design-baseline.json tracks the loop: `running` while a pass drives the scenarios,
 // `reviewing` while the agent reads the result, `done` once the scenarios stop changing (or the rounds run out).
+// `hashes`: each scenario's content hash as of the baseline result on record — a scenario whose hash is unchanged keeps
+// that result (a review round that edits only the proposal reruns nothing; one edited scenario reruns alone).
 interface DesignBaseline {
     status: "running" | "reviewing" | "done";
     round: number;
     qaHash: string;
+    hashes?: Record<string, string>;
 }
 const MAX_DESIGN_BASELINE_ROUNDS = 3;
-const qaHashOf = (design: DesignResult | null): string => createHash("sha1").update(JSON.stringify(design?.qa ?? [])).digest("hex");
+// Key order and whitespace are not content: the agent rewriting design.json must not look like a changed scenario.
+const stableJson = (v: unknown): string =>
+    Array.isArray(v) ? `[${v.map(stableJson).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson((v as Record<string, unknown>)[k])}`).join(",")}}` : JSON.stringify(v ?? null);
+const sha1 = (s: string): string => createHash("sha1").update(s).digest("hex");
+export const scenarioHashes = (design: DesignResult | null): Record<string, string> => Object.fromEntries((design?.qa ?? []).map((s) => [s.id, sha1(stableJson(s))]));
+const qaHashOf = (design: DesignResult | null): string => sha1(stableJson(scenarioHashes(design)));
 // What the design agent reads after a baseline pass: every scenario's outcome and observation, and why the pass stopped.
 const renderDesignBaselineNotes = (qa: QaPassResult, round: number, stopped: string | null): string => {
     const line = (s: QaPassResult["scenarios"][number]): string => {
@@ -1493,7 +1501,7 @@ export class Engine extends EventEmitter {
         // A baseline re-run before the design is approved ends in the design agent's review, like the loop's own passes.
         if (stage === "qa_baseline" && task.stage === "design_proposal") {
             const prev = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
-            this.writeDesignBaseline(taskId, { status: "running", round: prev?.round ?? 1, qaHash: qaHashOf(this.readArtifactJson<DesignResult>(taskId, "design.json")) });
+            this.writeDesignBaseline(taskId, { status: "running", round: prev?.round ?? 1, qaHash: qaHashOf(this.readArtifactJson<DesignResult>(taskId, "design.json")), ...(prev?.hashes ? { hashes: prev.hashes } : {}) });
         }
         this.setStage(taskId, stage);
         this.dispatch(taskId, stage, { notes: "This stage is being re-run on request. Do the work again from scratch for this stage; earlier stages' outputs in the task directory are still valid." });
@@ -4336,40 +4344,48 @@ export class Engine extends EventEmitter {
         writeFileSync(join(this.taskDir(taskId), "design-baseline.json"), JSON.stringify(m, null, 2));
     }
 
-    // The design agent's output passed its contract: run the baseline on its scenarios, or — when they did not change
-    // since the last baseline, or the rounds ran out — hand the proposal to the reviewer.
+    // The design agent's output passed its contract: run the baseline on the scenarios whose result is not on record
+    // (new or changed since it ran), or — when every result is current, or the rounds ran out — hand the proposal to
+    // the reviewer. A blocked result is reused only inside the loop (the agent kept the scenario after reading why);
+    // after a human review round it runs again, since the environment can have been fixed meanwhile.
     private afterDesign(taskId: string): void {
         const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
-        const hash = qaHashOf(design);
+        const cur = scenarioHashes(design);
+        const ids = Object.keys(cur);
         const prev = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
         const wait = (line: string): void => this.setTaskStatus(taskId, "waiting_user", `Design Proposal · needs you${line ? ` — ${line}` : ""}`);
-        if (!(design?.qa ?? []).length) {
+        if (!ids.length) {
             wait("");
             return;
         }
-        const hasBefore = existsSync(join(this.taskDir(taskId), "qa", "before.json"));
-        if (prev?.status === "reviewing" && prev.qaHash === hash) {
-            this.writeDesignBaseline(taskId, { ...prev, status: "done" });
-            wait(`QA baseline ran (round ${prev.round}); see the QA tests tab`);
-            return;
-        }
-        if (prev?.status === "done" && prev.qaHash === hash && hasBefore) {
-            wait("the QA baseline is current; see the QA tests tab");
-            return;
-        }
-        const round = prev?.status === "reviewing" ? prev.round + 1 : 1;
-        if (round > MAX_DESIGN_BASELINE_ROUNDS) {
-            this.writeDesignBaseline(taskId, { status: "done", round: MAX_DESIGN_BASELINE_ROUNDS, qaHash: hash });
-            wait(`the QA scenarios changed again after ${MAX_DESIGN_BASELINE_ROUNDS} baseline rounds — the last change has no baseline yet`);
-            return;
-        }
-        this.writeDesignBaseline(taskId, { status: "running", round, qaHash: hash });
-        this.addAgentNote(taskId, `QA baseline round ${round}/${MAX_DESIGN_BASELINE_ROUNDS}: the design's scenarios run on the unchanged app before the proposal goes to you`);
-        this.clearPassFiles(taskId, "before");
+        const inLoop = prev?.status === "reviewing";
+        const known = prev?.hashes ?? {};
+        const before = this.readArtifactJson<QaPassResult>(taskId, "qa/before.json");
+        const cached = (before?.scenarios ?? []).filter((r) => cur[r.id] !== undefined && known[r.id] === cur[r.id] && (inLoop || r.outcome !== "blocked"));
+        const toRun = ids.filter((id) => !cached.some((c) => c.id === id));
         const beforePath = join(this.taskDir(taskId), "qa", "before.json");
+        if (!toRun.length) {
+            // Removed scenarios leave the record; everything else stands.
+            if (before && before.scenarios.length !== cached.length) writeFileSync(beforePath, JSON.stringify({ ...before, scenarios: cached }, null, 2));
+            this.writeDesignBaseline(taskId, { status: "done", round: prev?.round ?? 1, qaHash: qaHashOf(design), hashes: cur });
+            wait(inLoop ? `QA baseline ran (round ${prev!.round}); see the QA tests tab` : "the QA baseline is current (no QA scenario changed); see the QA tests tab");
+            return;
+        }
+        const round = inLoop ? prev!.round + 1 : 1;
+        if (round > MAX_DESIGN_BASELINE_ROUNDS) {
+            this.writeDesignBaseline(taskId, { status: "done", round: MAX_DESIGN_BASELINE_ROUNDS, qaHash: qaHashOf(design), hashes: known });
+            wait(`the QA scenarios changed again after ${MAX_DESIGN_BASELINE_ROUNDS} baseline rounds — ${toRun.join(", ")} have no baseline for their last version`);
+            return;
+        }
+        this.writeDesignBaseline(taskId, { status: "running", round, qaHash: qaHashOf(design), hashes: known });
+        this.addAgentNote(
+            taskId,
+            `QA baseline round ${round}/${MAX_DESIGN_BASELINE_ROUNDS}: running ${toRun.join(", ")} on the unchanged app before the proposal goes to you${cached.length ? ` (${cached.map((c) => c.id).join(", ")} unchanged — their result is reused)` : ""}`,
+        );
+        this.clearPassFiles(taskId, "before");
         if (existsSync(beforePath)) renameSync(beforePath, `${beforePath}.prev-${Date.now()}`);
         this.setStage(taskId, "qa_baseline");
-        this.dispatch(taskId, "qa_baseline");
+        this.dispatch(taskId, "qa_baseline", cached.length ? { extraVars: this.resumeVars(taskId, "before", cached, toRun) } : {});
     }
 
     // A baseline pass of the design loop is over (any way but a login wall): the design agent reads the result.
@@ -4378,7 +4394,8 @@ export class Engine extends EventEmitter {
         const m = this.readArtifactJson<DesignBaseline>(task.id, "design-baseline.json");
         if (m?.status !== "running") return false;
         // The hash is taken now: corrections QA applied to design.json during the pass are part of what the agent reviews.
-        this.writeDesignBaseline(task.id, { status: "reviewing", round: m.round, qaHash: qaHashOf(this.readArtifactJson<DesignResult>(task.id, "design.json")) });
+        const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
+        this.writeDesignBaseline(task.id, { status: "reviewing", round: m.round, qaHash: qaHashOf(design), hashes: scenarioHashes(design) });
         this.stopServicesAfterQa(task);
         this.setStage(task.id, "design_proposal");
         this.dispatch(task.id, "design_proposal", { notes: renderDesignBaselineNotes(qa, m.round, stopped) });
@@ -4388,7 +4405,9 @@ export class Engine extends EventEmitter {
     // The design stage's baseline pairs with the approved scenarios: the separate baseline stage has nothing to add.
     private designBaselineCurrent(taskId: string): boolean {
         const m = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
-        return m?.status === "done" && m.qaHash === qaHashOf(this.readArtifactJson<DesignResult>(taskId, "design.json")) && existsSync(join(this.taskDir(taskId), "qa", "before.json"));
+        const cur = scenarioHashes(this.readArtifactJson<DesignResult>(taskId, "design.json"));
+        const recorded = new Set((this.readArtifactJson<QaPassResult>(taskId, "qa/before.json")?.scenarios ?? []).map((r) => r.id));
+        return m?.status === "done" && Object.entries(cur).every(([id, h]) => m.hashes?.[id] === h && recorded.has(id));
     }
 
     private clearPassFiles(taskId: string, pass: "before" | "after"): void {
