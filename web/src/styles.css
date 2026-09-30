@@ -758,3 +758,12 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .po-review textarea { width: 100%; box-sizing: border-box; font-family: var(--mono); font-size: 13px; }
 @media (max-width: 1100px) { .po-layout { grid-template-columns: 1fr; } .po-chat { position: static; height: 70vh; } }
 @media (max-width: 760px) { .po-doc, .po-tickets { grid-template-columns: 1fr; } .po-toc { position: static; flex-direction: row; flex-wrap: wrap; } .po-ticket-tree { max-height: 40vh; } }
+
+/* Resources: sortable columns, dev servers grouped under their task */
+.usage-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.usage-table th.sortable:hover { color: var(--accent); }
+.usage-table .hint-mark { color: var(--ink-3); font-weight: normal; }
+.usage-table tr.res-task { cursor: pointer; }
+.usage-table tr.res-task:hover { background: var(--accent-soft); }
+.usage-table tr.res-nested td:first-child { padding-left: 28px; }
+.usage-table tr.res-nested { background: var(--panel); }

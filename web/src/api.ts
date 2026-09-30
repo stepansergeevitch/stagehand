@@ -165,6 +165,8 @@ export interface ResourceEvent { id: number; at: string; resource_id: string; ki
 export interface ResourceSnapshot {
     at: string;
     host: { totalMb: number; availableMb: number; usedMb: number; compressedMb: number; swapUsedMb: number; swapTotalMb: number; pressure: "ok" | "warn" | "critical"; pressureReason: string };
+    // The volume holding Stagehand's data; absent from an older server.
+    disk?: { totalMb: number; freeMb: number } | null;
     stagehand: { rssMb: number; procs: number; devServerTasks: number; runs: number; browsers: number; terminals: number };
     policies: ResourcePolicies;
     resources: Resource[];

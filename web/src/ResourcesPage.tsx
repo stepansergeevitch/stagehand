@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Resource, type ResourceKind, type ResourcePolicies, type ResourceSnapshot } from "./api";
 import { hours } from "./Analytics";
 
 // Everything Stagehand has started on this host — dev servers, agent runs, terminals, browsers, worktrees — with what
-// each costs (RSS, CPU, disk), who owns it, what the policy will do with it and when. Stop and pin per row; the
-// policies themselves are edited at the bottom.
+// each costs (RSS, CPU, disk), who owns it, what the policy will do with it and when. Three tabs: the Dashboard (the
+// tiles and the tables, stop and pin per row), the Policies, and the Recent actions of the reaper.
 
 const gb = (mb: number): string => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`);
 const ago = (ms: number | null): string => (ms == null ? "—" : ms < 60_000 ? "now" : hours(ms));
@@ -53,6 +53,172 @@ const Owner = ({ r }: { r: Resource }) => {
     );
 };
 
+type SortKey = "rss" | "cpu" | "age" | "idle" | "disk";
+type Sort = { key: SortKey; desc: boolean };
+const sortValue = (r: { rssMb: number; cpuPct: number; ageMs: number; idleMs: number | null; diskMb: number | null }, k: SortKey): number =>
+    k === "rss" ? r.rssMb : k === "cpu" ? r.cpuPct : k === "age" ? r.ageMs : k === "idle" ? (r.idleMs ?? -1) : (r.diskMb ?? -1);
+const sortBy = <T extends { rssMb: number; cpuPct: number; ageMs: number; idleMs: number | null; diskMb: number | null }>(rows: T[], sort: Sort | null): T[] =>
+    sort ? [...rows].sort((a, b) => (sortValue(a, sort.key) - sortValue(b, sort.key)) * (sort.desc ? -1 : 1)) : rows;
+// A column header that sorts its table: first click descending (biggest first), second ascending, third off.
+const SortTh = ({ k, label, sort, onSort, hint }: { k: SortKey; label: string; sort: Sort | null; onSort: (s: Sort | null) => void; hint?: string }) => (
+    <th className="sortable" title={hint} onClick={() => onSort(sort?.key !== k ? { key: k, desc: true } : sort.desc ? { key: k, desc: false } : null)}>
+        {label}{hint && <span className="hint-mark"> ⓘ</span>} {sort?.key === k ? (sort.desc ? "▼" : "▲") : ""}
+    </th>
+);
+const WORKTREE_IDLE_HINT = "Time since the task last changed — a stage, a status, a message or any other update. How long this worktree has sat unused; the task's code stays on disk the whole time.";
+
+const ResourceRow = ({ r, busy, act, worktree = false, nested = false }: { r: Resource; busy: string | null; act: (label: string, fn: () => Promise<unknown>) => Promise<void>; worktree?: boolean; nested?: boolean }) => (
+    <tr className={`${r.policy.verdict === "stop" && !r.pinned ? "res-due" : ""}${nested ? " res-nested" : ""}`}>
+        <td className="usage-label"><b>{r.label}</b>{r.top && <small title={r.top}>{r.top.length > 60 ? `${r.top.slice(0, 60)}…` : r.top}</small>}</td>
+        {!nested && <td><Owner r={r} /></td>}
+        {nested && <td />}
+        <td className="mono res-where">
+            {r.tmux && <span title="tmux session">{r.tmux}</span>}
+            {r.pid != null && <span title="pid"> pid {r.pid}</span>}
+            {r.port != null && !r.label.includes(`:${r.port}`) && <span title="port"> :{r.port}</span>}
+            {r.path && !r.tmux && r.kind !== "service" && <span title={r.path}> {r.path.replace(/^\/Users\/[^/]+/, "~").split("/").slice(-2).join("/")}</span>}
+        </td>
+        {worktree ? (
+            <td className="mono">{r.diskMb == null ? <span className="quiet">measuring…</span> : gb(r.diskMb)}</td>
+        ) : (
+            <>
+                <td className="mono">{r.procs ? gb(r.rssMb) : <span className="quiet">—</span>}</td>
+                <td className="mono">{r.procs ? `${r.cpuPct}%` : <span className="quiet">—</span>}</td>
+                <td className="mono">{ago(r.ageMs)}</td>
+            </>
+        )}
+        <td className="mono">{ago(r.idleMs)}</td>
+        <td><Verdict r={r} /></td>
+        <td className="res-actions">
+            {r.kind !== "run" && r.kind !== "worktree" && (
+                <>
+                    <button className="tiny" disabled={!!busy} title={r.pinned ? "Let the policy apply again" : "Never stopped by the policy"} onClick={() => void act(r.id, () => api.pinResource(r.id, !r.pinned))}>{r.pinned ? "unpin" : "pin"}</button>
+                    <button className="tiny danger" disabled={!!busy} onClick={() => void act(r.id, () => api.stopResource(r.id))}>stop</button>
+                </>
+            )}
+        </td>
+    </tr>
+);
+
+// Dev servers grouped under their task: one row per task with the sums (RSS, CPU) and the extremes (oldest start,
+// most recent activity), expandable into one row per BE / FE / component.
+const DevServers = ({ rows, tasks, max, busy, act }: { rows: Resource[]; tasks: number; max: number; busy: string | null; act: (label: string, fn: () => Promise<unknown>) => Promise<void> }) => {
+    const [sort, setSort] = useState<Sort | null>({ key: "rss", desc: true });
+    const [open, setOpen] = useState<Set<string>>(new Set());
+    const groups = useMemo(() => {
+        const m = new Map<string, Resource[]>();
+        for (const r of rows) {
+            const k = r.owner.type === "task" && r.owner.id ? r.owner.id : `other:${r.id}`;
+            m.set(k, [...(m.get(k) ?? []), r]);
+        }
+        return [...m.entries()].map(([key, rs]) => ({
+            key,
+            rows: sortBy(rs, sort),
+            owner: rs[0]!,
+            rssMb: rs.reduce((n, r) => n + r.rssMb, 0),
+            cpuPct: Math.round(rs.reduce((n, r) => n + r.cpuPct, 0) * 10) / 10,
+            ageMs: Math.max(...rs.map((r) => r.ageMs)),
+            idleMs: rs.some((r) => r.idleMs != null) ? Math.min(...rs.map((r) => r.idleMs ?? Number.MAX_SAFE_INTEGER)) : null,
+            diskMb: null,
+            due: rs.some((r) => r.policy.verdict === "stop" && !r.pinned),
+        }));
+    }, [rows, sort]);
+    const sorted = sortBy(groups, sort);
+    return (
+        <section className="card usage-table res-group">
+            <h2>Dev Servers <span className="chip">{tasks} / {max} tasks</span> <span className="chip">{rows.length} server{rows.length === 1 ? "" : "s"}</span></h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>What</th>
+                        <th>Owner</th>
+                        <th>Where</th>
+                        <SortTh k="rss" label="RSS" sort={sort} onSort={setSort} />
+                        <SortTh k="cpu" label="CPU" sort={sort} onSort={setSort} />
+                        <SortTh k="age" label="Age" sort={sort} onSort={setSort} />
+                        <SortTh k="idle" label="Idle" sort={sort} onSort={setSort} />
+                        <th>Policy</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {sorted.map((g) => {
+                        const expanded = open.has(g.key);
+                        return [
+                            <tr key={g.key} className={`res-task${g.due ? " res-due" : ""}`} onClick={() => setOpen((s) => { const n = new Set(s); n.has(g.key) ? n.delete(g.key) : n.add(g.key); return n; })}>
+                                <td className="usage-label"><b>{expanded ? "▾" : "▸"} {g.rows.map((r) => r.label.split(" ")[0]).join(" + ")}</b></td>
+                                <td><Owner r={g.owner} /></td>
+                                <td className="mono res-where">{g.rows.length} server{g.rows.length === 1 ? "" : "s"}</td>
+                                <td className="mono">{gb(g.rssMb)}</td>
+                                <td className="mono">{g.cpuPct}%</td>
+                                <td className="mono">{ago(g.ageMs)}</td>
+                                <td className="mono">{ago(g.idleMs)}</td>
+                                <td>{g.due ? <span className="chip warn">some stop soon</span> : <Verdict r={g.rows[0]!} />}</td>
+                                <td />
+                            </tr>,
+                            ...(expanded ? g.rows.map((r) => <ResourceRow key={r.id} r={r} busy={busy} act={act} nested />) : []),
+                        ];
+                    })}
+                </tbody>
+            </table>
+        </section>
+    );
+};
+
+// Every other kind of resource (agent runs, browsers, terminals, sessions, orphans): one table each, sortable.
+const Group = ({ kind, rows, busy, act }: { kind: ResourceKind; rows: Resource[]; busy: string | null; act: (label: string, fn: () => Promise<unknown>) => Promise<void> }) => {
+    const [sort, setSort] = useState<Sort | null>(null);
+    return (
+        <section className={`card usage-table res-group${kind === "orphan" ? " res-orphans" : ""}`}>
+            <h2>
+                {KIND_LABEL[kind]}
+                {kind !== "orphan" && rows.length > 1 ? "s" : ""} <span className="chip">{rows.length}</span>
+                {kind === "orphan" && <span className="field-hint"> — running on the host, but no task, service row or session explains them</span>}
+            </h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>What</th>
+                        <th>Owner</th>
+                        <th>Where</th>
+                        <SortTh k="rss" label="RSS" sort={sort} onSort={setSort} />
+                        <SortTh k="cpu" label="CPU" sort={sort} onSort={setSort} />
+                        <SortTh k="age" label="Age" sort={sort} onSort={setSort} />
+                        <SortTh k="idle" label="Idle" sort={sort} onSort={setSort} />
+                        <th>Policy</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>{sortBy(rows, sort).map((r) => <ResourceRow key={r.id} r={r} busy={busy} act={act} />)}</tbody>
+            </table>
+        </section>
+    );
+};
+
+const Worktrees = ({ rows, busy, act }: { rows: Resource[]; busy: string | null; act: (label: string, fn: () => Promise<unknown>) => Promise<void> }) => {
+    const [sort, setSort] = useState<Sort | null>({ key: "disk", desc: true });
+    const total = rows.reduce((n, r) => n + (r.diskMb ?? 0), 0);
+    return (
+        <section className="card usage-table res-group">
+            <h2>Worktrees <span className="chip">{rows.length}</span> <span className="chip">{gb(total)} on disk</span></h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>What</th>
+                        <th>Owner</th>
+                        <th>Where</th>
+                        <SortTh k="disk" label="Disk" sort={sort} onSort={setSort} />
+                        <SortTh k="idle" label="Idle" sort={sort} onSort={setSort} hint={WORKTREE_IDLE_HINT} />
+                        <th>Policy</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>{sortBy(rows, sort).map((r) => <ResourceRow key={r.id} r={r} busy={busy} act={act} worktree />)}</tbody>
+            </table>
+        </section>
+    );
+};
+
 const Policies = ({ value, onSaved, onError }: { value: ResourcePolicies; onSaved: () => void; onError: (m: string) => void }) => {
     const [p, setP] = useState(value);
     const [saving, setSaving] = useState(false);
@@ -97,6 +263,7 @@ const Policies = ({ value, onSaved, onError }: { value: ResourcePolicies; onSave
 export const ResourcesPage = ({ onError }: { onError: (m: string) => void }) => {
     const [snap, setSnap] = useState<ResourceSnapshot | null>(null);
     const [busy, setBusy] = useState<string | null>(null);
+    const [tab, setTab] = useState<"dashboard" | "policies" | "actions">("dashboard");
     const load = useCallback((refresh = false) => api.resources(refresh).then(setSnap).catch((e: Error) => onError(e.message)), [onError]);
     useEffect(() => {
         void load();
@@ -119,8 +286,12 @@ export const ResourcesPage = ({ onError }: { onError: (m: string) => void }) => 
     const tone = h.pressure === "critical" ? "bad" : h.pressure === "warn" ? "warn" : "ok";
     const orphans = snap.resources.filter((r) => r.kind === "orphan");
     const due = snap.resources.filter((r) => r.policy.verdict === "stop" && r.kind !== "orphan");
-    const groups = KIND_ORDER.map((k) => ({ kind: k, rows: snap.resources.filter((r) => r.kind === k) })).filter((g) => g.rows.length);
-    const disk = snap.resources.reduce((s, r) => s + (r.diskMb ?? 0), 0);
+    const services = snap.resources.filter((r) => r.kind === "service");
+    const worktrees = snap.resources.filter((r) => r.kind === "worktree");
+    const groups = KIND_ORDER.filter((k) => k !== "service" && k !== "worktree").map((k) => ({ kind: k, rows: snap.resources.filter((r) => r.kind === k) })).filter((g) => g.rows.length);
+    const worktreeDisk = worktrees.reduce((s, r) => s + (r.diskMb ?? 0), 0);
+    const d = snap.disk ?? null;
+    const diskTone = d ? (d.freeMb < d.totalMb * 0.05 ? "bad" : d.freeMb < d.totalMb * 0.15 ? "warn" : "ok") : undefined;
     return (
         <div className="resources-page">
             <div className="page-head">
@@ -132,87 +303,56 @@ export const ResourcesPage = ({ onError }: { onError: (m: string) => void }) => 
                     Clean up {orphans.length + due.length ? `(${orphans.length + due.length})` : ""}
                 </button>
             </div>
-            {h.pressure !== "ok" && <div className={`blocked-box ${h.pressure === "critical" ? "" : "warn"}`}>Memory pressure: {h.pressureReason}. {h.pressure === "critical" ? "Grace periods are zero — parked dev servers and idle terminals stop now." : "Grace periods still apply."}</div>}
-            <div className="tiles">
-                <Tile label="Host RAM" value={`${gb(h.usedMb)} used`} sub={`${gb(h.availableMb)} available of ${gb(h.totalMb)} · ${gb(h.compressedMb)} compressed`} tone={tone} />
-                <Tile label="Swap" value={gb(h.swapUsedMb)} sub={`of ${gb(h.swapTotalMb)}`} tone={h.swapUsedMb > snap.policies.maxSwapMb ? "bad" : h.swapUsedMb > snap.policies.maxSwapMb / 2 ? "warn" : "ok"} />
-                <Tile label="Stagehand processes" value={gb(snap.stagehand.rssMb)} sub={`${snap.stagehand.procs} processes · ${snap.stagehand.runs} agent run${snap.stagehand.runs === 1 ? "" : "s"} · ${snap.stagehand.browsers} browser${snap.stagehand.browsers === 1 ? "" : "s"}`} />
-                <Tile label="Dev servers" value={`${snap.stagehand.devServerTasks} / ${snap.policies.maxDevServerTasks} tasks`} sub={`${snap.resources.filter((r) => r.kind === "worktree").length} worktrees · ${gb(disk)} on disk`} tone={snap.stagehand.devServerTasks > snap.policies.maxDevServerTasks ? "warn" : undefined} />
+            <div className="subtabs">
+                <button className={tab === "dashboard" ? "active" : ""} onClick={() => setTab("dashboard")}>Dashboard</button>
+                <button className={tab === "policies" ? "active" : ""} onClick={() => setTab("policies")}>Policies</button>
+                <button className={tab === "actions" ? "active" : ""} onClick={() => setTab("actions")}>Recent actions <span className="chip">{snap.events.length}</span></button>
             </div>
-            {groups.map((g) => (
-                <section className={`card usage-table res-group${g.kind === "orphan" ? " res-orphans" : ""}`} key={g.kind}>
-                    <h2>
-                        {KIND_LABEL[g.kind]}
-                        {g.kind !== "orphan" && g.rows.length > 1 ? "s" : ""} <span className="chip">{g.rows.length}</span>
-                        {g.kind === "orphan" && <span className="field-hint"> — running on the host, but no task, service row or session explains them</span>}
-                    </h2>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>What</th>
-                                <th>Owner</th>
-                                <th>Where</th>
-                                <th>RSS</th>
-                                <th>CPU</th>
-                                <th>{g.kind === "worktree" ? "Disk" : "Age"}</th>
-                                <th>Idle</th>
-                                <th>Policy</th>
-                                <th></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {g.rows.map((r) => (
-                                <tr key={r.id} className={r.policy.verdict === "stop" && !r.pinned ? "res-due" : ""}>
-                                    <td className="usage-label"><b>{r.label}</b>{r.top && <small title={r.top}>{r.top.length > 60 ? `${r.top.slice(0, 60)}…` : r.top}</small>}</td>
-                                    <td><Owner r={r} /></td>
-                                    <td className="mono res-where">
-                                        {r.tmux && <span title="tmux session">{r.tmux}</span>}
-                                        {r.pid != null && <span title="pid"> pid {r.pid}</span>}
-                                        {r.port != null && !r.label.includes(`:${r.port}`) && <span title="port"> :{r.port}</span>}
-                                        {r.path && !r.tmux && r.kind !== "service" && <span title={r.path}> {r.path.replace(/^\/Users\/[^/]+/, "~").split("/").slice(-2).join("/")}</span>}
-                                    </td>
-                                    <td className="mono">{r.procs ? gb(r.rssMb) : <span className="quiet">—</span>}</td>
-                                    <td className="mono">{r.procs ? `${r.cpuPct}%` : <span className="quiet">—</span>}</td>
-                                    <td className="mono">{g.kind === "worktree" ? (r.diskMb == null ? <span className="quiet">measuring…</span> : gb(r.diskMb)) : ago(r.ageMs)}</td>
-                                    <td className="mono">{ago(r.idleMs)}</td>
-                                    <td><Verdict r={r} /></td>
-                                    <td className="res-actions">
-                                        {r.kind !== "run" && r.kind !== "worktree" && (
-                                            <>
-                                                <button className="tiny" disabled={!!busy} title={r.pinned ? "Let the policy apply again" : "Never stopped by the policy"} onClick={() => void act(r.id, () => api.pinResource(r.id, !r.pinned))}>{r.pinned ? "unpin" : "pin"}</button>
-                                                <button className="tiny danger" disabled={!!busy} onClick={() => void act(r.id, () => api.stopResource(r.id))}>stop</button>
-                                            </>
-                                        )}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
+            {tab === "dashboard" && (
+                <>
+                    {h.pressure !== "ok" && <div className={`blocked-box ${h.pressure === "critical" ? "" : "warn"}`}>Memory pressure: {h.pressureReason}. {h.pressure === "critical" ? "Grace periods are zero — parked dev servers and idle terminals stop now." : "Grace periods still apply."}</div>}
+                    <div className="tiles">
+                        <Tile label="Host RAM" value={`${gb(h.usedMb)} used`} sub={`${gb(h.availableMb)} available of ${gb(h.totalMb)} · ${gb(h.compressedMb)} compressed`} tone={tone} />
+                        <Tile label="Swap" value={gb(h.swapUsedMb)} sub={`of ${gb(h.swapTotalMb)}`} tone={h.swapUsedMb > snap.policies.maxSwapMb ? "bad" : h.swapUsedMb > snap.policies.maxSwapMb / 2 ? "warn" : "ok"} />
+                        <Tile label="Stagehand processes" value={gb(snap.stagehand.rssMb)} sub={`${snap.stagehand.procs} processes · ${snap.stagehand.runs} agent run${snap.stagehand.runs === 1 ? "" : "s"} · ${snap.stagehand.browsers} browser${snap.stagehand.browsers === 1 ? "" : "s"}`} />
+                        <Tile
+                            label="Host storage"
+                            value={d ? `${gb(d.freeMb)} free` : "—"}
+                            sub={d ? `of ${gb(d.totalMb)} (${Math.round((1 - d.freeMb / d.totalMb) * 100)} % used) · worktrees ${gb(worktreeDisk)}` : "not reported by this server"}
+                            {...(diskTone ? { tone: diskTone } : {})}
+                        />
+                    </div>
+                    {orphans.length > 0 && groups.filter((g) => g.kind === "orphan").map((g) => <Group key={g.kind} kind={g.kind} rows={g.rows} busy={busy} act={act} />)}
+                    {services.length > 0 && <DevServers rows={services} tasks={snap.stagehand.devServerTasks} max={snap.policies.maxDevServerTasks} busy={busy} act={act} />}
+                    {groups.filter((g) => g.kind !== "orphan").map((g) => <Group key={g.kind} kind={g.kind} rows={g.rows} busy={busy} act={act} />)}
+                    {worktrees.length > 0 && <Worktrees rows={worktrees} busy={busy} act={act} />}
+                    {snap.resources.length === 0 && <div className="quiet">Nothing running that Stagehand started.</div>}
+                </>
+            )}
+            {tab === "policies" && <Policies value={snap.policies} onSaved={() => void load(true)} onError={onError} />}
+            {tab === "actions" && (
+                <section className="card usage-table">
+                    <h2>Recent actions <span className="chip">{snap.events.length}</span></h2>
+                    {snap.events.length === 0 && <div className="quiet">nothing stopped yet</div>}
+                    {snap.events.length > 0 && (
+                        <table>
+                            <thead><tr><th>When</th><th>What</th><th>Task</th><th>Action</th><th>Why</th><th>RSS</th></tr></thead>
+                            <tbody>
+                                {snap.events.map((e) => (
+                                    <tr key={e.id}>
+                                        <td className="mono">{ago(Date.now() - Date.parse(e.at))} ago</td>
+                                        <td><b>{e.label}</b> <span className="chip">{KIND_LABEL[e.kind as ResourceKind] ?? e.kind}</span></td>
+                                        <td className="mono">{e.task_id ? e.task_id.slice(0, 8) : "—"}</td>
+                                        <td>{e.action}</td>
+                                        <td className="res-why">{e.reason}</td>
+                                        <td className="mono">{e.rss_mb != null ? gb(e.rss_mb) : "—"}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
                 </section>
-            ))}
-            {snap.resources.length === 0 && <div className="quiet">Nothing running that Stagehand started.</div>}
-            <Policies value={snap.policies} onSaved={() => void load(true)} onError={onError} />
-            <section className="card usage-table">
-                <h2>Recent actions <span className="chip">{snap.events.length}</span></h2>
-                {snap.events.length === 0 && <div className="quiet">nothing stopped yet</div>}
-                {snap.events.length > 0 && (
-                    <table>
-                        <thead><tr><th>When</th><th>What</th><th>Task</th><th>Action</th><th>Why</th><th>RSS</th></tr></thead>
-                        <tbody>
-                            {snap.events.map((e) => (
-                                <tr key={e.id}>
-                                    <td className="mono">{ago(Date.now() - Date.parse(e.at))} ago</td>
-                                    <td><b>{e.label}</b> <span className="chip">{KIND_LABEL[e.kind as ResourceKind] ?? e.kind}</span></td>
-                                    <td className="mono">{e.task_id ? e.task_id.slice(0, 8) : "—"}</td>
-                                    <td>{e.action}</td>
-                                    <td className="res-why">{e.reason}</td>
-                                    <td className="mono">{e.rss_mb != null ? gb(e.rss_mb) : "—"}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                )}
-            </section>
+            )}
         </div>
     );
 };

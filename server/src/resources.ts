@@ -4,7 +4,7 @@
 // policy says so. The Resources page shows the same snapshot. The host has 52 GB; a Next dev server left on a task
 // parked at User Review grows past 5 GB, and a tmux-server death used to revive every pane of every old task.
 import { killSessionTree } from "./services.js";
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statfsSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "./config.js";
 import { now, type DB, type EnvRow, type EnvServiceRow, type ServiceRow, type SessionRow, type TaskRow } from "./db.js";
@@ -70,6 +70,8 @@ export interface ResourceEvent {
 export interface ResourceSnapshot {
     at: string;
     host: HostMemory & { pressure: "ok" | "warn" | "critical"; pressureReason: string };
+    // The volume that holds Stagehand's data (and, on this Mac, the worktrees): total and free space.
+    disk: { totalMb: number; freeMb: number } | null;
     stagehand: { rssMb: number; procs: number; devServerTasks: number; runs: number; browsers: number; terminals: number };
     policies: ResourcePolicies;
     resources: Resource[];
@@ -407,6 +409,14 @@ export class Resources {
         return {
             at: new Date(t0).toISOString(),
             host: { ...mem, ...pressure },
+            disk: ((): { totalMb: number; freeMb: number } | null => {
+                try {
+                    const f = statfsSync(this.cfg.dataDir);
+                    return { totalMb: Math.round((f.blocks * f.bsize) / 1048576), freeMb: Math.round((f.bavail * f.bsize) / 1048576) };
+                } catch {
+                    return null;
+                }
+            })(),
             stagehand: {
                 rssMb: allTree.reduce((s, p) => s + p.rssMb, 0),
                 procs: allTree.length,
