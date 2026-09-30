@@ -709,3 +709,52 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .qa-change { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
 .qa-change .qa-change-diff { max-height: 220px; overflow: auto; font-size: 11.5px; margin: 4px 0; }
 .gh-comment .pr-thread > button.tiny { justify-self: start; }
+
+/* ---------- Product and Product Owners ---------- */
+.product { display: flex; flex-direction: column; gap: 14px; }
+.po-row { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+.po-row input { flex: 1; min-width: 220px; }
+.po-list { display: flex; flex-direction: column; }
+.po-item { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 6px; border-top: 1px solid var(--line); cursor: pointer; }
+.po-item:hover { background: var(--accent-soft); }
+.md-editor { width: 100%; font-family: var(--mono); font-size: 13px; box-sizing: border-box; }
+.palace-hits { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.palace-hit > summary, .po-artifact > summary { cursor: pointer; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.po-artifact { border-top: 1px solid var(--line); padding: 8px 0; }
+.po-artifact > summary .tiny { margin-left: auto; }
+.po-artifact .markdown { max-height: 480px; overflow: auto; background: var(--panel); padding: 8px; border-radius: 6px; }
+.po-page { display: flex; flex-direction: column; gap: 10px; }
+.po-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.po-head h1 { margin: 0; font-size: 20px; }
+.po-head .spacer { flex: 1; }
+.po-phases { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.po-layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; align-items: start; }
+.po-main { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.po-chat { position: sticky; top: 10px; display: flex; flex-direction: column; height: calc(100vh - 150px); border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.po-messages { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.po-msg { padding: 8px 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); }
+.po-msg.user { background: var(--accent-soft); border-color: transparent; }
+.po-msg.system { background: transparent; border-style: dashed; color: var(--ink-2); font-size: 13px; }
+.po-msg-who { display: block; font-size: 12px; font-weight: 600; color: var(--ink-3); margin-bottom: 4px; }
+.po-input { border-top: 1px solid var(--line); padding: 8px; }
+.po-input textarea { width: 100%; box-sizing: border-box; }
+.po-input .actions { margin: 6px 0 0; }
+.po-doc { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 16px; }
+.po-toc { position: sticky; top: 10px; align-self: start; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.po-toc a { color: var(--ink-2); text-decoration: none; }
+.po-toc a:hover { color: var(--accent); }
+.po-section { border-top: 1px solid var(--line); padding-top: 8px; margin-bottom: 14px; }
+.po-section h2 { font-size: 17px; margin: 4px 0 6px; }
+.po-tickets { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 14px; }
+.po-ticket-tree { display: flex; flex-direction: column; gap: 2px; max-height: calc(100vh - 260px); overflow: auto; }
+.po-ticket-row { display: flex; gap: 6px; align-items: center; width: 100%; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 6px 8px; cursor: pointer; }
+.po-ticket-row.active { background: var(--accent-soft); border-color: var(--accent); }
+.po-ticket-row b { flex: 1; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.po-ticket-detail h2 { margin: 0 0 6px; font-size: 18px; }
+.po-ticket-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+.po-ac li { margin-bottom: 4px; }
+.po-ticket-edit { display: flex; flex-direction: column; gap: 8px; }
+.po-ticket-edit label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.po-review textarea { width: 100%; box-sizing: border-box; font-family: var(--mono); font-size: 13px; }
+@media (max-width: 1100px) { .po-layout { grid-template-columns: 1fr; } .po-chat { position: static; height: 70vh; } }
+@media (max-width: 760px) { .po-doc, .po-tickets { grid-template-columns: 1fr; } .po-toc { position: static; flex-direction: row; flex-wrap: wrap; } .po-ticket-tree { max-height: 40vh; } }

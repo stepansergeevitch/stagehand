@@ -5,7 +5,7 @@ import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabe
 export type ManageTab = "envs" | "dirs" | "accounts" | "integrations";
 
 // Every card on the Integrations page carries one of these, so a new kind of integration announces what it is.
-type IntegrationType = "task manager" | "notifications" | "decision model" | "assistant";
+type IntegrationType = "task manager" | "notifications" | "decision model" | "assistant" | "documents";
 const TypeChip = ({ type }: { type: IntegrationType }) => <span className="chip type" title="integration type">{type}</span>;
 
 const repoList = (json: string | null): string => {
@@ -136,6 +136,7 @@ export const ManagePage = ({
             {tab === "accounts" && settings && <PrompterCard settings={settings} accounts={accounts} onChanged={onChanged} onError={onError} />}
             {tab === "integrations" && <p className="field-hint">External services Stagehand talks to. Each card is tagged with its type: task manager (tickets), notifications (pushes to you), decision model (Jev).</p>}
             {tab === "integrations" && <TaskManagerList onError={onError} />}
+            {tab === "integrations" && <NotionCard onError={onError} />}
             {tab === "integrations" && settings && <NotificationsCard settings={settings} onChanged={onChanged} onError={onError} />}
             {tab === "integrations" && settings && <JevCard settings={settings} onChanged={onChanged} onError={onError} />}
         </div>
@@ -452,6 +453,28 @@ const JevCard = ({ settings, onChanged, onError }: { settings: Settings; onChang
                 <button className="danger" disabled={!configured} onClick={async () => { if (!confirm("Remove the TypeSafe API key?")) return; try { await api.patchSettings({ typesafeApiKey: null }); await onChanged(); setResult(null); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Remove key</button>
             </div>
             {result && <div className={`test-result ${result.ok ? "" : "bad"}`}>{result.text}</div>}
+        </section>
+    );
+};
+
+// Notion: the integration token Product Owners fetch pages with (share each page with the integration in Notion).
+const NotionCard = ({ onError }: { onError: (m: string) => void }) => {
+    const [state, setState] = useState<{ configured: boolean; token: string | null } | null>(null);
+    const [token, setToken] = useState("");
+    const load = () => api.notion().then(setState).catch((e: Error) => onError(e.message));
+    useEffect(() => { void load(); }, []);
+    if (!state) return null;
+    return (
+        <section className="card manager">
+            <h2>Notion <TypeChip type="documents" /> {state.configured ? <span className="chip ok">configured</span> : <span className="chip">no token</span>}</h2>
+            <p className="field-hint">Product Owners fetch Notion pages by URL with this token. Share each page with the integration in Notion first.</p>
+            <div className="env-fields manager-fields">
+                <label>Integration token<input value={token} onChange={(e) => setToken(e.target.value)} placeholder={state.token ?? "ntn_… or secret_…"} /></label>
+            </div>
+            <div className="actions">
+                <button className="primary" disabled={!token} onClick={async () => { try { await api.setNotion(token); setToken(""); await load(); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Save</button>
+                <button className="danger" disabled={!state.configured} onClick={async () => { if (!confirm("Remove the Notion token?")) return; await api.setNotion(null); await load(); }}>Remove token</button>
+            </div>
         </section>
     );
 };

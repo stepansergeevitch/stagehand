@@ -266,8 +266,27 @@ export const pendingQuestions = (d: Pick<TaskDetail, "questions">): QuestionRoun
 export interface Task {
     id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
     branch: string | null; base_branch: string | null; skip_qa?: number; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
-    pinned: number; notes: string | null; extra_tickets: string | null; labels?: string | null; created_at: string; updated_at: string;
+    pinned: number; notes: string | null; extra_tickets: string | null; labels?: string | null; product_owner_id?: string | null; created_at: string; updated_at: string;
 }
+// Product Owners: one per project of the product (a Linear project, a ClickUp epic).
+export type PoPhase = "context" | "design" | "tickets" | "approved" | "live";
+export interface ProductOwner {
+    id: string; title: string; slug: string; source: "linear" | "clickup"; scope_kind: "project" | "epic"; scope_id: string; scope_url: string | null;
+    team_id: string | null; phase: PoPhase; status: "idle" | "running" | "failed"; status_line: string | null; account_id: string | null; created_at: string; updated_at: string;
+    tasks?: number; created?: number;
+}
+export interface PoMessage { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
+export interface PoArtifact { id: string; po_id: string; kind: "upload" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string }
+export interface PoTicket { key: string; type: "epic" | "story" | "task" | "bug"; title: string; parent: string | null; summary: string; description: string; acceptanceCriteria: string[]; estimate: number | null; dependsOn: string[]; labels: string[] }
+export interface PoTicketLink { key: string; remote_id: string; identifier: string | null; url: string | null }
+export interface PoDetail {
+    po: ProductOwner; running: boolean; context: string; design: string | null; tickets: { tickets: PoTicket[] } | null; ticketsError: string | null;
+    proposal: string | null; messages: PoMessage[]; artifacts: PoArtifact[]; links: PoTicketLink[]; revisions: Array<{ file: string; name: string; at: string }>;
+    tasks: Array<{ id: string; ticket_id: string; title: string | null; stage: Stage; status: TaskStatus; env_id: string }>;
+}
+export type PoEvent = { poId: string; kind: "updated" } | { poId: string; kind: "text"; text: string } | { poId: string; kind: "activity"; text: string } | { poId: string; kind: "message"; message: PoMessage };
+export interface PalaceHit { text: string; wing: string; room: string; similarity?: number; source_file?: string }
+export interface PoReview { running: boolean; status: string | null; error: string | null; at: string | null; text: string | null }
 export interface TaskLabel { text: string; color: string }
 export const labelsOf = (t: Pick<Task, "labels">): TaskLabel[] => {
     try {
@@ -489,6 +508,40 @@ const uploadPrompterFiles = async (sessionId: string, files: File[]): Promise<Sh
 const withFiles = (body: Record<string, unknown>, files: SharedFile[] | undefined): Record<string, unknown> => (files?.length ? { ...body, files } : body);
 
 export const api = {
+    productContext: () => fetch("/api/product/context").then((r) => j<{ text: string }>(r)),
+    setProductContext: (text: string) => fetch("/api/product/context", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).then((r) => j<{ text: string }>(r)),
+    palaceSearch: (q: string, wing?: string) => fetch(`/api/product/search?${new URLSearchParams({ q, ...(wing ? { wing } : {}) })}`).then((r) => j<{ results: PalaceHit[] }>(r)),
+    palaceStatus: () => fetch("/api/product/palace").then((r) => j<{ home: string; total: number; wings: Record<string, Record<string, number>> }>(r)),
+    productOwners: () => fetch("/api/product-owners").then((r) => j<ProductOwner[]>(r)),
+    createProductOwner: (url: string) => post<ProductOwner>("/api/product-owners", { url }),
+    productOwner: (id: string) => fetch(`/api/product-owners/${id}`).then((r) => j<PoDetail>(r)),
+    deleteProductOwner: (id: string) => fetch(`/api/product-owners/${id}`, { method: "DELETE" }).then((r) => j<{ ok: true }>(r)),
+    poSend: (id: string, text: string) => post<{ started: true }>(`/api/product-owners/${id}/messages`, { text }),
+    poStop: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/stop`),
+    poSetContext: (id: string, text: string) => fetch(`/api/product-owners/${id}/context`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).then((r) => j<{ ok: true }>(r)),
+    poSetTickets: (id: string, tickets: PoTicket[]) => fetch(`/api/product-owners/${id}/tickets`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ tickets }) }).then((r) => j<{ ok: true }>(r)),
+    poFetch: (id: string, url: string) => post<PoArtifact>(`/api/product-owners/${id}/artifacts/fetch`, { url }),
+    poUpload: (id: string, f: File) => {
+        const fd = new FormData();
+        fd.append("file", f, f.name);
+        return fetch(`/api/product-owners/${id}/artifacts`, { method: "POST", body: fd }).then((r) => j<PoArtifact>(r));
+    },
+    poRemoveArtifact: (id: string, aid: string) => fetch(`/api/product-owners/${id}/artifacts/${aid}`, { method: "DELETE" }).then((r) => j<{ ok: true }>(r)),
+    poFileUrl: (id: string, file: string) => `/api/product-owners/${id}/files/${file.split("/").map(encodeURIComponent).join("/")}`,
+    poFileText: (id: string, file: string) => fetch(`/api/product-owners/${id}/files/${file.split("/").map(encodeURIComponent).join("/")}`).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)))),
+    poRevision: (id: string, name: string) => fetch(`/api/product-owners/${id}/revisions/${encodeURIComponent(name)}`).then((r) => j<{ text: string }>(r)),
+    poApproveDesign: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/approve-design`),
+    poApproveTickets: (id: string) => post<{ created: number; skipped: number }>(`/api/product-owners/${id}/approve-tickets`),
+    poSetPhase: (id: string, phase: PoPhase) => post<{ ok: true }>(`/api/product-owners/${id}/phase`, { phase }),
+    poAcceptProposal: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/proposal/accept`),
+    poRejectProposal: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/proposal/reject`),
+    poReview: (taskId: string) => fetch(`/api/tasks/${taskId}/po-review`).then((r) => j<PoReview>(r)),
+    startPoReview: (taskId: string) => post<PoReview>(`/api/tasks/${taskId}/po-review`),
+    savePoReview: (taskId: string, text: string) => fetch(`/api/tasks/${taskId}/po-review`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).then((r) => j<PoReview>(r)),
+    sendPoReview: (taskId: string) => post<Task>(`/api/tasks/${taskId}/po-review/send`),
+    setTaskProductOwner: (taskId: string, productOwnerId: string | null) => fetch(`/api/tasks/${taskId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ productOwnerId }) }).then((r) => j<Task>(r)),
+    notion: () => fetch("/api/integrations/notion").then((r) => j<{ configured: boolean; token: string | null }>(r)),
+    setNotion: (token: string | null) => fetch("/api/integrations/notion", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }).then((r) => j<{ configured: boolean; token: string | null }>(r)),
     accounts: () => fetch("/api/accounts").then((r) => j<Account[]>(r)),
     addAccount: (name: string, email?: string) => post<{ account: Account; terminal: string }>("/api/accounts", { name, email }),
     refreshAccount: (id: string) => post<{ ok: boolean; detail: string; account: Account }>(`/api/accounts/${id}/refresh`),
@@ -541,7 +594,7 @@ export const api = {
     tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
     // mode "each": one task per ticket; "batch": one task covering every ticket.
-    createTasks: (body: { envId: string; tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string | Record<string, string> }) => post<{ tasks: Task[] }>("/api/tasks", body),
+    createTasks: (body: { envId: string; tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string | Record<string, string>; productOwnerId?: string | null }) => post<{ tasks: Task[] }>("/api/tasks", body),
     // Remote branch names of one repository of an env ("" = the single repo), for the base-branch pickers.
     branches: (envId: string, repo = "") => fetch(`/api/envs/${envId}/branches?repo=${encodeURIComponent(repo)}`).then((r) => j<{ branches: string[] }>(r)),
     labelSuggestions: () => fetch("/api/labels").then((r) => j<Array<TaskLabel & { count: number }>>(r)),

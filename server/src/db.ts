@@ -318,6 +318,8 @@ export interface TaskRow {
     // One-shot: the human asked (from User Review's "Request changes" or "Return to a stage…") to skip the browser QA
     // stages on the way back to User Review this pass; advance() consumes it there.
     skip_qa: number;
+    // The Product Owner (product-owners.ts) whose project this ticket belongs to: reviews the design on request.
+    product_owner_id: string | null;
     worktree_path: string | null;
     stage: Stage;
     status: TaskStatus;
@@ -728,7 +730,76 @@ CREATE TABLE IF NOT EXISTS task_events (
     status TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS task_events_task ON task_events(task_id, at);
+CREATE TABLE IF NOT EXISTS product_owners (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    scope_kind TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    scope_url TEXT,
+    team_id TEXT,
+    phase TEXT NOT NULL DEFAULT 'context',
+    status TEXT NOT NULL DEFAULT 'idle',
+    status_line TEXT,
+    session_id TEXT NOT NULL,
+    account_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS po_messages (
+    id TEXT PRIMARY KEY,
+    po_id TEXT NOT NULL REFERENCES product_owners(id),
+    role TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS po_messages_po ON po_messages(po_id, created_at);
+CREATE TABLE IF NOT EXISTS po_artifacts (
+    id TEXT PRIMARY KEY,
+    po_id TEXT NOT NULL REFERENCES product_owners(id),
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    source_url TEXT,
+    file TEXT NOT NULL,
+    mime TEXT,
+    size INTEGER,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS po_ticket_links (
+    po_id TEXT NOT NULL REFERENCES product_owners(id),
+    key TEXT NOT NULL,
+    remote_id TEXT NOT NULL,
+    identifier TEXT,
+    url TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (po_id, key)
+);
 `;
+
+// A Product Owner: one project of the product (a Linear project, a ClickUp epic) with its context, sources, design
+// and ticket proposals — see product-owners.ts. `phase` walks context → design → tickets → approved → live.
+export type PoPhase = "context" | "design" | "tickets" | "approved" | "live";
+export interface ProductOwnerRow {
+    id: string;
+    title: string;
+    slug: string;
+    source: "linear" | "clickup";
+    scope_kind: "project" | "epic";
+    scope_id: string;
+    scope_url: string | null;
+    team_id: string | null;
+    phase: PoPhase;
+    status: "idle" | "running" | "failed";
+    status_line: string | null;
+    session_id: string;
+    account_id: string | null;
+    created_at: string;
+    updated_at: string;
+}
+export interface PoMessageRow { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
+export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string }
+export interface PoTicketLinkRow { po_id: string; key: string; remote_id: string; identifier: string | null; url: string | null; created_at: string }
 
 // One row per change of a task's (stage, status) — the timing analytics read how long a task sat where (working,
 // waiting for the human, waiting for GitHub, rate-limited). No foreign key: rows outlive the task, with its ticket id.
@@ -832,6 +903,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["tasks.base_branch", `ALTER TABLE tasks ADD COLUMN base_branch TEXT`],
     // One-shot "skip Manual QA (and QA baseline) this pass", set from Request changes / Return to a stage.
     ["tasks.skip_qa", `ALTER TABLE tasks ADD COLUMN skip_qa INTEGER NOT NULL DEFAULT 0`],
+    ["tasks.product_owner_id", `ALTER TABLE tasks ADD COLUMN product_owner_id TEXT`],
     // A BE/FE that never came up (start timeout, command exited, tmux session gone) — the row stays visible as failed
     // until it is stopped or restarted, so the human sees why and can hand it to the agent.
     ["services.failed_at", `ALTER TABLE services ADD COLUMN failed_at TEXT`],

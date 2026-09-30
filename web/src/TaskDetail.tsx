@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LabelEditor } from "./Labels";
 import { BranchPicker } from "./BranchPicker";
 import { api, baseLabel, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseBaseBranch, parseChecks, pendingQuestions, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaChange, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
@@ -11,7 +11,7 @@ import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
-import { anchorOf, type Env, type LineComment, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
+import { anchorOf, type Env, type LineComment, type PoReview, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
 
 const isResolved = (c: PrComment): boolean => c.kind === "line" && c.resolved;
 
@@ -678,6 +678,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const [comments, changeComment, clearComments] = useDraftComments(task.id);
     const pending = Object.entries(comments);
     const canComment = task.status === "waiting_user" && task.stage === "user_review";
+    // Product Owners, for the header's picker and the Product owner review tab.
+    const [owners, setOwners] = useState<ProductOwner[]>([]);
+    useEffect(() => { void api.productOwners().then(setOwners).catch(() => setOwners([])); }, [task.id]);
     // At a PR stage, Code-changes line comments go to a PR-fix round of their own (the box above the diff).
     const canCommentPr = task.status !== "running" && ["pr_waiting", "pr_fix", "pr_green", "pr_approved"].includes(task.stage);
     const [localNotes, setLocalNotes] = useState("");
@@ -969,6 +972,15 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {task.ticket_url ? <a href={task.ticket_url} target="_blank" rel="noreferrer">{task.source} ↗</a> : <span>{task.source}</span>}
                 {task.model && <span className="chip">{task.model}</span>}
                 <span>session {task.session_id.slice(0, 8)}</span>
+                {owners.length > 0 && (
+                    <label title="The Product Owner whose project this ticket belongs to: it can review the design proposal">
+                        product owner{" "}
+                        <select value={task.product_owner_id ?? ""} onChange={(e) => onAction(() => api.setTaskProductOwner(task.id, e.target.value || null))}>
+                            <option value="">none</option>
+                            {owners.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+                        </select>
+                    </label>
+                )}
                 <label>
                     account{" "}
                     <select value={task.account_id ?? ""} onChange={(e) => onAction(() => api.setAccount(task.id, e.target.value))}>
@@ -1202,7 +1214,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 design ? (
                     <Card title="Design proposal" badge={<><span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>{(design.affectedRepos ?? []).map((r) => <span key={r} className="chip">{r}</span>)}</>}>
                         {task.stage === "design_proposal" && reviewBox}
-                        <DesignTabs taskId={task.id} design={design} md={designMd} before={qaBefore} section={view.tab === "design" ? view.section : undefined} onSection={(s) => onView({ tab: "design", section: s })} />
+                        <DesignTabs task={task} owner={owners.find((o) => o.id === task.product_owner_id) ?? null} design={design} md={designMd} before={qaBefore} section={view.tab === "design" ? view.section : undefined} onSection={(s) => onView({ tab: "design", section: s })} onAction={onAction} onError={onError} />
                     </Card>
                 ) : <div className="empty">No design proposal yet.</div>
             )}
@@ -1765,9 +1777,52 @@ const QaTests = ({ taskId, design, before }: { taskId: string; design: NonNullab
     );
 };
 
-// The design tab: the proposal as one document, and the QA tests with their baseline.
-const DesignTabs = ({ taskId, design, md, before, section, onSection }: { taskId: string; design: NonNullable<TaskDetail["design"]>; md: string | null; before: QaPass | null; section?: string; onSection: (s: string) => void }) => {
-    const active = section === "qa" ? "qa" : "proposal";
+// "Product owner review": on request, the task's Product Owner reviews the proposal as product; the review is editable
+// here and goes to the design agent as the notes of another round.
+const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["task"]; owner: ProductOwner | null; onAction: Props["onAction"]; onError: (m: string) => void }) => {
+    const [r, setR] = useState<PoReview | null>(null);
+    const [draft, setDraft] = useState<string | null>(null);
+    const [editing, setEditing] = useState(false);
+    const load = useCallback(() => void api.poReview(task.id).then((x) => { setR(x); if (!editing) setDraft(x.text); }).catch((e: Error) => onError(e.message)), [task.id, editing, onError]);
+    useEffect(load, [load, task.updated_at]);
+    if (!owner) return <div className="empty">No Product Owner for this task. Pick one in the header (<b>product owner</b>) to get a product review of the proposal.</div>;
+    if (!r) return <div className="empty">loading…</div>;
+    const canSend = task.stage === "design_proposal" && task.status === "waiting_user";
+    return (
+        <div className="po-review">
+            <div className="actions" style={{ marginTop: 0 }}>
+                <button className="primary" disabled={r.running} onClick={() => void onAction(async () => { await api.startPoReview(task.id); load(); })}>{r.running ? "The Product Owner is reviewing…" : r.text ? "Review again by Product owner" : "Review by Product owner"}</button>
+                <span className="field-hint">{owner.title}{r.at ? ` · ${r.status ?? ""} ${new Date(r.at).toLocaleString()}` : ""}</span>
+            </div>
+            {r.status === "failed" && <div className="blocked-box">The review failed: {r.error}</div>}
+            {r.text !== null && (
+                <>
+                    {editing ? (
+                        <>
+                            <textarea rows={Math.min(30, Math.max(10, (draft ?? "").split("\n").length + 2))} value={draft ?? ""} onChange={(e) => setDraft(e.target.value)} />
+                            <div className="actions">
+                                <button className="primary" onClick={() => void onAction(async () => { await api.savePoReview(task.id, draft ?? ""); setEditing(false); load(); })}>Save</button>
+                                <button onClick={() => { setDraft(r.text); setEditing(false); }}>Cancel</button>
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            <Markdown source={r.text} />
+                            <div className="actions">
+                                <button onClick={() => setEditing(true)} disabled={r.running}>Edit</button>
+                                <button className="primary" disabled={!canSend || r.running} title={canSend ? "Another design round with this review as the notes" : "The proposal must be waiting for your review"} onClick={() => void onAction(async () => { await api.sendPoReview(task.id); })}>Send to agent</button>
+                            </div>
+                        </>
+                    )}
+                </>
+            )}
+        </div>
+    );
+};
+
+// The design tab: the proposal as one document, the QA tests with their baseline, and the Product owner review.
+const DesignTabs = ({ task, owner, design, md, before, section, onSection, onAction, onError }: { task: TaskDetail["task"]; owner: ProductOwner | null; design: NonNullable<TaskDetail["design"]>; md: string | null; before: QaPass | null; section?: string; onSection: (s: string) => void; onAction: Props["onAction"]; onError: (m: string) => void }) => {
+    const active = section === "qa" ? "qa" : section === "po" ? "po" : "proposal";
     const body = useMemo(() => (md ?? "").replace(/^#\s[^\n]*\n/, ""), [md]);
     const ran = design.qa.filter((s) => before?.scenarios.some((x) => x.id === s.id)).length;
     return (
@@ -1775,9 +1830,10 @@ const DesignTabs = ({ taskId, design, md, before, section, onSection }: { taskId
             <div className="subtabs">
                 <button className={active === "proposal" ? "active" : ""} onClick={() => onSection("proposal")}>Proposal</button>
                 <button className={active === "qa" ? "active" : ""} onClick={() => onSection("qa")}>QA tests <span className="chip">{design.qa.length}</span>{design.qa.length > 0 && <span className="chip">{ran ? `baseline ${ran}/${design.qa.length}` : "no baseline"}</span>}</button>
+                <button className={active === "po" ? "active" : ""} onClick={() => onSection("po")}>Product owner review{owner ? "" : " · none"}</button>
             </div>
             <div className="design-section">
-                {active === "proposal" ? (md ? <Markdown source={body} /> : <div className="empty">design.md is missing</div>) : <QaTests taskId={taskId} design={design} before={before} />}
+                {active === "proposal" ? (md ? <Markdown source={body} /> : <div className="empty">design.md is missing</div>) : active === "qa" ? <QaTests taskId={task.id} design={design} before={before} /> : <PoReviewPanel task={task} owner={owner} onAction={onAction} onError={onError} />}
             </div>
         </>
     );

@@ -24,6 +24,8 @@ const ConfigSchema = z.object({
     // Resolved once from GET /user with the token above and cached here.
     clickupUserId: z.string().nullable().default(null),
     linearApiKey: z.string().nullable().default(null),
+    // Notion integration token (an internal integration shared with the pages): Product Owners fetch pages by URL.
+    notionApiKey: z.string().nullable().default(null),
     // TypeSafe AI — Jev decision model (jev.ts). Null: Jev-backed judgments use the built-in heuristics.
     typesafeApiKey: z.string().nullable().default(null),
     defaultModel: z.string().nullable().default(null),
@@ -166,6 +168,7 @@ const defaults = (): Config => ({
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
     clickupUserId: null,
     linearApiKey: null,
+    notionApiKey: null,
     typesafeApiKey: null,
     defaultModel: null,
     notifications: { macos: true, ntfyServer: "https://ntfy.sh", ntfyTopic: null, ntfyToken: null, baseUrl: null, localBaseUrl: "http://localhost:5173" },

@@ -47,7 +47,10 @@ export type Route =
     | { page: "config-dirs"; dir?: string }
     | { page: "accounts" }
     | { page: "integrations" }
-    | { page: "resources" };
+    | { page: "resources" }
+    // The global product context and the Product Owners; `po` opens one, on its `tab`.
+    | { page: "product"; po?: string; tab?: PoTab };
+export type PoTab = "context" | "design" | "tickets";
 
 export type Page = Route["page"];
 
@@ -115,6 +118,8 @@ export const parseRoute = (hash: string): Route => {
             return { page: "integrations" };
         case "resources":
             return { page: "resources" };
+        case "product":
+            return { page: "product", ...(a ? { po: a } : {}), ...(b === "context" || b === "design" || b === "tickets" ? { tab: b } : {}) };
         default:
             return { page: "dashboard" };
     }
@@ -152,6 +157,7 @@ export const formatRoute = (r: Route): string => {
         case "timing": return withQuery("#/timing", { days: r.days ? String(r.days) : null });
         case "envs": return r.env ? `#/envs/${enc(r.env)}` : "#/envs";
         case "config-dirs": return r.dir ? `#/config-dirs/${enc(r.dir)}` : "#/config-dirs";
+        case "product": return r.po ? `#/product/${enc(r.po)}${r.tab ? `/${r.tab}` : ""}` : "#/product";
         default: return `#/${r.page}`;
     }
 };

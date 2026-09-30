@@ -21,6 +21,9 @@ export interface RunSpec {
     extraEnv?: Record<string, string>;
     // Extra settings file (hooks etc.), passed as --settings.
     settingsPath?: string;
+    // An MCP config file that is the ONLY source of MCP servers for the run (--strict-mcp-config): the config dir's
+    // and the project's own MCP servers are not loaded.
+    mcpConfig?: string;
 }
 
 export const RateLimitInfo = z.object({
@@ -164,6 +167,7 @@ export const buildArgs = (spec: RunSpec): string[] => {
     if (spec.allowedTools?.length) args.push("--allowedTools", spec.allowedTools.join(","));
     if (spec.appendSystemPrompt) args.push("--append-system-prompt", spec.appendSystemPrompt);
     if (spec.settingsPath) args.push("--settings", spec.settingsPath);
+    if (spec.mcpConfig) args.push("--strict-mcp-config", "--mcp-config", spec.mcpConfig);
     return args;
 };
 

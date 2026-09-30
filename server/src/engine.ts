@@ -1566,6 +1566,17 @@ export class Engine extends EventEmitter {
         this.emitTask(taskId);
     }
 
+    // The task's Product Owner (product-owners.ts): null clears it.
+    setProductOwner(taskId: string, poId: string | null): void {
+        this.db.prepare(`UPDATE tasks SET product_owner_id = ?, updated_at = ? WHERE id = ?`).run(poId, now(), taskId);
+        this.emitTask(taskId);
+    }
+
+    // A change to what the task page shows that is not a column of the task (a PO review file): the page re-reads.
+    touchTask(taskId: string): void {
+        this.emitTask(taskId);
+    }
+
     setLabels(taskId: string, labels: TaskLabel[]): void {
         const clean = labels.map((l) => ({ text: l.text.trim().slice(0, 40), color: l.color })).filter((l) => l.text);
         this.db.prepare(`UPDATE tasks SET labels = ?, updated_at = ? WHERE id = ?`).run(clean.length ? JSON.stringify(clean) : null, now(), taskId);

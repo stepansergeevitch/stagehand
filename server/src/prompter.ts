@@ -13,15 +13,17 @@ import { startClaude, type ActivityEvent, type ClaudeRun, type ResultEvent } fro
 import { recordUsage } from "./usage.js";
 import { parseRoute, type Route, type TaskView } from "./routes.js";
 import { STAGE_DEFS } from "./stages/registry.js";
+import type { Palace } from "./palace.js";
 
 // Prompter — the assistant in the bottom-right corner of the web app. A theatre prompter feeds lines from the prompt
 // box; this one knows how Stagehand works (its own MemPalace), sees where the human is (the URL hash, described per
 // turn), and acts through the local API. It lives in its own data folder:
 //
-//   ~/.stagehand/prompter/            = MEMPALACE_HOME (config.json → palace_path, knowledge_graph.sqlite3, palace/)
+//   ~/.stagehand/mempalace/           = MEMPALACE_HOME: Stagehand's own palace (palace.ts), shared with the Product
+//                                       Owners; it started as a copy of the palace that used to live in this folder
 //   ~/.stagehand/prompter/claude/     = CLAUDE_CONFIG_DIR (CLAUDE.md, settings.json, skills/ — synced from the repo's
 //                                       prompter/ folder at every start; .claude.json copied once from the main dir)
-//   ~/.stagehand/prompter/.mcp.json   = the mempalace MCP server, pointed at the folder above
+//   ~/.stagehand/prompter/.mcp.json   = the mempalace MCP server, pointed at Stagehand's palace
 //   ~/.stagehand/prompter/logs/       = one stream-json event log per turn
 //
 // Every chat is a claude session of its own (first turn --session-id, later turns --resume); the palace is the only
@@ -80,6 +82,7 @@ export class Prompter {
         private readonly db: DB,
         private readonly cfg: Config,
         private readonly emit: (ev: PrompterEvent) => void,
+        private readonly palace: Palace,
     ) {
         this.home = join(cfg.dataDir, "prompter");
         this.configDir = join(this.home, "claude");
@@ -91,7 +94,6 @@ export class Prompter {
     ensureHome(): void {
         mkdirSync(join(this.configDir, "skills"), { recursive: true });
         mkdirSync(join(this.home, "logs"), { recursive: true });
-        mkdirSync(join(this.home, "palace"), { recursive: true });
         if (!existsSync(TEMPLATES)) return;
         const copyText = (from: string, to: string, subst?: (s: string) => string): void => {
             if (!existsSync(from)) return;
@@ -100,15 +102,12 @@ export class Prompter {
         };
         copyText(join(TEMPLATES, "CLAUDE.md"), join(this.configDir, "CLAUDE.md"));
         copyText(join(TEMPLATES, "settings.json"), join(this.configDir, "settings.json"));
-        copyText(join(TEMPLATES, "mcp.json"), join(this.home, ".mcp.json"), (s) => s.replace(/\{\{home\}\}/g, this.home));
+        copyText(join(TEMPLATES, "mcp.json"), join(this.home, ".mcp.json"), (s) => s.replace(/\{\{home\}\}/g, this.palace.home));
         const skills = join(TEMPLATES, "skills");
         if (existsSync(skills)) {
             rmSync(join(this.configDir, "skills"), { recursive: true, force: true });
             cpSync(skills, join(this.configDir, "skills"), { recursive: true });
         }
-        // mempalace resolves its data from <MEMPALACE_HOME>/config.json, not from the home itself.
-        const palaceCfg = join(this.home, "config.json");
-        if (!existsSync(palaceCfg)) writeFileSync(palaceCfg, JSON.stringify({ palace_path: join(this.home, "palace"), collection_name: "mempalace_drawers" }, null, 2));
         // Onboarding flags and the trust of this folder come from the main config dir's .claude.json, once.
         const claudeJson = join(this.configDir, ".claude.json");
         if (!existsSync(claudeJson)) {
@@ -151,7 +150,7 @@ export class Prompter {
     // Copies the Stagehand knowledge out of another palace (see scripts/seed-prompter-palace.py). Re-runnable.
     async seed(): Promise<{ ok: boolean; detail: string; result?: unknown }> {
         const script = join(REPO_ROOT, "scripts", "seed-prompter-palace.py");
-        const args = [script, "--src", this.cfg.prompter.seedFrom, "--dst", this.home, "--diary", "wing_claude", "--mention", "stagehand"];
+        const args = [script, "--src", this.cfg.prompter.seedFrom, "--dst", this.palace.home, "--diary", "wing_claude", "--mention", "stagehand"];
         for (const w of this.cfg.prompter.seedWings) args.push("--wing", w);
         try {
             const { stdout, stderr } = await execFileAsync("python3", args, { timeout: 600_000, maxBuffer: 16 * 1024 * 1024 });
@@ -450,7 +449,15 @@ export class Prompter {
             case "accounts":
                 return { summary: "AI accounts", context: "Page: AI accounts (tokens, browser logins, Chrome profiles, usage)." };
             case "integrations":
-                return { summary: "Integrations", context: "Page: Integrations (ClickUp, Linear, notifications, Jev)." };
+                return { summary: "Integrations", context: "Page: Integrations (ClickUp, Linear, Notion, notifications, Jev)." };
+            case "product": {
+                if (!r.po) return { summary: "Product", context: "Page: Product — the global product context (GET/PUT /api/product/context), the Product Owners list (GET /api/product-owners) and a palace search (GET /api/product/search?q=)." };
+                const po = this.db.prepare(`SELECT title, phase, source, scope_url FROM product_owners WHERE id = ?`).get(r.po) as { title: string; phase: string; source: string; scope_url: string | null } | undefined;
+                return {
+                    summary: `Product Owner ${po?.title ?? r.po}`,
+                    context: `Page: Product Owner "${po?.title ?? r.po}" (id ${r.po}), ${po ? `${po.source} ${po.scope_url ?? ""}, phase ${po.phase}` : "not found"}; tab ${r.tab ?? "context"}. Detail: GET /api/product-owners/${r.po}. Its folder: ~/.stagehand/product-owners/${r.po}/ (context.md, design.md, tickets.json, artifacts/).`,
+                };
+            }
             default:
                 return { summary: path, context: `Page: ${path}` };
         }

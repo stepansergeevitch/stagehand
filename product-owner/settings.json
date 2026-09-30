@@ -1,0 +1,11 @@
+{
+    "permissions": {
+        "allow": ["Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "WebFetch", "Bash(curl *)", "Bash(ls *)", "Bash(cat *)", "Bash(jq *)", "Bash(head *)", "Bash(tail *)", "Bash(grep *)", "Bash(rg *)", "Bash(git log*)", "Bash(git show*)", "Bash(git grep*)", "mcp__mempalace__*"],
+        "deny": ["Bash(git push*)", "Bash(git commit*)", "Bash(rm -rf*)"]
+    },
+    "hooks": {
+        "SessionStart": [{ "hooks": [{ "type": "command", "command": "{{hooks}}/po_session_start_hook.sh", "timeout": 20 }] }],
+        "Stop": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "{{hooks}}/po_save_hook.sh", "timeout": 30 }] }],
+        "PreCompact": [{ "hooks": [{ "type": "command", "command": "{{hooks}}/po_precompact_hook.sh", "timeout": 30 }] }]
+    }
+}

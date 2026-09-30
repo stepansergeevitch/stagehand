@@ -26,7 +26,8 @@ export type Route =
     | { page: "envs"; env?: string }
     | { page: "config-dirs"; dir?: string }
     | { page: "accounts" }
-    | { page: "integrations" };
+    | { page: "integrations" }
+    | { page: "product"; po?: string; tab?: string };
 
 const isTab = (s: string | undefined): s is TaskTab => !!s && (TASK_TABS as readonly string[]).includes(s);
 
@@ -84,6 +85,8 @@ export const parseRoute = (hash: string): Route => {
         case "integrations":
         case "managers":
             return { page: "integrations" };
+        case "product":
+            return { page: "product", ...(a ? { po: a } : {}), ...(b ? { tab: b } : {}) };
         default:
             return { page: "dashboard" };
     }

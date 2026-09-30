@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LabelChips } from "./Labels";
 import { BranchPicker } from "./BranchPicker";
-import { accountOrderOf, accountUsableWith, api, envRepos, labelsOf, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
+import { accountOrderOf, accountUsableWith, api, envRepos, labelsOf, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type PoEvent, type ProductOwner, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
 import { TaskDetailView } from "./TaskDetail";
 import { formatRoute, navigate, taskRoute, useRoute, type Page, type TaskView } from "./routes";
 import { Prompter } from "./Prompter";
@@ -14,6 +14,8 @@ import { Analytics } from "./Analytics";
 import { ResourcesPage } from "./ResourcesPage";
 import { Timing } from "./Timing";
 import { SessionsPage } from "./SessionsPage";
+import { ProductPage } from "./ProductPage";
+import { poBus } from "./poBus";
 import { storage } from "./storage";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { LazyTerminal } from "./LazyTerminal";
@@ -24,6 +26,7 @@ import { AgentInput } from "./AgentInput";
 const NAV: { id: Page; label: string; hint: string }[] = [
     { id: "dashboard", label: "Dashboard", hint: "Tasks needing your attention, per environment" },
     { id: "tasks", label: "Tasks", hint: "Tasks in the selected environment" },
+    { id: "product", label: "Product", hint: "The product context and the Product Owners — one per project: plan it, design it, split it into tickets" },
     { id: "sessions", label: "Sessions", hint: "Free-form claude sessions in an environment, with the account and worktree of your choice" },
     { id: "analytics", label: "Analytics", hint: "Token and cost usage by environment, task, account" },
     { id: "timing", label: "Timing", hint: "How long runs and tasks take: by stage, operation, task, day; working vs waiting" },
@@ -224,6 +227,7 @@ export const App = () => {
                 }
                 if (msg.kind === "rate_limit" || msg.kind === "account") void Promise.all([api.accounts(), api.configDirs()]).then(([a, d]) => { setAccounts(a); setConfigDirs(d); });
                 if (msg.kind === "prompter") prompterBus.emit(msg.payload as PrompterEvent);
+                if (msg.kind === "po") poBus.emit(msg.payload as PoEvent);
             };
         };
         connect();
@@ -345,6 +349,21 @@ export const App = () => {
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
                             <ErrorBoundary label="Analytics"><Analytics days={route.page === "analytics" ? route.days : undefined} onDays={(d) => navigate({ page: "analytics", days: d })} onError={setError} /></ErrorBoundary>
+                        </main>
+                    </div>
+                )}
+                {page === "product" && (
+                    <div className="main page">
+                        <main className="detail">
+                            {error && <div className="blocked-box">{error}</div>}
+                            <ErrorBoundary label="Product">
+                                <ProductPage
+                                    {...(route.page === "product" && route.po ? { po: route.po } : {})}
+                                    {...(route.page === "product" && route.tab ? { tab: route.tab } : {})}
+                                    onNavigate={(po, tab) => navigate({ page: "product", ...(po ? { po } : {}), ...(tab ? { tab } : {}) })}
+                                    onError={setError}
+                                />
+                            </ErrorBoundary>
                         </main>
                     </div>
                 )}
@@ -593,9 +612,13 @@ const TicketPicker = ({ groups, selected, onToggle }: { groups: Array<[string, M
 
 const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
     accounts: Account[]; env: Env; settings: Settings | null; readiness: Readiness | undefined;
-    onSubmit: (body: { tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string | Record<string, string> }) => Promise<void>;
+    onSubmit: (body: { tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string | Record<string, string>; productOwnerId?: string | null }) => Promise<void>;
 }) => {
     const [ticket, setTicket] = useState("");
+    // "" = automatic (the PO whose project the ticket belongs to), "none" = no PO, else a PO id.
+    const [owner, setOwner] = useState("");
+    const [owners, setOwners] = useState<ProductOwner[]>([]);
+    useEffect(() => { void api.productOwners().then(setOwners).catch(() => setOwners([])); }, []);
     const [mode, setMode] = useState<"each" | "batch">("each");
     const [notes, setNotes] = useState("");
     // One base branch per repository ("" = the single repo); empty = the env default.
@@ -648,6 +671,15 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                     </select>
                 </label>
             )}
+            {owners.length > 0 && (
+                <label>Product owner
+                    <select value={owner} onChange={(e) => setOwner(e.target.value)}>
+                        <option value="">automatic — the one whose project the ticket belongs to</option>
+                        <option value="none">none</option>
+                        {owners.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+                    </select>
+                </label>
+            )}
             <label>Extra instructions for the agents (optional; every stage sees them) <AgentInput value={notes} onChange={setNotes} placeholder="Constraints, where the code lives, what to skip, how to test…" style={{ minHeight: 60 }} /></label>
             {repoKeys.map((repo) => (
                 <label key={repo}>Base branch{repo ? ` · ${repo}` : ""}
@@ -671,7 +703,7 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                 </select>
                 <span className="field-hint">Applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet.</span>
             </label>
-            <button className="primary" disabled={list.length === 0 || bad.length > 0 || accounts.length === 0} onClick={() => onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}), ...(baseBranch ? { baseBranch } : {}) })}>
+            <button className="primary" disabled={list.length === 0 || bad.length > 0 || accounts.length === 0} onClick={() => onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}), ...(baseBranch ? { baseBranch } : {}), ...(owner ? { productOwnerId: owner === "none" ? null : owner } : {}) })}>
                 {list.length > 1 ? (mode === "each" ? `Start ${list.length} tasks` : `Start 1 task for ${list.length} tickets`) : "Start task"}
             </button>
         </>

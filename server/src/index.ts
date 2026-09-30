@@ -33,6 +33,8 @@ import { matchChromeProfiles, openInProfile, restartChrome } from "./chrome-prof
 import { Engine } from "./engine.js";
 import { Services, DEPENDENCY_KIND } from "./services.js";
 import { Sessions } from "./sessions.js";
+import { Palace } from "./palace.js";
+import { ProductOwners, PoTickets } from "./product-owners.js";
 import { Prompter } from "./prompter.js";
 import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, probeRateLimits, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
 import { collapseLargeFiles, envRepos, isGitRepo, repoPaths, type DiffGroup } from "./git.js";
@@ -58,7 +60,14 @@ const resources = new Resources(db, cfg, {
 });
 if (!PREVIEW) resources.start();
 // The in-app assistant; its events ride the same websocket as everything else (kind "prompter").
-const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev));
+const palace = new Palace(cfg.dataDir);
+{
+    const { migrated } = palace.ensure(join(cfg.dataDir, "prompter"));
+    if (migrated) console.log(`[stagehand] palace: the Prompter's palace copied to ${palace.home} (the old one stays as a backup)`);
+}
+const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev), palace);
+const productOwners = new ProductOwners(db, cfg, palace, (ev) => engine.emit("po", ev), `http://127.0.0.1:${cfg.port}`);
+productOwners.ensureHome();
 
 const app = new Hono();
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -555,6 +564,15 @@ const taskManagers = () => [
 
 app.get("/api/task-managers", (c) => c.json(taskManagers()));
 
+// Notion: Product Owners fetch pages by URL with this integration token (the pages must be shared with the integration).
+app.get("/api/integrations/notion", (c) => c.json({ configured: !!cfg.notionApiKey, token: mask(cfg.notionApiKey) }));
+app.patch("/api/integrations/notion", async (c) => {
+    const body = json(z.object({ token: z.string().nullable() }), await c.req.json());
+    cfg.notionApiKey = body.token || null;
+    saveConfig(cfg);
+    return c.json({ configured: !!cfg.notionApiKey, token: mask(cfg.notionApiKey) });
+});
+
 app.patch("/api/task-managers/:source", async (c) => {
     const source = c.req.param("source");
     const body = json(z.object({ token: z.string().nullable().optional(), teamId: z.string().nullable().optional() }), await c.req.json());
@@ -940,12 +958,18 @@ app.post("/api/tasks", async (c) => {
             // Branch the work starts from and the PR targets; omitted = the env's base_branch. Another task's branch = a
             // stacked PR. A multi-repo env may give one branch per repository directory ({"backend": "…", "frontend": "…"}).
             baseBranch: z.union([z.string().trim().min(1), z.record(z.string())]).optional(),
+            // The Product Owner reviewing the design; omitted = the one whose project the ticket belongs to (if any).
+            productOwnerId: z.string().nullable().optional(),
         }),
         await c.req.json(),
     );
     const tickets = [...new Set([...(body.ticket ? [body.ticket] : []), ...(body.tickets ?? [])].map((t) => t.trim()).filter(Boolean))];
     if (tickets.length === 0) return c.json({ error: "no ticket given" }, 400);
     const created = body.mode === "batch" || tickets.length === 1 ? [engine.createTask(body.envId, tickets, body.accountId, body.model, body.notes, body.baseBranch)] : tickets.map((t) => engine.createTask(body.envId, [t], body.accountId, body.model, body.notes, body.baseBranch));
+    for (const t of created) {
+        if (body.productOwnerId !== undefined) engine.setProductOwner(t.id, body.productOwnerId);
+        else void productOwners.ownerOfTicket(t.source, t.ticket_id).then((po) => po && engine.setProductOwner(t.id, po)).catch(() => undefined);
+    }
     return c.json({ tasks: created });
 });
 
@@ -985,11 +1009,16 @@ app.patch("/api/tasks/:id", async (c) => {
             baseBranch: z.union([z.string(), z.record(z.string())]).nullable().optional(),
             // Files attached to the instructions: listed by path at the end of the notes, so every stage sees them.
             files: z.array(SharedFileSchema).optional(),
+            productOwnerId: z.string().nullable().optional(),
         }),
         await c.req.json(),
     );
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
+    if (body.productOwnerId !== undefined) {
+        if (body.productOwnerId && !productOwners.get(body.productOwnerId)) return c.json({ error: "no such Product Owner" }, 400);
+        engine.setProductOwner(task.id, body.productOwnerId);
+    }
     const files = sharedFilesOf(task.id, body.files);
     if (body.notes !== undefined || files.length) engine.setNotes(task.id, `${body.notes === undefined ? (task.notes ?? "") : (body.notes ?? "")}${renderSharedFiles(files, engine.taskDir(task.id))}`.trim() || null);
     if (body.labels !== undefined) engine.setLabels(task.id, body.labels);
@@ -1911,6 +1940,212 @@ app.get("/api/sessions/:id/commits", async (c) => {
     }
 });
 
+// ---------- product: the global product context and the Product Owners ----------
+
+const poErr = (c: { json: (b: unknown, s?: number) => Response }, e: unknown) => c.json({ error: String((e as Error).message ?? e).slice(0, 400) }, 400);
+
+app.get("/api/product/context", (c) => c.json({ text: productOwners.productContext() }));
+app.put("/api/product/context", async (c) => {
+    const body = json(z.object({ text: z.string() }), await c.req.json());
+    await productOwners.setProductContext(body.text);
+    return c.json({ text: productOwners.productContext() });
+});
+// Search Stagehand's palace: one PO's wing (`wing`), or all of it.
+app.get("/api/product/search", async (c) => {
+    const q = c.req.query("q")?.trim();
+    if (!q) return c.json({ results: [] });
+    try {
+        return c.json({ results: await palace.search(q, { wing: c.req.query("wing") || undefined, limit: Number(c.req.query("limit") ?? 10) }) });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.get("/api/product/palace", async (c) => {
+    try {
+        return c.json({ home: palace.home, ...(await palace.status()) });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+
+app.get("/api/product-owners", (c) =>
+    c.json(
+        productOwners.list().map((po) => ({
+            ...po,
+            tasks: (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE product_owner_id = ?`).get(po.id) as { n: number }).n,
+            created: productOwners.links(po.id).length,
+        })),
+    ),
+);
+app.post("/api/product-owners", async (c) => {
+    const body = json(z.object({ url: z.string().min(8), accountId: z.string().nullable().optional() }), await c.req.json());
+    try {
+        return c.json(await productOwners.create(body.url, body.accountId ?? null));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.get("/api/product-owners/:id", (c) => {
+    const d = productOwners.detail(c.req.param("id"));
+    if (!d) return c.json({ error: "not found" }, 404);
+    const tasks = db.prepare(`SELECT id, ticket_id, title, stage, status, env_id FROM tasks WHERE product_owner_id = ? ORDER BY updated_at DESC`).all(c.req.param("id"));
+    return c.json({ ...d, tasks });
+});
+app.delete("/api/product-owners/:id", async (c) => {
+    await productOwners.remove(c.req.param("id"));
+    return c.json({ ok: true });
+});
+// A chat turn runs in the background; the page follows it over the websocket ("po" events).
+app.post("/api/product-owners/:id/messages", async (c) => {
+    const body = json(z.object({ text: z.string().min(1) }), await c.req.json());
+    const po = productOwners.get(c.req.param("id"));
+    if (!po) return c.json({ error: "not found" }, 404);
+    try {
+        const turn = productOwners.send(po.id, body.text);
+        turn.catch((e: unknown) => console.warn(`[po] ${po.slug}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+        await Promise.race([turn, new Promise((r) => setTimeout(r, 50))]);
+        return c.json({ started: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.post("/api/product-owners/:id/stop", (c) => {
+    productOwners.stop(c.req.param("id"));
+    return c.json({ ok: true });
+});
+app.put("/api/product-owners/:id/context", async (c) => {
+    const body = json(z.object({ text: z.string() }), await c.req.json());
+    try {
+        await productOwners.setContext(c.req.param("id"), body.text);
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+// The human edits tickets inline on the Tickets page: the whole list, validated like the agent's.
+app.put("/api/product-owners/:id/tickets", async (c) => {
+    const po = productOwners.get(c.req.param("id"));
+    if (!po) return c.json({ error: "not found" }, 404);
+    const parsed = PoTickets.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") }, 400);
+    writeFileSync(join(productOwners.dir(po.id), "tickets.json"), JSON.stringify(parsed.data, null, 2));
+    engine.emit("po", { poId: po.id, kind: "updated" });
+    return c.json({ ok: true });
+});
+app.post("/api/product-owners/:id/artifacts/fetch", async (c) => {
+    const body = json(z.object({ url: z.string().min(8) }), await c.req.json());
+    try {
+        return c.json(await productOwners.fetchArtifact(c.req.param("id"), body.url));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.post("/api/product-owners/:id/artifacts", async (c) => {
+    const body = await c.req.parseBody();
+    const f = body["file"];
+    if (!(f instanceof File)) return c.json({ error: "send one file in the `file` field (multipart/form-data)" }, 400);
+    if (f.size === 0 || f.size > MAX_SHARED_FILE_BYTES) return c.json({ error: `${f.name}: empty or over 200 MB` }, 400);
+    try {
+        return c.json(productOwners.uploadArtifact(c.req.param("id"), f.name, Buffer.from(await f.arrayBuffer()), f.type && f.type !== "application/octet-stream" ? f.type : mimeOf(f.name)));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.delete("/api/product-owners/:id/artifacts/:aid", (c) => {
+    productOwners.removeArtifact(c.req.param("id"), c.req.param("aid"));
+    return c.json({ ok: true });
+});
+app.get("/api/product-owners/:id/files/*", (c) => {
+    const rel = c.req.path.replace(/^\/api\/product-owners\/[^/]+\/files\//, "");
+    if (!rel || rel.includes("..")) return c.json({ error: "bad path" }, 400);
+    const p = join(productOwners.dir(c.req.param("id")), decodeURIComponent(rel));
+    if (!existsSync(p)) return c.json({ error: "not found" }, 404);
+    return new Response(readFileSync(p), { headers: { "content-type": mimeOf(p) ?? "application/octet-stream" } });
+});
+app.get("/api/product-owners/:id/revisions/:name", (c) => {
+    try {
+        return c.json({ text: productOwners.revision(c.req.param("id"), c.req.param("name")) });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.post("/api/product-owners/:id/approve-design", async (c) => {
+    try {
+        await productOwners.approveDesign(c.req.param("id"));
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.post("/api/product-owners/:id/approve-tickets", async (c) => {
+    try {
+        return c.json(await productOwners.approveTickets(c.req.param("id")));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.post("/api/product-owners/:id/phase", async (c) => {
+    const body = json(z.object({ phase: z.enum(["context", "design", "tickets", "approved", "live"]) }), await c.req.json());
+    productOwners.setPhase(c.req.param("id"), body.phase);
+    return c.json({ ok: true });
+});
+app.post("/api/product-owners/:id/proposal/accept", async (c) => {
+    try {
+        await productOwners.acceptProposal(c.req.param("id"));
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.post("/api/product-owners/:id/proposal/reject", (c) => {
+    productOwners.rejectProposal(c.req.param("id"));
+    return c.json({ ok: true });
+});
+
+// ---------- a task's Product Owner review (Design proposal → Product owner review) ----------
+
+const poReviewOf = (taskId: string) => {
+    const dir = engine.taskDir(taskId);
+    const read = (f: string): string | null => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : null);
+    let state: { status?: string; error?: string; at?: string } = {};
+    try {
+        state = JSON.parse(read("po-review.json") ?? "{}") as typeof state;
+    } catch {
+        /* none yet */
+    }
+    return { running: productOwners.reviewing(taskId), status: state.status ?? null, error: state.error ?? null, at: state.at ?? null, text: read("po-review.md") };
+};
+app.get("/api/tasks/:id/po-review", (c) => (engine.getTask(c.req.param("id")) ? c.json(poReviewOf(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
+app.post("/api/tasks/:id/po-review", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    try {
+        await productOwners.reviewTask(task, engine.taskDir(task.id), () => engine.touchTask(task.id));
+        return c.json(poReviewOf(task.id));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.put("/api/tasks/:id/po-review", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    const body = json(z.object({ text: z.string() }), await c.req.json());
+    writeFileSync(join(engine.taskDir(task.id), "po-review.md"), body.text);
+    engine.touchTask(task.id);
+    return c.json(poReviewOf(task.id));
+});
+// "Send to agent": another design round with the PO review as the reviewer's notes.
+app.post("/api/tasks/:id/po-review/send", (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    const r = poReviewOf(task.id);
+    if (!r.text?.trim()) return c.json({ error: "there is no Product Owner review to send" }, 400);
+    if (task.stage !== "design_proposal" || task.status !== "waiting_user") return c.json({ error: "the design proposal is not waiting for review" }, 400);
+    const po = task.product_owner_id ? productOwners.get(task.product_owner_id) : undefined;
+    engine.review(task.id, { verdict: "changes", notes: `## Product Owner review${po ? ` — ${po.title}` : ""}\n\nThe project's Product Owner reviewed this proposal as product. Address every point.\n\n${r.text.trim()}` });
+    return c.json(engine.getTask(task.id));
+});
+
 // ---------- websockets ----------
 
 app.get(
@@ -1919,7 +2154,7 @@ app.get(
         const listeners: Array<[string, (...args: unknown[]) => void]> = [];
         return {
             onOpen(_evt, ws) {
-                for (const kind of ["task", "activity", "rate_limit", "account", "message", "prompter"]) {
+                for (const kind of ["task", "activity", "rate_limit", "account", "message", "prompter", "po"]) {
                     const fn = (payload: unknown): void => ws.send(JSON.stringify({ kind, payload }));
                     engine.on(kind, fn);
                     listeners.push([kind, fn]);
