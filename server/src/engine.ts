@@ -3293,6 +3293,9 @@ export class Engine extends EventEmitter {
                               })()}\n`
                             : "Seed: nothing beyond a logged-in user.\n") +
                         ((s.teardown ?? []).length ? `Teardown: ${(s.teardown ?? []).length} step(s) already run by the orchestrator before the seeds — this scenario's fixture set was reset; anything left is not from this pass.\n` : "") +
+                        (def.stage === "qa_baseline" && s.baseline === false
+                            ? "**New surface:** the change adds this scenario's page, control or endpoint, so it does not exist yet. Run the seeds and every step up to the new surface. The step that needs it is expected to fail: record `fail` with what you saw (the 404, the missing control). Record `blocked` only when a seed, the teardown, the login or an earlier step fails.\n"
+                            : "") +
                         s.steps
                             .map((st, i) =>
                                 (s.kind ?? "browser") === "api"
@@ -3371,14 +3374,6 @@ export class Engine extends EventEmitter {
         if (def.chrome && !opts.seedsDone) {
             const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
             const forPass = this.qaScenariosForPass(design, stage);
-            // Nothing to observe before the change (every scenario is `baseline: false`): record the pass as failures
-            // by construction and go straight to Implementation instead of driving surfaces that do not exist yet.
-            if (stage === "qa_baseline" && (design?.qa ?? []).length > 0 && forPass.length === 0) {
-                this.writeBaselineSkips(taskId, design!, []);
-                this.addAgentNote(taskId, "QA baseline skipped: every scenario is marked `baseline: false` (its journey does not exist before the change) — recorded as failures by construction.");
-                this.advance(taskId, "implementation");
-                return;
-            }
             // One pass id for this QA run, shared by the seeds run here and the scenario text the runner gets, so a
             // `{{qaPass}}` in a seed and in an assert resolve to the same value.
             const qaPass = opts.extraVars?.["qaPass"] ?? newQaPassId(def.stage === "qa_baseline" ? "qa_baseline" : "manual_qa");
@@ -4278,34 +4273,11 @@ export class Engine extends EventEmitter {
         console.log(`[stagehand] ${task.ticket_id}: warmed ${urls.length} page(s) in ${Math.round((Date.now() - started) / 1000)} s`);
     }
 
-    // The scenarios a pass drives: the baseline pass leaves out `baseline: false` ones (their journey does not exist yet).
-    private qaScenariosForPass(design: DesignResult | null, stage: Stage): QaScenario[] {
-        const all = design?.qa ?? [];
-        return stage === "qa_baseline" ? all.filter((s) => s.baseline !== false) : all;
-    }
-
-    // Records the `baseline: false` scenarios in qa/before.json as failures by construction, next to whatever the
-    // baseline pass observed for the others (`observed`), so the QA tab shows a before-state for every scenario.
-    private writeBaselineSkips(taskId: string, design: DesignResult, observed: QaPassResult["scenarios"]): QaPassResult {
-        const skipped = (design.qa ?? []).filter((s) => s.baseline === false && !observed.some((o) => o.id === s.id)).map((s) => ({
-            id: s.id,
-            outcome: "fail" as const,
-            observation: "not run before the change: the journey does not exist yet (design: baseline false)",
-            shots: [],
-            log: "",
-        }));
-        const merged: QaPassResult = { pass: "before", scenarios: [...observed, ...skipped].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true })), blockers: [] };
-        const dir = join(this.taskDir(taskId), "qa");
-        mkdirSync(dir, { recursive: true });
-        const path = join(dir, "before.json");
-        let existing: Partial<QaPassResult> = {};
-        try {
-            existing = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Partial<QaPassResult>) : {};
-        } catch {
-            existing = {};
-        }
-        writeFileSync(path, JSON.stringify({ ...existing, ...merged, blockers: existing.blockers ?? [] }, null, 2));
-        return { ...merged, blockers: existing.blockers ?? [] };
+    // The scenarios a pass drives: every one, in both passes. A `baseline: false` scenario still runs in the baseline —
+    // its seeds, teardown, auth and the steps before the new surface are what the design loop checks (INV-154,
+    // 2026-09-30: four `baseline: false` scenarios meant no baseline at all); the runner is told what to expect.
+    private qaScenariosForPass(design: DesignResult | null, _stage: Stage): QaScenario[] {
+        return design?.qa ?? [];
     }
 
     // A QA pass that stops half-way (the runner asked the human, or an unblock retry) resumes from the scenarios already
@@ -4371,7 +4343,7 @@ export class Engine extends EventEmitter {
         const hash = qaHashOf(design);
         const prev = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
         const wait = (line: string): void => this.setTaskStatus(taskId, "waiting_user", `Design Proposal · needs you${line ? ` — ${line}` : ""}`);
-        if (!(design?.qa ?? []).some((s) => s.baseline !== false)) {
+        if (!(design?.qa ?? []).length) {
             wait("");
             return;
         }
@@ -5474,7 +5446,7 @@ export class Engine extends EventEmitter {
         if (!task || !task.worktree_path || !task.branch) return this.advance(taskId, marker.next);
         const env = this.env(task.env_id);
         const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
-        const ids = marker.ids.filter((id) => design?.qa.some((s) => s.id === id && s.baseline !== false));
+        const ids = marker.ids.filter((id) => design?.qa.some((s) => s.id === id));
         const taskDir = this.taskDir(taskId);
         const clear = () => rmSync(join(taskDir, "qa", "baseline-rerun.json"), { force: true });
         if (!ids.length) {
@@ -5954,11 +5926,6 @@ export class Engine extends EventEmitter {
             const taskDirQa = this.taskDir(taskId);
             // The pass consumed its partial results (a resumed pass) and its shards' files; a leftover would resume the next pass wrongly.
             this.clearPassFiles(taskId, qa.pass);
-            // Baseline: the `baseline: false` scenarios the pass did not drive are recorded as failures by construction.
-            if (def.stage === "qa_baseline") {
-                const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
-                if (design && (design.qa ?? []).some((s) => s.baseline === false)) qa = this.writeBaselineSkips(taskId, design, qa.scenarios);
-            }
             // Jev's sorting of the blocked scenarios (classifyQaBlockers): an application error is a failure, not a block.
             const verdicts = this.blockerVerdicts.get(taskId) ?? {};
             this.blockerVerdicts.delete(taskId);

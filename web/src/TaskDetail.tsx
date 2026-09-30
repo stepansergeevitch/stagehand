@@ -748,10 +748,12 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
         }
     };
     // PR stages (draft review through merge) live on their own top-level tab now, not as a Work step.
-    const steps = STAGE_ORDER.filter((s, i) => i <= currentIdx && !skipped.has(s) && s !== "pr_creation_review" && !PR_STAGES.has(s) && (stepHasContent(s) || s === task.stage));
-    const stepKey = (s: Stage): Stage => s;
+    // The QA baseline is part of the design proposal (it runs inside that stage, and Manual QA shows it next to the
+    // after-state), so it is no step of its own.
+    const stepKey = (s: Stage): Stage => (s === "qa_baseline" ? "design_proposal" : s);
+    const steps = STAGE_ORDER.filter((s, i) => i <= currentIdx && s !== "qa_baseline" && !skipped.has(s) && s !== "pr_creation_review" && !PR_STAGES.has(s) && (stepHasContent(s) || s === stepKey(task.stage)));
     // The Work step shown: the routed one when it is a step of this task, else the current stage.
-    const step: Stage = view.tab === "work" && view.step && steps.includes(view.step) ? view.step : task.stage;
+    const step: Stage = view.tab === "work" && view.step && steps.includes(view.step) ? view.step : stepKey(task.stage);
     const setStep = (s: Stage) => onView({ tab: "work", step: s });
     // Jump to the Pull request tab, optionally focusing one repository (from the header's "show more" or a Work pointer).
     // "Rebase onto latest base" — from the header button and from the Code changes base-drift banner.
@@ -875,8 +877,12 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             <b>Plan</b><span>{design.plan.length} layer(s): {design.plan.map((p) => p.layer).join(", ")}</span>
                             <b>Tests</b><span>{design.testPlan.reduce((n, t) => n + t.cases.length, 0)} case(s) in {design.testPlan.length} file(s)</span>
                             <b>QA</b><span>{design.qa.length ? `${design.qa.length} scenario(s)` : `none — ${design.qaSkippedReason ?? "no reason given"}`}</span>
+                            {design.qa.length > 0 && <><b>Baseline</b><span>{task.stage === "qa_baseline" ? <b>running now</b> : qaBefore ? `ran on ${qaBefore.scenarios.length} scenario(s)` : "not run yet"}</span></>}
                         </div>
-                        <div className="actions"><button onClick={() => setTab("design")}>Open the full proposal</button></div>
+                        <div className="actions">
+                            <button onClick={() => setTab("design")}>Open the full proposal</button>
+                            {design.qa.length > 0 && <button onClick={() => onView({ tab: "design", section: "qa" })}>QA tests and baseline</button>}
+                        </div>
                     </Card>
                 ) : <div className="empty">no design yet</div>;
             case "qa_baseline":
@@ -1157,7 +1163,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     <div className="subtabs">
                         {steps.map((s) => (
                             <button key={s} className={stepKey(step) === stepKey(s) ? "active" : ""} onClick={() => setStep(s)}>
-                                {PR_STAGES.has(s) ? "Pull request" : STAGE_LABEL[s]}{s === task.stage ? " ·" : ""}
+                                {PR_STAGES.has(s) ? "Pull request" : STAGE_LABEL[s]}{s === stepKey(task.stage) ? " ·" : ""}
                             </button>
                         ))}
                     </div>
