@@ -61,6 +61,8 @@ const SCENARIO_REF = /\bS(\d+)\s+scenario\b/i;
 // A command itself never starts with those words; a "shell:"/"sql:" prefix after the label is kept (INV-136,
 // 2026-09-21: "apply corrected teardown: cd backend …" was written into design.json label included → "command not found: corrected").
 const PREFIX = /^\s*(apply|use|run|replace)\b[^:\n]{0,200}:\s*/i;
+// "add seed 2 as: shell: …" — the runner's wording for a seed or teardown that does not exist yet.
+const ADD_PREFIX = /^\s*(add|append|insert)\b[^:\n]{0,80}\bas\s*:\s*/i;
 
 // Commentary after the command is not part of it: an option like `… item={item.id}')" (and add the same line to S1
 // teardown 1)` written whole into design.json gave bash "syntax error near unexpected token '('" (INV-133,
@@ -89,7 +91,7 @@ export const parseStepFixAnswer = (text: string, answer: string | undefined): Pa
     const whole = SCENARIO_REF.exec(text);
     const m = REF.exec(text);
     if (!m && !whole) return null;
-    let command = raw.replace(PREFIX, "").trim();
+    let command = raw.replace(PREFIX, "").trim().replace(ADD_PREFIX, "").trim();
     if (whole && (!m || whole.index < m.index)) {
         command = stripFences(command);
         try {
@@ -132,10 +134,10 @@ export const applyFixToScenario = (scenario: Scenario, fix: ParsedFix): { after:
         return { after, line: `${scenario.id} step ${fix.index + 1}: ${field} replaced with the approved ${fix.kind === "step" ? "command" : "text"}` };
     }
     // Seeds and teardown steps carry a "shell:" / "sql:" / "ui:" prefix that says who runs them — keep it unless the
-    // answer has one. A teardown index past the end appends (the runner may propose a teardown that did not exist).
+    // answer has one. An index past the end appends: the runner proposes a seed or teardown that did not exist (INV-151,
+    // 2026-09-30: "add seed 2" was approved three times and dropped each time, so the pass asked again).
     const list = fix.kind === "seed" ? (after.seed ??= []) : (after.teardown ??= []);
     const current = typeof list[fix.index] === "string" ? list[fix.index]! : null;
-    if (fix.kind === "seed" && current === null) return null;
     const prefix = /^\s*(shell|sql|ui)\s*:/i.exec(fix.command) ? "" : (current ? (/^\s*(shell|sql|ui)\s*:\s*/i.exec(current)?.[0] ?? "shell: ") : "shell: ");
     const next = `${prefix}${fix.command}`;
     if (current === next) return null;
@@ -181,17 +183,24 @@ export interface FixRequest {
 
 // Applies every fix to the design file; returns one line per applied change and the change records. The original is
 // kept beside it as design.json.bak-<timestamp> the first time a round changes anything.
-export const applyQaFixes = (designPath: string, requests: FixRequest[]): { lines: string[]; changes: QaChange[] } => {
-    if (!existsSync(designPath) || requests.length === 0) return { lines: [], changes: [] };
+export const applyQaFixes = (designPath: string, requests: FixRequest[]): { lines: string[]; changes: QaChange[]; skipped: string[] } => {
+    if (!existsSync(designPath) || requests.length === 0) return { lines: [], changes: [], skipped: [] };
     const design = JSON.parse(readFileSync(designPath, "utf8")) as { qa?: Scenario[] };
     const lines: string[] = [];
+    const skipped: string[] = [];
     const changes: QaChange[] = [];
     for (const r of requests) {
         const i = design.qa?.findIndex((s) => s.id.toUpperCase() === r.fix.scenario) ?? -1;
         const scenario = i >= 0 ? design.qa![i] : undefined;
-        if (!scenario) continue;
+        if (!scenario) {
+            skipped.push(`${r.fix.scenario} ${r.fix.kind}: no such scenario in design.json`);
+            continue;
+        }
         const applied = applyFixToScenario(scenario, r.fix);
-        if (!applied) continue;
+        if (!applied) {
+            skipped.push(`${scenario.id} ${r.fix.kind}${r.fix.index >= 0 ? ` ${r.fix.index + 1}` : ""}: nothing to change, or the answer did not carry a command that applies`);
+            continue;
+        }
         design.qa![i] = applied.after;
         lines.push(applied.line);
         changes.push({
@@ -212,7 +221,7 @@ export const applyQaFixes = (designPath: string, requests: FixRequest[]): { line
         copyFileSync(designPath, `${designPath}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`);
         writeFileSync(designPath, JSON.stringify(design, null, 2));
     }
-    return { lines, changes };
+    return { lines, changes, skipped };
 };
 
 // The human-answer path: every question the answers match, applied as human-approved.

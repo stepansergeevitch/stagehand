@@ -5277,6 +5277,8 @@ export class Engine extends EventEmitter {
             }
             const applied = applyQaFixes(join(this.taskDir(taskId), "design.json"), requests);
             if (applied.lines.length) this.addAgentNote(taskId, `🛠 Applied to design.json from your answers:\n${applied.lines.map((a) => `- ${a}`).join("\n")}`);
+            // An approved correction that did not apply is said out loud: silence let the runner ask the same question again.
+            if (applied.skipped.length) this.addAgentNote(taskId, `⚠️ Not applied to design.json from your answers — the runner still sees the old scenario:\n${applied.skipped.map((a) => `- ${a}`).join("\n")}`);
             if (applied.changes.length) this.onQaChanges(taskId, row.stage, applied.changes);
         } catch (e) {
             console.warn(`[stagehand] applying approved step fixes for ${task.ticket_id}: ${String((e as Error).message ?? e)}`);

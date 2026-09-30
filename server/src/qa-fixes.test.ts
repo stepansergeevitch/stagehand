@@ -25,6 +25,8 @@ describe("parseStepFixAnswer", () => {
     });
     it("skips a 'keep as written' answer and questions without a step reference", () => {
         expect(parseStepFixAnswer("S2 seed 1 is wrong", "keep the seed as written")).toBeNull();
+        // The runner's wording for a seed that does not exist yet: the "add seed N as:" part is not the command.
+        expect(parseStepFixAnswer("S1 seed 2", "apply the corrected command: add seed 2 as: shell: cd backend && echo key")?.command).toBe("shell: cd backend && echo key");
         expect(parseStepFixAnswer("Is a list UI in scope?", "yes")).toBeNull();
     });
 });
@@ -130,5 +132,15 @@ describe("assert and scenario corrections", () => {
         expect((JSON.parse(readFileSync(path, "utf8")) as { qa: Array<{ seed: string[] }> }).qa[0]?.seed).toEqual(["shell: echo fixed"]);
         expect(revertQaChange(path, applied.changes[0]!)).toBe(true);
         expect((JSON.parse(readFileSync(path, "utf8")) as { qa: Array<{ seed: string[] }> }).qa[0]?.seed).toEqual(["shell: echo seed"]);
+    });
+});
+
+describe("applyFixToScenario — a seed past the end", () => {
+    it("appends it, keeping its runner prefix", async () => {
+        const { applyFixToScenario } = await import("./qa-fixes.js");
+        const s = { id: "S1", title: "t", url: "/", persona: "p", seed: ["shell: echo one"], steps: [{ action: "a", assert: "b", shot: false }] };
+        const r = applyFixToScenario(s as never, { scenario: "S1", kind: "seed", index: 1, command: "shell: echo two" });
+        expect((r?.after as { seed: string[] }).seed).toEqual(["shell: echo one", "shell: echo two"]);
+        expect(r?.line).toBe("S1 seed 2: added the approved command");
     });
 });
