@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PREVIEW, type Config } from "./config.js";
 import { accountBrowserReady, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, componentsOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvComponent, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type SharedFile, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
 import { permissionProblem, rateLimitHit, ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
@@ -365,23 +365,21 @@ const FIVE_HOUR = "five_hour";
 // Task states in which nothing happens until a human acts (or, for rate limits, until the window resets).
 const NEEDS_HUMAN: ReadonlySet<TaskStatus> = new Set(["waiting_user", "blocked", "failed", "rate_limited"]);
 
-// Required `## ` sections of design.md, in order (numbering optional); mirrored in prompts/design.md. "A|B" = either title.
-export const DESIGN_SECTIONS = ["Decision", "Classification", "How it works today", "Root cause|Approach", "Why this option", "Proposed changes", "Technical changes|Change", "Evidence", "Contract", "Risks and edge cases", "Tests", "QA", "Review questions"] as const;
+// Required `## ` sections of design.md, in order (numbering optional); mirrored in prompts/design.md. Root cause is
+// required for a bug and refused for a feature.
+export const DESIGN_SECTIONS = ["Classification", "Problem statement", "Root cause", "Suggested approach", "Technical changes"] as const;
 // Word caps count prose only: code blocks and table rows are excluded everywhere.
-export const DESIGN_MAX_WORDS = 1400;
-const PROPOSED_MAX_WORDS = 120;
-const DECISION_MAX_WORDS = 150;
-const OPTIONS_MAX_WORDS = 200;
-const CONTRACT_MAX_WORDS = 150;
-// The explanation section (Root cause / Approach) is the one the reviewer relies on; a few lines is not an explanation.
-const EXPLANATION_MIN_WORDS = 60;
-const EXPLANATION_MAX_WORDS = 320;
-// The labelled lines the one-screen Decision and the Contract must carry, in this order.
-const DECISION_LABELS = ["Problem", "Recommendation", "Decisive insight", "Price", "Decision requested", "Open blocker"] as const;
-const CONTRACT_LABELS = ["Guaranteed", "Target", "Unresolved", "Fixed by approval", "Left to implementation", "Reopen if"] as const;
-const EVIDENCE_STATUSES = ["Observed", "Measured", "Inferred", "Assumed", "Preference", "Unknown"] as const;
+export const DESIGN_MAX_WORDS = 700;
+const PROBLEM_MAX_WORDS = 80;
+const ROOT_CAUSE_WORDS = [40, 160] as const;
+const APPROACH_WORDS = [60, 250] as const;
+const SUMMARY_MAX_WORDS = 50;
+// ASD-STE100: 20 words for an instruction, 25 for a description — the longer limit is the hard one.
+const SENTENCE_MAX_WORDS = 25;
 // Sections for a product reader: behaviour and the part of the system, never paths, line numbers or identifiers.
-const PROSE_SECTIONS = ["Decision", "How it works today", "Root cause", "Approach", "Why this option", "Proposed changes"] as const;
+const PROSE_SECTIONS = ["Problem statement", "Root cause", "Suggested approach"] as const;
+// Filler and hedging the STE rules in prompts/design.md ban; "should/might/could" state no requirement.
+const DESIGN_FILLER = /\b(it is worth noting|importantly|note that|in order to|basically|essentially|robust|seamless(ly)?|leverag(e|es|ing)|comprehensive|ensure that|should|might|could)\b/i;
 // A backticked span counts as code when it looks like one (path, identifier, call, constant); a plain word such as `archived` is a product term.
 const CODE_REF = /`[^`\n]*(?:[./_(:\\]|[a-z][A-Z])[^`\n]*`|`[^`\n]{30,}`|\b[\w./-]+\.(py|ts|tsx|js|jsx|rs|go|java|kt|rb|sql|scss|css|json|ya?ml)\b|\b[\w./-]+:\d+\b|\b[a-z]+_[a-z_]+\b|\b[a-z]+[A-Z]\w+\(|\b[A-Z]+_[A-Z_]+\b/;
 const LOGIN_POLL_MS = 3_000;
@@ -396,6 +394,32 @@ const MAX_AUTO_QA_RETURNS = 2;
 // see renderUnblockHint. Capped independently of MAX_AUTO_QA_RETURNS since it is a different kind of retry (same
 // stage re-running itself, not a return to Implementation).
 const MAX_UNBLOCK_ATTEMPTS = 2;
+// The QA baseline runs inside the design stage (the user's ask, 2026-09-30): the design agent writes its scenarios, the
+// baseline runs them on the unchanged app, the agent corrects the wrong ones, and the proposal reaches the reviewer only
+// with a baseline behind it. design-baseline.json tracks the loop: `running` while a pass drives the scenarios,
+// `reviewing` while the agent reads the result, `done` once the scenarios stop changing (or the rounds run out).
+interface DesignBaseline {
+    status: "running" | "reviewing" | "done";
+    round: number;
+    qaHash: string;
+}
+const MAX_DESIGN_BASELINE_ROUNDS = 3;
+const qaHashOf = (design: DesignResult | null): string => createHash("sha1").update(JSON.stringify(design?.qa ?? [])).digest("hex");
+// What the design agent reads after a baseline pass: every scenario's outcome and observation, and why the pass stopped.
+const renderDesignBaselineNotes = (qa: QaPassResult, round: number, stopped: string | null): string => {
+    const line = (s: QaPassResult["scenarios"][number]): string => {
+        const log = s.log?.trim() ? `\n  Output: ${s.log.trim().slice(-600).replace(/\n/g, "\n  ")}` : "";
+        return `- **${s.id}** — **${s.outcome}** — ${s.observation.slice(0, 800)}${log}`;
+    };
+    return (
+        `## QA baseline result — round ${round} of ${MAX_DESIGN_BASELINE_ROUNDS}\n\n` +
+        "The baseline ran your design.json scenarios on the unchanged app. Follow \"When you get the baseline result\" in this prompt.\n\n" +
+        (stopped ? `**The pass stopped:** ${stopped}\n\n` : "") +
+        (qa.blockers.length ? `**Blockers:**\n${qa.blockers.map((b) => `- ${b}`).join("\n")}\n\n` : "") +
+        `${qa.scenarios.map(line).join("\n")}\n\n` +
+        "Leave design.json `qa` unchanged when every scenario is correct: that sends the proposal to the reviewer."
+    );
+};
 // Jev's sorting of a blocked QA scenario (classifyQaBlockers): what a retry can and cannot fix.
 type BlockerKind = "bridge_or_auth" | "seed_or_design_defect" | "environment" | "app_bug" | "other";
 // qa/baseline-rerun.json: scenarios whose baseline a change made stale; `active` while the re-run pass drives them on the
@@ -416,22 +440,13 @@ const LOGIN_WAIT_MS = 15 * 60_000;
 type ChromeTabLike = { url: string; title: string };
 const tabKey = (t: { window: number; tab: number; url: string }): string => `${t.window}:${t.tab}:${t.url}`;
 
-// The proposal is for a human: a fixed section order and a hard word cap keep it dense. Violations go back to the agent
-// through the normal contract-retry path.
+// The proposal is for a human: a fixed set of sections, hard word caps and the STE sentence rules keep it dense.
+// Violations go back to the agent through the normal contract-retry path.
 // `repos`: the workspace's sub-repository directories (multi-repo env) — Classification must then name the affected ones.
 export const designMdProblems = (md: string, opts: { repos?: string[] } = {}): string | null => {
     const problems: string[] = [];
     const headings = [...md.matchAll(/^##\s+(.+?)\s*$/gm)].map((m) => m[1]!.replace(/^\d+[.)]\s*/, "").toLowerCase());
     const has = (title: string): boolean => headings.some((h) => h.startsWith(title.toLowerCase()));
-    for (const want of DESIGN_SECTIONS) {
-        const alternatives = want.split("|");
-        if (!alternatives.some(has)) problems.push(`design.md is missing the section "## ${alternatives.join('" or "## ')}"`);
-    }
-    // Prose only: code blocks and table rows are structure, not review-time reading.
-    const wordCount = (s: string): number => s.replace(/```[\s\S]*?```/g, " ").split("\n").filter((l) => !/^\s*\|/.test(l)).join(" ").split(/\s+/).filter(Boolean).length;
-    const words = wordCount(md);
-    if (words > DESIGN_MAX_WORDS) problems.push(`design.md is ${words} words of prose; the cap is ${DESIGN_MAX_WORDS} — cut repetition, provenance remarks and prose around tables, keep every path:line`);
-    if (/^\s*```json/m.test(md)) problems.push("design.md contains a JSON block — describe scenarios and plans in prose/tables; design.json carries the structure");
     const section = (name: string): string | null => {
         const m = new RegExp(`^##\\s+(?:\\d+[.)]\\s*)?${name}[^\\n]*\\n([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "im").exec(md);
         return m ? m[1]! : null;
@@ -440,90 +455,73 @@ export const designMdProblems = (md: string, opts: { repos?: string[] } = {}): s
         const m = new RegExp(`^###\\s+${name}[^\\n]*\\n([\\s\\S]*?)(?=^###\\s|(?![\\s\\S]))`, "im").exec(body);
         return m ? m[1]! : null;
     };
-    // `**Label:** text`, `Label: text` or `- **Label** — text` at the start of a line.
-    const labelled = (body: string, label: string): boolean => new RegExp(`^\\s*(?:[-*]\\s*)?\\**${label}\\**:?\\**\\s*[—–-]?\\s*\\S`, "im").test(body);
+    // Prose only: code blocks and table rows are structure, not review-time reading.
+    const prose = (s: string): string => s.replace(/```[\s\S]*?```/g, " ").split("\n").filter((l) => !/^\s*\|/.test(l) && !/^\s*#/.test(l)).join("\n");
+    const wordCount = (s: string): number => prose(s).split(/\s+/).filter(Boolean).length;
+    const bullets = (body: string): string[] => body.split("\n").filter((l) => /^\s*[-*]\s+\S/.test(l));
     const hasTable = (body: string): boolean => /^\s*\|.*\|\s*\n\s*\|\s*:?-+/m.test(body);
-    const citations = (body: string): string[] => [...body.matchAll(/\[([EAU]\d+)\]/g)].map((m) => m[1]!);
+
     const classification = section("Classification");
-    const isBug = !!classification && /^\s*`?bug`?\b/im.test(classification);
-    const isFeature = !!classification && /^\s*`?feature`?\b/im.test(classification);
-    if (isBug && !has("Root cause")) problems.push("a bug needs the section `## 4. Root cause` (not Approach): the causal chain from trigger to wrong output, with path:line");
-    if (isFeature && !has("Approach")) problems.push("a feature needs the section `## 4. Approach` (not Root cause): how it should be built, where it lives and why, the data flow, the key decisions");
-    const decision = section("Decision");
-    if (decision !== null) {
-        const missing = DECISION_LABELS.filter((l) => !labelled(decision, l));
-        if (missing.length) problems.push(`the Decision section is missing the line(s) ${missing.map((l) => `\`**${l}:**\``).join(", ")} — six labelled lines: Problem, Recommendation, Decisive insight, Price, Decision requested, Open blocker`);
-        const n = wordCount(decision);
-        if (n > DECISION_MAX_WORDS) problems.push(`the Decision section is ${n} words; keep it under ${DECISION_MAX_WORDS} — six lines of at most 30 words, the one-screen decision`);
-        if (citations(decision).length === 0) problems.push("the Decision section cites no evidence — the Decisive insight line names the Evidence row that supports it, e.g. `[E1]`");
+    const isBug = !!classification && /^\s*`?\**bug\**`?\b/im.test(classification);
+    const isFeature = !!classification && /^\s*`?\**feature\**`?\b/im.test(classification);
+    for (const want of DESIGN_SECTIONS) {
+        if (want === "Root cause" && !isBug) continue;
+        if (!has(want)) problems.push(`design.md is missing the section "## ${want}"`);
     }
-    const explanation = section("Root cause") ?? section("Approach");
-    if (explanation !== null) {
-        const n = wordCount(explanation);
-        const title = has("Root cause") ? "Root cause" : "Approach";
-        if (n < EXPLANATION_MIN_WORDS) problems.push(`the ${title} section is ${n} words — it is the explanation the reviewer relies on: ${title === "Root cause" ? "walk the chain of behaviour (the action → what each part of the app does with it → the wrong outcome), the assumption behind it, and why the change removes the cause" : "say which part of the app takes on what and why there, how the data moves after the change, what the reviewer must check"} (${EXPLANATION_MIN_WORDS}–${EXPLANATION_MAX_WORDS} words outside the table)`);
-        else if (n > EXPLANATION_MAX_WORDS) problems.push(`the ${title} section is ${n} words; keep it under ${EXPLANATION_MAX_WORDS} — one causal chain / one approach, no restating the Technical changes table`);
-        const worked = subsection(explanation, "Worked case");
-        if (worked === null) problems.push(`the ${title} section needs a \`### Worked case\` — one concrete input traced through today's and the proposed behaviour in a | Step | Actor and action | Today | After the change | Why this step | table`);
-        else if (!hasTable(worked)) problems.push("the Worked case has no table — trace the one concrete input step by step: | Step | Actor and action | Today | After the change | Why this step |");
-        if (subsection(explanation, "Failure variant") === null) problems.push(`the ${title} section needs a \`### Failure variant\` — change one event on the same input (crash, timeout, duplicate, invalid input, concurrent edit) and say what the system does after the change and what limitation remains`);
-        if (citations(explanation).length < 2) problems.push(`the ${title} section cites ${citations(explanation).length} evidence row(s) — the claims that carry the argument cite the rows that support them (\`[E1]\`, \`[A1]\`), at least two`);
-    }
-    const options = section("Why this option");
-    if (options !== null) {
-        if (!hasTable(options) || !/^\s*\|[^\n]*proposed[^\n]*alternative/im.test(options)) problems.push("the Why this option section needs the | Criterion | Proposed | Strongest alternative | Minimal change / status quo | table — one row per decisive criterion, same running example");
-        if (!labelled(options, "Reverse if")) problems.push("the Why this option section needs a `**Reverse if:**` line — the changed requirement, verified fact or preference that would make the alternative the right call");
-        if (!labelled(options, "Why the alternative loses here")) problems.push("the Why this option section needs a `**Why the alternative loses here:**` line — the precise difference, shown on the worked case");
-        const n = wordCount(options);
-        if (n > OPTIONS_MAX_WORDS) problems.push(`the Why this option section is ${n} words outside the table; keep it under ${OPTIONS_MAX_WORDS}`);
-        if (/\b\d+\s*\/\s*10\b/.test(options)) problems.push("the Why this option section scores options (n/10) — compare mechanisms and costs on the criteria, or give units and the measurement method");
-    }
-    const evidence = section("Evidence");
-    if (evidence !== null) {
-        const rows = evidence.split("\n").map((l) => l.trim()).filter((l) => /^\|/.test(l)).map((l) => l.split("|").map((c) => c.trim()).slice(1, -1)).filter((cells) => /^`?[EAU]\d+`?$/.test(cells[0] ?? ""));
-        const ids = rows.map((cells) => cells[0]!.replace(/`/g, ""));
-        if (rows.length === 0) problems.push("the Evidence section needs the | ID | Claim | Status | Source | If wrong | table with ids E1…, A1…, U1… — the index every `[E1]` citation resolves to");
-        else {
-            const badStatus = rows.filter((cells) => !EVIDENCE_STATUSES.some((s) => (cells[2] ?? "").toLowerCase().startsWith(s.toLowerCase())));
-            if (badStatus.length) problems.push(`Evidence row(s) ${badStatus.map((c) => c[0]).join(", ")} have a Status outside ${EVIDENCE_STATUSES.join(" / ")}`);
-            const badPrefix = rows.filter((cells) => {
-                const status = (cells[2] ?? "").toLowerCase();
-                const id = cells[0]!.replace(/`/g, "");
-                return (id.startsWith("E") && !/^(observed|measured)/.test(status)) || (id.startsWith("A") && !/^(assumed|inferred|preference)/.test(status)) || (id.startsWith("U") && !/^unknown/.test(status));
-            });
-            if (badPrefix.length) problems.push(`Evidence row(s) ${badPrefix.map((c) => c[0]).join(", ")}: E ids are Observed or Measured, A ids Assumed, Inferred or Preference, U ids Unknown`);
-            const noSource = rows.filter((cells) => /^observed/i.test(cells[2] ?? "") && !/[\w./-]+:\d+|https?:\/\//.test(cells[3] ?? ""));
-            if (noSource.length) problems.push(`Evidence row(s) ${noSource.map((c) => c[0]).join(", ")} are Observed without a \`path:line\` source — the reviewer opens it`);
-            if (!rows.some((cells) => /^(observed|measured)/i.test(cells[2] ?? ""))) problems.push("the Evidence table has no Observed row — at least one claim about the current code with its path:line");
-            if (!rows.some((cells) => /^(assumed|inferred|unknown)/i.test(cells[2] ?? "")) && !/no assumptions or unknowns/i.test(evidence)) problems.push("the Evidence table has no Assumed, Inferred or Unknown row — surface what was not verified, or write `No assumptions or unknowns.` under the table");
-            const outside = md.replace(evidence, "");
-            const cited = new Set(citations(outside));
-            const uncited = ids.filter((id) => !cited.has(id));
-            if (uncited.length) problems.push(`Evidence row(s) ${uncited.join(", ")} are never cited — cite them where the claim is made (\`[${uncited[0]}]\`) or drop them`);
-            const dangling = [...cited].filter((id) => !ids.includes(id));
-            if (dangling.length) problems.push(`citation(s) ${dangling.map((id) => `[${id}]`).join(", ")} have no row in the Evidence table`);
-        }
-    }
-    const contract = section("Contract");
-    if (contract !== null) {
-        const missing = CONTRACT_LABELS.filter((l) => !labelled(contract, l));
-        if (missing.length) problems.push(`the Contract section is missing the line(s) ${missing.map((l) => `\`**${l}:**\``).join(", ")} — six labelled lines: Guaranteed, Target, Unresolved, Fixed by approval, Left to implementation, Reopen if`);
-        const n = wordCount(contract);
-        if (n > CONTRACT_MAX_WORDS) problems.push(`the Contract section is ${n} words; keep it under ${CONTRACT_MAX_WORDS}`);
-    }
-    const questions = section("Review questions");
-    if (questions !== null) {
-        const bullets = questions.split("\n").filter((l) => /^\s*[-*]\s+\S/.test(l));
-        if (bullets.length !== 2) problems.push(`the Review questions section has ${bullets.length} bullet(s) — exactly two: **Behavior** (one changed condition in the worked case) and **Choice** (what would make the alternative preferable)`);
-        else if (!bullets.every((l) => /\?\s*$/.test(l))) problems.push("each Review questions bullet is one question and ends with `?`");
-    }
+    if (classification !== null && !isBug && !isFeature) problems.push("the Classification section starts with `bug` or `feature`, a dash, then the reason");
+    if (isFeature && has("Root cause")) problems.push("a feature has no Root cause section — the Suggested approach explains the change");
+    const extra = headings.filter((h) => !DESIGN_SECTIONS.some((s) => h.startsWith(s.toLowerCase())));
+    if (extra.length) problems.push(`design.md has section(s) the template does not have: ${extra.map((h) => `"## ${h}"`).join(", ")} — use only ${DESIGN_SECTIONS.join(", ")}`);
+
+    const words = wordCount(md);
+    if (words > DESIGN_MAX_WORDS) problems.push(`design.md is ${words} words of prose; the cap is ${DESIGN_MAX_WORDS} — cut repetition and prose around tables`);
+    if (/^\s*```json/m.test(md)) problems.push("design.md contains a JSON block — design.json carries the structure");
+
+    const cap = (name: string, min: number, max: number): void => {
+        const body = section(name);
+        if (body === null) return;
+        const n = wordCount(body);
+        if (n < min) problems.push(`the ${name} section is ${n} words — it needs at least ${min}`);
+        else if (n > max) problems.push(`the ${name} section is ${n} words; keep it under ${max}`);
+    };
+    cap("Problem statement", 1, PROBLEM_MAX_WORDS);
+    if (isBug) cap("Root cause", ROOT_CAUSE_WORDS[0], ROOT_CAUSE_WORDS[1]);
+    cap("Suggested approach", APPROACH_WORDS[0], APPROACH_WORDS[1]);
+
     for (const name of PROSE_SECTIONS) {
         const body = section(name);
         if (body === null) continue;
         const hit = CODE_REF.exec(body);
-        if (wordCount(body) >= 40 && !/\*\*[^*\n]+\*\*/.test(body)) problems.push(`the ${name} section has no bold at all — give every bullet a bold lead-in naming the part of the system or the case (**Frontend form** — …) and use \`###\` sub-headings in long sections; plain sentences in a row are hard to scan`);
-        if (hit) problems.push(`the ${name} section contains code or a file reference (${hit[0].slice(0, 40)}) — write it in product words: what the app does or fails to do and which part of the system (the frontend form, the backend service, the loader) does it; paths, line numbers and identifiers belong in Technical changes`);
+        if (hit) problems.push(`the ${name} section contains code or a file reference (${hit[0].slice(0, 40)}) — write it in product words; paths, line numbers and identifiers belong in Technical changes`);
+        const plain = bullets(body).filter((l) => !/^\s*[-*]\s+\*\*[^*\n]+\*\*/.test(l));
+        if (plain.length) problems.push(`${plain.length} bullet(s) in ${name} have no bold lead-in — open every bullet with **the part of the system or the case** — then the fact`);
     }
+    const approach = section("Suggested approach");
+    if (approach !== null && !/^\s*(?:[-*]\s*)?\*\*Invariant:?\*\*/im.test(approach)) problems.push("the Suggested approach section closes with an `**Invariant:**` line — what must stay true after the change");
+
+    const technical = section("Technical changes");
+    if (technical !== null) {
+        const summary = /^\s*(?:[-*]\s*)?\**Summary:?\**\s*(\S.*)$/im.exec(technical);
+        if (!summary) problems.push("the Technical changes section opens with a `**Summary:**` line — the whole change in 1–3 imperative clauses, with the symbols");
+        else if (summary[1]!.split(/\s+/).length > SUMMARY_MAX_WORDS) problems.push(`the Technical changes Summary line is over ${SUMMARY_MAX_WORDS} words`);
+        if (!hasTable(technical) || !/^\s*\|\s*Layer\s*\|/im.test(technical)) problems.push("the Technical changes section needs the | Layer | File | Symbol | Before | After | table");
+        const tests = subsection(technical, "Tests");
+        if (tests === null) problems.push("the Technical changes section needs a `### Tests` sub-section: the | File | Test | Asserts | table and a `**Run:**` bash block");
+        else if (!/^\s*\**Run:?\**\s*\n+\s*```/im.test(tests)) problems.push("the Tests sub-section ends with `**Run:**` followed by a fenced ```bash block with the exact commands");
+    }
+
+    // STE sentence rules: prose outside code, tables, headings and inline code.
+    const sentences = prose(md)
+        .replace(/`[^`\n]*`/g, "x")
+        .split(/(?<=[.!?])\s+|\n+/)
+        .map((s) => s.replace(/^\s*[-*]\s+/, "").replace(/\*\*[^*\n]+\*\*\s*[—–-]\s*/, "").trim())
+        .filter(Boolean);
+    const long = sentences.filter((s) => s.split(/\s+/).length > SENTENCE_MAX_WORDS);
+    if (long.length) problems.push(`${long.length} sentence(s) are over ${SENTENCE_MAX_WORDS} words (STE) — split them: ${long.slice(0, 3).map((s) => `"${s.slice(0, 60)}…"`).join(", ")}`);
+    const filler = DESIGN_FILLER.exec(prose(md).replace(/`[^`\n]*`/g, "x"));
+    if (filler) problems.push(`design.md uses "${filler[0]}" — STE bans filler and hedging; use "must" for a requirement, "can" for a possibility, and state the fact`);
+    if (/mempalace|research\.md|as research (found|showed)|per the ticket'?s? (own )?note/i.test(md)) problems.push("design.md refers to where facts came from (research.md, mempalace, ticket notes) — state the facts only");
+
     const repos = opts.repos ?? [];
     if (repos.length && classification !== null) {
         const m = /^\s*\**Repos?:?\**\s*(.+)$/im.exec(classification);
@@ -535,29 +533,6 @@ export const designMdProblems = (md: string, opts: { repos?: string[] } = {}): s
             if (unknown.length) problems.push(`the \`Repos:\` line names ${unknown.join(", ")}, which are not repositories of this workspace (${repos.join(", ")}) — use the directory names exactly`);
         }
     }
-    const today = section("How it works today");
-    if (today !== null && !labelled(today, "Invariant")) problems.push("the How it works today section ends with an `**Invariant:**` line — what must stay true across the change, with its precise scope");
-    const proposed = section("Proposed changes");
-    if (proposed !== null) {
-        const words = proposed.replace(/```[\s\S]*?```/g, " ").split(/\s+/).filter(Boolean).length;
-        if (words === 0) problems.push("the Proposed changes section is empty — 2–6 short bullets saying in plain words what changes and why");
-        else if (words > PROPOSED_MAX_WORDS) problems.push(`the Proposed changes section is ${words} words; keep it under ${PROPOSED_MAX_WORDS} — plain words, no tables, no code`);
-        if (/^\s*\|/m.test(proposed)) problems.push("the Proposed changes section must not contain a table — the Technical changes table follows in its own section");
-    }
-    const technical = section("Technical changes");
-    const change = technical ?? section("Change");
-    if (change !== null && !/^\s*\**Summary:?\**\s*\S/im.test(change)) problems.push("the Technical changes section must open with a `Summary:` line — the whole change in 1–3 imperative clauses, before the table");
-    if (technical !== null && !/^\s*\**Flow:?\**\s*\S/im.test(technical)) problems.push("the Technical changes section needs a `Flow:` line — the data flow after the change as symbols (`A.field` → `B.method` → `C.total`)");
-    if (technical !== null && !/^\s*\|/m.test(technical)) problems.push("the Technical changes section needs the | Layer | File | Symbol | Before | After | table");
-    const risks = section("Risks and edge cases");
-    if (risks !== null) {
-        const bullets = risks.split("\n").filter((l) => /^\s*[-*]\s+\S/.test(l));
-        const missing = bullets.filter((l) => !/action:/i.test(l)).length;
-        if (missing) problems.push(`${missing} bullet(s) in Risks and edge cases have no \`→ action: …\` part — every case names what to do about it`);
-    }
-    const tests = section("Tests");
-    if (tests !== null && !/^\s*\**Run:?\**\s*\n+\s*```/im.test(tests)) problems.push("the Tests section must end with `Run:` followed by a fenced ```bash block with the exact commands (not inline code)");
-    if (/mempalace|research\.md|as research (found|showed)|per the ticket'?s? (own )?note/i.test(md)) problems.push("design.md refers to where facts came from (research.md, mempalace, ticket notes) — state the facts only");
     return problems.length ? problems.join("; ") : null;
 };
 
@@ -1515,6 +1490,11 @@ export class Engine extends EventEmitter {
         }
         // A re-run from scratch: nothing of an earlier pass is resumed (partial results, shard outputs).
         if (stage === "qa_baseline" || stage === "manual_qa") this.clearPassFiles(taskId, stage === "qa_baseline" ? "before" : "after");
+        // A baseline re-run before the design is approved ends in the design agent's review, like the loop's own passes.
+        if (stage === "qa_baseline" && task.stage === "design_proposal") {
+            const prev = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
+            this.writeDesignBaseline(taskId, { status: "running", round: prev?.round ?? 1, qaHash: qaHashOf(this.readArtifactJson<DesignResult>(taskId, "design.json")) });
+        }
         this.setStage(taskId, stage);
         this.dispatch(taskId, stage, { notes: "This stage is being re-run on request. Do the work again from scratch for this stage; earlier stages' outputs in the task directory are still valid." });
     }
@@ -2697,6 +2677,10 @@ export class Engine extends EventEmitter {
         let target = stage;
         // The Code Review stage is optional (config.codeReview); off, Implementation goes straight on to QA.
         if (target === "code_review" && !this.cfg.codeReview) target = "manual_qa";
+        if (target === "qa_baseline" && this.designBaselineCurrent(taskId)) {
+            this.addAgentNote(taskId, "QA baseline from the design stage matches the approved scenarios — Implementation starts now");
+            target = "implementation";
+        }
         if (target === "qa_baseline" || target === "manual_qa") {
             const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
             // No browser scenarios in the design, or the human asked to skip QA this pass: hop over the QA stage.
@@ -4376,6 +4360,65 @@ export class Engine extends EventEmitter {
     }
 
     // Removes what earlier runs of a pass left behind: the partial file and every shard's output / partial / questions.
+    private writeDesignBaseline(taskId: string, m: DesignBaseline): void {
+        writeFileSync(join(this.taskDir(taskId), "design-baseline.json"), JSON.stringify(m, null, 2));
+    }
+
+    // The design agent's output passed its contract: run the baseline on its scenarios, or — when they did not change
+    // since the last baseline, or the rounds ran out — hand the proposal to the reviewer.
+    private afterDesign(taskId: string): void {
+        const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+        const hash = qaHashOf(design);
+        const prev = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
+        const wait = (line: string): void => this.setTaskStatus(taskId, "waiting_user", `Design Proposal · needs you${line ? ` — ${line}` : ""}`);
+        if (!(design?.qa ?? []).some((s) => s.baseline !== false)) {
+            wait("");
+            return;
+        }
+        const hasBefore = existsSync(join(this.taskDir(taskId), "qa", "before.json"));
+        if (prev?.status === "reviewing" && prev.qaHash === hash) {
+            this.writeDesignBaseline(taskId, { ...prev, status: "done" });
+            wait(`QA baseline ran (round ${prev.round}); see the QA tests tab`);
+            return;
+        }
+        if (prev?.status === "done" && prev.qaHash === hash && hasBefore) {
+            wait("the QA baseline is current; see the QA tests tab");
+            return;
+        }
+        const round = prev?.status === "reviewing" ? prev.round + 1 : 1;
+        if (round > MAX_DESIGN_BASELINE_ROUNDS) {
+            this.writeDesignBaseline(taskId, { status: "done", round: MAX_DESIGN_BASELINE_ROUNDS, qaHash: hash });
+            wait(`the QA scenarios changed again after ${MAX_DESIGN_BASELINE_ROUNDS} baseline rounds — the last change has no baseline yet`);
+            return;
+        }
+        this.writeDesignBaseline(taskId, { status: "running", round, qaHash: hash });
+        this.addAgentNote(taskId, `QA baseline round ${round}/${MAX_DESIGN_BASELINE_ROUNDS}: the design's scenarios run on the unchanged app before the proposal goes to you`);
+        this.clearPassFiles(taskId, "before");
+        const beforePath = join(this.taskDir(taskId), "qa", "before.json");
+        if (existsSync(beforePath)) renameSync(beforePath, `${beforePath}.prev-${Date.now()}`);
+        this.setStage(taskId, "qa_baseline");
+        this.dispatch(taskId, "qa_baseline");
+    }
+
+    // A baseline pass of the design loop is over (any way but a login wall): the design agent reads the result.
+    // Returns false outside the loop (a baseline after approval ends the normal way).
+    private designBaselineEnded(task: TaskRow, qa: QaPassResult, stopped: string | null): boolean {
+        const m = this.readArtifactJson<DesignBaseline>(task.id, "design-baseline.json");
+        if (m?.status !== "running") return false;
+        // The hash is taken now: corrections QA applied to design.json during the pass are part of what the agent reviews.
+        this.writeDesignBaseline(task.id, { status: "reviewing", round: m.round, qaHash: qaHashOf(this.readArtifactJson<DesignResult>(task.id, "design.json")) });
+        this.stopServicesAfterQa(task);
+        this.setStage(task.id, "design_proposal");
+        this.dispatch(task.id, "design_proposal", { notes: renderDesignBaselineNotes(qa, m.round, stopped) });
+        return true;
+    }
+
+    // The design stage's baseline pairs with the approved scenarios: the separate baseline stage has nothing to add.
+    private designBaselineCurrent(taskId: string): boolean {
+        const m = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
+        return m?.status === "done" && m.qaHash === qaHashOf(this.readArtifactJson<DesignResult>(taskId, "design.json")) && existsSync(join(this.taskDir(taskId), "qa", "before.json"));
+    }
+
     private clearPassFiles(taskId: string, pass: "before" | "after"): void {
         const dir = join(this.taskDir(taskId), "qa");
         if (!existsSync(dir)) return;
@@ -5364,13 +5407,15 @@ export class Engine extends EventEmitter {
         return { remaining, answers, notes };
     }
 
-    // The design's Contract section (what the change must do), the acceptance Jev judges corrections against.
+    // What the change must do — the Problem statement and the Suggested approach with its Invariant (an older proposal:
+    // its Contract section) — the acceptance Jev judges corrections against.
     private designContract(taskId: string): string {
         const p = join(this.taskDir(taskId), "design.md");
         if (!existsSync(p)) return "";
         const md = readFileSync(p, "utf8");
-        const m = /^##[^\n]*contract[^\n]*\n([\s\S]*?)(?=^## |\s*$)/im.exec(md);
-        return (m?.[1] ?? md).trim().slice(0, 4000);
+        const part = (name: string): string | null => new RegExp(`^##[^\\n]*${name}[^\\n]*\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, "im").exec(md)?.[1]?.trim() ?? null;
+        const now = [part("problem statement"), part("suggested approach")].filter((x): x is string => !!x);
+        return (now.length ? now.join("\n\n") : (part("contract") ?? md)).trim().slice(0, 4000);
     }
 
     // Every applied correction is logged; a step, assert, seed or scenario change during Manual QA also makes that
@@ -5895,6 +5940,10 @@ export class Engine extends EventEmitter {
                 .catch((e: unknown) => this.setTaskStatus(taskId, "failed", `worktree: ${String(e).slice(0, 160)}`));
             return;
         }
+        if (def.stage === "design_proposal") {
+            this.afterDesign(taskId);
+            return;
+        }
         if (def.kind === "wait") {
             this.setTaskStatus(taskId, "waiting_user", `${def.label} · needs you`);
             if (def.stage === "pr_creation_review") void this.annotateStackedDrafts(taskId);
@@ -5961,11 +6010,9 @@ export class Engine extends EventEmitter {
                 const seedFixesAllowed = autoFixKinds(this.env(task.env_id).qa_auto_fix ?? DEFAULT_QA_AUTO_FIX).has("seed") && jevEnabled(this.cfg);
                 const forHuman = blocked.filter((s) => verdicts[s.id] === "environment" || (verdicts[s.id] === "seed_or_design_defect" && (!seedFixesAllowed || priorAttempts >= MAX_UNBLOCK_ATTEMPTS)));
                 if (forHuman.length) {
-                    this.setTaskStatus(
-                        taskId,
-                        "blocked",
-                        `${def.label} · ${forHuman.map((s) => `${s.id}: ${verdicts[s.id] === "environment" ? "environment problem" : "seed or step wrong as written"}`).join("; ")} — ${reason} — fix it (design.json, or the environment), then Retry`,
-                    );
+                    const why = `${forHuman.map((s) => `${s.id}: ${verdicts[s.id] === "environment" ? "environment problem" : "seed or step wrong as written"}`).join("; ")} — ${reason}`;
+                    if (def.stage === "qa_baseline" && this.designBaselineEnded(task, qa, why)) return;
+                    this.setTaskStatus(taskId, "blocked", `${def.label} · ${why} — fix it (design.json, or the environment), then Retry`);
                     return;
                 }
                 if (priorAttempts < MAX_UNBLOCK_ATTEMPTS) {
@@ -5987,13 +6034,12 @@ export class Engine extends EventEmitter {
                     this.dispatch(taskId, def.stage, { extraVars: { unblockHint, ...this.resumeVars(taskId, pass, recorded, blocked.map((s) => s.id)) } });
                     return;
                 }
-                this.setTaskStatus(
-                    taskId,
-                    "blocked",
-                    `${def.label} · ${blocked.length}/${qa.scenarios.length} scenario(s) still blocked after ${MAX_UNBLOCK_ATTEMPTS} automatic unblock attempts — ${reason} — fix it, then Retry`,
-                );
+                const why = `${blocked.length}/${qa.scenarios.length} scenario(s) still blocked after ${MAX_UNBLOCK_ATTEMPTS} automatic unblock attempts — ${reason}`;
+                if (def.stage === "qa_baseline" && this.designBaselineEnded(task, qa, why)) return;
+                this.setTaskStatus(taskId, "blocked", `${def.label} · ${why} — fix it, then Retry`);
                 return;
             }
+            if (def.stage === "qa_baseline" && this.designBaselineEnded(task, qa, null)) return;
             if (def.stage === "manual_qa" && (failed > 0 || needsHuman > 0)) {
                 const parts = [failed > 0 ? `${failed} scenario(s) failed` : null, needsHuman > 0 ? `${needsHuman} need your own check` : null].filter(Boolean);
                 this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`Manual QA · ${parts.join(" · ")}`, now(), taskId);

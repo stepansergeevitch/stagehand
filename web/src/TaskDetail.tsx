@@ -729,11 +729,10 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             .map((c) => ({ path: c.path, line: c.line ?? 0, side: c.side, snippet: c.snippet, text: c.body, round: 0, by: c.author, resolved: c.resolved })),
     ];
 
-    const proposedMd = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^proposed changes/i.test(s.title))?.body.trim() ?? null : null), [designMd]);
-    // The one-screen Decision (problem, recommendation, decisive insight, price, decision requested, open blocker) opens the review.
-    const decisionMd = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^decision/i.test(s.title))?.body.trim() ?? null : null), [designMd]);
-    // The explanation section — Root cause (bug) or Approach (feature) — is what the reviewer reads next.
-    const explanation = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^(root cause|approach)/i.test(s.title)) ?? null : null), [designMd]);
+    // The Work tab's summary of the proposal: the problem, then the approach (a proposal in the older template: its
+    // Decision, then its Root cause / Approach).
+    const problemMd = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^(problem statement|decision)/i.test(s.title)) ?? null : null), [designMd]);
+    const explanation = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^suggested approach/i.test(s.title)) ?? splitSections(designMd).sections.find((s) => /^(root cause|approach)/i.test(s.title)) ?? null : null), [designMd]);
 
     // Which workflow steps have something to show (or are the current one).
     const stepHasContent = (s: Stage): boolean => {
@@ -870,9 +869,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             case "design_proposal":
                 return design ? (
                     <Card title="Design proposal" badge={<><span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>{(design.affectedRepos ?? []).map((r) => <span key={r} className="chip">{r}</span>)}</>}>
-                        {decisionMd && <div className="proposed decision"><b>Decision</b><Markdown source={decisionMd} /></div>}
+                        {problemMd && <div className="proposed decision"><b>{problemMd.title}</b><Markdown source={problemMd.body.trim()} /></div>}
                         {explanation && <div className="proposed explanation"><b>{explanation.title}</b><Markdown source={explanation.body.trim()} /></div>}
-                        {proposedMd && <div className="proposed"><b>Proposed changes</b><Markdown source={proposedMd} /></div>}
                         <div className="kv">
                             <b>Plan</b><span>{design.plan.length} layer(s): {design.plan.map((p) => p.layer).join(", ")}</span>
                             <b>Tests</b><span>{design.testPlan.reduce((n, t) => n + t.cases.length, 0)} case(s) in {design.testPlan.length} file(s)</span>
@@ -1198,7 +1196,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 design ? (
                     <Card title="Design proposal" badge={<><span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>{(design.affectedRepos ?? []).map((r) => <span key={r} className="chip">{r}</span>)}</>}>
                         {task.stage === "design_proposal" && reviewBox}
-                        <DesignSections design={design} md={designMd} section={view.tab === "design" ? view.section : undefined} onSection={(s) => onView({ tab: "design", section: s })} />
+                        <DesignTabs taskId={task.id} design={design} md={designMd} before={qaBefore} section={view.tab === "design" ? view.section : undefined} onSection={(s) => onView({ tab: "design", section: s })} />
                     </Card>
                 ) : <div className="empty">No design proposal yet.</div>
             )}
@@ -1669,8 +1667,7 @@ const PrPanel = ({ detail, onAction, focusRepo, onFocusRepo }: { detail: TaskDet
     );
 };
 
-// design.md is split on its `## ` headings into subtabs; the structured plan / test plan / QA scenarios from design.json
-// are merged into the subtab whose heading they belong to, so each section is read in one place.
+// design.md split on its `## ` headings, for the Work tab's summary of the proposal.
 interface MdSection { title: string; body: string }
 const splitSections = (md: string): { intro: string; sections: MdSection[] } => {
     const lines = md.split("\n");
@@ -1695,66 +1692,87 @@ const splitSections = (md: string): { intro: string; sections: MdSection[] } => 
     return { intro: intro.join("\n").trim(), sections };
 };
 
-const QaScenarios = ({ design }: { design: NonNullable<TaskDetail["design"]> }) => (
-    <>
-        {design.qa.length === 0 && <div className="quiet">none — {design.qaSkippedReason ?? "no reason given"}</div>}
-        {design.qa.map((s) => (
-            <details className="scenario" key={s.id} open>
-                <summary>
-                    <h3><span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip" title="API scenario: the runner executes each step's command with Bash and records the output">API</span>}<span className="scenario-title">{s.title}</span> <code>{s.url}</code> <span className="chip persona">{s.persona}</span></h3>
-                </summary>
-                {s.seed && s.seed.length > 0 ? (
-                    <div className="seed"><b>Seed</b><ul className="plain">{s.seed.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
-                ) : (
-                    <div className="seed quiet">Seed: nothing beyond a logged-in user</div>
-                )}
-                <ol style={{ margin: 0, paddingLeft: 20 }}>{s.steps.map((st, i) => <li key={i}>{s.kind === "api" ? <code>{st.action}</code> : st.action} → <i>{st.assert}</i> {st.shot && <span className="chip warn">shot</span>}</li>)}</ol>
-            </details>
-        ))}
-    </>
-);
-
-const DesignSections = ({ design, md, section, onSection }: { design: NonNullable<TaskDetail["design"]>; md: string | null; section?: string; onSection: (title: string) => void }) => {
-    const parsed = useMemo(() => (md ? splitSections(md) : { intro: "", sections: [] }), [md]);
-    // Structured data attaches to the matching markdown section; sections without a markdown twin still get a tab.
-    type Part = { key: string; title: string; md?: string; extra?: React.ReactNode };
-    const parts: Part[] = parsed.sections.map((s) => ({ key: s.title, title: s.title, md: s.body }));
-    // `replace` drops the markdown twin when the structured view is a superset of it (QA scenarios carry title, url,
-    // persona, seed and steps), so a section is never shown twice.
-    const attach = (test: RegExp, title: string, extra: React.ReactNode, replace = false) => {
-        const hit = parts.find((p) => test.test(p.title));
-        if (hit) {
-            hit.extra = extra;
-            if (replace) delete hit.md;
-        } else parts.push({ key: title, title, extra });
-    };
-    attach(/^technical changes|^change|implementation|plan by layer/i, "Plan by layer", (
-        <table><tbody>{design.plan.map((p) => <tr key={p.layer}><td><code>{p.layer}</code></td><td><ul className="plain">{p.changes.map((c, i) => <li key={i}>{c}</li>)}</ul></td></tr>)}</tbody></table>
-    ));
-    // The Tests table in design.md already lists every case, so design.json's testPlan is not repeated here. A pre-template
-    // `Run: \`cmd\`` line is shown as a code block like the current template's fenced one.
-    const tests = parts.find((p) => /^tests?\b|test plan/i.test(p.title));
-    if (tests?.md) tests.md = tests.md.replace(/^(\**Run:?\**)\s*`([^`\n]+)`\s*$/im, "$1\n\n```bash\n$2\n```");
-    attach(/qa/i, "QA scenarios", <QaScenarios design={design} />, true);
-    // Open on the one-screen Decision; proposals from before that section open on the explanation (Root cause / Approach),
-    // older ones still on Proposed changes.
-    // The routed section when it exists; else the default opening section.
-    const routed = section ? parts.findIndex((p) => p.key === section) : -1;
-    const first = [/^decision/i, /^(root cause|approach)/i, /^proposed changes/i].map((re) => parts.findIndex((p) => re.test(p.title))).find((i) => i >= 0);
-    const active = routed >= 0 ? routed : (first ?? 0);
-    const cur = parts[Math.min(active, parts.length - 1)];
+// One QA scenario as the reviewer reads it: the steps, the baseline's outcome with its evidence, and the seed and
+// teardown folded away (rarely read).
+const QaTests = ({ taskId, design, before }: { taskId: string; design: NonNullable<TaskDetail["design"]>; before: QaPass | null }) => {
+    const [zoom, setZoom] = useState<{ src: string; caption: string } | null>(null);
+    const chip = (o?: string) =>
+        o ? <span className={`chip ${o === "pass" ? "ok" : o === "fail" ? "bad" : o === "needs_human" ? "wait" : "warn"}`}>baseline {o === "needs_human" ? "check yourself" : o}</span> : <span className="chip">no baseline yet</span>;
+    if (design.qa.length === 0) return <div className="quiet"><b>No QA scenarios</b> — {design.qaSkippedReason ?? "no reason given"}</div>;
     return (
         <>
-            {parsed.intro && <Markdown source={parsed.intro} />}
+            {zoom && <Lightbox src={zoom.src} caption={zoom.caption} onClose={() => setZoom(null)} />}
+            {before?.blockers.length ? (
+                <div className="qa-blockers"><span className="qa-obs-label"><b>Baseline blockers</b></span><ul className="qa-obs-text">{before.blockers.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
+            ) : null}
+            {design.qa.map((s) => {
+                const b = before?.scenarios.find((x) => x.id === s.id);
+                const setup = [...(s.teardown ?? []).map((x) => ({ kind: "Teardown", x })), ...(s.seed ?? []).map((x) => ({ kind: "Seed", x }))];
+                return (
+                    <details className="scenario" key={s.id} open>
+                        <summary>
+                            <h3>
+                                <span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip">API</span>}<b className="scenario-title">{s.title}</b> <code>{s.url}</code> <span className="chip persona">{s.persona}</span>{" "}
+                                {s.baseline === false ? <span className="chip" title="The journey does not exist before the change: the baseline records it as a failure by construction">new surface — no baseline</span> : chip(b?.outcome)}
+                            </h3>
+                        </summary>
+                        <ol className="qa-steps">
+                            {s.steps.map((st, i) => (
+                                <li key={i}>
+                                    <b>Do:</b> {s.kind === "api" ? <code>{st.action}</code> : st.action}
+                                    <br />
+                                    <b>Expect:</b> {st.assert} {st.shot && <span className="chip warn">shot</span>}
+                                </li>
+                            ))}
+                        </ol>
+                        {b?.observation && (
+                            <div className="qa-obs">
+                                <div className="qa-obs-row">
+                                    <span className="qa-obs-label"><b>Baseline saw</b></span>
+                                    <ul className="qa-obs-text">{b.observation.split(/;\s+/).map((frag, i) => <li key={i}>{frag}</li>)}</ul>
+                                </div>
+                            </div>
+                        )}
+                        {b?.log && <pre className="qa-log">{b.log}</pre>}
+                        {b && b.shots.length > 0 && (
+                            <div className="gallery" style={{ marginTop: 8 }}>
+                                {b.shots.map((sh) => (
+                                    <figure key={sh.step}>
+                                        <img src={api.artifactUrl(taskId, sh.file)} alt="" onClick={() => setZoom({ src: api.artifactUrl(taskId, sh.file), caption: `${s.id} · baseline · step ${sh.step} · ${s.steps[sh.step - 1]?.assert ?? ""}` })} title="Click to inspect" />
+                                        <figcaption><b>step {sh.step}</b> · {s.steps[sh.step - 1]?.assert}</figcaption>
+                                    </figure>
+                                ))}
+                            </div>
+                        )}
+                        {setup.length > 0 ? (
+                            <details className="seed">
+                                <summary><b>Seed</b> — {s.seed?.length ?? 0} step(s){s.teardown?.length ? `, ${s.teardown.length} teardown` : ""}</summary>
+                                <ul className="plain">{setup.map((x, i) => <li key={i}><b>{x.kind}:</b> <code>{x.x}</code></li>)}</ul>
+                            </details>
+                        ) : (
+                            <div className="seed quiet">Seed: nothing beyond a logged-in user</div>
+                        )}
+                    </details>
+                );
+            })}
+        </>
+    );
+};
+
+// The design tab: the proposal as one document, and the QA tests with their baseline.
+const DesignTabs = ({ taskId, design, md, before, section, onSection }: { taskId: string; design: NonNullable<TaskDetail["design"]>; md: string | null; before: QaPass | null; section?: string; onSection: (s: string) => void }) => {
+    const active = section === "qa" ? "qa" : "proposal";
+    const body = useMemo(() => (md ?? "").replace(/^#\s[^\n]*\n/, ""), [md]);
+    const ran = design.qa.filter((s) => before?.scenarios.some((x) => x.id === s.id)).length;
+    return (
+        <>
             <div className="subtabs">
-                {parts.map((p, i) => <button key={p.key} className={i === active ? "active" : ""} onClick={() => onSection(p.key)}>{p.title}</button>)}
+                <button className={active === "proposal" ? "active" : ""} onClick={() => onSection("proposal")}>Proposal</button>
+                <button className={active === "qa" ? "active" : ""} onClick={() => onSection("qa")}>QA tests <span className="chip">{design.qa.length}</span>{design.qa.length > 0 && <span className="chip">{ran ? `baseline ${ran}/${design.qa.length}` : "no baseline"}</span>}</button>
             </div>
-            {cur && (
-                <div className="design-section">
-                    {cur.md && <Markdown source={cur.md} />}
-                    {cur.extra && <div className="design-structured">{cur.extra}</div>}
-                </div>
-            )}
+            <div className="design-section">
+                {active === "proposal" ? (md ? <Markdown source={body} /> : <div className="empty">design.md is missing</div>) : <QaTests taskId={taskId} design={design} before={before} />}
+            </div>
         </>
     );
 };

@@ -293,7 +293,7 @@ export interface Run {
     group_id?: string | null;
 }
 export interface QaStep { action: string; assert: string; shot: boolean }
-export interface QaScenario { id: string; kind?: "browser" | "api"; title: string; url: string; persona: string; seed?: string[]; steps: QaStep[] }
+export interface QaScenario { id: string; kind?: "browser" | "api"; title: string; url: string; persona: string; teardown?: string[]; seed?: string[]; steps: QaStep[]; baseline?: boolean }
 export interface Design {
     classification: "bug" | "feature"; affectedRepos?: string[]; scope: { inScope: string[]; outOfScope: string[] };
     plan: Array<{ layer: string; changes: string[] }>; testPlan: Array<{ file: string; cases: string[] }>;
