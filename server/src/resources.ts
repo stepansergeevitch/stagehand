@@ -3,6 +3,7 @@
 // worktrees — joined with what the OS shows (processes, memory, ports, tmux), judged by a policy, and reaped when the
 // policy says so. The Resources page shows the same snapshot. The host has 52 GB; a Next dev server left on a task
 // parked at User Review grows past 5 GB, and a tmux-server death used to revive every pane of every old task.
+import { killSessionTree } from "./services.js";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "./config.js";
@@ -550,11 +551,11 @@ export class Resources {
             case "terminal":
             case "session":
             case "login":
-                if (r.tmux) await killSession(r.tmux);
+                if (r.tmux) await killSessionTree(r.tmux);
                 if (r.owner.type === "task" && r.owner.id && by === "policy") this.hooks.notice(r.owner.id, `🧹 Closed the task terminal (${Math.round(r.rssMb)} MB): ${reason}. Opening the Terminal tab starts a new one.`);
                 break;
             case "orphan":
-                if (r.tmux) await killSession(r.tmux);
+                if (r.tmux) await killSessionTree(r.tmux);
                 else if (r.pid && r.path && r.path.startsWith(CLONES_ROOT)) {
                     killPid(r.pid, "SIGTERM");
                     await new Promise((res) => setTimeout(res, 3_000));

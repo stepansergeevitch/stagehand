@@ -10,6 +10,61 @@ import { ensureSession, killSession, sessionExists, sessionExistsSync } from "./
 
 const execFileAsync = promisify(execFile);
 
+// Every process of the machine as pid → parent pid and command (one `ps` call).
+const processTable = async (): Promise<Array<{ pid: number; ppid: number; command: string }>> => {
+    const { stdout } = await execFileAsync("ps", ["-Ao", "pid=,ppid=,command="], { maxBuffer: 16 * 1024 * 1024 });
+    return stdout
+        .split("\n")
+        .map((l) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l))
+        .filter((m): m is RegExpExecArray => !!m)
+        .map((m) => ({ pid: Number(m[1]), ppid: Number(m[2]), command: m[3]! }));
+};
+
+// The pids under `roots` (the roots included), from one process table.
+const descendants = (table: Array<{ pid: number; ppid: number }>, roots: number[]): number[] => {
+    const out = new Set(roots);
+    let grew = true;
+    while (grew) {
+        grew = false;
+        for (const p of table) if (out.has(p.ppid) && !out.has(p.pid)) { out.add(p.pid); grew = true; }
+    }
+    return [...out];
+};
+
+const signal = (pids: number[], sig: NodeJS.Signals): number[] => {
+    const alive: number[] = [];
+    for (const pid of pids) {
+        try {
+            process.kill(pid, sig);
+            alive.push(pid);
+        } catch {
+            /* already gone */
+        }
+    }
+    return alive;
+};
+
+// Kills a tmux session and every process that ran under it. `tmux kill-session` only hangs up the pane: a celery
+// worker (no port, so no port sweep) survived that, was adopted by launchd and kept its 1.7 GB — 21 of them on
+// 2026-09-30, 35 GB with swap full. The tree is read before the session goes, then TERM, then KILL what is left.
+export const killSessionTree = async (name: string): Promise<void> => {
+    let tree: number[] = [];
+    try {
+        const { stdout } = await execFileAsync("tmux", ["list-panes", "-s", "-t", `=${name}`, "-F", "#{pane_pid}"]);
+        const roots = stdout.split("\n").map(Number).filter((n) => n > 0);
+        if (roots.length) tree = descendants(await processTable(), roots);
+    } catch {
+        /* no such session */
+    }
+    await killSession(name);
+    if (!tree.length) return;
+    await new Promise((r) => setTimeout(r, 1500));
+    const left = signal(tree, "SIGTERM");
+    if (!left.length) return;
+    await new Promise((r) => setTimeout(r, 4000));
+    signal(left, "SIGKILL");
+};
+
 export const PORT_RANGE: Record<CoreServiceKind, [number, number]> = { be: [18000, 18999], fe: [13000, 13999] };
 
 // How long a BE/FE gets to start listening on its port before it counts as failed (a Next/Vite dev server compiles
@@ -138,8 +193,28 @@ export class Services {
 
     // Records failures (and recovers vanished panes) even when nobody is looking at the task page. BE rows first: a
     // vanished FE is restarted with its BE's URL, which must be the live one.
+    // Processes launchd adopted (parent pid 1) whose command names a task's worktree, for a task with no service
+    // running: what a lost pane (tmux or host restart, a session killed by hand) leaves behind. Returns what it killed.
+    async sweepOrphans(): Promise<Array<{ pid: number; command: string }>> {
+        const tasks = this.db.prepare(`SELECT id, worktree_path FROM tasks WHERE worktree_path IS NOT NULL`).all() as Array<{ id: string; worktree_path: string }>;
+        if (!tasks.length) return [];
+        const live = new Set((this.db.prepare(`SELECT DISTINCT task_id FROM services WHERE stopped_at IS NULL AND failed_at IS NULL`).all() as Array<{ task_id: string }>).map((r) => r.task_id));
+        const idle = tasks.filter((t) => !live.has(t.id));
+        const table = await processTable().catch(() => []);
+        const orphans = table.filter((p) => p.ppid === 1 && p.pid !== process.pid && idle.some((t) => p.command.includes(`${t.worktree_path}/`) || p.command.includes(`${t.worktree_path} `)));
+        if (!orphans.length) return [];
+        signal(orphans.map((p) => p.pid), "SIGTERM");
+        await new Promise((r) => setTimeout(r, 4000));
+        signal(orphans.map((p) => p.pid), "SIGKILL");
+        for (const o of orphans) console.log(`[services] killed orphaned process ${o.pid}: ${o.command.slice(0, 160)}`);
+        return orphans.map((o) => ({ pid: o.pid, command: o.command }));
+    }
+
     startWatch(intervalMs = 15_000): void {
+        let ticks = 0;
         setInterval(() => {
+            // Every ~5 minutes: reclaim what lost panes left running.
+            if (++ticks % 20 === 1) void this.sweepOrphans().catch((e: unknown) => console.warn(`[services] orphan sweep: ${String((e as Error).message ?? e).slice(0, 160)}`));
             const rows = this.db.prepare(`SELECT * FROM services WHERE stopped_at IS NULL AND failed_at IS NULL ORDER BY CASE kind WHEN 'be' THEN 0 ELSE 1 END`).all() as ServiceRow[];
             void (async () => {
                 for (const r of rows) await this.probe(r).catch(() => undefined);
@@ -227,7 +302,7 @@ export class Services {
             const current = this.get(task.id, kind);
             if (current && current.id !== existing.id) return current;
             if (probed.state !== "failed" && (await sessionExists(existing.tmux))) return existing;
-            await killSession(existing.tmux);
+            await killSessionTree(existing.tmux);
             this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), existing.id);
         }
 
@@ -300,7 +375,7 @@ export class Services {
         // still open reads as "vanished" (a stray notice in Chat, and a needless auto-restart for a running task).
         this.db.prepare(`UPDATE services SET stopped_at = ? WHERE id = ?`).run(now(), row.id);
         const hadSession = await sessionExists(row.tmux);
-        await killSession(row.tmux);
+        await killSessionTree(row.tmux);
         // Only sweep leftover listeners when this service actually owned the port: a process we started, on a port
         // Stagehand chose. On a fixed port (3000/8000-style pins) the listener may be the user's own dev server.
         if (hadSession && row.port > 0 && !this.isFixedPort(row.port)) {
@@ -437,7 +512,7 @@ export class Services {
         const row = this.envServiceRow(dep.id);
         if (!row) return;
         const hadSession = await sessionExists(row.tmux);
-        await killSession(row.tmux);
+        await killSessionTree(row.tmux);
         // The listener is ours only when our pane was alive: ensureDependency starts on a port that was free, so
         // a listener on it with no pane of ours is the user's own instance — left alone.
         if (hadSession) {
@@ -489,7 +564,7 @@ export class Services {
             const s = await this.dependencyState(existing);
             if (s.state === "running" || s.state === "starting") return existing;
             // Failed or gone: tear the pane down (a crashed command's pane still sleeps there) and start over.
-            await killSession(existing.tmux);
+            await killSessionTree(existing.tmux);
         }
         let port: number;
         if (dep.be_port && (await portFree(dep.be_port))) port = dep.be_port;
