@@ -66,8 +66,42 @@ export interface QaFixInput {
 }
 
 // One Jev call per proposed correction. Throws when Jev is off or fails; the caller then leaves the question to the human.
+// A seed or teardown correction, as Jev reads it: the setup lines that changed and the asserts they must not satisfy.
+// The deterministic guard already proves the steps and asserts are untouched, so the one way such a fix weakens the
+// scenario is a seed that writes the result an assert checks.
+const setupDiff = (before: unknown, after: unknown, kind: "seed" | "teardown"): { changed: Array<{ line: number; before: string | null; after: string | null }>; asserts: string[] } => {
+    const list = (x: unknown): string[] => ((x as Record<string, unknown> | null)?.[kind] as string[] | undefined) ?? [];
+    const b = list(before);
+    const a = list(after);
+    const changed: Array<{ line: number; before: string | null; after: string | null }> = [];
+    for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) changed.push({ line: i + 1, before: b[i] ?? null, after: a[i] ?? null });
+    const steps = ((after as Record<string, unknown> | null)?.["steps"] as Array<{ action?: string; assert?: string }> | undefined) ?? [];
+    return { changed, asserts: steps.map((st, i) => `step ${i + 1}: ${st.action ?? ""} → assert: ${st.assert ?? ""}`) };
+};
+
 export const jevQaFixVerdict = async (cfg: Config, db: DB, ctx: Omit<UsageContext, "kind">, input: QaFixInput): Promise<QaFixVerdict> => {
     if (!jevEnabled(cfg)) throw new Error("Jev is not configured");
+    const setup = input.fixKind === "seed" || input.fixKind === "teardown";
+    // The generic weakens criteria counted any seed that creates data as "creates the state the assert expects": every
+    // seed fix scored 50–65 % and none passed the 15 % gate (PRODUCT-10587, INV-151, INV-149, 2026-09-29/30). For setup
+    // fixes Jev gets the changed lines and the asserts, and a question about exactly that one risk.
+    const weakens = setup
+        ? {
+              type: "noul" as const,
+              instructions: "The corrected setup writes the result that an assert checks, so the scenario no longer tests that the app produces it",
+              criteria: {
+                  true: "A changed seed line inserts or updates the very record, value or state an assert's expected result names as the outcome of the journey's steps (e.g. the assert expects a status the seed now sets directly, or a total the seed writes)",
+                  false: "The changed lines only create or reset preconditions the steps start from — records, relations, settings, ids, files, credentials — and every asserted result still has to come from the app during the steps",
+              },
+          }
+        : {
+              type: "noul" as const,
+              instructions: "The corrected scenario would pass in a state where the original would fail, or asserts less than the acceptance criterion requires",
+              criteria: {
+                  true: "An assert lost a value or condition, a step that verified something was dropped or neutralised, a seed now creates the state the assert expects instead of letting the app produce it, or the expected value moved to what the app currently shows",
+                  false: "Every assert still requires what the acceptance criterion requires; the seed only sets up preconditions; nothing the original proved is lost",
+              },
+          };
     const r = await jevAsk(
         cfg,
         {
@@ -75,8 +109,7 @@ export const jevQaFixVerdict = async (cfg: Config, db: DB, ctx: Omit<UsageContex
             acceptance: input.contract.slice(0, 4000),
             pass: input.pass === "before" ? "baseline, before the change is implemented" : "after the change is implemented",
             correction: { kind: input.fixKind, question: input.question, runnerReason: input.reason.slice(0, 1500), triggeringObservation: input.observation.slice(0, 1500) },
-            scenarioBefore: input.before,
-            scenarioAfter: input.after,
+            ...(setup ? { setupChange: setupDiff(input.before, input.after, input.fixKind as "seed" | "teardown") } : { scenarioBefore: input.before, scenarioAfter: input.after }),
         },
         {
             legit: {
@@ -87,14 +120,7 @@ export const jevQaFixVerdict = async (cfg: Config, db: DB, ctx: Omit<UsageContex
                     false: "The correction changes which behaviour is checked, expects a different result than the acceptance criterion states, or is unrelated to what made the original fail",
                 },
             },
-            weakens: {
-                type: "noul",
-                instructions: "The corrected scenario would pass in a state where the original would fail, or asserts less than the acceptance criterion requires",
-                criteria: {
-                    true: "An assert lost a value or condition, a step that verified something was dropped or neutralised, a seed now creates the state the assert expects instead of letting the app produce it, or the expected value moved to what the app currently shows",
-                    false: "Every assert still requires what the acceptance criterion requires; the seed only sets up preconditions; nothing the original proved is lost",
-                },
-            },
+            weakens,
             kind: {
                 type: "choice",
                 instructions: "What the correction really is",
