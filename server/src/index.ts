@@ -1978,10 +1978,9 @@ app.get("/api/product-owners", (c) =>
     ),
 );
 app.post("/api/product-owners", async (c) => {
-    // `planned` + `files`: import a project planned elsewhere (see ProductOwners.create); files are local paths.
-    const body = json(z.object({ url: z.string().min(8), accountId: z.string().nullable().optional(), planned: z.boolean().optional(), files: z.array(z.string()).optional() }), await c.req.json());
+    const body = json(z.object({ url: z.string().min(8), accountId: z.string().nullable().optional() }), await c.req.json());
     try {
-        return c.json(await productOwners.create(body.url, body.accountId ?? null, { ...(body.planned ? { planned: true } : {}), ...(body.files ? { files: body.files } : {}) }));
+        return c.json(await productOwners.create(body.url, body.accountId ?? null));
     } catch (e) {
         return poErr(c, e);
     }

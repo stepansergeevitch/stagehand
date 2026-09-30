@@ -21,7 +21,7 @@ Apply them to everything you write: chat replies, `context.md`, `design.md`, tic
   ```json
   { "tickets": [ { "key": "T1", "type": "epic|story|task|bug", "title": "…", "parent": null, "summary": "one line", "description": "markdown", "acceptanceCriteria": ["…"], "estimate": 3, "dependsOn": ["T2"], "labels": [], "existing": null } ] }
   ```
-  `key` is stable (`T1`, `T2`, …): keep a ticket's key when you change it. `parent` is the key of its epic or `null`. `estimate` is points or `null`. `existing` is the identifier of an issue that already exists for the ticket (`INV-154`), else `null`: Stagehand links it and never creates it again.
+  `key` is stable (`T1`, `T2`, …): keep a ticket's key when you change it. `parent` is the key of its epic or `null`. `estimate` is points or `null`. `existing` is the identifier of an issue that already exists for the ticket (`INV-154`), else `null`: Stagehand links it and never creates it again. When a source shows that the project was already planned and its issues exist (a session record, the project's issue list), import that plan: one ticket per existing issue, each with its `existing` identifier — do not plan it again.
 - **`product-context-proposal.md`** — only when this project changes the product-wide picture: the full new text of the product context. The human accepts or rejects it. Never edit the product context another way.
 
 Never create, edit or close tickets in Linear or ClickUp yourself. Stagehand creates them from `tickets.json` after the human approves.

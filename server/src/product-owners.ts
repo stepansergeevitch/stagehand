@@ -236,9 +236,7 @@ export class ProductOwners {
 
     // ---------- creation ----------
 
-    // `planned`: the project was planned elsewhere (its tickets exist): the first turn imports the plan from the sources
-    // instead of starting at Context, and the PO goes Live. `files`: local files to add as sources first (an export).
-    async create(url: string, accountId: string | null, opts: { planned?: boolean; files?: string[] } = {}): Promise<ProductOwnerRow> {
+    async create(url: string, accountId: string | null): Promise<ProductOwnerRow> {
         const scope = await fetchScope(this.cfg, url);
         const existing = this.db.prepare(`SELECT * FROM product_owners WHERE source = ? AND scope_id = ?`).get(scope.source, scope.id) as ProductOwnerRow | undefined;
         if (existing) return existing;
@@ -267,25 +265,9 @@ export class ProductOwners {
         mkdirSync(join(this.dir(row.id), "artifacts"), { recursive: true });
         writeFileSync(join(this.dir(row.id), "context.md"), "");
         this.addArtifactText(row.id, scope.source, `${scope.kind === "project" ? "Linear project" : "ClickUp epic"}: ${scope.title}`, scope.url, scope.markdown);
-        for (const f of opts.files ?? []) {
-            if (!existsSync(f)) throw new Error(`${f} does not exist`);
-            this.uploadArtifact(row.id, f.split("/").pop() ?? "source.md", readFileSync(f), /\.(md|txt)$/i.test(f) ? "text/markdown" : null);
-        }
         void this.assignExistingTasks(row);
         const what = scope.kind === "project" ? "Linear project" : "ClickUp epic";
-        const brief = opts.planned
-            ? [
-                  `This project was already planned in another session, and its tickets already exist in the ${what}. Import that plan; do not plan it again.`,
-                  `1. **Read** every artifact: the ${what} (its issues) and the session record.`,
-                  `2. **context.md** — write the project context from them: goal, users, constraints, what exists today, decisions with their reasons, open questions, glossary.`,
-                  `3. **design.md** — write the design the session settled on, in the sections of your CLAUDE.md.`,
-                  `4. **tickets.json** — one ticket per issue of the plan, with its scope and acceptance criteria. Set \`existing\` to the identifier of the issue that already exists (e.g. \`INV-154\`). Every ticket of the plan has one.`,
-                  `5. **Palace** — file the product knowledge in your wing's features, users, decisions and glossary rooms; add knowledge-graph facts for product entities; write a diary entry for this import.`,
-                  `Then answer with a short summary: what you filed, and anything in the sources that contradicts itself.`,
-              ].join("\n\n")
-            : `Start the Context phase. Read the ${what} artifact and the product context. Write a first context.md. Then tell me in a few bullets what this project is, what is still unclear, and which sources you need from me.`;
-        if (opts.planned) this.touch(row.id, { phase: "live" });
-        void this.send(row.id, brief, { system: true });
+        void this.send(row.id, `Start the Context phase. Read the ${what} artifact and the product context. Write a first context.md. Then tell me in a few bullets what this project is, what is still unclear, and which sources you need from me.`, { system: true });
         return this.get(row.id) ?? row;
     }
 
