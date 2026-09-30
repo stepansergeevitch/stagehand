@@ -4359,7 +4359,8 @@ export class Engine extends EventEmitter {
             return;
         }
         const inLoop = prev?.status === "reviewing";
-        const known = prev?.hashes ?? {};
+        // A record from before per-scenario hashes: its one whole-set hash still says whether nothing changed.
+        const known = prev?.hashes ?? (prev && prev.qaHash === sha1(JSON.stringify(design?.qa ?? [])) ? cur : {});
         const before = this.readArtifactJson<QaPassResult>(taskId, "qa/before.json");
         const cached = (before?.scenarios ?? []).filter((r) => cur[r.id] !== undefined && known[r.id] === cur[r.id] && (inLoop || r.outcome !== "blocked"));
         const toRun = ids.filter((id) => !cached.some((c) => c.id === id));
