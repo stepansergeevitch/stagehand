@@ -764,6 +764,7 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .usage-table th.sortable:hover { color: var(--accent); }
 .usage-table .hint-mark { color: var(--ink-3); font-weight: normal; }
 .usage-table tr.res-task { cursor: pointer; }
+.res-toggle { cursor: pointer; user-select: none; }
 .usage-table tr.res-task:hover { background: var(--accent-soft); }
 .usage-table tr.res-nested td:first-child { padding-left: 28px; }
 .usage-table tr.res-nested { background: var(--panel); }

@@ -44,13 +44,12 @@ const Verdict = ({ r }: { r: Resource }) => {
 const Owner = ({ r }: { r: Resource }) => {
     const o = r.owner;
     if (o.type === "none") return <span className="quiet">nobody</span>;
-    return (
-        <span>
-            <b>{o.name ?? o.id?.slice(0, 8) ?? "?"}</b>
-            {o.stage && <span className="res-sub"> {o.stage.replace(/_/g, " ")}</span>}
-            {o.status && <span className="res-sub"> · {o.status.replace(/_/g, " ")}</span>}
-        </span>
-    );
+    return <b>{o.name ?? o.id?.slice(0, 8) ?? "?"}</b>;
+};
+// The owning task's stage and status, in a column of their own.
+const OwnerStatus = ({ r }: { r: Resource }) => {
+    const parts = [r.owner.stage, r.owner.status].filter((x): x is string => !!x).map((x) => x.replace(/_/g, " "));
+    return parts.length ? <span className="res-sub">{parts.join(" · ")}</span> : <span className="quiet">—</span>;
 };
 
 type SortKey = "rss" | "cpu" | "age" | "idle" | "disk";
@@ -69,9 +68,8 @@ const WORKTREE_IDLE_HINT = "Time since the task last changed — a stage, a stat
 
 const ResourceRow = ({ r, busy, act, worktree = false, nested = false }: { r: Resource; busy: string | null; act: (label: string, fn: () => Promise<unknown>) => Promise<void>; worktree?: boolean; nested?: boolean }) => (
     <tr className={`${r.policy.verdict === "stop" && !r.pinned ? "res-due" : ""}${nested ? " res-nested" : ""}`}>
-        <td className="usage-label"><b>{r.label}</b>{r.top && <small title={r.top}>{r.top.length > 60 ? `${r.top.slice(0, 60)}…` : r.top}</small>}</td>
-        {!nested && <td><Owner r={r} /></td>}
-        {nested && <td />}
+        {nested ? <><td /><td /></> : <><td><Owner r={r} /></td><td><OwnerStatus r={r} /></td></>}
+        {!worktree && <td className="usage-label"><b>{r.label}</b>{r.top && <small title={r.top}>{r.top.length > 60 ? `${r.top.slice(0, 60)}…` : r.top}</small>}</td>}
         <td className="mono res-where">
             {r.tmux && <span title="tmux session">{r.tmux}</span>}
             {r.pid != null && <span title="pid"> pid {r.pid}</span>}
@@ -130,8 +128,9 @@ const DevServers = ({ rows, tasks, max, busy, act }: { rows: Resource[]; tasks: 
             <table>
                 <thead>
                     <tr>
-                        <th>What</th>
                         <th>Owner</th>
+                        <th>Owner status</th>
+                        <th>What</th>
                         <th>Where</th>
                         <SortTh k="rss" label="RSS" sort={sort} onSort={setSort} />
                         <SortTh k="cpu" label="CPU" sort={sort} onSort={setSort} />
@@ -146,8 +145,9 @@ const DevServers = ({ rows, tasks, max, busy, act }: { rows: Resource[]; tasks: 
                         const expanded = open.has(g.key);
                         return [
                             <tr key={g.key} className={`res-task${g.due ? " res-due" : ""}`} onClick={() => setOpen((s) => { const n = new Set(s); n.has(g.key) ? n.delete(g.key) : n.add(g.key); return n; })}>
-                                <td className="usage-label"><b>{expanded ? "▾" : "▸"} {g.rows.map((r) => r.label.split(" ")[0]).join(" + ")}</b></td>
-                                <td><Owner r={g.owner} /></td>
+                                <td><b>{expanded ? "▾" : "▸"}</b> <Owner r={g.owner} /></td>
+                                <td><OwnerStatus r={g.owner} /></td>
+                                <td className="usage-label"><b>{g.rows.map((r) => r.label.split(" ")[0]).join(" + ")}</b></td>
                                 <td className="mono res-where">{g.rows.length} server{g.rows.length === 1 ? "" : "s"}</td>
                                 <td className="mono">{gb(g.rssMb)}</td>
                                 <td className="mono">{g.cpuPct}%</td>
@@ -178,8 +178,9 @@ const Group = ({ kind, rows, busy, act }: { kind: ResourceKind; rows: Resource[]
             <table>
                 <thead>
                     <tr>
-                        <th>What</th>
                         <th>Owner</th>
+                        <th>Owner status</th>
+                        <th>What</th>
                         <th>Where</th>
                         <SortTh k="rss" label="RSS" sort={sort} onSort={setSort} />
                         <SortTh k="cpu" label="CPU" sort={sort} onSort={setSort} />
@@ -197,15 +198,16 @@ const Group = ({ kind, rows, busy, act }: { kind: ResourceKind; rows: Resource[]
 
 const Worktrees = ({ rows, busy, act }: { rows: Resource[]; busy: string | null; act: (label: string, fn: () => Promise<unknown>) => Promise<void> }) => {
     const [sort, setSort] = useState<Sort | null>({ key: "disk", desc: true });
+    const [expanded, setExpanded] = useState(false);
     const total = rows.reduce((n, r) => n + (r.diskMb ?? 0), 0);
     return (
         <section className="card usage-table res-group">
-            <h2>Worktrees <span className="chip">{rows.length}</span> <span className="chip">{gb(total)} on disk</span></h2>
-            <table>
+            <h2 className="res-toggle" onClick={() => setExpanded((x) => !x)}>{expanded ? "▾" : "▸"} Worktrees <span className="chip">{rows.length}</span> <span className="chip">{gb(total)} on disk</span></h2>
+            {expanded && <table>
                 <thead>
                     <tr>
-                        <th>What</th>
                         <th>Owner</th>
+                        <th>Owner status</th>
                         <th>Where</th>
                         <SortTh k="disk" label="Disk" sort={sort} onSort={setSort} />
                         <SortTh k="idle" label="Idle" sort={sort} onSort={setSort} hint={WORKTREE_IDLE_HINT} />
@@ -214,7 +216,7 @@ const Worktrees = ({ rows, busy, act }: { rows: Resource[]; busy: string | null;
                     </tr>
                 </thead>
                 <tbody>{sortBy(rows, sort).map((r) => <ResourceRow key={r.id} r={r} busy={busy} act={act} worktree />)}</tbody>
-            </table>
+            </table>}
         </section>
     );
 };
