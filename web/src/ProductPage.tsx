@@ -65,6 +65,7 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
     const [pos, setPos] = useState<ProductOwner[] | null>(null);
     const [url, setUrl] = useState("");
     const [busy, setBusy] = useState(false);
+    const [tab, setTab] = useState<"owners" | "context" | "memory">("owners");
     const load = useCallback(() => {
         void api.productContext().then((r) => setCtx(r.text)).catch((e: Error) => onError(e.message));
         void api.productOwners().then(setPos).catch((e: Error) => onError(e.message));
@@ -73,7 +74,12 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
     useEffect(() => poBus.subscribe((ev) => ev.kind === "updated" && load()), [load]);
     return (
         <div className="product">
-            <section className="card">
+            <div className="subtabs">
+                <button className={tab === "owners" ? "active" : ""} onClick={() => setTab("owners")}>Product owners {pos ? <span className="chip">{pos.length}</span> : null}</button>
+                <button className={tab === "context" ? "active" : ""} onClick={() => setTab("context")}>Product context</button>
+                <button className={tab === "memory" ? "active" : ""} onClick={() => setTab("memory")}>Memory</button>
+            </div>
+            {tab === "owners" && <section className="card">
                 <h2>Product owners <span className="field-hint">— one per project of the product: a Linear project or a ClickUp epic</span></h2>
                 <div className="po-row">
                     <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Linear project URL (linear.app/…/project/…) or ClickUp epic URL (app.clickup.com/t/…)" />
@@ -93,15 +99,15 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
                         ))}
                     </div>
                 )}
-            </section>
-            <section className="card">
+            </section>}
+            {tab === "context" && <section className="card">
                 <h2>Product context <span className="field-hint">— the whole product; every Product Owner reads it</span></h2>
                 {ctx === null ? <div className="empty">loading…</div> : <EditableMarkdown text={ctx} empty="Empty. Describe the product: what it is, who uses it, its main areas, its rules." onSave={async (t) => { await api.setProductContext(t); setCtx(t); }} />}
-            </section>
-            <section className="card">
+            </section>}
+            {tab === "memory" && <section className="card">
                 <h2>Memory</h2>
                 <PalaceSearch onError={onError} />
-            </section>
+            </section>}
         </div>
     );
 };
