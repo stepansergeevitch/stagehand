@@ -302,7 +302,7 @@ export interface PoReviewComment {
     id: string; severity: "high" | "medium" | "low"; area: "product" | "scope" | "acceptance" | "qa" | "question"; title: string; body: string;
     include?: boolean; withdrawn: boolean; sentAt: string | null; thread: Array<{ role: "user" | "po"; text: string; at: string }>;
 }
-export interface PoDesignReview extends PoReview { asking: string | null; review: { verdict: "approve" | "changes"; summary: string; comments: PoReviewComment[] } | null }
+export interface PoDesignReview { running: boolean; status: string | null; error: string | null; at: string | null; asking: string | null; review: { verdict: "approve" | "changes"; summary: string; comments: PoReviewComment[] } | null }
 export interface TaskLabel { text: string; color: string }
 export const labelsOf = (t: Pick<Task, "labels">): TaskLabel[] => {
     try {

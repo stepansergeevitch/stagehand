@@ -2156,10 +2156,7 @@ app.post("/api/product-owners/:id/proposal/reject", (c) => {
 const poReviewOf = (taskId: string) => {
     const dir = engine.taskDir(taskId);
     const st = readReviewState(dir);
-    const review = readReview(dir);
-    // A review from before the structured format: its markdown, read-only.
-    const legacy = !review && existsSync(join(dir, "po-review.md")) ? readFileSync(join(dir, "po-review.md"), "utf8") : null;
-    return { running: productOwners.reviewing(taskId), status: st.status ?? null, error: st.error ?? null, at: st.at ?? null, asking: st.asking ?? null, review, text: legacy };
+    return { running: productOwners.reviewing(taskId), status: st.status ?? null, error: st.error ?? null, at: st.at ?? null, asking: st.asking ?? null, review: readReview(dir) };
 };
 app.get("/api/tasks/:id/po-review", (c) => (engine.getTask(c.req.param("id")) ? c.json(poReviewOf(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
 // The PO's brief on the ticket (written before research): read it, or have the PO write it again.

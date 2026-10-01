@@ -1875,7 +1875,7 @@ const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["t
     return (
         <div className="po-review">
             <div className="actions" style={{ marginTop: 0 }}>
-                <button className="primary" disabled={r.running} onClick={() => void call(() => api.startPoReview(task.id))}>{reviewing ? "The Product Owner is reviewing…" : rev || r.text ? "Review again by Product owner" : "Review by Product owner"}</button>
+                <button className="primary" disabled={r.running} onClick={() => void call(() => api.startPoReview(task.id))}>{reviewing ? "The Product Owner is reviewing…" : rev ? "Review again by Product owner" : "Review by Product owner"}</button>
                 <span className="field-hint">{owner.title}{r.at ? ` · ${r.status ?? ""} ${new Date(r.at).toLocaleString()}` : ""}</span>
             </div>
             {r.status === "failed" && <div className="blocked-box">The review failed: {r.error}</div>}
@@ -1900,12 +1900,6 @@ const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["t
                         </button>
                         <span className="field-hint">{rev.comments.length - picked.length} skipped this round</span>
                     </div>
-                </>
-            )}
-            {!rev && r.text !== null && (
-                <>
-                    <div className="field-hint">A review in the old text format. Review again for comments you can pick and discuss.</div>
-                    <Markdown source={r.text} />
                 </>
             )}
         </div>

@@ -80,7 +80,7 @@ export const readReviewState = (taskDir: string): PoReviewState => {
     }
 };
 const writeReviewState = (taskDir: string, s: PoReviewState): void => writeFileSync(join(taskDir, "po-review-state.json"), JSON.stringify({ ...s, at: now() }, null, 2));
-// The review itself; null when there is none or po-review.json is the run state of the old, text-only review.
+// The review itself; null when there is none.
 export const readReview = (taskDir: string): PoReviewResult | null => {
     try {
         const parsed = PoReviewResult.safeParse(JSON.parse(readFileSync(join(taskDir, "po-review.json"), "utf8")));

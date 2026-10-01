@@ -30,9 +30,4 @@ describe("PO design review", () => {
         expect(notes).not.toContain("Label wording");
         expect(notes).toContain("1 other(s) are skipped");
     });
-    it("reads the old state-only po-review.json as no review", () => {
-        const old = mkdtempSync(join(tmpdir(), "po-review-old-"));
-        writeFileSync(join(old, "po-review.json"), JSON.stringify({ status: "done", at: "t" }));
-        expect(readReview(old)).toBeNull();
-    });
 });
