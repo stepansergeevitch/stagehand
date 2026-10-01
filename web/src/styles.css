@@ -786,3 +786,8 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .list-table tr.clickable:hover td { background: var(--bg); }
 .list-table th.num, .list-table td.num { text-align: right; }
 .env-picker { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.po-verdict { margin: 6px 0 10px; }
+.po-comment-card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+.po-comment-card.picked { border-left: 3px solid var(--accent); }
+.po-comment-card.withdrawn { opacity: 0.55; }
+.po-comment-top { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }

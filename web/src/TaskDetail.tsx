@@ -11,7 +11,7 @@ import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
-import { anchorOf, type Env, type LineComment, type PoReview, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
+import { anchorOf, type Env, type LineComment, type PoDesignReview, type PoReview, type PoReviewComment, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
 
 const isResolved = (c: PrComment): boolean => c.kind === "line" && c.resolved;
 
@@ -1799,41 +1799,113 @@ const PoBriefCard = ({ task, onError }: { task: TaskDetail["task"]; onError: (m:
     );
 };
 
+const SEVERITY_CHIP: Record<PoReviewComment["severity"], string> = { high: "bad", medium: "warn", low: "" };
+
+// One review comment: pick it for the next round, read it, discuss it with the PO.
+const PoReviewCommentCard = ({ c, busy, asking, onPick, onAsk }: { c: PoReviewComment; busy: boolean; asking: boolean; onPick: (v: boolean) => void; onAsk: (text: string) => Promise<void> }) => {
+    const [open, setOpen] = useState(c.thread.length > 0);
+    const [text, setText] = useState("");
+    const send = async (): Promise<void> => {
+        const t = text.trim();
+        if (!t) return;
+        setText("");
+        await onAsk(t);
+    };
+    return (
+        <div className={`po-comment-card${c.withdrawn ? " withdrawn" : ""}${c.include ? " picked" : ""}`}>
+            <div className="po-comment-top">
+                <label className="inline" title={c.withdrawn ? "The Product Owner withdrew this comment" : "Send this comment in the next design round"}>
+                    <input type="checkbox" checked={!!c.include && !c.withdrawn} disabled={c.withdrawn || busy} onChange={(e) => onPick(e.target.checked)} />
+                </label>
+                <span className={`chip ${SEVERITY_CHIP[c.severity]}`}>{c.severity}</span>
+                <span className="chip">{c.area}</span>
+                <b>{c.id} · {c.title}</b>
+                {c.withdrawn && <span className="chip">withdrawn</span>}
+                {c.sentAt && <span className="chip ok" title={new Date(c.sentAt).toLocaleString()}>sent</span>}
+            </div>
+            <Markdown source={c.body} />
+            <button className="tiny" onClick={() => setOpen((o) => !o)}>{open ? "▾" : "▸"} Discuss with Product owner{c.thread.length ? ` (${c.thread.length})` : ""}</button>
+            {open && (
+                <div className="line-thread" style={{ marginLeft: 0 }}>
+                    {c.thread.map((m, i) => (
+                        <div key={i} className={`thread-msg ${m.role === "po" ? "agent" : "user"}`}>
+                            <div className="chat-msg-head"><b>{m.role === "user" ? "You" : "Product Owner"}</b> <span className="field-hint">{new Date(m.at).toLocaleString()}</span></div>
+                            {m.role === "po" ? <Markdown source={m.text} /> : <div>{m.text}</div>}
+                        </div>
+                    ))}
+                    {asking && <div className="thread-msg agent pending">The Product Owner is answering…</div>}
+                    {!asking && (
+                        <>
+                            <AgentInput
+                                placeholder="Push back, ask why, or ask what a fix looks like (⌘/Ctrl+Enter sends)"
+                                value={text}
+                                onChange={setText}
+                                rows={2}
+                                onKeyDown={(e) => {
+                                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                                        e.preventDefault();
+                                        void send();
+                                    }
+                                }}
+                            />
+                            <div className="actions" style={{ marginBottom: 0 }}>
+                                <button className="primary" disabled={!text.trim() || busy} title={busy ? "The Product Owner is busy with this review" : undefined} onClick={() => void send()}>Ask</button>
+                            </div>
+                        </>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
 const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["task"]; owner: ProductOwner | null; onAction: Props["onAction"]; onError: (m: string) => void }) => {
-    const [r, setR] = useState<PoReview | null>(null);
-    const [draft, setDraft] = useState<string | null>(null);
-    const [editing, setEditing] = useState(false);
-    const load = useCallback(() => void api.poReview(task.id).then((x) => { setR(x); if (!editing) setDraft(x.text); }).catch((e: Error) => onError(e.message)), [task.id, editing, onError]);
+    const [r, setR] = useState<PoDesignReview | null>(null);
+    const load = useCallback(() => void api.poReview(task.id).then(setR).catch((e: Error) => onError(e.message)), [task.id, onError]);
     useEffect(load, [load, task.updated_at]);
     if (!owner) return <div className="empty">No Product Owner for this task. Pick one in the header (<b>product owner</b>) to get a product review of the proposal.</div>;
     if (!r) return <div className="empty">loading…</div>;
     const canSend = task.stage === "design_proposal" && task.status === "waiting_user";
+    const rev = r.review;
+    const picked = rev?.comments.filter((c) => c.include && !c.withdrawn) ?? [];
+    const order = { high: 0, medium: 1, low: 2 } as const;
+    const comments = [...(rev?.comments ?? [])].sort((a, b) => Number(a.withdrawn) - Number(b.withdrawn) || order[a.severity] - order[b.severity]);
+    const reviewing = r.running && !r.asking;
+    const call = async (fn: () => Promise<PoDesignReview>) => { try { setR(await fn()); } catch (e) { onError(String((e as Error).message ?? e)); } };
     return (
         <div className="po-review">
             <div className="actions" style={{ marginTop: 0 }}>
-                <button className="primary" disabled={r.running} onClick={() => void onAction(async () => { await api.startPoReview(task.id); load(); })}>{r.running ? "The Product Owner is reviewing…" : r.text ? "Review again by Product owner" : "Review by Product owner"}</button>
+                <button className="primary" disabled={r.running} onClick={() => void call(() => api.startPoReview(task.id))}>{reviewing ? "The Product Owner is reviewing…" : rev || r.text ? "Review again by Product owner" : "Review by Product owner"}</button>
                 <span className="field-hint">{owner.title}{r.at ? ` · ${r.status ?? ""} ${new Date(r.at).toLocaleString()}` : ""}</span>
             </div>
             {r.status === "failed" && <div className="blocked-box">The review failed: {r.error}</div>}
-            {r.text !== null && (
+            {rev && (
                 <>
-                    {editing ? (
-                        <>
-                            <textarea rows={Math.min(30, Math.max(10, (draft ?? "").split("\n").length + 2))} value={draft ?? ""} onChange={(e) => setDraft(e.target.value)} />
-                            <div className="actions">
-                                <button className="primary" onClick={() => void onAction(async () => { await api.savePoReview(task.id, draft ?? ""); setEditing(false); load(); })}>Save</button>
-                                <button onClick={() => { setDraft(r.text); setEditing(false); }}>Cancel</button>
-                            </div>
-                        </>
-                    ) : (
-                        <>
-                            <Markdown source={r.text} />
-                            <div className="actions">
-                                <button onClick={() => setEditing(true)} disabled={r.running}>Edit</button>
-                                <button className="primary" disabled={!canSend || r.running} title={canSend ? "Another design round with this review as the notes" : "The proposal must be waiting for your review"} onClick={() => void onAction(async () => { await api.sendPoReview(task.id); })}>Send to agent</button>
-                            </div>
-                        </>
-                    )}
+                    <div className="po-verdict">
+                        <span className={`chip ${rev.verdict === "approve" ? "ok" : "warn"}`}>{rev.verdict === "approve" ? "approve" : "changes"}</span> <b>{rev.summary}</b>
+                    </div>
+                    {comments.length === 0 ? <div className="quiet">No comments.</div> : comments.map((c) => (
+                        <PoReviewCommentCard
+                            key={c.id}
+                            c={c}
+                            busy={r.running}
+                            asking={r.asking === c.id}
+                            onPick={(v) => void call(() => api.pickPoReviewComment(task.id, c.id, v))}
+                            onAsk={(text) => call(() => api.askPoReviewComment(task.id, c.id, text))}
+                        />
+                    ))}
+                    <div className="actions">
+                        <button className="primary" disabled={!canSend || r.running || picked.length === 0} title={canSend ? "Another design round with the picked comments as the notes" : "The proposal must be waiting for your review"} onClick={() => void onAction(async () => { await api.sendPoReview(task.id); })}>
+                            Send {picked.length} comment{picked.length === 1 ? "" : "s"} to agent
+                        </button>
+                        <span className="field-hint">{rev.comments.length - picked.length} skipped this round</span>
+                    </div>
+                </>
+            )}
+            {!rev && r.text !== null && (
+                <>
+                    <div className="field-hint">A review in the old text format. Review again for comments you can pick and discuss.</div>
+                    <Markdown source={r.text} />
                 </>
             )}
         </div>

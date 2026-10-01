@@ -297,6 +297,12 @@ export interface PoDetail {
 export type PoEvent = { poId: string; kind: "updated" } | { poId: string; kind: "text"; text: string } | { poId: string; kind: "activity"; text: string } | { poId: string; kind: "message"; message: PoMessage };
 export interface PalaceHit { text: string; wing: string; room: string; similarity?: number; source_file?: string }
 export interface PoReview { running: boolean; status: string | null; error: string | null; at: string | null; text: string | null }
+// The PO's review of a design proposal: a verdict and graded comments the human picks and discusses.
+export interface PoReviewComment {
+    id: string; severity: "high" | "medium" | "low"; area: "product" | "scope" | "acceptance" | "qa" | "question"; title: string; body: string;
+    include?: boolean; withdrawn: boolean; sentAt: string | null; thread: Array<{ role: "user" | "po"; text: string; at: string }>;
+}
+export interface PoDesignReview extends PoReview { asking: string | null; review: { verdict: "approve" | "changes"; summary: string; comments: PoReviewComment[] } | null }
 export interface TaskLabel { text: string; color: string }
 export const labelsOf = (t: Pick<Task, "labels">): TaskLabel[] => {
     try {
@@ -551,9 +557,10 @@ export const api = {
     poRejectProposal: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/proposal/reject`),
     poBrief: (taskId: string) => fetch(`/api/tasks/${taskId}/po-brief`).then((r) => j<PoReview>(r)),
     startPoBrief: (taskId: string) => post<PoReview>(`/api/tasks/${taskId}/po-brief`),
-    poReview: (taskId: string) => fetch(`/api/tasks/${taskId}/po-review`).then((r) => j<PoReview>(r)),
-    startPoReview: (taskId: string) => post<PoReview>(`/api/tasks/${taskId}/po-review`),
-    savePoReview: (taskId: string, text: string) => fetch(`/api/tasks/${taskId}/po-review`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).then((r) => j<PoReview>(r)),
+    poReview: (taskId: string) => fetch(`/api/tasks/${taskId}/po-review`).then((r) => j<PoDesignReview>(r)),
+    startPoReview: (taskId: string) => post<PoDesignReview>(`/api/tasks/${taskId}/po-review`),
+    pickPoReviewComment: (taskId: string, cid: string, include: boolean) => fetch(`/api/tasks/${taskId}/po-review/comments/${encodeURIComponent(cid)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ include }) }).then((r) => j<PoDesignReview>(r)),
+    askPoReviewComment: (taskId: string, cid: string, text: string) => post<PoDesignReview>(`/api/tasks/${taskId}/po-review/comments/${encodeURIComponent(cid)}/ask`, { text }),
     sendPoReview: (taskId: string) => post<Task>(`/api/tasks/${taskId}/po-review/send`),
     setTaskProductOwner: (taskId: string, productOwnerId: string | null) => fetch(`/api/tasks/${taskId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ productOwnerId }) }).then((r) => j<Task>(r)),
     notion: () => fetch("/api/integrations/notion").then((r) => j<{ configured: boolean; token: string | null }>(r)),

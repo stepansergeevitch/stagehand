@@ -49,6 +49,67 @@ export const PoTicket = z.object({
 export const PoTickets = z.object({ tickets: z.array(PoTicket) });
 export type PoTicket = z.infer<typeof PoTicket>;
 
+// A PO review of a task's design proposal (po-review.json in the task folder): a verdict and graded comments. The
+// human picks the comments for the next design round (`include`), and discusses each one with the PO (`thread`).
+export const PoReviewComment = z.object({
+    id: z.string(),
+    severity: z.enum(["high", "medium", "low"]),
+    area: z.enum(["product", "scope", "acceptance", "qa", "question"]).default("product"),
+    title: z.string().min(1),
+    body: z.string().default(""),
+    // Unset = by severity: high and medium go to the next round, low does not.
+    include: z.boolean().optional(),
+    withdrawn: z.boolean().default(false),
+    // When it went to the design agent (null = not yet).
+    sentAt: z.string().nullable().default(null),
+    thread: z.array(z.object({ role: z.enum(["user", "po"]), text: z.string(), at: z.string() })).default([]),
+});
+export const PoReviewResult = z.object({ verdict: z.enum(["approve", "changes"]), summary: z.string(), comments: z.array(PoReviewComment) });
+export type PoReviewComment = z.infer<typeof PoReviewComment>;
+export type PoReviewResult = z.infer<typeof PoReviewResult>;
+const REVIEW_SHAPE = `{ "verdict": "approve" | "changes", "summary": "…", "comments": [ { "id": "C1", "severity": "high" | "medium" | "low", "area": "product" | "scope" | "acceptance" | "qa" | "question", "title": "…", "body": "markdown" } ] }`;
+const withDefaults = (r: PoReviewResult): PoReviewResult => ({ ...r, comments: r.comments.map((c) => ({ ...c, include: c.include ?? (!c.withdrawn && c.severity !== "low") })) });
+
+// The review's run state (po-review-state.json): status, error, the review's session, the comment being discussed.
+export interface PoReviewState { status?: "running" | "done" | "failed"; error?: string; at?: string; sessionId?: string; asking?: string }
+export const readReviewState = (taskDir: string): PoReviewState => {
+    try {
+        return JSON.parse(readFileSync(join(taskDir, "po-review-state.json"), "utf8")) as PoReviewState;
+    } catch {
+        return {};
+    }
+};
+const writeReviewState = (taskDir: string, s: PoReviewState): void => writeFileSync(join(taskDir, "po-review-state.json"), JSON.stringify({ ...s, at: now() }, null, 2));
+// The review itself; null when there is none or po-review.json is the run state of the old, text-only review.
+export const readReview = (taskDir: string): PoReviewResult | null => {
+    try {
+        const parsed = PoReviewResult.safeParse(JSON.parse(readFileSync(join(taskDir, "po-review.json"), "utf8")));
+        return parsed.success ? withDefaults(parsed.data) : null;
+    } catch {
+        return null;
+    }
+};
+
+// The picked comments of a review as the notes of the next design round, with their discussions.
+export const reviewNotes = (r: PoReviewResult, poTitle: string | null): string => {
+    const picked = r.comments.filter((c) => c.include && !c.withdrawn);
+    const skipped = r.comments.length - picked.length;
+    return [
+        `## Product Owner review${poTitle ? ` — ${poTitle}` : ""}`,
+        `**Verdict: ${r.verdict}** — ${r.summary}`,
+        `The project's Product Owner reviewed this proposal as product. The human picked these ${picked.length} comment(s) for this round${skipped ? `; ${skipped} other(s) are skipped for now — do not act on them` : ""}. Address every one.`,
+        ...picked.map((c) =>
+            [
+                `### ${c.id} · ${c.severity} · ${c.area} — ${c.title}`,
+                c.body,
+                c.thread.length ? `**Discussion with the human:**\n${c.thread.map((m) => `- **${m.role === "user" ? "Human" : "Product Owner"}:** ${m.text.replace(/\n+/g, " ")}`).join("\n")}` : "",
+            ]
+                .filter(Boolean)
+                .join("\n\n"),
+        ),
+    ].join("\n\n");
+};
+
 export type PoEvent =
     | { poId: string; kind: "updated" }
     | { poId: string; kind: "text"; text: string }
@@ -982,33 +1043,34 @@ export class ProductOwners {
         return this.reviews.has(taskId);
     }
 
-    // "Review by Product owner": a fresh session in the PO's context reads the task's proposal and writes po-review.md
-    // into the task folder. It never edits the proposal itself; the human edits the review and sends it on.
+    // "Review by Product owner": a fresh session in the PO's context reads the task's proposal and writes po-review.json
+    // — a short verdict and graded comments the human picks for the next design round, each with its own chat with the
+    // PO (askReviewComment, resuming the review's session). It never edits the proposal itself.
     async reviewTask(task: TaskRow, taskDir: string, onDone: () => void): Promise<void> {
         if (!task.product_owner_id) throw new Error("this task has no Product Owner");
         const po = this.get(task.product_owner_id);
         if (!po) throw new Error("the task's Product Owner no longer exists");
-        if (this.reviews.has(task.id)) throw new Error("the Product Owner is already reviewing this task");
+        if (this.reviews.has(task.id)) throw new Error("the Product Owner is already working on this review");
         if (!existsSync(join(taskDir, "design.md"))) throw new Error("the task has no design proposal yet");
         const acc = this.account(po);
         if (!acc?.oauth_token) throw new Error("no AI account with a token — set one up on the AI accounts page");
         this.trust(po.id);
-        const out = join(taskDir, "po-review.md");
-        const state = (s: Record<string, unknown>): void => writeFileSync(join(taskDir, "po-review.json"), JSON.stringify({ ...s, at: now() }, null, 2));
-        state({ status: "running" });
+        const out = join(taskDir, "po-review.json");
+        const sessionId = randomUUID();
+        writeReviewState(taskDir, { status: "running", sessionId });
         const prompt = [
             `Review the design proposal of task ${task.ticket_id}${task.title ? ` (${task.title})` : ""} as the Product Owner of "${po.title}".`,
-            `Read ${taskDir}/design.md, ${taskDir}/design.json (its QA scenarios), ${taskDir}/research.md and ${taskDir}/ticket.json. Search the palace for the product facts that matter. ${task.worktree_path ? `The code is in ${task.worktree_path}; read it only to check a claim.` : ""}`,
-            `Judge the proposal as product, not as code: does it solve the ticket's problem for its users, does the scope match the ticket and the project, do the QA scenarios test what the user needs, what does it miss or break for other parts of the product.`,
-            `Write ${out} with exactly these \`## \` sections: \`Verdict\` (one line: **approve** or **changes** — and why, 20 words or fewer), \`Product concerns\`, \`Scope gaps\`, \`Acceptance criteria\` (each one: met, missed or unclear), \`QA scenarios\`, \`Questions\`. Every bullet opens with a bold lead-in. Leave a section with "None." when it has nothing. Do not change any other file of the task.`,
-            `Then answer with one line: DONE.`,
+            `Read ${taskDir}/design.md, ${taskDir}/design.json (its QA scenarios), ${taskDir}/research.md and ${taskDir}/ticket.json. Search your environment's wings for the product facts that matter. ${task.worktree_path ? `The code is in ${task.worktree_path}; read it only to check a claim.` : ""}`,
+            `Judge the proposal as product, not as code: does it solve the ticket's problem for its users, does the scope match the ticket and the project, are the acceptance criteria met, do the QA scenarios test what the user needs, what does it miss or break for other parts of the product.`,
+            `Write ${out} with exactly this JSON shape:\n\n\`\`\`json\n${REVIEW_SHAPE}\n\`\`\`\n\n- **verdict** — "approve" when nothing high is left, else "changes".\n- **summary** — 20 words or fewer: the verdict and the main reason.\n- **comments** — one problem each, ids C1, C2, … in order of importance. Grade each: **high** = must change before implementation (wrong for the users, breaks the scope or an acceptance criterion); **medium** = a real gap the next round should close; **low** = a nice-to-have or a question. **area**: product, scope, acceptance, qa or question. **title**: 12 words or fewer. **body**: 80 words or fewer — what is wrong, why it matters for the product, what to do; name the source (a decision, a comment and its author). No comment for things that are right.`,
+            `Do not change any other file of the task. Then answer with one line: DONE.`,
         ].join("\n\n");
         const run = startClaude({
             prompt,
             cwd: this.dir(po.id),
             configDir: this.configDir,
             extraEnv: this.runEnv(po, acc),
-            sessionId: randomUUID(),
+            sessionId,
             name: `${po.slug}-review-${task.ticket_id}`,
             ...(this.cfg.defaultModel ? { model: this.cfg.defaultModel } : {}),
             maxTurns: 60,
@@ -1017,14 +1079,83 @@ export class ProductOwners {
             mcpConfig: this.palace.mcpConfigPath,
             eventLogPath: join(taskDir, `po-review-${Date.now()}.ndjson`),
         });
+        const started = Date.now();
         this.reviews.set(task.id, run);
         onDone();
         void run.done.then((outcome) => {
             this.reviews.delete(task.id);
             if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: task.env_id, taskId: task.id, runId: null, kind: "product_owner", stage: null }, outcome.result);
-            const ok = existsSync(out) && statSync(out).mtimeMs > Date.now() - 2 * 3600_000;
-            state(ok ? { status: "done" } : { status: "failed", error: outcome.stderr.trim().split("\n").pop()?.slice(0, 300) || `exited with ${outcome.exitCode ?? "?"}` });
+            let error: string | null = null;
+            if (!existsSync(out) || statSync(out).mtimeMs < started - 1000) error = outcome.stderr.trim().split("\n").pop()?.slice(0, 300) || `no po-review.json written (exited with ${outcome.exitCode ?? "?"})`;
+            else {
+                const parsed = PoReviewResult.safeParse(JSON.parse(readFileSync(out, "utf8")));
+                if (!parsed.success) error = `po-review.json does not match its shape: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`;
+                else writeFileSync(out, JSON.stringify(withDefaults(parsed.data), null, 2));
+            }
+            writeReviewState(taskDir, error ? { status: "failed", error, sessionId } : { status: "done", sessionId });
             onDone();
+        });
+    }
+
+    // A question about one review comment, answered in the review's own session. The PO may regrade the comment
+    // ("SEVERITY: low") or withdraw it ("WITHDRAW") on the last line of its answer.
+    async askReviewComment(task: TaskRow, taskDir: string, commentId: string, text: string, onChange: () => void): Promise<void> {
+        const po = task.product_owner_id ? this.get(task.product_owner_id) : undefined;
+        if (!po) throw new Error("this task has no Product Owner");
+        if (this.reviews.has(task.id)) throw new Error("the Product Owner is still working on this review — ask when it is done");
+        const state = readReviewState(taskDir);
+        const review = readReview(taskDir);
+        const c = review?.comments.find((x) => x.id === commentId);
+        if (!review || !c) throw new Error("no such review comment");
+        const acc = this.account(po);
+        if (!acc?.oauth_token) throw new Error("no AI account with a token — set one up on the AI accounts page");
+        c.thread.push({ role: "user", text, at: now() });
+        writeFileSync(join(taskDir, "po-review.json"), JSON.stringify(review, null, 2));
+        writeReviewState(taskDir, { ...state, asking: commentId });
+        const prompt = [
+            `The human asks about your review comment ${c.id} (${c.severity}, ${c.area}): "${c.title}" — ${c.body}`,
+            `Their message: ${text}`,
+            `Answer in 120 words or fewer, as the Product Owner, by the writing rules. Check the proposal and the palace again when the question needs it. Do not change any file.`,
+            `When the discussion changes your view, end with one line: "SEVERITY: high", "SEVERITY: medium" or "SEVERITY: low" to regrade the comment, or "WITHDRAW" to drop it. Otherwise end without such a line.`,
+        ].join("\n\n");
+        const run = startClaude({
+            prompt,
+            cwd: this.dir(po.id),
+            configDir: this.configDir,
+            extraEnv: this.runEnv(po, acc),
+            ...(state.sessionId ? { resume: state.sessionId } : { sessionId: randomUUID() }),
+            ...(this.cfg.defaultModel ? { model: this.cfg.defaultModel } : {}),
+            maxTurns: 30,
+            addDirs: [taskDir, ...(task.worktree_path ? [task.worktree_path] : [])],
+            appendSystemPrompt: this.systemPrompt(po),
+            mcpConfig: this.palace.mcpConfigPath,
+            eventLogPath: join(taskDir, `po-review-ask-${Date.now()}.ndjson`),
+        });
+        this.reviews.set(task.id, run);
+        onChange();
+        void run.done.then((outcome) => {
+            this.reviews.delete(task.id);
+            if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: task.env_id, taskId: task.id, runId: null, kind: "product_owner", stage: null }, outcome.result);
+            const fresh = readReview(taskDir);
+            const fc = fresh?.comments.find((x) => x.id === commentId);
+            if (fresh && fc) {
+                let reply = (outcome.result?.result ?? "").trim() || `(no answer: ${outcome.stderr.trim().split("\n").pop()?.slice(0, 200) || "the run failed"})`;
+                const last = reply.split("\n").pop()?.trim() ?? "";
+                const sev = /^SEVERITY:\s*(high|medium|low)\b/i.exec(last);
+                if (sev) {
+                    fc.severity = sev[1]!.toLowerCase() as PoReviewComment["severity"];
+                    reply = reply.split("\n").slice(0, -1).join("\n").trim() + `\n\n*Regraded to **${fc.severity}**.*`;
+                } else if (/^WITHDRAW\b/i.test(last)) {
+                    fc.withdrawn = true;
+                    fc.include = false;
+                    reply = reply.split("\n").slice(0, -1).join("\n").trim() + "\n\n*Withdrawn.*";
+                }
+                fc.thread.push({ role: "po", text: reply, at: now() });
+                writeFileSync(join(taskDir, "po-review.json"), JSON.stringify(fresh, null, 2));
+            }
+            const { asking: _a, ...rest } = readReviewState(taskDir);
+            writeReviewState(taskDir, rest);
+            onChange();
         });
     }
 }

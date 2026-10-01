@@ -34,7 +34,7 @@ import { Engine } from "./engine.js";
 import { Services, DEPENDENCY_KIND } from "./services.js";
 import { Sessions } from "./sessions.js";
 import { Palace } from "./palace.js";
-import { ProductOwners, PoTickets } from "./product-owners.js";
+import { ProductOwners, PoTickets, readReview, readReviewState, reviewNotes } from "./product-owners.js";
 import { Prompter } from "./prompter.js";
 import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, probeRateLimits, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
 import { collapseLargeFiles, envRepos, isGitRepo, repoPaths, type DiffGroup } from "./git.js";
@@ -2155,14 +2155,11 @@ app.post("/api/product-owners/:id/proposal/reject", (c) => {
 
 const poReviewOf = (taskId: string) => {
     const dir = engine.taskDir(taskId);
-    const read = (f: string): string | null => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : null);
-    let state: { status?: string; error?: string; at?: string } = {};
-    try {
-        state = JSON.parse(read("po-review.json") ?? "{}") as typeof state;
-    } catch {
-        /* none yet */
-    }
-    return { running: productOwners.reviewing(taskId), status: state.status ?? null, error: state.error ?? null, at: state.at ?? null, text: read("po-review.md") };
+    const st = readReviewState(dir);
+    const review = readReview(dir);
+    // A review from before the structured format: its markdown, read-only.
+    const legacy = !review && existsSync(join(dir, "po-review.md")) ? readFileSync(join(dir, "po-review.md"), "utf8") : null;
+    return { running: productOwners.reviewing(taskId), status: st.status ?? null, error: st.error ?? null, at: st.at ?? null, asking: st.asking ?? null, review, text: legacy };
 };
 app.get("/api/tasks/:id/po-review", (c) => (engine.getTask(c.req.param("id")) ? c.json(poReviewOf(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
 // The PO's brief on the ticket (written before research): read it, or have the PO write it again.
@@ -2196,23 +2193,46 @@ app.post("/api/tasks/:id/po-review", async (c) => {
         return poErr(c, e);
     }
 });
-app.put("/api/tasks/:id/po-review", async (c) => {
+// Pick or skip one comment for the next design round.
+app.patch("/api/tasks/:id/po-review/comments/:cid", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
-    const body = json(z.object({ text: z.string() }), await c.req.json());
-    writeFileSync(join(engine.taskDir(task.id), "po-review.md"), body.text);
+    const body = json(z.object({ include: z.boolean() }), await c.req.json());
+    const dir = engine.taskDir(task.id);
+    const review = readReview(dir);
+    const cm = review?.comments.find((x) => x.id === c.req.param("cid"));
+    if (!review || !cm) return c.json({ error: "no such review comment" }, 404);
+    cm.include = body.include;
+    writeFileSync(join(dir, "po-review.json"), JSON.stringify(review, null, 2));
     engine.touchTask(task.id);
     return c.json(poReviewOf(task.id));
 });
-// "Send to agent": another design round with the PO review as the reviewer's notes.
+// Discuss one comment with the PO; the answer lands in the comment's thread.
+app.post("/api/tasks/:id/po-review/comments/:cid/ask", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    const body = json(z.object({ text: z.string().trim().min(1).max(8000) }), await c.req.json());
+    try {
+        await productOwners.askReviewComment(task, engine.taskDir(task.id), c.req.param("cid"), body.text, () => engine.touchTask(task.id));
+        return c.json(poReviewOf(task.id));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
 app.post("/api/tasks/:id/po-review/send", (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
-    const r = poReviewOf(task.id);
-    if (!r.text?.trim()) return c.json({ error: "there is no Product Owner review to send" }, 400);
+    const dir = engine.taskDir(task.id);
+    const review = readReview(dir);
+    if (!review) return c.json({ error: "there is no Product Owner review to send" }, 400);
     if (task.stage !== "design_proposal" || task.status !== "waiting_user") return c.json({ error: "the design proposal is not waiting for review" }, 400);
+    if (!review.comments.some((x) => x.include && !x.withdrawn)) return c.json({ error: "pick at least one comment for the next round" }, 400);
     const po = task.product_owner_id ? productOwners.get(task.product_owner_id) : undefined;
-    engine.review(task.id, { verdict: "changes", notes: `## Product Owner review${po ? ` — ${po.title}` : ""}\n\nThe project's Product Owner reviewed this proposal as product. Address every point.\n\n${r.text.trim()}` });
+    const notes = reviewNotes(review, po?.title ?? null);
+    const at = new Date().toISOString();
+    for (const x of review.comments) if (x.include && !x.withdrawn) x.sentAt = at;
+    writeFileSync(join(dir, "po-review.json"), JSON.stringify(review, null, 2));
+    engine.review(task.id, { verdict: "changes", notes });
     return c.json(engine.getTask(task.id));
 });
 
