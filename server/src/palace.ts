@@ -79,6 +79,19 @@ export class Palace {
         await this.run(["put", "--id", id, "--wing", wing, "--room", room, "--source", source], content);
     }
 
+    // Many drawers in one call (an artifact's chunks): upserted by id, metadata as given plus who filed them and when.
+    async putMany(drawers: Array<{ id: string; text: string; meta: Record<string, string | number> }>): Promise<void> {
+        if (!drawers.length) return;
+        await this.run(["put-many"], JSON.stringify({ ids: drawers.map((d) => d.id), documents: drawers.map((d) => d.text), metadatas: drawers.map((d) => d.meta) }));
+    }
+
+    // Removes every drawer whose metadata matches (one key: {"artifact_id": "…"}).
+    async deleteWhere(where: Record<string, string> | null, ids: string[] = []): Promise<number> {
+        const args = ["delete", ...(where ? ["--where", JSON.stringify(where)] : []), ...(ids.length ? ["--ids", ids.join(",")] : [])];
+        const r = (await this.run(args)) as { deleted?: number };
+        return r.deleted ?? 0;
+    }
+
     async search(query: string, opts: { wing?: string | undefined; room?: string | undefined; limit?: number } = {}): Promise<PalaceHit[]> {
         const args = ["search", "--query", query, "--limit", String(opts.limit ?? 8)];
         if (opts.wing) args.push("--wing", opts.wing);

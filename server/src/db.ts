@@ -813,8 +813,8 @@ export interface ProductOwnerRow {
     issues_error?: string | null;
 }
 export interface PoMessageRow { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
-export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string }
-export interface PoIssueRow { po_id: string; identifier: string; remote_id: string; hash: string; data: string; fetched_at: string; changed_at: string }
+export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; indexed_hash?: string | null; chunks?: number | null }
+export interface PoIssueRow { po_id: string; identifier: string; remote_id: string; hash: string; data: string; fetched_at: string; changed_at: string; indexed_hash?: string | null }
 export interface PoTicketLinkRow { po_id: string; key: string; remote_id: string; identifier: string | null; url: string | null; created_at: string }
 
 // One row per change of a task's (stage, status) — the timing analytics read how long a task sat where (working,
@@ -922,6 +922,10 @@ const MIGRATIONS: Array<[string, string]> = [
     ["tasks.product_owner_id", `ALTER TABLE tasks ADD COLUMN product_owner_id TEXT`],
     ["product_owners.issues_refreshed_at", `ALTER TABLE product_owners ADD COLUMN issues_refreshed_at TEXT`],
     ["product_owners.issues_error", `ALTER TABLE product_owners ADD COLUMN issues_error TEXT`],
+    // The hash of the text last filed in the palace as chunks (null = not filed yet), and how many chunks it made.
+    ["po_artifacts.indexed_hash", `ALTER TABLE po_artifacts ADD COLUMN indexed_hash TEXT`],
+    ["po_artifacts.chunks", `ALTER TABLE po_artifacts ADD COLUMN chunks INTEGER`],
+    ["po_issues.indexed_hash", `ALTER TABLE po_issues ADD COLUMN indexed_hash TEXT`],
     // A BE/FE that never came up (start timeout, command exited, tmux session gone) — the row stays visible as failed
     // until it is stopped or restarted, so the human sees why and can hand it to the agent.
     ["services.failed_at", `ALTER TABLE services ADD COLUMN failed_at TEXT`],

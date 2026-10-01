@@ -28,7 +28,15 @@ Never create, edit or close tickets in Linear or ClickUp yourself. Stagehand cre
 
 ## Sources
 
-The artifacts listed in the system prompt are markdown files in `artifacts/`. Read them before you answer about them. To add a source the human names (a Linear project or issue, a ClickUp task, a Notion page, a web page), fetch it through Stagehand — it stores the result as an artifact:
+The artifacts listed in the system prompt are markdown files in `artifacts/`. Stagehand files each one in your palace wing, room `artifacts`, as verbatim chunks; it files every issue of the project (head, description, each comment) in room `issues`. Each chunk opens with a locator: `[title › section · file L12-30]`.
+
+**Search first. Read a file only when search is not enough.**
+- **Search** — `mempalace_search` with your wing and room `artifacts` or `issues` answers most questions. Use several short queries before you open a file.
+- **Read a span** — when you need the exact wording or the text around a hit, read only the lines its locator names (`Read` with `offset` and `limit`).
+- **Read a whole file** — only to take in a new source the human just gave you, or when the question needs the whole document (a full review, a summary of it).
+- **`issues.md`** — the current state of every issue. Read it whole only when you need all issues at once.
+
+To add a source the human names (a Linear project or issue, a ClickUp task, a Notion page, a web page), fetch it through Stagehand — it stores the result as an artifact:
 
 ```bash
 curl -s -X POST "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/artifacts/fetch" -H 'content-type: application/json' -d '{"url":"<url>"}'

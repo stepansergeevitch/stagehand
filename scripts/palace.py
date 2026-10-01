@@ -6,6 +6,8 @@ so Stagehand upserts it here by a fixed id. Search goes through mempalace's own 
 
   palace.py --palace <dir> get --id <drawer_id>
   palace.py --palace <dir> put --id <drawer_id> --wing <w> --room <r> [--source <s>]   (content on stdin)
+  palace.py --palace <dir> put-many          (stdin: {"ids": [...], "documents": [...], "metadatas": [...]})
+  palace.py --palace <dir> delete [--where <json>] [--ids a,b]   (a Chroma where filter, e.g. {"artifact_id": "…"})
   palace.py --palace <dir> search --query <q> [--wing <w>] [--room <r>] [--limit <n>]
   palace.py --palace <dir> status
 """
@@ -35,6 +37,10 @@ def main():
     p.add_argument("--wing", required=True)
     p.add_argument("--room", required=True)
     p.add_argument("--source", default="stagehand")
+    sub.add_parser("put-many")
+    d = sub.add_parser("delete")
+    d.add_argument("--where")
+    d.add_argument("--ids", help="comma-separated drawer ids")
     s = sub.add_parser("search")
     s.add_argument("--query", required=True)
     s.add_argument("--wing")
@@ -62,6 +68,28 @@ def main():
             metadatas=[{"wing": a.wing, "room": a.room, "source_file": a.source, "chunk_index": 0, "added_by": "stagehand", "filed_at": datetime.now().isoformat()}],
         )
         print(json.dumps({"ok": True, "id": a.id}))
+    elif a.cmd == "put-many":
+        batch = json.loads(sys.stdin.read())
+        col = collection(a.palace, create=True)
+        at = datetime.now().isoformat()
+        metas = [{**m, "added_by": "stagehand", "filed_at": at} for m in batch["metadatas"]]
+        for i in range(0, len(batch["ids"]), 200):
+            col.upsert(ids=batch["ids"][i : i + 200], documents=batch["documents"][i : i + 200], metadatas=metas[i : i + 200])
+        print(json.dumps({"ok": True, "count": len(batch["ids"])}))
+    elif a.cmd == "delete":
+        try:
+            col = collection(a.palace)
+        except Exception:
+            print(json.dumps({"ok": True, "deleted": 0}))
+            return
+        ids = [i for i in (a.ids or "").split(",") if i]
+        if ids:
+            ids = col.get(ids=ids, include=[])["ids"]
+        if a.where:
+            ids += col.get(where=json.loads(a.where), include=[])["ids"]
+        if ids:
+            col.delete(ids=ids)
+        print(json.dumps({"ok": True, "deleted": len(ids)}))
     elif a.cmd == "search":
         from mempalace.searcher import search_memories
 

@@ -11,6 +11,7 @@ import { recordUsage } from "./usage.js";
 import type { Palace } from "./palace.js";
 import { createClickUpTask, createLinearIssue, fetchScope, fetchScopeIssues, fetchSource, findIssue, ticketScopeId, type TrackedIssue } from "./sources.js";
 import { sharedFileName } from "./tickets.js";
+import { chunkText, drawerText, issueDrawers } from "./palace-index.js";
 
 // Product Owners — one per project of the product (a Linear project, a ClickUp epic). The human plans the project with
 // its PO in a chat while the PO keeps three documents the UI shows as pages: context.md (the living project context),
@@ -362,12 +363,7 @@ export class ProductOwners {
     }
     private insertArtifact(a: PoArtifactRow): PoArtifactRow {
         this.db.prepare(`INSERT INTO po_artifacts (id, po_id, kind, title, source_url, file, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(a.id, a.po_id, a.kind, a.title, a.source_url, a.file, a.mime, a.size, a.created_at);
-        const po = this.get(a.po_id);
-        // Text sources are searchable in the PO's wing; the file on disk stays the verbatim copy.
-        if (po && (a.mime?.startsWith("text/") || /\.(md|txt|csv|json)$/i.test(a.file))) {
-            const text = readFileSync(join(this.dir(a.po_id), a.file), "utf8").slice(0, 200_000);
-            void this.palace.put(`art_${a.id}`, this.wing(po), "artifacts", `${a.title}\n${a.source_url ?? ""}\n\n${text}`, a.file).catch(() => undefined);
-        }
+        this.queueIndex(a.po_id, a.id);
         this.emit({ poId: a.po_id, kind: "updated" });
         return a;
     }
@@ -395,9 +391,73 @@ export class ProductOwners {
     removeArtifact(poId: string, artifactId: string): void {
         const a = this.db.prepare(`SELECT * FROM po_artifacts WHERE id = ? AND po_id = ?`).get(artifactId, poId) as PoArtifactRow | undefined;
         if (!a) return;
+        this.indexing = this.indexing.then(() => this.palace.deleteWhere({ artifact_id: a.id }, [`art_${a.id}`])).then(() => undefined, () => undefined);
         rmSync(join(this.dir(poId), a.file), { force: true });
         this.db.prepare(`DELETE FROM po_artifacts WHERE id = ?`).run(artifactId);
         this.emit({ poId, kind: "updated" });
+    }
+
+    // ---------- the palace index of sources and issues ----------
+
+    // Palace writes run one at a time: each is a Python process on the same Chroma store.
+    private indexing: Promise<void> = Promise.resolve();
+    private queueIndex(poId: string, artifactId: string): void {
+        this.indexing = this.indexing.then(() => this.indexArtifact(poId, artifactId)).catch((e: unknown) => console.warn(`[po] index ${artifactId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+    }
+
+    // Files a text source as verbatim chunks (see palace-index.ts), replacing the ones filed before. A text whose hash
+    // matches the last filing is skipped. The old single drawer `art_<id>` goes too.
+    private async indexArtifact(poId: string, artifactId: string): Promise<void> {
+        const po = this.get(poId);
+        const a = this.db.prepare(`SELECT * FROM po_artifacts WHERE id = ? AND po_id = ?`).get(artifactId, poId) as PoArtifactRow | undefined;
+        if (!po || !a) return;
+        if (!(a.mime?.startsWith("text/") || /\.(md|txt|csv|json)$/i.test(a.file))) return;
+        const path = join(this.dir(poId), a.file);
+        if (!existsSync(path)) return;
+        const text = readFileSync(path, "utf8");
+        const hash = createHash("sha256").update(text).digest("hex");
+        if (a.indexed_hash === hash) return;
+        const chunks = chunkText(text);
+        await this.palace.deleteWhere({ artifact_id: a.id }, [`art_${a.id}`]);
+        await this.palace.putMany(
+            chunks.map((c, n) => ({
+                id: `art_${a.id}_${n}`,
+                text: drawerText(a.title, a.file, c),
+                meta: { wing: this.wing(po), room: "artifacts", source_file: a.file, chunk_index: n, artifact_id: a.id, section: c.section.slice(0, 200) },
+            })),
+        );
+        this.db.prepare(`UPDATE po_artifacts SET indexed_hash = ?, chunks = ? WHERE id = ?`).run(hash, chunks.length, a.id);
+        this.emit({ poId, kind: "updated" });
+    }
+
+    // Files one issue (its head and description, each comment) in room `issues`, replacing what was filed before.
+    private queueIssueIndex(po: ProductOwnerRow, identifier: string): void {
+        this.indexing = this.indexing
+            .then(async () => {
+                const row = this.db.prepare(`SELECT * FROM po_issues WHERE po_id = ? AND identifier = ?`).get(po.id, identifier) as PoIssueRow | undefined;
+                const ref = `${po.id}:${identifier}`;
+                await this.palace.deleteWhere({ issue_ref: ref });
+                if (!row) return;
+                const issue = JSON.parse(row.data) as TrackedIssue;
+                await this.palace.putMany(
+                    issueDrawers(issue).map((d, n) => ({
+                        id: `iss_${po.id.slice(0, 8)}_${identifier}_${d.part}`,
+                        text: d.text,
+                        meta: { wing: this.wing(po), room: "issues", source_file: "issues.md", chunk_index: n, issue_ref: ref, issue: identifier },
+                    })),
+                );
+                this.db.prepare(`UPDATE po_issues SET indexed_hash = ? WHERE po_id = ? AND identifier = ?`).run(row.hash, po.id, identifier);
+            })
+            .catch((e: unknown) => console.warn(`[po] index issue ${identifier}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+    }
+
+    // At start: file what is not filed yet, or changed since (sources from before chunking, issues of the first refresh).
+    private reindexAll(): void {
+        for (const po of this.list()) {
+            for (const a of this.artifacts(po.id)) if (!a.indexed_hash) this.queueIndex(po.id, a.id);
+            const rows = this.db.prepare(`SELECT identifier FROM po_issues WHERE po_id = ? AND (indexed_hash IS NULL OR indexed_hash != hash)`).all(po.id) as Array<{ identifier: string }>;
+            for (const r of rows) this.queueIssueIndex(po, r.identifier);
+        }
     }
 
     // ---------- revisions ----------
@@ -455,8 +515,8 @@ export class ProductOwners {
             `Phase: ${PHASE_LABEL[po.phase]}. ${phaseNote[po.phase]}`,
             `## Product context (the whole product — read-only; propose a change in product-context-proposal.md)\n\n${this.productContext().trim() || "(empty — ask the human for it when you need it)"}`,
             `## Your project context (context.md)\n\n${ctx.trim() || "(empty — write it)"}`,
-            `## Issues\n\nissues.md in your folder holds the current state of every issue of the project, with its comments. Stagehand reads them again every hour and tells you what changed.`,
-            `## Artifacts (${arts.length})\n\n${arts.map((a) => `- ${a.file} — ${a.title}${a.source_url ? ` (${a.source_url})` : ""} [${a.kind}]`).join("\n") || "(none)"}`,
+            `## Issues\n\nEvery issue of the project, with its comments, is in your wing, room \`issues\` (current state in full: issues.md). Stagehand reads them again every hour and tells you what changed.`,
+            `## Artifacts (${arts.length}) — search them in your wing, room \`artifacts\`; read a file only when search is not enough\n\n${arts.map((a) => `- ${a.file} — ${a.title}${a.source_url ? ` (${a.source_url})` : ""} [${a.kind}${a.chunks ? `, ${a.chunks} chunks` : ""}]`).join("\n") || "(none)"}`,
             `Local API: ${this.apiUrl} (STAGEHAND_API). Now: ${new Date().toLocaleString()}.`,
         ].join("\n\n");
     }
@@ -598,6 +658,7 @@ export class ProductOwners {
             }
         };
         this.refreshTimer = setInterval(() => void tick(), ISSUES_TICK_MS);
+        setTimeout(() => this.reindexAll(), 20_000);
         setTimeout(() => void tick(), 60_000);
     }
 
@@ -657,6 +718,8 @@ export class ProductOwners {
                 this.db.prepare(`UPDATE product_owners SET issues_refreshed_at = ?, issues_error = NULL WHERE id = ?`).run(at, poId);
             })();
             writeFileSync(join(this.dir(poId), "issues.md"), renderIssues(fetched, at));
+            for (const i of fetched) if (prev.get(i.identifier)?.hash !== issueHash(i)) this.queueIssueIndex(po, i.identifier);
+            for (const id of prev.keys()) if (!fetched.some((i) => i.identifier === id)) this.queueIssueIndex(po, id);
             this.assignTasksOfIssues(po, fetched);
             let briefed = false;
             const commented = fetched.filter((i) => i.comments.length).length;
