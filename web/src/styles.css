@@ -775,7 +775,7 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .po-comment-head { font-size: 12px; margin-bottom: 2px; }
 .po-paste { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
 .po-paste textarea { width: 100%; font: inherit; }
-.sidebar .caret { width: 10px; font-size: 10px; color: var(--ink-3); }
+.sidebar .caret { margin-left: auto; font-size: 10px; color: var(--ink-3); }
 .sidebar button.child { padding-left: 28px; }
 @media (max-width: 760px) { .sidebar button.child { padding-left: 10px; } }
 .po-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

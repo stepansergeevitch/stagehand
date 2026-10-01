@@ -84,8 +84,8 @@ const SidebarTree = ({ page, renderItem }: { page: Page; renderItem: (n: NavItem
                 const within = g.items.some((n) => n.id === page);
                 return [
                     <button key={`group-${g.group}`} className={`sidebar-node${!open && within ? " active" : ""}`} aria-expanded={open} onClick={() => toggle(g.group!)}>
-                        <span className="caret">{open ? "▾" : "▸"}</span>
                         {g.group}
+                        <span className="caret">{open ? "▾" : "▸"}</span>
                     </button>,
                     ...(open ? g.items.map((n) => renderItem(n, true)) : []),
                 ];
