@@ -69,6 +69,7 @@ const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev), pala
 const productOwners = new ProductOwners(db, cfg, palace, (ev) => engine.emit("po", ev), `http://127.0.0.1:${cfg.port}`, (taskId) => engine.touchTask(taskId));
 productOwners.ensureHome();
 productOwners.backfillEnvs();
+void productOwners.migrateGlobalContext().catch((e: unknown) => console.warn(`[po] product context migration: ${String((e as Error).message ?? e)}`));
 productOwners.startIssueRefresh();
 engine.setPoBriefer((task, taskDir) => productOwners.briefTask(task, taskDir, () => engine.touchTask(task.id)));
 
@@ -1950,18 +1951,26 @@ app.get("/api/sessions/:id/commits", async (c) => {
 
 const poErr = (c: { json: (b: unknown, s?: number) => Response }, e: unknown) => c.json({ error: String((e as Error).message ?? e).slice(0, 400) }, 400);
 
-app.get("/api/product/context", (c) => c.json({ text: productOwners.productContext() }));
+// The product context of one environment (?env=<envId>).
+app.get("/api/product/context", (c) => {
+    const env = c.req.query("env");
+    if (!env) return c.json({ error: "env is required" }, 400);
+    return c.json({ text: productOwners.productContext(env) });
+});
 app.put("/api/product/context", async (c) => {
-    const body = json(z.object({ text: z.string() }), await c.req.json());
-    await productOwners.setProductContext(body.text);
-    return c.json({ text: productOwners.productContext() });
+    const body = json(z.object({ env: z.string(), text: z.string() }), await c.req.json());
+    await productOwners.setProductContext(body.env, body.text);
+    return c.json({ text: productOwners.productContext(body.env) });
 });
 // Search Stagehand's palace: one PO's wing (`wing`), or all of it.
 app.get("/api/product/search", async (c) => {
     const q = c.req.query("q")?.trim();
     if (!q) return c.json({ results: [] });
     try {
-        return c.json({ results: await palace.search(q, { wing: c.req.query("wing") || undefined, limit: Number(c.req.query("limit") ?? 10) }) });
+        // ?env= searches that environment's memory (its product wing and its POs' wings); ?wing= one wing.
+        const env = c.req.query("env");
+        const opts = { limit: Number(c.req.query("limit") ?? 10) };
+        return c.json({ results: env ? await palace.search(q, { ...opts, wings: productOwners.envWings(env) }) : await palace.search(q, { ...opts, wing: c.req.query("wing") || undefined }) });
     } catch (e) {
         return poErr(c, e);
     }
@@ -1976,11 +1985,21 @@ app.get("/api/product/palace", async (c) => {
 
 app.get("/api/product-owners", (c) =>
     c.json(
-        productOwners.list().map((po) => ({
-            ...po,
-            tasks: (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE product_owner_id = ?`).get(po.id) as { n: number }).n,
-            created: productOwners.links(po.id).length,
-        })),
+        productOwners.list().map((po) => {
+            // Progress by the issues' own statuses: done ÷ all, canceled ones counted in neither.
+            const issues = productOwners.issues(po.id);
+            const canceled = issues.filter((i) => /cancel|duplicate|won.?t/i.test(i.status ?? "")).length;
+            const done = issues.filter((i) => /done|complete|closed|merged|released|shipped|resolved/i.test(i.status ?? "")).length;
+            const counted = issues.length - canceled;
+            return {
+                ...po,
+                tasks: (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE product_owner_id = ?`).get(po.id) as { n: number }).n,
+                created: productOwners.links(po.id).length,
+                tickets: issues.length,
+                ticketsDone: done,
+                progress: counted > 0 ? Math.round((done / counted) * 100) : null,
+            };
+        }),
     ),
 );
 app.post("/api/product-owners", async (c) => {

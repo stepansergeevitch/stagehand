@@ -44,6 +44,7 @@ def main():
     s = sub.add_parser("search")
     s.add_argument("--query", required=True)
     s.add_argument("--wing")
+    s.add_argument("--wings", help="comma-separated: search these wings only")
     s.add_argument("--room")
     s.add_argument("--limit", type=int, default=8)
     sub.add_parser("status")
@@ -90,6 +91,22 @@ def main():
         if ids:
             col.delete(ids=ids)
         print(json.dumps({"ok": True, "deleted": len(ids)}))
+    elif a.cmd == "search" and a.wings:
+        # Several wings (one environment's memory): a direct query; hits in the searcher's shape.
+        wings = [w for w in a.wings.split(",") if w]
+        where = {"wing": {"$in": wings}}
+        if a.room:
+            where = {"$and": [where, {"room": a.room}]}
+        try:
+            r = collection(a.palace).query(query_texts=[a.query], n_results=a.limit, where=where, include=["documents", "metadatas", "distances"])
+        except Exception as e:
+            print(json.dumps({"results": [], "error": str(e)[:300]}))
+            return
+        hits = [
+            {"text": d, "wing": m.get("wing", "?"), "room": m.get("room", "?"), "source_file": m.get("source_file", "?").split("/")[-1], "similarity": round(1 - dist, 3)}
+            for d, m, dist in zip(r["documents"][0], r["metadatas"][0], r["distances"][0])
+        ]
+        print(json.dumps({"query": a.query, "results": hits}))
     elif a.cmd == "search":
         from mempalace.searcher import search_memories
 

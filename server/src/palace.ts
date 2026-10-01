@@ -92,9 +92,10 @@ export class Palace {
         return r.deleted ?? 0;
     }
 
-    async search(query: string, opts: { wing?: string | undefined; room?: string | undefined; limit?: number } = {}): Promise<PalaceHit[]> {
+    async search(query: string, opts: { wing?: string | undefined; wings?: string[]; room?: string | undefined; limit?: number } = {}): Promise<PalaceHit[]> {
         const args = ["search", "--query", query, "--limit", String(opts.limit ?? 8)];
-        if (opts.wing) args.push("--wing", opts.wing);
+        if (opts.wings?.length) args.push("--wings", opts.wings.join(","));
+        else if (opts.wing) args.push("--wing", opts.wing);
         if (opts.room) args.push("--room", opts.room);
         const r = (await this.run(args)) as { results?: PalaceHit[]; error?: string };
         if (r.error) throw new Error(r.error);

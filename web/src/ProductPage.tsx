@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Env, type PalaceHit, type PoArtifact, type PoDetail, type PoIssue, type PoPhase, type PoTicket, type ProductOwner } from "./api";
 import { Markdown } from "./Markdown";
 import { Modal } from "./Modal";
+import { ListTable, type ListColumn } from "./ListTable";
 import { poBus } from "./poBus";
 import type { PoTab } from "./routes";
 
@@ -32,17 +33,17 @@ const EditableMarkdown = ({ text, empty, onSave }: { text: string; empty: string
     );
 };
 
-const PalaceSearch = ({ wing, onError }: { wing?: string; onError: (m: string) => void }) => {
+const PalaceSearch = ({ wing, env, envLabel, onError }: { wing?: string; env?: string; envLabel?: string; onError: (m: string) => void }) => {
     const [q, setQ] = useState("");
     const [hits, setHits] = useState<PalaceHit[] | null>(null);
     const run = async () => {
         if (!q.trim()) return;
-        try { setHits((await api.palaceSearch(q.trim(), wing)).results); } catch (e) { onError(String((e as Error).message ?? e)); }
+        try { setHits((await api.palaceSearch(q.trim(), wing ? { wing } : { env: env ?? "" })).results); } catch (e) { onError(String((e as Error).message ?? e)); }
     };
     return (
         <>
             <div className="po-row">
-                <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void run()} placeholder={wing ? `Search this PO's memory (${wing})` : "Search the whole palace"} />
+                <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void run()} placeholder={wing ? `Search this PO's memory (${wing})` : `Search the memory of ${envLabel ?? "this environment"}`} />
                 <button onClick={() => void run()}>Search</button>
             </div>
             {hits && (hits.length === 0 ? <div className="quiet">No drawers match.</div> : (
@@ -147,6 +148,25 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
     );
 };
 
+// The environment the Product context and Memory tabs show; remembered per browser.
+const useProductEnv = (envs: Env[]): [string, (id: string) => void] => {
+    const [env, setEnv] = useState<string>(() => {
+        try { return localStorage.getItem("stagehand.product.env") ?? ""; } catch { return ""; }
+    });
+    const valid = envs.some((e) => e.id === env) ? env : envs[0]?.id ?? "";
+    const set = (id: string): void => {
+        setEnv(id);
+        try { localStorage.setItem("stagehand.product.env", id); } catch { /* not remembered */ }
+    };
+    return [valid, set];
+};
+
+const EnvPicker = ({ envs, value, onChange }: { envs: Env[]; value: string; onChange: (id: string) => void }) => (
+    <label className="inline env-picker">Environment
+        <select value={value} onChange={(e) => onChange(e.target.value)}>{envs.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
+    </label>
+);
+
 const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onError: (m: string) => void }) => {
     const [ctx, setCtx] = useState<string | null>(null);
     const [pos, setPos] = useState<ProductOwner[] | null>(null);
@@ -154,13 +174,43 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
     const [tab, setTab] = useState<"owners" | "context" | "memory">("owners");
     const [envs, setEnvs] = useState<Env[]>([]);
     useEffect(() => { void api.envs().then(setEnvs).catch(() => undefined); }, []);
+    const [envId, setEnvId] = useProductEnv(envs);
     const envName = (id: string) => envs.find((e) => e.id === id)?.name ?? "…";
-    const load = useCallback(() => {
-        void api.productContext().then((r) => setCtx(r.text)).catch((e: Error) => onError(e.message));
-        void api.productOwners().then(setPos).catch((e: Error) => onError(e.message));
-    }, [onError]);
-    useEffect(load, [load]);
-    useEffect(() => poBus.subscribe((ev) => ev.kind === "updated" && load()), [load]);
+    const loadOwners = useCallback(() => void api.productOwners().then(setPos).catch((e: Error) => onError(e.message)), [onError]);
+    useEffect(loadOwners, [loadOwners]);
+    useEffect(() => poBus.subscribe((ev) => ev.kind === "updated" && loadOwners()), [loadOwners]);
+    useEffect(() => {
+        if (!envId) return;
+        setCtx(null);
+        void api.productContext(envId).then((r) => setCtx(r.text)).catch((e: Error) => onError(e.message));
+    }, [envId, onError]);
+    const columns: ListColumn<ProductOwner>[] = [
+        { key: "name", label: "Name", kind: "label", render: (po) => <b>{po.title}</b>, sort: (po) => po.title },
+        { key: "env", label: "Environment", render: (po) => envName(po.env_id), sort: (po) => envName(po.env_id) },
+        { key: "type", label: "Type", render: (po) => (po.source === "linear" ? "Linear project" : "ClickUp epic"), sort: (po) => po.source },
+        {
+            key: "status",
+            label: "Status",
+            render: (po) => (
+                <>
+                    <span className={`chip ${po.phase === "live" ? "ok" : "accent"}`}>{PHASE_LABEL[po.phase]}</span>
+                    {po.status === "running" && <span className="chip wait"> answering…</span>}
+                    {po.status === "failed" && <span className="chip bad" title={po.status_line ?? ""}> failed</span>}
+                </>
+            ),
+            sort: (po) => Object.keys(PHASE_LABEL).indexOf(po.phase),
+        },
+        { key: "tickets", label: "Tickets #", kind: "num", hint: "Issues of the project in the task manager", render: (po) => po.tickets ?? 0, sort: (po) => po.tickets ?? 0 },
+        { key: "tasks", label: "Tasks #", kind: "num", hint: "Stagehand tasks with this Product Owner", render: (po) => po.tasks ?? 0, sort: (po) => po.tasks ?? 0 },
+        {
+            key: "progress",
+            label: "Progress %",
+            hint: "Issues done ÷ all issues, by their status in the task manager; canceled ones count in neither",
+            render: (po) => (po.progress == null ? <span className="quiet">—</span> : <span className="share" title={`${po.ticketsDone ?? 0} of ${po.tickets ?? 0} done`}><i style={{ width: `${po.progress}%` }} /><span>{po.progress}%</span></span>),
+            sort: (po) => po.progress ?? -1,
+        },
+    ];
+    const envLabel = envs.find((e) => e.id === envId)?.name;
     return (
         <div className="product">
             <div className="subtabs">
@@ -174,29 +224,21 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
                     <h2>Product owners <span className="field-hint">— one per project of an environment: a Linear project or a ClickUp epic</span></h2>
                     <button className="primary" disabled={!envs.length} onClick={() => setCreating(true)}>New product owner</button>
                 </div>
-                {pos === null ? <div className="empty">loading…</div> : pos.length === 0 ? <div className="empty">No Product Owner yet. Use <b>New product owner</b> to start one.</div> : (
-                    <div className="po-list">
-                        {pos.map((po) => (
-                            <div key={po.id} className="po-item" onClick={() => onOpen(po.id)}>
-                                <b>{po.title}</b>
-                                <span className="chip accent" title="Environment">{envName(po.env_id)}</span>
-                                <span className="chip">{po.source === "linear" ? "Linear project" : "ClickUp epic"}</span>
-                                <span className={`chip ${po.phase === "live" ? "ok" : "accent"}`}>{PHASE_LABEL[po.phase]}</span>
-                                {po.status === "running" && <span className="chip wait">answering…</span>}
-                                {po.status === "failed" && <span className="chip bad" title={po.status_line ?? ""}>failed</span>}
-                                <span className="field-hint">{po.created ? `${po.created} ticket(s) created · ` : ""}{po.tasks ? `${po.tasks} task(s) · ` : ""}updated {new Date(po.updated_at).toLocaleString()}</span>
-                            </div>
-                        ))}
-                    </div>
-                )}
+                {pos === null ? <div className="empty">loading…</div> : <ListTable columns={columns} rows={pos} rowKey={(po) => po.id} onRowClick={(po) => onOpen(po.id)} empty={<>No Product Owner yet. Use <b>New product owner</b> to start one.</>} />}
             </section>}
             {tab === "context" && <section className="card">
-                <h2>Product context <span className="field-hint">— the whole product; every Product Owner reads it</span></h2>
-                {ctx === null ? <div className="empty">loading…</div> : <EditableMarkdown text={ctx} empty="Empty. Describe the product: what it is, who uses it, its main areas, its rules." onSave={async (t) => { await api.setProductContext(t); setCtx(t); }} />}
+                <div className="po-head">
+                    <h2>Product context <span className="field-hint">— this environment's product; its Product Owners read it</span></h2>
+                    <EnvPicker envs={envs} value={envId} onChange={setEnvId} />
+                </div>
+                {ctx === null ? <div className="empty">loading…</div> : <EditableMarkdown key={envId} text={ctx} empty="Empty. Describe the product: what it is, who uses it, its main areas, its rules." onSave={async (t) => { await api.setProductContext(envId, t); setCtx(t); }} />}
             </section>}
             {tab === "memory" && <section className="card">
-                <h2>Memory</h2>
-                <PalaceSearch onError={onError} />
+                <div className="po-head">
+                    <h2>Memory <span className="field-hint">— this environment's product and its Product Owners</span></h2>
+                    <EnvPicker envs={envs} value={envId} onChange={setEnvId} />
+                </div>
+                <PalaceSearch key={envId} env={envId} {...(envLabel ? { envLabel } : {})} onError={onError} />
             </section>}
         </div>
     );

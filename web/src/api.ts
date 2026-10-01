@@ -276,7 +276,7 @@ export interface ProductOwner {
     id: string; title: string; slug: string; source: "linear" | "clickup"; scope_kind: "project" | "epic"; scope_id: string; scope_url: string | null;
     team_id: string | null; phase: PoPhase; status: "idle" | "running" | "failed"; status_line: string | null; account_id: string | null; created_at: string; updated_at: string;
     issues_refreshed_at?: string | null; issues_error?: string | null; env_id: string;
-    tasks?: number; created?: number;
+    tasks?: number; created?: number; tickets?: number; ticketsDone?: number; progress?: number | null;
 }
 export interface PoMessage { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
 export interface PoArtifact { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string }
@@ -518,9 +518,10 @@ const uploadPrompterFiles = async (sessionId: string, files: File[]): Promise<Sh
 const withFiles = (body: Record<string, unknown>, files: SharedFile[] | undefined): Record<string, unknown> => (files?.length ? { ...body, files } : body);
 
 export const api = {
-    productContext: () => fetch("/api/product/context").then((r) => j<{ text: string }>(r)),
-    setProductContext: (text: string) => fetch("/api/product/context", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).then((r) => j<{ text: string }>(r)),
-    palaceSearch: (q: string, wing?: string) => fetch(`/api/product/search?${new URLSearchParams({ q, ...(wing ? { wing } : {}) })}`).then((r) => j<{ results: PalaceHit[] }>(r)),
+    productContext: (env: string) => fetch(`/api/product/context?${new URLSearchParams({ env })}`).then((r) => j<{ text: string }>(r)),
+    setProductContext: (env: string, text: string) => fetch("/api/product/context", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ env, text }) }).then((r) => j<{ text: string }>(r)),
+    // One wing (a PO's), or the memory of an environment (its product wing and its POs' wings).
+    palaceSearch: (q: string, scope: { wing?: string; env?: string }) => fetch(`/api/product/search?${new URLSearchParams({ q, ...(scope.wing ? { wing: scope.wing } : {}), ...(scope.env ? { env: scope.env } : {}) })}`).then((r) => j<{ results: PalaceHit[] }>(r)),
     palaceStatus: () => fetch("/api/product/palace").then((r) => j<{ home: string; total: number; wings: Record<string, Record<string, number>> }>(r)),
     productOwners: () => fetch("/api/product-owners").then((r) => j<ProductOwner[]>(r)),
     createProductOwner: (url: string, envId: string, start = true) => post<ProductOwner>("/api/product-owners", { url, envId, start }),

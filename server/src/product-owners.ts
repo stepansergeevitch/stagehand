@@ -163,7 +163,6 @@ export class ProductOwners {
     ensureHome(): void {
         mkdirSync(join(this.configDir, "hooks"), { recursive: true });
         mkdirSync(this.productDir, { recursive: true });
-        if (!existsSync(join(this.productDir, "context.md"))) writeFileSync(join(this.productDir, "context.md"), "");
         if (!existsSync(TEMPLATES)) return;
         const hooks = join(this.configDir, "hooks");
         copyFileSync(join(TEMPLATES, "CLAUDE.md"), join(this.configDir, "CLAUDE.md"));
@@ -270,22 +269,44 @@ export class ProductOwners {
         };
     }
 
-    // ---------- the global product context ----------
+    // ---------- the product context of an environment ----------
 
-    productContext(): string {
-        const p = join(this.productDir, "context.md");
+    // Each environment is its own product: its context is <dataDir>/product/<envId>/context.md, filed in the palace wing
+    // product-<envId8>. The memory of an environment is that wing plus the wings of its POs.
+    productWing(envId: string): string {
+        return `product-${envId.slice(0, 8)}`;
+    }
+    envWings(envId: string): string[] {
+        const pos = this.db.prepare(`SELECT slug FROM product_owners WHERE env_id = ?`).all(envId) as Array<{ slug: string }>;
+        return [this.productWing(envId), ...pos.flatMap((p) => [p.slug, `wing_${p.slug}`])];
+    }
+    productContext(envId: string): string {
+        const p = join(this.productDir, envId, "context.md");
         return existsSync(p) ? readFileSync(p, "utf8") : "";
     }
-    async setProductContext(text: string): Promise<void> {
-        writeFileSync(join(this.productDir, "context.md"), text);
-        await this.palace.put("ctx_product", "product", "context", text, "product/context.md").catch((e: unknown) => console.warn(`[po] palace product context: ${String((e as Error).message ?? e).slice(0, 160)}`));
+    async setProductContext(envId: string, text: string): Promise<void> {
+        mkdirSync(join(this.productDir, envId), { recursive: true });
+        writeFileSync(join(this.productDir, envId, "context.md"), text);
+        await this.palace.put(`ctx_product_${envId.slice(0, 8)}`, this.productWing(envId), "context", text, `product/${envId}/context.md`).catch((e: unknown) => console.warn(`[po] palace product context: ${String((e as Error).message ?? e).slice(0, 160)}`));
+    }
+    // The product context from before environments (one global file and drawer): it goes to every env that has a PO.
+    async migrateGlobalContext(): Promise<void> {
+        const old = join(this.productDir, "context.md");
+        if (!existsSync(old)) return;
+        const text = readFileSync(old, "utf8");
+        const envs = this.db.prepare(`SELECT DISTINCT env_id FROM product_owners WHERE env_id IS NOT NULL`).all() as Array<{ env_id: string }>;
+        if (text.trim()) for (const e of envs) if (!this.productContext(e.env_id).trim()) await this.setProductContext(e.env_id, text);
+        rmSync(old);
+        await this.palace.deleteWhere(null, ["ctx_product"]).catch(() => undefined);
     }
     async acceptProposal(poId: string): Promise<void> {
         const p = join(this.dir(poId), "product-context-proposal.md");
         if (!existsSync(p)) throw new Error("no product context proposal");
-        await this.setProductContext(readFileSync(p, "utf8"));
+        const po = this.get(poId);
+        if (!po) throw new Error("product owner not found");
+        await this.setProductContext(po.env_id, readFileSync(p, "utf8"));
         rmSync(p);
-        this.addMessage(poId, "system", "You accepted the proposed product context. It is now the product context of every Product Owner.");
+        this.addMessage(poId, "system", "You accepted the proposed product context. It is now the product context of every Product Owner of this environment.");
         this.emit({ poId, kind: "updated" });
     }
     rejectProposal(poId: string): void {
@@ -549,7 +570,8 @@ export class ProductOwners {
             `You are the Product Owner of "${po.title}" — ${po.source === "linear" ? "a Linear project" : "a ClickUp epic"}: ${po.scope_url ?? po.scope_id}.`,
             `Your folder: ${d}. Your palace wing: ${this.wing(po)}. Your diary agent name: ${po.slug}.`,
             `Phase: ${PHASE_LABEL[po.phase]}. ${phaseNote[po.phase]}`,
-            `## Product context (the whole product — read-only; propose a change in product-context-proposal.md)\n\n${this.productContext().trim() || "(empty — ask the human for it when you need it)"}`,
+            `## Product context (this environment's product — read-only; propose a change in product-context-proposal.md; palace wing ${this.productWing(po.env_id)})\n\n${this.productContext(po.env_id).trim() || "(empty — ask the human for it when you need it)"}`,
+            `## Memory of this environment\n\nSearch only these wings: ${this.envWings(po.env_id).join(", ")}. Never use the wings of other environments' Product Owners: they are other products.`,
             `## Your project context (context.md)\n\n${ctx.trim() || "(empty — write it)"}`,
             `## Issues\n\nEvery issue of the project, with its comments, is in your wing, room \`issues\` (current state in full: issues.md). Stagehand reads them again every hour and tells you what changed.`,
             `## Artifacts (${arts.length}) — search them in your wing, room \`artifacts\`; read a file only when search is not enough\n\n${arts.map((a) => `- ${a.file} — ${a.title}${a.source_url ? ` (${a.source_url})` : ""} [${a.kind}${a.chunks ? `, ${a.chunks} chunks` : ""}]`).join("\n") || "(none)"}`,

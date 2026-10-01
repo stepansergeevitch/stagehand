@@ -451,7 +451,7 @@ export class Prompter {
             case "integrations":
                 return { summary: "Integrations", context: "Page: Integrations (ClickUp, Linear, Notion, notifications, Jev)." };
             case "product": {
-                if (!r.po) return { summary: "Product", context: "Page: Product — the global product context (GET/PUT /api/product/context), the Product Owners list (GET /api/product-owners) and a palace search (GET /api/product/search?q=)." };
+                if (!r.po) return { summary: "Product", context: "Page: Product — the Product Owners list (GET /api/product-owners; each belongs to one environment), the product context of an environment (GET/PUT /api/product/context?env=<envId>) and the memory of an environment (GET /api/product/search?q=&env=<envId>)." };
                 const po = this.db.prepare(`SELECT title, phase, source, scope_url FROM product_owners WHERE id = ?`).get(r.po) as { title: string; phase: string; source: string; scope_url: string | null } | undefined;
                 return {
                     summary: `Product Owner ${po?.title ?? r.po}`,

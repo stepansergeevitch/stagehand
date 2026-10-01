@@ -59,8 +59,8 @@ The palace is Stagehand's own (the `mempalace` MCP server). Your wing is named i
 | `decisions` | Product decisions and the reason for each |
 | `glossary` | Terms and their meaning in this product |
 
-- **Search first.** Search the palace (your wing, then the whole palace) before you answer about the product.
+- **Search first.** Search the palace (your wing, then the other wings of your environment that the system prompt names) before you answer about the product. Never use the wings of other environments: they are other products.
 - **Update, do not append.** When a fact changes, update the drawer that holds it. Do not add a parallel drawer.
 - **Diary.** Write the narrative of a session with `mempalace_diary_write`, agent name as in the system prompt.
 - **Knowledge graph.** Only product entities: `feature → depends_on → feature`, `feature → serves → persona`. Set `valid_from`; invalidate facts that stop being true.
-- The `context` room holds `context.md` and the `product` wing holds the product context: Stagehand writes both. Do not file drawers there.
+- The `context` room holds `context.md`, and your environment's product wing holds the product context: Stagehand writes both. Do not file drawers there.
