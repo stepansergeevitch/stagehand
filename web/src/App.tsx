@@ -23,18 +23,34 @@ import { AgentInput } from "./AgentInput";
 
 // Where the user is lives in the URL hash only (see routes.ts): reloads, back/forward, pasted links and anything that
 // reads the path see the same screen.
-const NAV: { id: Page; label: string; hint: string }[] = [
-    { id: "dashboard", label: "Dashboard", hint: "Tasks needing your attention, per environment" },
-    { id: "tasks", label: "Tasks", hint: "Tasks in the selected environment" },
-    { id: "product", label: "Product", hint: "The product context and the Product Owners — one per project: plan it, design it, split it into tickets" },
-    { id: "sessions", label: "Sessions", hint: "Free-form claude sessions in an environment, with the account and worktree of your choice" },
-    { id: "analytics", label: "Analytics", hint: "Token and cost usage by environment, task, account" },
-    { id: "timing", label: "Timing", hint: "How long runs and tasks take: by stage, operation, task, day; working vs waiting" },
-    { id: "resources", label: "Resources", hint: "Everything Stagehand runs on this host — dev servers, agent runs, browsers, terminals, worktrees — with memory, owner and the cleanup policy" },
-    { id: "envs", label: "Environments", hint: "Repositories, services, which config dir and account they use" },
-    { id: "config-dirs", label: "Config dirs", hint: "Claude config dirs: skills, hooks, rules, Chrome" },
-    { id: "accounts", label: "AI accounts", hint: "Provider logins (tokens), usage, failover" },
-    { id: "integrations", label: "Integrations", hint: "External services, each tagged with its type: task managers (ClickUp, Linear), notifications, decision model (Jev)" },
+// The sidebar in groups; a group without a title is a single top-level page.
+const NAV: { group: string | null; items: { id: Page; label: string; hint: string }[] }[] = [
+    {
+        group: "Work",
+        items: [
+            { id: "dashboard", label: "Dashboard", hint: "Tasks needing your attention, per environment" },
+            { id: "tasks", label: "Environments", hint: "The tasks of the selected environment" },
+        ],
+    },
+    { group: null, items: [{ id: "product", label: "Product", hint: "The product context and the Product Owners — one per project: plan it, design it, split it into tickets" }] },
+    { group: null, items: [{ id: "sessions", label: "Sessions", hint: "Free-form claude sessions in an environment, with the account and worktree of your choice" }] },
+    {
+        group: "Analytics",
+        items: [
+            { id: "analytics", label: "Usage", hint: "Token and cost usage by environment, task, account" },
+            { id: "timing", label: "Timing", hint: "How long runs and tasks take: by stage, operation, task, day; working vs waiting" },
+            { id: "resources", label: "Resources", hint: "Everything Stagehand runs on this host — dev servers, agent runs, browsers, terminals, worktrees — with memory, owner and the cleanup policy" },
+        ],
+    },
+    {
+        group: "Configuration",
+        items: [
+            { id: "envs", label: "Environments", hint: "Repositories, services, which config dir and account they use" },
+            { id: "config-dirs", label: "Config dirs", hint: "Claude config dirs: skills, hooks, rules, Chrome" },
+            { id: "accounts", label: "AI accounts", hint: "Provider logins (tokens), usage, failover" },
+            { id: "integrations", label: "Integrations", hint: "External services, each tagged with its type: task managers (ClickUp, Linear), notifications, decision model (Jev)" },
+        ],
+    },
 ];
 // The list pages ManagePage renders, by route page.
 const MANAGE_TAB: Partial<Record<Page, ManageTab>> = { envs: "envs", "config-dirs": "dirs", accounts: "accounts", integrations: "integrations" };
@@ -324,7 +340,9 @@ export const App = () => {
             </header>
             <div className="body">
                 <nav className="sidebar" aria-label="Sections">
-                    {NAV.map((n) => (
+                    {NAV.map((g, gi) => [
+                        g.group ? <span key={`g${gi}`} className="sidebar-group">{g.group}</span> : <span key={`g${gi}`} className="sidebar-gap" />,
+                        ...g.items.map((n) => (
                         <button key={n.id} className={page === n.id ? "active" : ""} title={n.hint} onClick={() => navigate(n.id === "tasks" ? listRoute() : { page: n.id })}>
                             {n.label}
                             {n.id === "dashboard" && attention > 0 && <span className="count alert">{attention}</span>}
@@ -332,7 +350,8 @@ export const App = () => {
                             {n.id === "envs" && envs.length > 0 && <span className="count">{envs.length}</span>}
                             {n.id === "accounts" && accounts.length > 0 && <span className="count">{accounts.length}</span>}
                         </button>
-                    ))}
+                        )),
+                    ])}
                 </nav>
                 {page === "dashboard" && (
                     <div className="main page">
