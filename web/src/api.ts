@@ -279,7 +279,7 @@ export interface ProductOwner {
     tasks?: number; created?: number;
 }
 export interface PoMessage { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
-export interface PoArtifact { id: string; po_id: string; kind: "upload" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string }
+export interface PoArtifact { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string }
 export interface PoTicket { key: string; type: "epic" | "story" | "task" | "bug"; title: string; parent: string | null; summary: string; description: string; acceptanceCriteria: string[]; estimate: number | null; dependsOn: string[]; labels: string[]; existing?: string | null }
 // An issue of the PO's project as the last refresh saw it.
 export interface PoIssue {
@@ -531,6 +531,7 @@ export const api = {
     poSetContext: (id: string, text: string) => fetch(`/api/product-owners/${id}/context`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).then((r) => j<{ ok: true }>(r)),
     poSetTickets: (id: string, tickets: PoTicket[]) => fetch(`/api/product-owners/${id}/tickets`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ tickets }) }).then((r) => j<{ ok: true }>(r)),
     poFetch: (id: string, url: string) => post<PoArtifact>(`/api/product-owners/${id}/artifacts/fetch`, { url }),
+    poPaste: (id: string, title: string, text: string, tell: boolean) => post<PoArtifact>(`/api/product-owners/${id}/artifacts/text`, { title, text, tell }),
     poUpload: (id: string, f: File) => {
         const fd = new FormData();
         fd.append("file", f, f.name);

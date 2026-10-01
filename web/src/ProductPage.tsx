@@ -127,6 +127,7 @@ const ArtifactRow = ({ poId, a, onRemove }: { poId: string; a: PoArtifact; onRem
 const ContextTab = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => void; reload: () => void }) => {
     const [url, setUrl] = useState("");
     const [busy, setBusy] = useState(false);
+    const [paste, setPaste] = useState<{ title: string; text: string; tell: boolean } | null>(null);
     const fileRef = useRef<HTMLInputElement>(null);
     const act = async (fn: () => Promise<unknown>) => { setBusy(true); try { await fn(); reload(); } catch (e) { onError(String((e as Error).message ?? e)); } finally { setBusy(false); } };
     return (
@@ -151,8 +152,20 @@ const ContextTab = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) 
                     <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Linear project or issue, ClickUp task, Notion page, or any web page URL" />
                     <button disabled={busy || url.trim().length < 8} onClick={() => void act(async () => { await api.poFetch(d.po.id, url.trim()); setUrl(""); })}>{busy ? "Fetching…" : "Fetch"}</button>
                     <button disabled={busy} onClick={() => fileRef.current?.click()}>Upload</button>
+                    <button disabled={busy} onClick={() => setPaste((p) => (p ? null : { title: "", text: "", tell: true }))}>Paste text</button>
                     <input ref={fileRef} type="file" multiple hidden onChange={(e) => { const files = [...(e.target.files ?? [])]; e.target.value = ""; void act(async () => { for (const f of files) await api.poUpload(d.po.id, f); }); }} />
                 </div>
+                {paste && (
+                    <div className="po-paste">
+                        <input value={paste.title} onChange={(e) => setPaste({ ...paste, title: e.target.value })} placeholder="Title (optional) — e.g. Call with Austin about density" />
+                        <textarea rows={10} value={paste.text} onChange={(e) => setPaste({ ...paste, text: e.target.value })} placeholder="Paste a conversation, notes or any text with context for this project" autoFocus />
+                        <div className="actions">
+                            <label className="inline" title={d.running ? "The Product Owner is answering; it reads the source in a later turn" : undefined}><input type="checkbox" checked={paste.tell} onChange={(e) => setPaste({ ...paste, tell: e.target.checked })} /> Product Owner reads it now and updates the context</label>
+                            <button className="primary" disabled={busy || !paste.text.trim()} onClick={() => void act(async () => { await api.poPaste(d.po.id, paste.title, paste.text, paste.tell); setPaste(null); })}>Add source</button>
+                            <button onClick={() => setPaste(null)}>Cancel</button>
+                        </div>
+                    </div>
+                )}
                 {d.artifacts.map((a) => <ArtifactRow key={a.id} poId={d.po.id} a={a} onRemove={() => void act(() => api.poRemoveArtifact(d.po.id, a.id))} />)}
             </section>
             <section className="card">

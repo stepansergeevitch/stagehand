@@ -773,3 +773,5 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .po-comments { display: flex; flex-direction: column; gap: 8px; }
 .po-comment { border-left: 3px solid var(--line); padding: 4px 10px; }
 .po-comment-head { font-size: 12px; margin-bottom: 2px; }
+.po-paste { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.po-paste textarea { width: 100%; font: inherit; }

@@ -376,6 +376,16 @@ export class ProductOwners {
         const src = await fetchSource(this.cfg, url);
         return this.addArtifactText(poId, src.kind, src.title, src.url, src.markdown);
     }
+    // Text the human pastes (a conversation with people, notes): a markdown source like any other. With `tell`, the PO
+    // gets a turn to read it and bring its context and palace up to date (unless it is answering).
+    pasteArtifact(poId: string, title: string, text: string, tell: boolean): PoArtifactRow {
+        if (!this.get(poId)) throw new Error("product owner not found");
+        const name = title.trim() || `Pasted text ${now().slice(0, 16).replace("T", " ")}`;
+        const a = this.addArtifactText(poId, "text", name, null, `# ${name}\nPasted by the human · ${new Date().toLocaleString()}\n\n${text.trim()}`);
+        if (tell)
+            this.brief(poId, `I added a source: ${a.file} — "${name}", text I pasted (often a conversation with people). Read it. Bring context.md up to date with the decisions, facts and open questions it holds, and file them in your palace drawers (update, do not append). If it contradicts design.md or tickets.json, say so. Then answer with a short summary of what it changed.`);
+        return a;
+    }
     uploadArtifact(poId: string, name: string, bytes: Buffer, mime: string | null): PoArtifactRow {
         if (!this.get(poId)) throw new Error("product owner not found");
         const file = `artifacts/${randomUUID().slice(0, 8)}-${sharedFileName(name)}`;

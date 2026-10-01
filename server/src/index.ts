@@ -2041,6 +2041,14 @@ app.post("/api/product-owners/:id/artifacts/fetch", async (c) => {
         return poErr(c, e);
     }
 });
+app.post("/api/product-owners/:id/artifacts/text", async (c) => {
+    const body = json(z.object({ title: z.string().max(200).default(""), text: z.string().min(1).max(2_000_000), tell: z.boolean().default(true) }), await c.req.json());
+    try {
+        return c.json(productOwners.pasteArtifact(c.req.param("id"), body.title ?? "", body.text, body.tell ?? true));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
 app.post("/api/product-owners/:id/artifacts", async (c) => {
     const body = await c.req.parseBody();
     const f = body["file"];

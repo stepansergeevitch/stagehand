@@ -813,7 +813,7 @@ export interface ProductOwnerRow {
     issues_error?: string | null;
 }
 export interface PoMessageRow { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
-export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string }
+export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string }
 export interface PoIssueRow { po_id: string; identifier: string; remote_id: string; hash: string; data: string; fetched_at: string; changed_at: string }
 export interface PoTicketLinkRow { po_id: string; key: string; remote_id: string; identifier: string | null; url: string | null; created_at: string }
 
