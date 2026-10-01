@@ -11,7 +11,7 @@ import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
-import { anchorOf, type Env, type LineComment, type PoDesignReview, type PoReview, type PoReviewComment, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
+import { anchorOf, type Env, type LineComment, type PoDesignReview, type PoReview, type PrFixReplies as PrFixRepliesData, type PoReviewComment, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
 
 const isResolved = (c: PrComment): boolean => c.kind === "line" && c.resolved;
 
@@ -1273,6 +1273,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         <PrDraftTabs detail={detail} onAction={onAction} focusRepo={prFocusRepo} onFocusRepo={setPrFocusRepo} />
                     ) : (
                         <>
+                            {task.stage === "pr_fix" && task.status === "waiting_user" && <PrFixReplies taskId={task.id} updatedAt={task.updated_at} />}
                             {task.stage === "pr_fix" && reviewBox}
                             {task.stage === "pr_fix" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
                             <PrPanel detail={detail} onAction={onAction} focusRepo={prFocusRepo} onFocusRepo={setPrFocusRepo} />
@@ -1785,6 +1786,51 @@ const QaTests = ({ taskId, design, before }: { taskId: string; design: NonNullab
 
 // "Product owner review": on request, the task's Product Owner reviews the proposal as product; the review is editable
 // here and goes to the design agent as the notes of another round.
+// At the fix review: for each PR comment the round addressed, a reply "Addressed in <commit>" from the human's GitHub
+// account, posted once the fix is pushed. Off by default: it speaks in the human's name.
+const PrFixReplies = ({ taskId, updatedAt }: { taskId: string; updatedAt: string }) => {
+    const [d, setD] = useState<PrFixRepliesData | null>(null);
+    const [err, setErr] = useState<string | null>(null);
+    useEffect(() => { void api.prFixReplies(taskId).then(setD).catch(() => setD(null)); }, [taskId, updatedAt]);
+    if (!d) return null;
+    const rows = Object.entries(d.repos).flatMap(([repo, r]) => r.comments.map((c) => ({ repo, r, c })));
+    if (!rows.length) return null;
+    const picked = (repo: string, id: number) => d.replies.find((x) => x.repo === repo && x.commentId === id);
+    const save = async (next: Array<{ repo: string; commentId: number; sha: string }>) => {
+        try { setD(await api.setPrFixReplies(taskId, next)); setErr(null); } catch (e) { setErr(String((e as Error).message ?? e)); }
+    };
+    const current = () => d.replies.map(({ repo, commentId, sha }) => ({ repo, commentId, sha }));
+    return (
+        <Card title={`Reply to the addressed comments (${d.replies.length}/${rows.length})`}>
+            <div className="field-hint">After <b>Approve &amp; push</b>, each ticked comment gets "Addressed in &lt;commit link&gt;" on GitHub from your account. A line comment gets it in its thread; a review or general comment gets a PR comment quoting it.</div>
+            {err && <div className="blocked-box">{err}</div>}
+            {rows.map(({ repo, r, c }) => {
+                const p = picked(repo, c.id);
+                const commits = d.commits[repo] ?? [];
+                const sha = p?.sha ?? commits[0]?.sha ?? "";
+                return (
+                    <div key={`${repo}:${c.id}`} className="fix-reply-row">
+                        <label className="inline">
+                            <input type="checkbox" checked={!!p} disabled={!sha} onChange={(e) => void save(e.target.checked ? [...current(), { repo, commentId: c.id, sha }] : current().filter((x) => !(x.repo === repo && x.commentId === c.id)))} />
+                            <b>{c.author}</b> <span className="chip">{c.kind === "line" ? `${c.path ?? ""}${c.line ? `:${c.line}` : ""}` : c.kind}</span>
+                            <span className="fix-reply-body">{c.body.split("\n")[0]?.slice(0, 140)}</span>
+                            <a href={c.url} target="_blank" rel="noreferrer">↗</a>
+                        </label>
+                        {commits.length > 0 ? (
+                            <select value={sha} disabled={!p} onChange={(e) => void save(current().map((x) => (x.repo === repo && x.commentId === c.id ? { ...x, sha: e.target.value } : x)))}>
+                                {commits.map((k) => <option key={k.sha} value={k.sha}>{k.sha.slice(0, 7)} {k.subject.slice(0, 60)}</option>)}
+                            </select>
+                        ) : <span className="quiet">no commit in this round</span>}
+                        {p?.posted && <a className="chip ok" href={p.posted} target="_blank" rel="noreferrer">replied</a>}
+                        {p?.error && <span className="chip bad" title={p.error}>reply failed</span>}
+                        <span className="field-hint">PR #{r.number}</span>
+                    </div>
+                );
+            })}
+        </Card>
+    );
+};
+
 // The Product Owner's brief on the ticket: written before research, read by the research and design agents.
 const PoBriefCard = ({ task, onError }: { task: TaskDetail["task"]; onError: (m: string) => void }) => {
     const [b, setB] = useState<PoReview | null>(null);

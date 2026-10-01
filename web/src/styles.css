@@ -794,3 +794,5 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .po-human-note { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--ok); background: var(--ok-soft); border-radius: 4px; }
 .po-comment-card.closed { background: var(--bg); }
 .po-kind { display: grid; gap: 6px; }
+.fix-reply-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 0; border-top: 1px solid var(--line); }
+.fix-reply-row .fix-reply-body { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; max-width: 520px; white-space: nowrap; }

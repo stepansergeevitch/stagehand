@@ -272,6 +272,13 @@ interface PrGroup {
     results: Map<string, PrShardResult>;
 }
 // <taskDir>/pr_fix_round.json — the jobs of the current PR Fix round per repository, so Retry and a restart replay it.
+// The PR comments a fix round addresses (pr_fix_comments.json) and the "Addressed in <commit>" replies the human picked.
+interface FixComments {
+    at: string;
+    repos: Record<string, { number: number; prUrl: string; headBefore: string; comments: Array<{ id: number; kind: PrComment["kind"]; author: string; url: string; body: string; path?: string; line?: number | null; root?: number }> }>;
+    replies: Array<{ repo: string; commentId: number; sha: string; posted?: string | null; error?: string | null }>;
+}
+
 interface PrRoundSpec {
     jobs: Record<string, string>;
     attempt: number;
@@ -2517,6 +2524,7 @@ export class Engine extends EventEmitter {
         if (!failed.length) throw new Error("no failing checks right now — re-poll first");
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");
+        await this.recordFixComments(task, []);
         this.setStage(taskId, "pr_fix");
         this.startPrRound(taskId, { [repo]: `${repoScopeNote(repo)}Failing checks on PR #${row.number}: ${names}. Read their logs with \`gh pr checks ${row.number}\` and \`gh run view --log-failed <run-id>\` (run inside that repository) before changing anything.` }, { attempt: rounds.n + 1, operation: "pr_fix_ci" });
     }
@@ -2530,6 +2538,7 @@ export class Engine extends EventEmitter {
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
         if (!LOCAL_COMMENT_FIX_STAGES.has(task.stage)) throw new Error("this is for a task at a PR stage — use Request changes at User Review");
         if (!notes?.trim() && comments.length === 0) throw new Error("leave a line comment on Code changes or write notes first");
+        await this.recordFixComments(task, []);
         const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE task_id = ? AND stage = 'pr_fix' AND verdict = 'changes'`).get(taskId) as { n: number };
         this.db
             .prepare(`INSERT INTO reviews (id, task_id, stage, verdict, route_to, notes, comments, created_at) VALUES (?, ?, 'pr_fix', 'changes', 'pr_fix', ?, ?, ?)`)
@@ -2553,6 +2562,7 @@ export class Engine extends EventEmitter {
             `Where a comment carries replies or a Stagehand discussion below it, that discussion is the brief: the human's last word there wins over the comment's original wording.\n` +
             picked.map((c) => describePrComment(c) + renderReplies(c, all) + renderAskThread(threads.get(c.id) ?? [])).join("\n");
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
+        await this.recordFixComments(task, [{ repo, comments: picked }]);
         this.setStage(taskId, "pr_fix");
         this.startPrRound(taskId, { [repo]: failureOutput }, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
     }
@@ -2601,6 +2611,84 @@ export class Engine extends EventEmitter {
 
     // After the human approves a PR Fix (already committed locally, never pushed): push every checkout that has
     // unpushed commits, reset those PRs' checks and resume polling.
+    // ---------- replies to the PR comments a fix round addressed ----------
+
+    // The comments a PR Fix round addresses, with each repository's HEAD before the round: the fix review offers to
+    // reply to each one ("Addressed in <commit>") from the human's GitHub account once the fix is pushed.
+    private async recordFixComments(task: TaskRow, groups: Array<{ repo: string; comments: PrComment[] }>): Promise<void> {
+        const env = this.env(task.env_id);
+        const repos: FixComments["repos"] = {};
+        for (const g of groups) {
+            const row = this.prRow(task.id, g.repo);
+            if (!row?.number || !row.url || !g.comments.length) continue;
+            const headBefore = (await this.headSha(this.checkoutOf(task, env, g.repo), env)) ?? "";
+            repos[g.repo] = {
+                number: row.number,
+                prUrl: row.url,
+                headBefore,
+                comments: g.comments.map((c) => ({ id: c.id, kind: c.kind, author: c.author, url: c.url, body: c.body.slice(0, 400), ...(c.kind === "line" ? { path: c.path, line: c.line, root: c.replyTo ?? c.id } : {}) })),
+            };
+        }
+        const file = join(this.taskDir(task.id), "pr_fix_comments.json");
+        if (Object.keys(repos).length) writeFileSync(file, JSON.stringify({ at: now(), repos, replies: [] } satisfies FixComments, null, 2));
+        else rmSync(file, { force: true });
+    }
+
+    // What the fix review shows: the addressed comments, the round's commits per repository, the replies picked.
+    async fixReplies(taskId: string): Promise<(FixComments & { commits: Record<string, Array<{ sha: string; subject: string }>> }) | null> {
+        const task = this.getTask(taskId);
+        const fc = this.readArtifactJson<FixComments>(taskId, "pr_fix_comments.json");
+        if (!task || !fc) return null;
+        const env = this.env(task.env_id);
+        const commits: Record<string, Array<{ sha: string; subject: string }>> = {};
+        for (const [repo, r] of Object.entries(fc.repos)) {
+            const log = await this.git(this.checkoutOf(task, env, repo), ["log", "--format=%H %s", r.headBefore ? `${r.headBefore}..HEAD` : "-5"], env).catch(() => "");
+            commits[repo] = log.split("\n").filter(Boolean).map((l) => ({ sha: l.slice(0, 40), subject: l.slice(41) }));
+        }
+        return { ...fc, commits };
+    }
+
+    setFixReplies(taskId: string, replies: FixComments["replies"]): void {
+        const fc = this.readArtifactJson<FixComments>(taskId, "pr_fix_comments.json");
+        if (!fc) throw new Error("this fix round addressed no PR comments");
+        for (const r of replies) if (!fc.repos[r.repo]?.comments.some((c) => c.id === r.commentId)) throw new Error(`comment ${r.commentId} is not one this round addressed`);
+        writeFileSync(join(this.taskDir(taskId), "pr_fix_comments.json"), JSON.stringify({ ...fc, replies: replies.map((r) => ({ ...r, posted: null, error: null })) }, null, 2));
+        this.emitTask(taskId);
+    }
+
+    // After the push: each picked reply goes to GitHub with the env's gh login (the human's account). A line comment
+    // gets a reply in its thread; a review or general comment gets a PR comment that quotes it.
+    private async postFixReplies(task: TaskRow, env: EnvRow): Promise<void> {
+        const file = join(this.taskDir(task.id), "pr_fix_comments.json");
+        const fc = this.readArtifactJson<FixComments>(task.id, "pr_fix_comments.json");
+        if (!fc?.replies.length) return;
+        const done: string[] = [];
+        for (const r of fc.replies) {
+            if (r.posted) continue;
+            const pr = fc.repos[r.repo];
+            const c = pr?.comments.find((x) => x.id === r.commentId);
+            const m = pr ? /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(pr.prUrl) : null;
+            if (!pr || !c || !m) continue;
+            const link = `${pr.prUrl}/commits/${r.sha}`;
+            const cwd = this.checkoutOf(task, env, r.repo);
+            try {
+                const out =
+                    c.kind === "line"
+                        ? await this.gh(cwd, ["api", "-X", "POST", `repos/${m[1]}/${m[2]}/pulls/${m[3]}/comments/${c.root ?? c.id}/replies`, "-f", `body=Addressed in ${link}`], env)
+                        : await this.gh(cwd, ["api", "-X", "POST", `repos/${m[1]}/${m[2]}/issues/${m[3]}/comments`, "-f", `body=> ${c.body.split("\n").filter(Boolean)[0]?.slice(0, 200) ?? ""}\n\n@${c.author} addressed in ${link} (${c.url})`], env);
+                r.posted = (JSON.parse(out) as { html_url?: string }).html_url ?? "posted";
+                r.error = null;
+                done.push(`${c.author}'s comment`);
+            } catch (e) {
+                r.error = String((e as Error).message ?? e).slice(0, 200);
+            }
+        }
+        writeFileSync(file, JSON.stringify(fc, null, 2));
+        const failed = fc.replies.filter((r) => r.error);
+        if (done.length) this.addAgentNote(task.id, `Replied "Addressed in …" on GitHub to ${done.length} comment(s).`);
+        if (failed.length) this.addAgentNote(task.id, `${failed.length} GitHub repl${failed.length === 1 ? "y" : "ies"} failed: ${failed.map((r) => r.error).join("; ")}`);
+    }
+
     private async pushPrFix(taskId: string): Promise<void> {
         const task = this.getTask(taskId);
         if (!task?.branch) return;
@@ -2634,6 +2722,7 @@ export class Engine extends EventEmitter {
         // A fix can land while a repository's draft is still unapproved (its PR never opened before CI on another
         // repository's PR failed): that draft still needs the human — back to PR Creation Review for it, not on to
         // PR Waiting where nothing offers to open it.
+        await this.postFixReplies(task, env).catch((e: unknown) => console.warn(`[stagehand] fix replies ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         const repos = this.draftRepos(taskId, env);
         const rows = this.prRows(taskId);
         const missing = repos.filter((r) => !rows.find((x) => x.repo === r)?.number);
@@ -4756,7 +4845,7 @@ export class Engine extends EventEmitter {
     }
 
     // What an address-comments job tells the agent: the picked comments of one repository's PR, one line each.
-    private async commentsText(task: TaskRow, repo: string, commentIds: number[]): Promise<{ text: string; count: number }> {
+    private async commentsText(task: TaskRow, repo: string, commentIds: number[]): Promise<{ text: string; count: number; picked?: PrComment[] }> {
         const row = this.prRow(task.id, repo);
         if (!row?.number || !commentIds.length) return { text: "", count: 0 };
         const comments = await this.prComments(task.id, repo);
@@ -4764,7 +4853,7 @@ export class Engine extends EventEmitter {
         const wanted = new Set(commentIds);
         const picked = [...comments.human, ...comments.automation].filter((c) => wanted.has(c.id));
         if (!picked.length) return { text: "", count: 0 };
-        return { count: picked.length, text: `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (not necessarily a CI failure):\n${picked.map(describePrComment).join("\n")}` };
+        return { count: picked.length, picked, text: `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (not necessarily a CI failure):\n${picked.map(describePrComment).join("\n")}` };
     }
 
     // Batched PR jobs — the user's ask (2026-09-21): "batch jobs for agent after PR creation - e.g. rebase onto latest
@@ -4817,13 +4906,16 @@ export class Engine extends EventEmitter {
                 }
             }
         }
+        const addressed: Array<{ repo: string; comments: PrComment[] }> = [];
         for (const c of spec.comments ?? []) {
             const t = await this.commentsText(task, c.repo, c.ids);
             if (t.count) {
                 addJob(c.repo, t.text);
                 summary.push(`${t.count} comment(s) on ${repoLabel(c.repo)}`);
+                addressed.push({ repo: c.repo, comments: t.picked ?? [] });
             }
         }
+        await this.recordFixComments(task, addressed);
         if (spec.instructions?.trim() || spec.files?.length) {
             // Instructions go with every repository that has work; alone, they are one job on the task root.
             const text = `Instructions from the human (do exactly this, nothing more):\n\n${(spec.instructions ?? "").trim() || "See the attached file(s)."}${renderSharedFiles(spec.files ?? [], this.taskDir(taskId))}`;

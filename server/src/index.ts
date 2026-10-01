@@ -1465,6 +1465,17 @@ app.post("/api/tasks/:id/stop", (c) => {
     return c.json(engine.getTask(c.req.param("id")));
 });
 
+// The PR comments the current fix round addressed, and the "Addressed in <commit>" replies picked for after the push.
+app.get("/api/tasks/:id/pr-fix-replies", async (c) => c.json(await engine.fixReplies(c.req.param("id"))));
+app.put("/api/tasks/:id/pr-fix-replies", async (c) => {
+    const body = json(z.object({ replies: z.array(z.object({ repo: z.string(), commentId: z.number(), sha: z.string().regex(/^[0-9a-f]{7,40}$/) })) }), await c.req.json());
+    try {
+        engine.setFixReplies(c.req.param("id"), body.replies);
+        return c.json(await engine.fixReplies(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
 app.post("/api/tasks/:id/retry", (c) => {
     engine.retry(c.req.param("id"));
     return c.json(engine.getTask(c.req.param("id")));

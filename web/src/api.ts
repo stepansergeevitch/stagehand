@@ -303,6 +303,13 @@ export interface PoReviewComment {
     include?: boolean; withdrawn: boolean; note: string | null; sentAt: string | null; thread: Array<{ role: "user" | "po"; text: string; at: string }>;
 }
 export interface PoDesignReview { running: boolean; status: string | null; error: string | null; at: string | null; asking: string | null; review: { verdict: "approve" | "changes"; summary: string; comments: PoReviewComment[]; sentAt: string | null } | null }
+// The PR comments the current fix round addressed, the round's commits, and the replies picked for after the push.
+export interface PrFixReplies {
+    at: string;
+    repos: Record<string, { number: number; prUrl: string; headBefore: string; comments: Array<{ id: number; kind: "review" | "line" | "general"; author: string; url: string; body: string; path?: string; line?: number | null }> }>;
+    replies: Array<{ repo: string; commentId: number; sha: string; posted?: string | null; error?: string | null }>;
+    commits: Record<string, Array<{ sha: string; subject: string }>>;
+}
 export interface TaskLabel { text: string; color: string }
 export const labelsOf = (t: Pick<Task, "labels">): TaskLabel[] => {
     try {
@@ -556,6 +563,8 @@ export const api = {
     poSetPhase: (id: string, phase: PoPhase) => post<{ ok: true }>(`/api/product-owners/${id}/phase`, { phase }),
     poAcceptProposal: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/proposal/accept`),
     poRejectProposal: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/proposal/reject`),
+    prFixReplies: (taskId: string) => fetch(`/api/tasks/${taskId}/pr-fix-replies`).then((r) => j<PrFixReplies | null>(r)),
+    setPrFixReplies: (taskId: string, replies: Array<{ repo: string; commentId: number; sha: string }>) => fetch(`/api/tasks/${taskId}/pr-fix-replies`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ replies }) }).then((r) => j<PrFixReplies>(r)),
     poBrief: (taskId: string) => fetch(`/api/tasks/${taskId}/po-brief`).then((r) => j<PoReview>(r)),
     startPoBrief: (taskId: string) => post<PoReview>(`/api/tasks/${taskId}/po-brief`),
     poReview: (taskId: string) => fetch(`/api/tasks/${taskId}/po-review`).then((r) => j<PoDesignReview>(r)),
