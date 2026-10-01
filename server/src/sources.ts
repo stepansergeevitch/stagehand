@@ -251,6 +251,98 @@ export const fetchSource = async (cfg: Config, url: string): Promise<FetchedSour
     return plainPage(u);
 };
 
+// ---------- the issues of a scope, tracked ----------
+
+// One issue of a PO's project or epic as a refresh sees it: every field a human can change, normalised so that the
+// same state always hashes the same (sorted labels, comments in order). `updatedAt` is left out of the hash.
+export interface TrackedIssue {
+    identifier: string;
+    remoteId: string;
+    url: string;
+    title: string;
+    status: string | null;
+    description: string;
+    labels: string[];
+    assignee: string | null;
+    priority: string | null;
+    estimate: number | null;
+    parent: string | null;
+    comments: Array<{ id: string; author: string; at: string; body: string }>;
+}
+
+type LinearTrackedNode = {
+    id: string; identifier: string; title: string; url: string; description?: string | null; state?: { name: string } | null;
+    labels: { nodes: Array<{ name: string }> }; assignee?: { name: string } | null; priorityLabel?: string | null; estimate?: number | null;
+    parent?: { identifier: string } | null; comments: { nodes: Array<{ id: string; body: string; createdAt: string; user?: { name?: string } | null }> };
+};
+
+const linearScopeIssues = async (cfg: Config, projectId: string): Promise<TrackedIssue[]> => {
+    // 50 issues a page keeps the query under Linear's complexity limit with 100 comments each.
+    const q = `query($id: String!, $after: String) { project(id: $id) { issues(first: 50, after: $after) { pageInfo { hasNextPage endCursor } nodes {
+        id identifier title url description state { name } labels { nodes { name } } assignee { name } priorityLabel estimate parent { identifier }
+        comments(first: 100) { nodes { id body createdAt user { name } } } } } } }`;
+    const out: TrackedIssue[] = [];
+    let after: string | null = null;
+    do {
+        const d: { project: { issues: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: LinearTrackedNode[] } } | null } = await linear(cfg, q, { id: projectId, after });
+        if (!d.project) throw new Error("Linear: project not found");
+        for (const i of d.project.issues.nodes)
+            out.push({
+                identifier: i.identifier,
+                remoteId: i.id,
+                url: i.url,
+                title: i.title,
+                status: i.state?.name ?? null,
+                description: (i.description ?? "").trim(),
+                labels: i.labels.nodes.map((l) => l.name).sort(),
+                assignee: i.assignee?.name ?? null,
+                priority: i.priorityLabel ?? null,
+                estimate: i.estimate ?? null,
+                parent: i.parent?.identifier ?? null,
+                comments: i.comments.nodes
+                    .filter((c) => c.body.trim())
+                    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+                    .map((c) => ({ id: c.id, author: c.user?.name ?? "unknown", at: c.createdAt, body: c.body.trim() })),
+            });
+        after = d.project.issues.pageInfo.hasNextPage ? d.project.issues.pageInfo.endCursor : null;
+    } while (after && out.length < 1000);
+    return out;
+};
+
+type ClickUpFullTask = ClickUpTask & { tags?: Array<{ name: string }>; assignees?: Array<{ username?: string; email?: string }>; priority?: { priority?: string } | null; points?: number | null; time_estimate?: number | null; parent?: string | null };
+type ClickUpComment = { id: string; comment_text: string; date: string; user?: { username?: string; email?: string } };
+
+const clickupScopeIssues = async (cfg: Config, epicId: string): Promise<TrackedIssue[]> => {
+    const epic = await clickupTask(cfg, epicId);
+    const out: TrackedIssue[] = [];
+    for (const s of (epic.subtasks ?? []).slice(0, 300)) {
+        const t = await clickup<ClickUpFullTask>(cfg, `/task/${encodeURIComponent(s.id)}?include_markdown_description=true`);
+        const c = await clickup<{ comments: ClickUpComment[] }>(cfg, `/task/${encodeURIComponent(s.id)}/comment`).catch(() => ({ comments: [] as ClickUpComment[] }));
+        out.push({
+            identifier: t.custom_id ?? t.id,
+            remoteId: t.id,
+            url: t.url,
+            title: t.name,
+            status: t.status?.status ?? null,
+            description: (t.markdown_description ?? t.description ?? "").trim(),
+            labels: (t.tags ?? []).map((x) => x.name).sort(),
+            assignee: (t.assignees ?? []).map((a) => a.username ?? a.email ?? "?").sort().join(", ") || null,
+            priority: t.priority?.priority ?? null,
+            estimate: t.points ?? null,
+            parent: epic.custom_id ?? epic.id,
+            comments: c.comments
+                .filter((x) => x.comment_text.trim())
+                .sort((a, b) => Number(a.date) - Number(b.date))
+                .map((x) => ({ id: x.id, author: x.user?.username ?? x.user?.email ?? "unknown", at: new Date(Number(x.date)).toISOString(), body: x.comment_text.trim() })),
+        });
+    }
+    return out;
+};
+
+// Every issue of a PO's scope, with its comments: the issues of a Linear project, or the subtasks of a ClickUp epic.
+export const fetchScopeIssues = (cfg: Config, source: "linear" | "clickup", scopeId: string): Promise<TrackedIssue[]> =>
+    source === "linear" ? linearScopeIssues(cfg, scopeId) : clickupScopeIssues(cfg, scopeId);
+
 // The scope a new Product Owner is created from: a Linear project, or a ClickUp epic (a task whose subtasks are the tickets).
 export const fetchScope = async (cfg: Config, url: string): Promise<PoScope> => {
     const u = url.trim();

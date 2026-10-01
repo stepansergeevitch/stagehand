@@ -68,6 +68,7 @@ const palace = new Palace(cfg.dataDir);
 const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev), palace);
 const productOwners = new ProductOwners(db, cfg, palace, (ev) => engine.emit("po", ev), `http://127.0.0.1:${cfg.port}`, (taskId) => engine.touchTask(taskId));
 productOwners.ensureHome();
+productOwners.startIssueRefresh();
 
 const app = new Hono();
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -2080,6 +2081,14 @@ app.post("/api/product-owners/:id/approve-design", async (c) => {
 app.post("/api/product-owners/:id/approve-tickets", async (c) => {
     try {
         return c.json(await productOwners.approveTickets(c.req.param("id")));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+// Read the project's issues again now (the timer does it every hour) and brief the PO on what changed.
+app.post("/api/product-owners/:id/refresh-issues", async (c) => {
+    try {
+        return c.json(await productOwners.refreshIssues(c.req.param("id")));
     } catch (e) {
         return poErr(c, e);
     }

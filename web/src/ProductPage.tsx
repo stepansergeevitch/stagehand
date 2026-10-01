@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type PalaceHit, type PoArtifact, type PoDetail, type PoPhase, type PoTicket, type ProductOwner } from "./api";
+import { api, type Env, type PalaceHit, type PoArtifact, type PoDetail, type PoIssue, type PoPhase, type PoTicket, type ProductOwner } from "./api";
 import { Markdown } from "./Markdown";
 import { poBus } from "./poBus";
 import type { PoTab } from "./routes";
@@ -241,6 +241,92 @@ const TicketEditor = ({ t, onSave, onCancel }: { t: PoTicket; onSave: (t: PoTick
     );
 };
 
+const since = (iso: string): string => {
+    const m = Math.round((Date.now() - Date.parse(iso)) / 60_000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+};
+
+// When the issues were last read from the task manager, and a button to read them now.
+const IssuesRefresh = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => void; reload: () => void }) => {
+    const [busy, setBusy] = useState(false);
+    const refresh = async () => {
+        setBusy(true);
+        try { await api.poRefreshIssues(d.po.id); reload(); } catch (e) { onError(String((e as Error).message ?? e)); } finally { setBusy(false); }
+    };
+    return (
+        <div className="po-issues-bar">
+            <span className="field-hint">
+                {d.issues.length} issue(s) tracked · {d.po.issues_refreshed_at ? `read ${since(d.po.issues_refreshed_at)}` : "never read"} · every hour, and the Product Owner gets what changed
+                {d.po.issues_error && <span className="chip bad" title={d.po.issues_error}> last refresh failed</span>}
+            </span>
+            <button className="tiny" disabled={busy || d.refreshingIssues || d.running} title={d.running ? "Wait for the Product Owner's turn" : undefined} onClick={() => void refresh()}>{busy || d.refreshingIssues ? "Refreshing…" : "Refresh issues"}</button>
+        </div>
+    );
+};
+
+// The issue behind a ticket as the task manager has it now: status, labels, assignee and its comments.
+const LiveIssue = ({ issue }: { issue: PoIssue }) => (
+    <>
+        <h3>In {issue.url.includes("clickup") ? "ClickUp" : "Linear"} now</h3>
+        <div className="po-ticket-meta">
+            <span className="chip accent">{issue.status ?? "?"}</span>
+            {issue.assignee && <span className="chip">{issue.assignee}</span>}
+            {issue.priority && <span className="chip">priority {issue.priority}</span>}
+            {issue.labels.map((l) => <span key={l} className="chip">{l}</span>)}
+        </div>
+        <h3>Comments ({issue.comments.length})</h3>
+        {issue.comments.length === 0 ? <p className="quiet">No comments.</p> : (
+            <div className="po-comments">
+                {issue.comments.map((c) => (
+                    <div key={c.id} className="po-comment">
+                        <div className="po-comment-head"><b>{c.author}</b> <span className="quiet">{new Date(c.at).toLocaleString()}</span></div>
+                        <Markdown source={c.body} />
+                    </div>
+                ))}
+            </div>
+        )}
+    </>
+);
+
+// The Stagehand task of a ticket's issue, or a way to start one in an environment of the same task manager.
+const TicketTask = ({ d, identifier, reload, onError }: { d: PoDetail; identifier: string; reload: () => void; onError: (m: string) => void }) => {
+    const task = d.tasks.find((t) => t.ticket_id.toUpperCase() === identifier.toUpperCase());
+    const [envs, setEnvs] = useState<Env[]>([]);
+    const [env, setEnv] = useState("");
+    const [busy, setBusy] = useState(false);
+    useEffect(() => {
+        if (task) return;
+        void api.envs().then((all) => {
+            const mine = all.filter((e) => e.ticket_source === d.po.source);
+            setEnvs(mine);
+            setEnv((cur) => cur || mine[0]?.id || "");
+        }).catch(() => undefined);
+    }, [task, d.po.source]);
+    if (task) {
+        return (
+            <div className="po-ticket-task">
+                <b>Task:</b> <a href={`#/tasks/${encodeURIComponent(task.id)}`}>{task.ticket_id}{task.title ? ` — ${task.title}` : ""}</a>
+                <span className="chip">{task.stage.replace(/_/g, " ")}</span> <span className="chip">{task.status.replace(/_/g, " ")}</span>
+            </div>
+        );
+    }
+    const create = async () => {
+        setBusy(true);
+        try { await api.createTasks({ envId: env, tickets: [identifier], mode: "each", productOwnerId: d.po.id }); reload(); } catch (e) { onError(String((e as Error).message ?? e)); } finally { setBusy(false); }
+    };
+    return (
+        <div className="po-ticket-task">
+            <b>No task yet.</b>
+            {envs.length === 0 ? <span className="quiet"> No environment uses {d.po.source === "linear" ? "Linear" : "ClickUp"}.</span> : (
+                <>
+                    {envs.length > 1 && <select value={env} onChange={(e) => setEnv(e.target.value)}>{envs.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select>}
+                    <button className="tiny primary" disabled={busy || !env} onClick={() => void create()}>{busy ? "Creating…" : `Create task${envs.length === 1 ? ` in ${envs[0]!.name}` : ""}`}</button>
+                </>
+            )}
+        </div>
+    );
+};
+
 const TicketsTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: string) => void; reload: () => void; send: (t: string) => void }) => {
     const tickets = d.tickets?.tickets ?? [];
     const [sel, setSel] = useState<string | null>(null);
@@ -249,6 +335,9 @@ const TicketsTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: st
     const byKey = useMemo(() => new Map(tickets.map((t) => [t.key, t])), [tickets]);
     const link = (k: string) => d.links.find((l) => l.key === k);
     const current = (sel && byKey.get(sel)) || tickets[0];
+    const identOf = (t: PoTicket): string | null => link(t.key)?.identifier ?? t.existing ?? null;
+    const issueOf = (t: PoTicket): PoIssue | undefined => { const id = identOf(t)?.toUpperCase(); return id ? d.issues.find((i) => i.identifier.toUpperCase() === id) : undefined; };
+    const taskOf = (t: PoTicket) => { const id = identOf(t)?.toUpperCase(); return id ? d.tasks.find((x) => x.ticket_id.toUpperCase() === id) : undefined; };
     if (!d.tickets) {
         return (
             <div className="empty">
@@ -271,6 +360,9 @@ const TicketsTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: st
                 <span className={`chip ${t.type === "epic" ? "accent" : t.type === "bug" ? "bad" : ""}`}>{t.type}</span> <b>{t.title}</b>
                 {t.estimate != null && <span className="chip">{t.estimate}</span>}
                 {link(t.key) && <span className="chip ok">{link(t.key)!.identifier}</span>}
+                {issueOf(t)?.status && <span className="chip">{issueOf(t)!.status}</span>}
+                {taskOf(t) && <span className="chip accent" title="Stagehand task">task · {taskOf(t)!.stage.replace(/_/g, " ")}</span>}
+                {(issueOf(t)?.comments.length ?? 0) > 0 && <span className="chip" title="comments">💬 {issueOf(t)!.comments.length}</span>}
             </button>
             {children(t.key).map((c) => row(c, depth + 1))}
         </div>
@@ -278,6 +370,7 @@ const TicketsTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: st
     return (
         <>
             {d.ticketsError && <div className="blocked-box">tickets.json: {d.ticketsError}</div>}
+            <IssuesRefresh d={d} onError={onError} reload={reload} />
             {(d.po.phase === "tickets" || (d.po.phase === "approved" && pending > 0)) && (
                 <div className="review-box">
                     <b>{tickets.length} ticket(s), {points} point(s).</b> Refine them in the chat or edit one here. Approve to create {pending === tickets.length ? "them" : `the ${pending} not created yet`} in {d.po.source === "linear" ? "the Linear project" : "the ClickUp epic"}.
@@ -301,6 +394,8 @@ const TicketsTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: st
                             <Markdown source={current.description} />
                             {current.acceptanceCriteria.length > 0 && (<><h3>Acceptance criteria</h3><ul className="po-ac">{current.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul></>)}
                             {current.dependsOn.length > 0 && (<><h3>Depends on</h3><div className="po-ticket-meta">{current.dependsOn.map((k) => <button key={k} className="tiny" onClick={() => setSel(k)}>{k} {byKey.get(k)?.title ?? ""}</button>)}</div></>)}
+                            {identOf(current) && <TicketTask d={d} identifier={identOf(current)!} reload={reload} onError={onError} />}
+                            {issueOf(current) && <LiveIssue issue={issueOf(current)!} />}
                             {!link(current.key) && <div className="actions"><button onClick={() => setEditing(true)}>Edit</button></div>}
                         </>
                     ))}

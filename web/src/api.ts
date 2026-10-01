@@ -275,15 +275,23 @@ export type PoPhase = "context" | "design" | "tickets" | "approved" | "live";
 export interface ProductOwner {
     id: string; title: string; slug: string; source: "linear" | "clickup"; scope_kind: "project" | "epic"; scope_id: string; scope_url: string | null;
     team_id: string | null; phase: PoPhase; status: "idle" | "running" | "failed"; status_line: string | null; account_id: string | null; created_at: string; updated_at: string;
+    issues_refreshed_at?: string | null; issues_error?: string | null;
     tasks?: number; created?: number;
 }
 export interface PoMessage { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
 export interface PoArtifact { id: string; po_id: string; kind: "upload" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string }
-export interface PoTicket { key: string; type: "epic" | "story" | "task" | "bug"; title: string; parent: string | null; summary: string; description: string; acceptanceCriteria: string[]; estimate: number | null; dependsOn: string[]; labels: string[] }
+export interface PoTicket { key: string; type: "epic" | "story" | "task" | "bug"; title: string; parent: string | null; summary: string; description: string; acceptanceCriteria: string[]; estimate: number | null; dependsOn: string[]; labels: string[]; existing?: string | null }
+// An issue of the PO's project as the last refresh saw it.
+export interface PoIssue {
+    identifier: string; remoteId: string; url: string; title: string; status: string | null; description: string; labels: string[];
+    assignee: string | null; priority: string | null; estimate: number | null; parent: string | null;
+    comments: Array<{ id: string; author: string; at: string; body: string }>;
+}
 export interface PoTicketLink { key: string; remote_id: string; identifier: string | null; url: string | null }
 export interface PoDetail {
     po: ProductOwner; running: boolean; context: string; design: string | null; tickets: { tickets: PoTicket[] } | null; ticketsError: string | null;
     proposal: string | null; messages: PoMessage[]; artifacts: PoArtifact[]; links: PoTicketLink[]; revisions: Array<{ file: string; name: string; at: string }>;
+    issues: PoIssue[]; refreshingIssues: boolean;
     tasks: Array<{ id: string; ticket_id: string; title: string | null; stage: Stage; status: TaskStatus; env_id: string }>;
 }
 export type PoEvent = { poId: string; kind: "updated" } | { poId: string; kind: "text"; text: string } | { poId: string; kind: "activity"; text: string } | { poId: string; kind: "message"; message: PoMessage };
@@ -534,6 +542,7 @@ export const api = {
     poRevision: (id: string, name: string) => fetch(`/api/product-owners/${id}/revisions/${encodeURIComponent(name)}`).then((r) => j<{ text: string }>(r)),
     poApproveDesign: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/approve-design`),
     poApproveTickets: (id: string) => post<{ created: number; skipped: number }>(`/api/product-owners/${id}/approve-tickets`),
+    poRefreshIssues: (id: string) => post<{ total: number; added: number; changed: number; removed: number; briefed: boolean }>(`/api/product-owners/${id}/refresh-issues`),
     poSetPhase: (id: string, phase: PoPhase) => post<{ ok: true }>(`/api/product-owners/${id}/phase`, { phase }),
     poAcceptProposal: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/proposal/accept`),
     poRejectProposal: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/proposal/reject`),

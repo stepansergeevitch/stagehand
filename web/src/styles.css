@@ -768,3 +768,8 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .usage-table tr.res-task:hover { background: var(--accent-soft); }
 .usage-table tr.res-nested td:first-child { padding-left: 28px; }
 .usage-table tr.res-nested { background: var(--panel); }
+.po-issues-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 8px; }
+.po-ticket-task { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 10px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.po-comments { display: flex; flex-direction: column; gap: 8px; }
+.po-comment { border-left: 3px solid var(--line); padding: 4px 10px; }
+.po-comment-head { font-size: 12px; margin-bottom: 2px; }

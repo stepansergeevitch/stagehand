@@ -775,6 +775,18 @@ CREATE TABLE IF NOT EXISTS po_ticket_links (
     created_at TEXT NOT NULL,
     PRIMARY KEY (po_id, key)
 );
+-- The last state Stagehand saw of every issue in a PO's project or epic (see ProductOwners.refreshIssues): its
+-- normalised fields and comments as JSON, and their hash, so a refresh can tell what changed.
+CREATE TABLE IF NOT EXISTS po_issues (
+    po_id TEXT NOT NULL REFERENCES product_owners(id),
+    identifier TEXT NOT NULL,
+    remote_id TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    data TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    changed_at TEXT NOT NULL,
+    PRIMARY KEY (po_id, identifier)
+);
 `;
 
 // A Product Owner: one project of the product (a Linear project, a ClickUp epic) with its context, sources, design
@@ -796,9 +808,13 @@ export interface ProductOwnerRow {
     account_id: string | null;
     created_at: string;
     updated_at: string;
+    // The last refresh of the project's issues (null = never), and why the last one failed.
+    issues_refreshed_at?: string | null;
+    issues_error?: string | null;
 }
 export interface PoMessageRow { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
 export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string }
+export interface PoIssueRow { po_id: string; identifier: string; remote_id: string; hash: string; data: string; fetched_at: string; changed_at: string }
 export interface PoTicketLinkRow { po_id: string; key: string; remote_id: string; identifier: string | null; url: string | null; created_at: string }
 
 // One row per change of a task's (stage, status) — the timing analytics read how long a task sat where (working,
@@ -904,6 +920,8 @@ const MIGRATIONS: Array<[string, string]> = [
     // One-shot "skip Manual QA (and QA baseline) this pass", set from Request changes / Return to a stage.
     ["tasks.skip_qa", `ALTER TABLE tasks ADD COLUMN skip_qa INTEGER NOT NULL DEFAULT 0`],
     ["tasks.product_owner_id", `ALTER TABLE tasks ADD COLUMN product_owner_id TEXT`],
+    ["product_owners.issues_refreshed_at", `ALTER TABLE product_owners ADD COLUMN issues_refreshed_at TEXT`],
+    ["product_owners.issues_error", `ALTER TABLE product_owners ADD COLUMN issues_error TEXT`],
     // A BE/FE that never came up (start timeout, command exited, tmux session gone) — the row stays visible as failed
     // until it is stopped or restarted, so the human sees why and can hand it to the agent.
     ["services.failed_at", `ALTER TABLE services ADD COLUMN failed_at TEXT`],
