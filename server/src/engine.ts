@@ -640,6 +640,7 @@ export class Engine extends EventEmitter {
                 }
                 const title = extras.length ? `${ticket.title}${titles.length > 1 ? ` + ${titles.slice(1).join(" + ")}` : ""}` : ticket.title;
                 this.db.prepare(`UPDATE tasks SET title = ?, ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(title.slice(0, 300), ticket.url, now(), taskId);
+                await this.ensurePoBrief(taskId);
                 this.dispatch(taskId, "research");
             })
             .catch((e: unknown) => {
@@ -647,6 +648,22 @@ export class Engine extends EventEmitter {
                 this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`ticket fetch failed (${reason}) — research will try the MCP itself`, now(), taskId);
                 this.dispatch(taskId, "research");
             });
+    }
+
+    // The Product Owner's brief on a ticket (product-owners.ts briefTask), written before research starts when the task
+    // has a PO: what to pay attention to beyond the ticket. At most a few minutes; research starts without it on failure.
+    private poBriefer: ((task: TaskRow, taskDir: string) => Promise<void>) | null = null;
+    setPoBriefer(fn: (task: TaskRow, taskDir: string) => Promise<void>): void {
+        this.poBriefer = fn;
+    }
+    private async ensurePoBrief(taskId: string): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task?.product_owner_id || !this.poBriefer || existsSync(join(this.taskDir(taskId), "po-brief.md"))) return;
+        this.setTaskStatus(taskId, "running", "the Product Owner is writing a brief on the ticket");
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([this.poBriefer(task, this.taskDir(taskId)), new Promise<void>((resolve) => (timer = setTimeout(resolve, 6 * 60_000)))])
+            .catch((e: unknown) => console.warn(`[po] brief ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`))
+            .finally(() => clearTimeout(timer));
     }
 
     // Stores the raw ticket for a task that has none (created before a token existed); REST only, no agent run.
@@ -3179,6 +3196,13 @@ export class Engine extends EventEmitter {
                   (tickets.length < allIds.length ? `\n\n(Stagehand could not fetch ${allIds.filter((id) => !tickets.some((t) => t.id === id)).join(", ")} server-side — fetch them yourself with the ${task.source} MCP tool.)` : "")
                 : `(Stagehand could not fetch the ticket server-side. Fetch ${task.source} ticket ${allIds.join(", ")} yourself with the ${task.source} MCP tool — for ClickUp: mcp__clickup__clickup_get_task with detail_level "detailed", and its parent if any. If that fails too, write the output file with classification "feature", title "TICKET FETCH FAILED" and the error in summary.)`,
             taskNotes: task.notes?.trim() ? `## Instructions from the human for this task (apply them throughout)\n\n${task.notes.trim()}` : "",
+            poBrief: ((): string => {
+                const p = join(taskDir, "po-brief.md");
+                const text = existsSync(p) ? readFileSync(p, "utf8").trim() : "";
+                return text
+                    ? `## The Product Owner's brief on this ticket\n\nThe project's Product Owner wrote this from what it knows of the project (decisions, comments, related tickets): what to pay attention to beyond the ticket text. It is context, not new requirements — the ticket and the human decide. Check every claim it makes about the code.\n\n${text}`
+                    : "";
+            })(),
             envPath: env.path,
             baseBranch: this.baseBranchLabel(task, env),
             repoLayout: describeRepoLayout(this.layoutOf(task, env), task.worktree_path),

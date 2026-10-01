@@ -69,6 +69,7 @@ const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev), pala
 const productOwners = new ProductOwners(db, cfg, palace, (ev) => engine.emit("po", ev), `http://127.0.0.1:${cfg.port}`, (taskId) => engine.touchTask(taskId));
 productOwners.ensureHome();
 productOwners.startIssueRefresh();
+engine.setPoBriefer((task, taskDir) => productOwners.briefTask(task, taskDir, () => engine.touchTask(task.id)));
 
 const app = new Hono();
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -2133,6 +2134,27 @@ const poReviewOf = (taskId: string) => {
     return { running: productOwners.reviewing(taskId), status: state.status ?? null, error: state.error ?? null, at: state.at ?? null, text: read("po-review.md") };
 };
 app.get("/api/tasks/:id/po-review", (c) => (engine.getTask(c.req.param("id")) ? c.json(poReviewOf(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
+// The PO's brief on the ticket (written before research): read it, or have the PO write it again.
+const poBriefOf = (taskId: string) => {
+    const dir = engine.taskDir(taskId);
+    const read = (f: string): string | null => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : null);
+    let state: { status?: string; error?: string; at?: string } = {};
+    try {
+        state = JSON.parse(read("po-brief.json") ?? "{}") as typeof state;
+    } catch {
+        /* no state yet */
+    }
+    return { running: productOwners.briefing(taskId), status: state.status ?? null, error: state.error ?? null, at: state.at ?? null, text: read("po-brief.md") };
+};
+app.get("/api/tasks/:id/po-brief", (c) => (engine.getTask(c.req.param("id")) ? c.json(poBriefOf(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
+app.post("/api/tasks/:id/po-brief", (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    if (!task.product_owner_id) return c.json({ error: "this task has no Product Owner" }, 400);
+    if (productOwners.briefing(task.id)) return c.json({ error: "the Product Owner is already writing this brief" }, 409);
+    void productOwners.briefTask(task, engine.taskDir(task.id), () => engine.touchTask(task.id)).catch((e: unknown) => console.warn(`[po] brief ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+    return c.json({ ...poBriefOf(task.id), running: true });
+});
 app.post("/api/tasks/:id/po-review", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);

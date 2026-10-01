@@ -547,6 +547,8 @@ export const api = {
     poSetPhase: (id: string, phase: PoPhase) => post<{ ok: true }>(`/api/product-owners/${id}/phase`, { phase }),
     poAcceptProposal: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/proposal/accept`),
     poRejectProposal: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/proposal/reject`),
+    poBrief: (taskId: string) => fetch(`/api/tasks/${taskId}/po-brief`).then((r) => j<PoReview>(r)),
+    startPoBrief: (taskId: string) => post<PoReview>(`/api/tasks/${taskId}/po-brief`),
     poReview: (taskId: string) => fetch(`/api/tasks/${taskId}/po-review`).then((r) => j<PoReview>(r)),
     startPoReview: (taskId: string) => post<PoReview>(`/api/tasks/${taskId}/po-review`),
     savePoReview: (taskId: string, text: string) => fetch(`/api/tasks/${taskId}/po-review`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).then((r) => j<PoReview>(r)),

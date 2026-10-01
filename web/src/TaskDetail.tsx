@@ -1361,6 +1361,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {tab === "ticket" && (
                 <>
                     <NotesCard detail={detail} onSave={(text, files) => onAction(async () => api.patchTask(task.id, { notes: text.trim() || null, files: await api.uploadFiles(task.id, files) }))} />
+                    {task.product_owner_id && <PoBriefCard task={task} onError={(m) => void onAction(async () => { throw new Error(m); })} />}
                     <TicketView detail={detail} onFetch={async () => { await api.fetchTicket(task.id); await onAction(async () => undefined); }} />
                 </>
             )}
@@ -1779,6 +1780,25 @@ const QaTests = ({ taskId, design, before }: { taskId: string; design: NonNullab
 
 // "Product owner review": on request, the task's Product Owner reviews the proposal as product; the review is editable
 // here and goes to the design agent as the notes of another round.
+// The Product Owner's brief on the ticket: written before research, read by the research and design agents.
+const PoBriefCard = ({ task, onError }: { task: TaskDetail["task"]; onError: (m: string) => void }) => {
+    const [b, setB] = useState<PoReview | null>(null);
+    const load = useCallback(() => void api.poBrief(task.id).then(setB).catch((e: Error) => onError(e.message)), [task.id, onError]);
+    useEffect(load, [load, task.updated_at]);
+    if (!b) return null;
+    return (
+        <section className="card">
+            <h2>Product Owner brief <span className="field-hint">— what to pay attention to beyond the ticket; research and design read it</span></h2>
+            {b.status === "failed" && <div className="blocked-box">The brief failed: {b.error}</div>}
+            {b.text ? <Markdown source={b.text} /> : <div className="quiet">{b.running ? "The Product Owner is writing it…" : "No brief yet. It is written before research starts."}</div>}
+            <div className="actions">
+                <button disabled={b.running} onClick={async () => { try { setB(await api.startPoBrief(task.id)); } catch (e) { onError(String((e as Error).message ?? e)); } }}>{b.running ? "Writing…" : b.text ? "Write again" : "Write brief"}</button>
+                {b.at && <span className="field-hint">{b.status} · {new Date(b.at).toLocaleString()}</span>}
+            </div>
+        </section>
+    );
+};
+
 const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["task"]; owner: ProductOwner | null; onAction: Props["onAction"]; onError: (m: string) => void }) => {
     const [r, setR] = useState<PoReview | null>(null);
     const [draft, setDraft] = useState<string | null>(null);

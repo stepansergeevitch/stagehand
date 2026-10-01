@@ -845,6 +845,58 @@ export class ProductOwners {
         return owners.find((o) => o.scope_id === scope)?.id ?? null;
     }
 
+    // Briefs in flight, by task id.
+    private readonly briefs = new Map<string, ClaudeRun>();
+    briefing(taskId: string): boolean {
+        return this.briefs.has(taskId);
+    }
+
+    // The PO's brief on a task's ticket, before research: a fresh session in the PO's context writes po-brief.md — what
+    // the research agent must pay attention to beyond the ticket text (decisions, comments, related tickets, open
+    // questions). Resolves when the run ends; po-brief.json holds the state.
+    async briefTask(task: TaskRow, taskDir: string, onChange: () => void = () => undefined): Promise<void> {
+        if (!task.product_owner_id) throw new Error("this task has no Product Owner");
+        const po = this.get(task.product_owner_id);
+        if (!po) throw new Error("the task's Product Owner no longer exists");
+        if (this.briefs.has(task.id)) throw new Error("the Product Owner is already writing this brief");
+        const acc = this.account(po);
+        if (!acc?.oauth_token) throw new Error("no AI account with a token — set one up on the AI accounts page");
+        this.trust(po.id);
+        const out = join(taskDir, "po-brief.md");
+        const state = (s: Record<string, unknown>): void => writeFileSync(join(taskDir, "po-brief.json"), JSON.stringify({ ...s, at: now() }, null, 2));
+        state({ status: "running" });
+        const prompt = [
+            `Write a brief on ticket ${task.ticket_id}${task.title ? ` (${task.title})` : ""} for the agent that researches it next, as the Product Owner of "${po.title}".`,
+            `Read ${taskDir}/ticket.json${existsSync(join(taskDir, "tickets")) ? ` and ${taskDir}/tickets/` : ""}. Search your wing for what you know about this ticket and its area: rooms \`issues\` (its comments and the neighbouring issues), \`decisions\`, \`features\`, \`artifacts\`. Read a file only when search is not enough.`,
+            `Give only what the ticket text does not already say and the research must not miss: product decisions that apply (name the source — a decision id, a comment and its author), constraints, related or dependent tickets and how they touch this one, open questions and contradictions, the user intent behind the ticket.`,
+            `Write ${out}: 200 words or fewer, bullets only, each with a **bold lead-in**. When you know nothing beyond the ticket, write "Nothing beyond the ticket." Do not change any other file of the task.`,
+            `Then answer with one line: DONE.`,
+        ].join("\n\n");
+        const run = startClaude({
+            prompt,
+            cwd: this.dir(po.id),
+            configDir: this.configDir,
+            extraEnv: this.runEnv(po, acc),
+            sessionId: randomUUID(),
+            name: `${po.slug}-brief-${task.ticket_id}`,
+            ...(this.cfg.defaultModel ? { model: this.cfg.defaultModel } : {}),
+            maxTurns: 40,
+            addDirs: [taskDir],
+            appendSystemPrompt: this.systemPrompt(po),
+            mcpConfig: this.palace.mcpConfigPath,
+            eventLogPath: join(taskDir, `po-brief-${Date.now()}.ndjson`),
+        });
+        this.briefs.set(task.id, run);
+        onChange();
+        const started = Date.now();
+        const outcome = await run.done;
+        this.briefs.delete(task.id);
+        if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: task.env_id, taskId: task.id, runId: null, kind: "product_owner", stage: null }, outcome.result);
+        const ok = existsSync(out) && statSync(out).mtimeMs >= started - 1000;
+        state(ok ? { status: "done" } : { status: "failed", error: outcome.stderr.trim().split("\n").pop()?.slice(0, 300) || `exited with ${outcome.exitCode ?? "?"}` });
+        onChange();
+    }
+
     reviewing(taskId: string): boolean {
         return this.reviews.has(taskId);
     }

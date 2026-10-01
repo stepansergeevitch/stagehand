@@ -4,6 +4,8 @@ You are starting work on ticket {{ticketId}} in the project at {{envPath}} (base
 
 {{ticket}}
 
+{{poBrief}}
+
 {{taskNotes}}
 
 {{askHuman}}
