@@ -778,3 +778,7 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .sidebar .caret { width: 10px; font-size: 10px; color: var(--ink-3); }
 .sidebar button.child { padding-left: 28px; }
 @media (max-width: 760px) { .sidebar button.child { padding-left: 10px; } }
+.po-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.po-head h2 { margin: 0; }
+.po-pending { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.field-hint.bad { color: var(--bad); }

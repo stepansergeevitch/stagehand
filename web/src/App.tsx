@@ -20,6 +20,7 @@ import { storage } from "./storage";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { LazyTerminal } from "./LazyTerminal";
 import { AgentInput } from "./AgentInput";
+import { Modal } from "./Modal";
 
 // Where the user is lives in the URL hash only (see routes.ts): reloads, back/forward, pasted links and anything that
 // reads the path see the same screen.
@@ -586,24 +587,6 @@ export const App = () => {
     );
 };
 
-const Modal = ({ title, children, onClose, wide }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) => {
-    useEffect(() => {
-        const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-    }, [onClose]);
-    return (
-        <div className="modal" onClick={onClose}>
-            <div className="box" style={wide ? { minWidth: "min(900px, 100vw - 24px)" } : undefined} onClick={(e) => e.stopPropagation()}>
-                <div className="modal-head">
-                    <h2>{title}</h2>
-                    <button className="close" onClick={onClose} aria-label="Close" title="Close (Esc)">×</button>
-                </div>
-                {children}
-            </div>
-        </div>
-    );
-};
 
 // ClickUp and Linear both use 1 = urgent … 4 = low; 0/null = unset.
 const PRIORITY_MARK: Record<number, string> = { 0: "·", 1: "🔴", 2: "🟠", 3: "🟡", 4: "🔵" };

@@ -311,7 +311,8 @@ export class ProductOwners {
 
     // ---------- creation ----------
 
-    async create(url: string, envId: string, accountId: string | null): Promise<ProductOwnerRow> {
+    // `start: false` creates the PO without its first turn, so the creation dialog can add sources first (then start()).
+    async create(url: string, envId: string, accountId: string | null, opts: { start?: boolean } = {}): Promise<ProductOwnerRow> {
         const env = this.db.prepare(`SELECT id, name, ticket_source FROM envs WHERE id = ?`).get(envId) as { id: string; name: string; ticket_source: string } | undefined;
         if (!env) throw new Error("no such environment");
         const scope = await fetchScope(this.cfg, url);
@@ -345,9 +346,29 @@ export class ProductOwners {
         writeFileSync(join(this.dir(row.id), "context.md"), "");
         this.addArtifactText(row.id, scope.source, `${scope.kind === "project" ? "Linear project" : "ClickUp epic"}: ${scope.title}`, scope.url, scope.markdown);
         void this.assignExistingTasks(row);
-        const what = scope.kind === "project" ? "Linear project" : "ClickUp epic";
-        void this.send(row.id, `Start the Context phase. Read the ${what} artifact and the product context. Write a first context.md. Then tell me in a few bullets what this project is, what is still unclear, and which sources you need from me.`, { system: true });
+        if (opts.start !== false) this.start(row.id);
         return this.get(row.id) ?? row;
+    }
+
+    // The first turn: read the sources and write a first context.md.
+    start(poId: string): void {
+        const po = this.get(poId);
+        if (!po) throw new Error("product owner not found");
+        if (this.messages(poId).length) return;
+        const what = po.scope_kind === "project" ? "Linear project" : "ClickUp epic";
+        const n = this.artifacts(poId).length;
+        void this.send(
+            poId,
+            `Start the Context phase. Read the ${what} artifact${n > 1 ? ` and the ${n - 1} other source(s) the human added` : ""}, and the product context. Write a first context.md. Then tell me in a few bullets what this project is, what is still unclear, and which sources you need from me.`,
+            { system: true },
+        ).catch((e: unknown) => console.warn(`[po] start ${po.slug}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+    }
+
+    // A PO works only with its environment's task manager: the env must still use the PO's.
+    private checkManager(po: ProductOwnerRow): void {
+        const env = this.db.prepare(`SELECT name, ticket_source FROM envs WHERE id = ?`).get(po.env_id) as { name: string; ticket_source: string } | undefined;
+        if (!env) throw new Error("this Product Owner's environment no longer exists");
+        if (env.ticket_source !== po.source) throw new Error(`environment "${env.name}" now uses ${env.ticket_source === "linear" ? "Linear" : "ClickUp"}, but this Product Owner's project is in ${po.source === "linear" ? "Linear" : "ClickUp"}`);
     }
 
     async remove(poId: string): Promise<void> {
@@ -648,7 +669,7 @@ export class ProductOwners {
 
     // Open Stagehand tasks whose ticket belongs to this PO's project or epic get it as their Product Owner.
     private async assignExistingTasks(po: ProductOwnerRow): Promise<void> {
-        const tasks = this.db.prepare(`SELECT id, source, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND stage != 'done' AND product_owner_id IS NULL`).all(po.env_id ?? "", po.source) as Array<{ id: string; source: "linear" | "clickup"; ticket_id: string }>;
+        const tasks = this.db.prepare(`SELECT id, source, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND stage != 'done' AND product_owner_id IS NULL`).all(po.env_id, po.source) as Array<{ id: string; source: "linear" | "clickup"; ticket_id: string }>;
         for (const t of tasks) {
             const scope = await ticketScopeId(this.cfg, t.source, t.ticket_id);
             if (scope === po.scope_id) {
@@ -668,13 +689,16 @@ export class ProductOwners {
 
     // Every few minutes: refresh the issues of each PO whose last refresh is an hour old. A PO that is answering waits
     // for the next look, so its brief never collides with a turn.
-    // A PO from before environments: it belongs to the env of its tasks, else to the one env on its task manager.
+    // A PO from before environments: it belongs to the env of its tasks, else to the first env on its task manager.
     backfillEnvs(): void {
         for (const po of this.db.prepare(`SELECT * FROM product_owners WHERE env_id IS NULL`).all() as ProductOwnerRow[]) {
             const byTasks = this.db.prepare(`SELECT env_id, COUNT(*) n FROM tasks WHERE product_owner_id = ? GROUP BY env_id ORDER BY n DESC`).get(po.id) as { env_id: string } | undefined;
             const envs = this.db.prepare(`SELECT id FROM envs WHERE ticket_source = ?`).all(po.source) as Array<{ id: string }>;
-            const env = byTasks?.env_id ?? (envs.length === 1 ? envs[0]!.id : null);
-            if (!env) continue;
+            const env = byTasks?.env_id ?? envs[0]?.id ?? null;
+            if (!env) {
+                console.warn(`[po] ${po.slug}: no environment uses ${po.source} — it cannot work until one does`);
+                continue;
+            }
             this.db.prepare(`UPDATE product_owners SET env_id = ? WHERE id = ?`).run(env, po.id);
             // Tasks of other envs drop a PO that is not theirs.
             this.db.prepare(`UPDATE tasks SET product_owner_id = NULL WHERE product_owner_id = ? AND env_id != ?`).run(po.id, env);
@@ -703,6 +727,7 @@ export class ProductOwners {
         if (!po) throw new Error("product owner not found");
         if (this.refreshing.has(poId)) throw new Error("the issues are already being refreshed");
         if (this.active.has(poId)) throw new Error("the Product Owner is answering — refresh after its turn");
+        this.checkManager(po);
         this.refreshing.add(poId);
         this.emit({ poId, kind: "updated" });
         try {
@@ -784,7 +809,7 @@ export class ProductOwners {
     // Open tasks for one of the project's issues get this PO, so a product ticket and its task are linked.
     private assignTasksOfIssues(po: ProductOwnerRow, issues: TrackedIssue[]): void {
         const ids = new Set(issues.flatMap((i) => [i.identifier.toUpperCase(), i.remoteId]));
-        const tasks = this.db.prepare(`SELECT id, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND product_owner_id IS NULL`).all(po.env_id ?? "", po.source) as Array<{ id: string; ticket_id: string }>;
+        const tasks = this.db.prepare(`SELECT id, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND product_owner_id IS NULL`).all(po.env_id, po.source) as Array<{ id: string; ticket_id: string }>;
         for (const t of tasks) {
             if (!ids.has(t.ticket_id.toUpperCase()) && !ids.has(t.ticket_id)) continue;
             this.db.prepare(`UPDATE tasks SET product_owner_id = ?, updated_at = ? WHERE id = ?`).run(po.id, now(), t.id);
@@ -810,6 +835,7 @@ export class ProductOwners {
         const raw = join(this.dir(poId), "tickets.json");
         if (!existsSync(raw)) throw new Error("there is no tickets.json yet");
         const { tickets } = PoTickets.parse(JSON.parse(readFileSync(raw, "utf8")));
+        this.checkManager(po);
         if (!po.team_id) throw new Error(po.source === "linear" ? "the Linear project has no team to create issues in" : "the ClickUp epic has no list to create tasks in");
         this.touch(poId, { phase: "approved", status: "running", status_line: `creating ${tickets.length} ticket(s)…` });
         const done = new Map(this.links(poId).map((l) => [l.key, l]));

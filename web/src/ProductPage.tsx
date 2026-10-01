@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Env, type PalaceHit, type PoArtifact, type PoDetail, type PoIssue, type PoPhase, type PoTicket, type ProductOwner } from "./api";
 import { Markdown } from "./Markdown";
+import { Modal } from "./Modal";
 import { poBus } from "./poBus";
 import type { PoTab } from "./routes";
 
@@ -60,16 +61,100 @@ const PalaceSearch = ({ wing, onError }: { wing?: string; onError: (m: string) =
 
 // ---------- the list ----------
 
+type PendingSource = { kind: "url"; url: string } | { kind: "text"; title: string; text: string } | { kind: "file"; file: File };
+const LINEAR_PROJECT = /^https?:\/\/linear\.app\/[^/]+\/project\//;
+const CLICKUP_TASK = /^https?:\/\/app\.clickup\.com\/t\//;
+
+// A new PO: its environment (which fixes the task manager), the project of that task manager, and the sources it
+// starts from. The PO is created without its first turn, gets the sources, then starts — so it reads them all.
+const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClose: () => void; onCreated: (id: string) => void; onError: (m: string) => void }) => {
+    const [envId, setEnvId] = useState(envs[0]?.id ?? "");
+    const env = envs.find((e) => e.id === envId);
+    const manager = env?.ticket_source === "clickup" ? "ClickUp" : "Linear";
+    const [url, setUrl] = useState("");
+    const [sources, setSources] = useState<PendingSource[]>([]);
+    const [srcUrl, setSrcUrl] = useState("");
+    const [paste, setPaste] = useState<{ title: string; text: string } | null>(null);
+    const [progress, setProgress] = useState<string | null>(null);
+    const fileRef = useRef<HTMLInputElement>(null);
+    const urlOk = env?.ticket_source === "clickup" ? CLICKUP_TASK.test(url.trim()) : LINEAR_PROJECT.test(url.trim());
+    const create = async () => {
+        if (!env) return;
+        setProgress("Reading the project…");
+        let po: ProductOwner;
+        try {
+            po = await api.createProductOwner(url.trim(), env.id, false);
+        } catch (e) {
+            setProgress(null);
+            onError(String((e as Error).message ?? e));
+            return;
+        }
+        const failed: string[] = [];
+        for (const [i, s] of sources.entries()) {
+            setProgress(`Adding sources ${i + 1} / ${sources.length}…`);
+            try {
+                if (s.kind === "url") await api.poFetch(po.id, s.url);
+                else if (s.kind === "text") await api.poPaste(po.id, s.title, s.text, false);
+                else await api.poUpload(po.id, s.file);
+            } catch (e) {
+                failed.push(`${s.kind === "url" ? s.url : s.kind === "text" ? s.title || "pasted text" : s.file.name}: ${String((e as Error).message ?? e)}`);
+            }
+        }
+        await api.startProductOwner(po.id).catch(() => undefined);
+        if (failed.length) onError(`Some sources were not added — add them on the Context tab:\n${failed.join("\n")}`);
+        onCreated(po.id);
+    };
+    const label = (s: PendingSource) => (s.kind === "url" ? s.url : s.kind === "text" ? `${s.title || "Pasted text"} (${s.text.length} characters)` : `${s.file.name} (${Math.round(s.file.size / 1024)} KB)`);
+    return (
+        <Modal title="New product owner" onClose={() => !progress && onClose()} wide>
+            <label>Environment
+                <select value={envId} onChange={(e) => { setEnvId(e.target.value); setUrl(""); }}>
+                    {envs.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </select>
+            </label>
+            <div className="field-hint">Task manager: <b>{manager}</b> — the Product Owner reads its project and creates tickets only there. Only this environment's tasks get it.</div>
+            <label>{manager === "Linear" ? "Linear project" : "ClickUp epic"}
+                <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={manager === "Linear" ? "https://linear.app/<workspace>/project/…" : "https://app.clickup.com/t/…"} />
+            </label>
+            {url.trim() && !urlOk && <div className="field-hint bad">This is not a {manager === "Linear" ? "Linear project URL" : "ClickUp task URL"}.</div>}
+            <h3>Sources <span className="field-hint">— optional; the Product Owner reads them in its first turn</span></h3>
+            {sources.length > 0 && (
+                <ul className="po-pending">
+                    {sources.map((s, i) => (
+                        <li key={i}><span className="chip">{s.kind}</span> {label(s)} <button className="tiny" onClick={() => setSources((x) => x.filter((_, j) => j !== i))}>Remove</button></li>
+                    ))}
+                </ul>
+            )}
+            <div className="po-row">
+                <input value={srcUrl} onChange={(e) => setSrcUrl(e.target.value)} placeholder="Linear issue, ClickUp task, Notion page or any web page URL" />
+                <button disabled={!/^https?:\/\//.test(srcUrl.trim())} onClick={() => { setSources((x) => [...x, { kind: "url", url: srcUrl.trim() }]); setSrcUrl(""); }}>Add URL</button>
+                <button onClick={() => setPaste((p) => (p ? null : { title: "", text: "" }))}>Paste text</button>
+                <button onClick={() => fileRef.current?.click()}>Upload files</button>
+                <input ref={fileRef} type="file" multiple hidden onChange={(e) => { const files = [...(e.target.files ?? [])]; e.target.value = ""; setSources((x) => [...x, ...files.map((file) => ({ kind: "file" as const, file }))]); }} />
+            </div>
+            {paste && (
+                <div className="po-paste">
+                    <input value={paste.title} onChange={(e) => setPaste({ ...paste, title: e.target.value })} placeholder="Title (optional)" />
+                    <textarea rows={8} value={paste.text} onChange={(e) => setPaste({ ...paste, text: e.target.value })} placeholder="Paste a conversation, notes or any text with context for this project" autoFocus />
+                    <div className="actions"><button disabled={!paste.text.trim()} onClick={() => { setSources((x) => [...x, { kind: "text", title: paste.title.trim(), text: paste.text }]); setPaste(null); }}>Add text</button></div>
+                </div>
+            )}
+            <div className="actions">
+                <button className="primary" disabled={!env || !urlOk || !!progress} onClick={() => void create()}>{progress ?? "Create"}</button>
+                <button disabled={!!progress} onClick={onClose}>Cancel</button>
+            </div>
+        </Modal>
+    );
+};
+
 const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onError: (m: string) => void }) => {
     const [ctx, setCtx] = useState<string | null>(null);
     const [pos, setPos] = useState<ProductOwner[] | null>(null);
-    const [url, setUrl] = useState("");
-    const [busy, setBusy] = useState(false);
+    const [creating, setCreating] = useState(false);
     const [tab, setTab] = useState<"owners" | "context" | "memory">("owners");
     const [envs, setEnvs] = useState<Env[]>([]);
-    const [envId, setEnvId] = useState("");
-    useEffect(() => { void api.envs().then((e) => { setEnvs(e); setEnvId((cur) => cur || e[0]?.id || ""); }).catch(() => undefined); }, []);
-    const envName = (id: string | null | undefined) => envs.find((e) => e.id === id)?.name ?? "no environment";
+    useEffect(() => { void api.envs().then(setEnvs).catch(() => undefined); }, []);
+    const envName = (id: string) => envs.find((e) => e.id === id)?.name ?? "…";
     const load = useCallback(() => {
         void api.productContext().then((r) => setCtx(r.text)).catch((e: Error) => onError(e.message));
         void api.productOwners().then(setPos).catch((e: Error) => onError(e.message));
@@ -83,16 +168,13 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
                 <button className={tab === "context" ? "active" : ""} onClick={() => setTab("context")}>Product context</button>
                 <button className={tab === "memory" ? "active" : ""} onClick={() => setTab("memory")}>Memory</button>
             </div>
+            {creating && <NewPoDialog envs={envs} onClose={() => setCreating(false)} onCreated={(id) => { setCreating(false); onOpen(id); }} onError={onError} />}
             {tab === "owners" && <section className="card">
-                <h2>Product owners <span className="field-hint">— one per project of the product: a Linear project or a ClickUp epic</span></h2>
-                <div className="po-row">
-                    <select value={envId} onChange={(e) => setEnvId(e.target.value)} title="The environment this Product Owner belongs to: only its tasks get it">
-                        {envs.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.ticket_source === "linear" ? "Linear" : "ClickUp"})</option>)}
-                    </select>
-                    <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={envs.find((e) => e.id === envId)?.ticket_source === "clickup" ? "ClickUp epic URL (app.clickup.com/t/…)" : "Linear project URL (linear.app/…/project/…)"} />
-                    <button className="primary" disabled={busy || !envId || url.trim().length < 8} onClick={async () => { setBusy(true); try { const po = await api.createProductOwner(url.trim(), envId); setUrl(""); onOpen(po.id); } catch (e) { onError(String((e as Error).message ?? e)); } finally { setBusy(false); } }}>{busy ? "Reading the project…" : "New product owner"}</button>
+                <div className="po-head">
+                    <h2>Product owners <span className="field-hint">— one per project of an environment: a Linear project or a ClickUp epic</span></h2>
+                    <button className="primary" disabled={!envs.length} onClick={() => setCreating(true)}>New product owner</button>
                 </div>
-                {pos === null ? <div className="empty">loading…</div> : pos.length === 0 ? <div className="empty">No Product Owner yet. Paste a project URL above to start one.</div> : (
+                {pos === null ? <div className="empty">loading…</div> : pos.length === 0 ? <div className="empty">No Product Owner yet. Use <b>New product owner</b> to start one.</div> : (
                     <div className="po-list">
                         {pos.map((po) => (
                             <div key={po.id} className="po-item" onClick={() => onOpen(po.id)}>

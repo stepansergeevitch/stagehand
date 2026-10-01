@@ -808,7 +808,8 @@ export interface ProductOwnerRow {
     account_id: string | null;
     created_at: string;
     updated_at: string;
-    env_id?: string | null;
+    // Every PO has one (backfilled at start for POs from before environments).
+    env_id: string;
     // The last refresh of the project's issues (null = never), and why the last one failed.
     issues_refreshed_at?: string | null;
     issues_error?: string | null;

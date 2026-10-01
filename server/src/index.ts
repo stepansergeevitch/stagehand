@@ -1984,9 +1984,17 @@ app.get("/api/product-owners", (c) =>
     ),
 );
 app.post("/api/product-owners", async (c) => {
-    const body = json(z.object({ url: z.string().min(8), envId: z.string(), accountId: z.string().nullable().optional() }), await c.req.json());
+    const body = json(z.object({ url: z.string().min(8), envId: z.string(), accountId: z.string().nullable().optional(), start: z.boolean().optional() }), await c.req.json());
     try {
-        return c.json(await productOwners.create(body.url, body.envId, body.accountId ?? null));
+        return c.json(await productOwners.create(body.url, body.envId, body.accountId ?? null, { start: body.start ?? true }));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.post("/api/product-owners/:id/start", (c) => {
+    try {
+        productOwners.start(c.req.param("id"));
+        return c.json({ ok: true });
     } catch (e) {
         return poErr(c, e);
     }
