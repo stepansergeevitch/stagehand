@@ -2204,6 +2204,7 @@ app.patch("/api/tasks/:id/po-review/comments/:cid", async (c) => {
     const review = readReview(dir);
     const cm = review?.comments.find((x) => x.id === c.req.param("cid"));
     if (!review || !cm) return c.json({ error: "no such review comment" }, 404);
+    if (review.sentAt) return c.json({ error: "this review was sent to the agent — review the new proposal again" }, 409);
     if (body.include !== undefined) cm.include = body.include;
     if (body.note !== undefined) cm.note = body.note?.trim() ? body.note.trim() : null;
     writeFileSync(join(dir, "po-review.json"), JSON.stringify(review, null, 2));
@@ -2228,12 +2229,14 @@ app.post("/api/tasks/:id/po-review/send", (c) => {
     const dir = engine.taskDir(task.id);
     const review = readReview(dir);
     if (!review) return c.json({ error: "there is no Product Owner review to send" }, 400);
+    if (review.sentAt) return c.json({ error: "this review was already sent to the agent" }, 409);
     if (task.stage !== "design_proposal" || task.status !== "waiting_user") return c.json({ error: "the design proposal is not waiting for review" }, 400);
     if (!review.comments.some((x) => x.include && !x.withdrawn)) return c.json({ error: "pick at least one comment for the next round" }, 400);
     const po = task.product_owner_id ? productOwners.get(task.product_owner_id) : undefined;
     const notes = reviewNotes(review, po?.title ?? null);
     const at = new Date().toISOString();
     for (const x of review.comments) if (x.include && !x.withdrawn) x.sentAt = at;
+    review.sentAt = at;
     writeFileSync(join(dir, "po-review.json"), JSON.stringify(review, null, 2));
     engine.review(task.id, { verdict: "changes", notes });
     return c.json(engine.getTask(task.id));

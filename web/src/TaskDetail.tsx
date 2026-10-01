@@ -1802,7 +1802,8 @@ const PoBriefCard = ({ task, onError }: { task: TaskDetail["task"]; onError: (m:
 const SEVERITY_CHIP: Record<PoReviewComment["severity"], string> = { high: "bad", medium: "warn", low: "" };
 
 // One review comment: pick it for the next round, read it, discuss it with the PO.
-const PoReviewCommentCard = ({ c, busy, asking, onPick, onNote, onAsk }: { c: PoReviewComment; busy: boolean; asking: boolean; onPick: (v: boolean) => void; onNote: (note: string | null) => Promise<void>; onAsk: (text: string) => Promise<void> }) => {
+// `closed`: the review was sent — the card only shows the comment, the note and the discussion.
+const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, onAsk }: { c: PoReviewComment; busy: boolean; asking: boolean; closed?: boolean; onPick: (v: boolean) => void; onNote: (note: string | null) => Promise<void>; onAsk: (text: string) => Promise<void> }) => {
     const [open, setOpen] = useState(c.thread.length > 0);
     const [note, setNote] = useState<string | null>(null);
     const [text, setText] = useState("");
@@ -1813,17 +1814,19 @@ const PoReviewCommentCard = ({ c, busy, asking, onPick, onNote, onAsk }: { c: Po
         await onAsk(t);
     };
     return (
-        <div className={`po-comment-card${c.withdrawn ? " withdrawn" : ""}${c.include ? " picked" : ""}`}>
+        <div className={`po-comment-card${c.withdrawn ? " withdrawn" : ""}${c.include && !closed ? " picked" : ""}${closed ? " closed" : ""}`}>
             <div className="po-comment-top">
-                <label className="inline" title={c.withdrawn ? "The Product Owner withdrew this comment" : "Send this comment in the next design round"}>
-                    <input type="checkbox" checked={!!c.include && !c.withdrawn} disabled={c.withdrawn || busy} onChange={(e) => onPick(e.target.checked)} />
-                </label>
+                {!closed && (
+                    <label className="inline" title={c.withdrawn ? "The Product Owner withdrew this comment" : "Send this comment in the next design round"}>
+                        <input type="checkbox" checked={!!c.include && !c.withdrawn} disabled={c.withdrawn || busy} onChange={(e) => onPick(e.target.checked)} />
+                    </label>
+                )}
                 <span className={`chip ${SEVERITY_CHIP[c.severity]}`}>{c.severity}</span>
                 <span className="chip">{c.area}</span>
                 {c.laterTicket && <span className="chip accent" title="This task's design makes this later ticket harder; the comment says what to change here">for {c.laterTicket}</span>}
                 <b>{c.id} · {c.title}</b>
                 {c.withdrawn && <span className="chip">withdrawn</span>}
-                {c.sentAt && <span className="chip ok" title={new Date(c.sentAt).toLocaleString()}>sent</span>}
+
             </div>
             <Markdown source={c.body} />
             {note !== null ? (
@@ -1838,14 +1841,16 @@ const PoReviewCommentCard = ({ c, busy, asking, onPick, onNote, onAsk }: { c: Po
                 <div className="po-human-note">
                     <div className="chat-msg-head"><b>Your note</b></div>
                     <Markdown source={c.note} />
-                    <div className="actions" style={{ marginBottom: 0 }}>
-                        <button className="tiny" onClick={() => setNote(c.note ?? "")}>Edit</button>
-                        <button className="tiny danger" onClick={() => void onNote(null)}>Delete</button>
-                    </div>
+                    {!closed && (
+                        <div className="actions" style={{ marginBottom: 0 }}>
+                            <button className="tiny" onClick={() => setNote(c.note ?? "")}>Edit</button>
+                            <button className="tiny danger" onClick={() => void onNote(null)}>Delete</button>
+                        </div>
+                    )}
                 </div>
             ) : null}
-            {note === null && !c.note && <button className="tiny" onClick={() => setNote("")}>+ Add note</button>}{" "}
-            <button className="tiny" onClick={() => setOpen((o) => !o)}>{open ? "▾" : "▸"} Discuss with Product owner{c.thread.length ? ` (${c.thread.length})` : ""}</button>
+            {!closed && note === null && !c.note && <button className="tiny" onClick={() => setNote("")}>+ Add note</button>}{" "}
+            {(!closed || c.thread.length > 0) && <button className="tiny" onClick={() => setOpen((o) => !o)}>{open ? "▾" : "▸"} {closed ? "Discussion" : "Discuss with Product owner"}{c.thread.length ? ` (${c.thread.length})` : ""}</button>}
             {open && (
                 <div className="line-thread" style={{ marginLeft: 0 }}>
                     {c.thread.map((m, i) => (
@@ -1855,7 +1860,7 @@ const PoReviewCommentCard = ({ c, busy, asking, onPick, onNote, onAsk }: { c: Po
                         </div>
                     ))}
                     {asking && <div className="thread-msg agent pending">The Product Owner is answering…</div>}
-                    {!asking && (
+                    {!asking && !closed && (
                         <>
                             <AgentInput
                                 placeholder="Push back, ask why, or ask what a fix looks like (⌘/Ctrl+Enter sends)"
@@ -1905,7 +1910,21 @@ const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["t
                     <div className="po-verdict">
                         <span className={`chip ${rev.verdict === "approve" ? "ok" : "warn"}`}>{rev.verdict === "approve" ? "approve" : "changes"}</span> <b>{rev.summary}</b>
                     </div>
-                    {comments.length === 0 ? <div className="quiet">No comments.</div> : comments.map((c) => (
+                    {rev.sentAt ? (
+                        <>
+                            <div className="review-box">
+                                <b>Sent to the agent {new Date(rev.sentAt).toLocaleString()}</b> — {rev.comments.filter((c) => c.sentAt).length} sent, {rev.comments.filter((c) => !c.sentAt).length} skipped. This review is closed; review the new proposal again when it is ready.
+                            </div>
+                            {[["Sent", comments.filter((c) => c.sentAt)], ["Skipped", comments.filter((c) => !c.sentAt)]].map(([label, list]) =>
+                                (list as PoReviewComment[]).length ? (
+                                    <div key={label as string}>
+                                        <h3>{label as string} ({(list as PoReviewComment[]).length})</h3>
+                                        {(list as PoReviewComment[]).map((c) => <PoReviewCommentCard key={c.id} c={c} busy asking={false} closed onPick={() => undefined} onNote={async () => undefined} onAsk={async () => undefined} />)}
+                                    </div>
+                                ) : null,
+                            )}
+                        </>
+                    ) : comments.length === 0 ? <div className="quiet">No comments.</div> : comments.map((c) => (
                         <PoReviewCommentCard
                             key={c.id}
                             c={c}
@@ -1916,12 +1935,12 @@ const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["t
                             onAsk={(text) => call(() => api.askPoReviewComment(task.id, c.id, text))}
                         />
                     ))}
-                    <div className="actions">
+                    {!rev.sentAt && <div className="actions">
                         <button className="primary" disabled={!canSend || r.running || picked.length === 0} title={canSend ? "Another design round with the picked comments as the notes" : "The proposal must be waiting for your review"} onClick={() => void onAction(async () => { await api.sendPoReview(task.id); })}>
                             Send {picked.length} comment{picked.length === 1 ? "" : "s"} to agent
                         </button>
                         <span className="field-hint">{rev.comments.length - picked.length} skipped this round</span>
-                    </div>
+                    </div>}
                 </>
             )}
         </div>

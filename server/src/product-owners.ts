@@ -69,7 +69,8 @@ export const PoReviewComment = z.object({
     sentAt: z.string().nullable().default(null),
     thread: z.array(z.object({ role: z.enum(["user", "po"]), text: z.string(), at: z.string() })).default([]),
 });
-export const PoReviewResult = z.object({ verdict: z.enum(["approve", "changes"]), summary: z.string(), comments: z.array(PoReviewComment) });
+// `sentAt`: when the picked comments went to the design agent — the review is closed from then on (read-only).
+export const PoReviewResult = z.object({ verdict: z.enum(["approve", "changes"]), summary: z.string(), comments: z.array(PoReviewComment), sentAt: z.string().nullable().default(null) });
 export type PoReviewComment = z.infer<typeof PoReviewComment>;
 export type PoReviewResult = z.infer<typeof PoReviewResult>;
 const REVIEW_SHAPE = `{ "verdict": "approve" | "changes", "summary": "…", "comments": [ { "id": "C1", "severity": "high" | "medium" | "low", "area": "product" | "scope" | "acceptance" | "qa" | "question", "laterTicket": null | "INV-155", "title": "…", "body": "markdown" } ] }`;
@@ -1138,6 +1139,7 @@ export class ProductOwners {
         const review = readReview(taskDir);
         const c = review?.comments.find((x) => x.id === commentId);
         if (!review || !c) throw new Error("no such review comment");
+        if (review.sentAt) throw new Error("this review was sent to the agent — review the new proposal again");
         const acc = this.account(po);
         if (!acc?.oauth_token) throw new Error("no AI account with a token — set one up on the AI accounts page");
         c.thread.push({ role: "user", text, at: now() });
