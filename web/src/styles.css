@@ -793,3 +793,4 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .po-comment-top { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .po-human-note { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--ok); background: var(--ok-soft); border-radius: 4px; }
 .po-comment-card.closed { background: var(--bg); }
+.po-kind { display: grid; gap: 6px; }

@@ -346,7 +346,15 @@ export class ProductOwners {
     }
     envWings(envId: string): string[] {
         const pos = this.db.prepare(`SELECT slug FROM product_owners WHERE env_id = ?`).all(envId) as Array<{ slug: string }>;
-        return [this.productWing(envId), ...pos.flatMap((p) => [p.slug, `wing_${p.slug}`])];
+        const env = this.db.prepare(`SELECT memory_wings FROM envs WHERE id = ?`).get(envId) as { memory_wings: string | null } | undefined;
+        let extra: string[] = [];
+        try {
+            const parsed: unknown = JSON.parse(env?.memory_wings ?? "[]");
+            if (Array.isArray(parsed)) extra = parsed.filter((w): w is string => typeof w === "string" && !!w.trim());
+        } catch {
+            /* no extra wings */
+        }
+        return [...new Set([this.productWing(envId), ...extra, ...pos.flatMap((p) => [p.slug, `wing_${p.slug}`])])];
     }
     productContext(envId: string): string {
         const p = join(this.productDir, envId, "context.md");
@@ -439,13 +447,48 @@ export class ProductOwners {
         return this.get(row.id) ?? row;
     }
 
+    // The environment's own PO (one per env): no project, no tickets, no first turn. It reviews and briefs every task
+    // of the env that has no project PO, from the product context and the env's memory.
+    createEnvPo(envId: string, accountId: string | null): ProductOwnerRow {
+        const env = this.db.prepare(`SELECT id, name, ticket_source FROM envs WHERE id = ?`).get(envId) as { id: string; name: string; ticket_source: "linear" | "clickup" } | undefined;
+        if (!env) throw new Error("no such environment");
+        const existing = this.envPo(env.id);
+        if (existing) return existing;
+        let slug = `po-env-${slugify(env.name)}`;
+        for (let i = 2; this.db.prepare(`SELECT 1 FROM product_owners WHERE slug = ?`).get(slug); i++) slug = `po-env-${slugify(env.name)}-${i}`;
+        const row: ProductOwnerRow = {
+            id: randomUUID(), title: `${env.name} — product`, slug, source: env.ticket_source, scope_kind: "env", scope_id: env.id, scope_url: null, team_id: null,
+            phase: "live", status: "idle", status_line: null, session_id: randomUUID(), account_id: accountId, created_at: now(), updated_at: now(), env_id: env.id,
+        };
+        this.db
+            .prepare(`INSERT INTO product_owners (id, title, slug, source, scope_kind, scope_id, scope_url, team_id, phase, status, status_line, session_id, account_id, created_at, updated_at, env_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(row.id, row.title, row.slug, row.source, row.scope_kind, row.scope_id, row.scope_url, row.team_id, row.phase, row.status, row.status_line, row.session_id, row.account_id, row.created_at, row.updated_at, row.env_id);
+        mkdirSync(join(this.dir(row.id), "artifacts"), { recursive: true });
+        writeFileSync(join(this.dir(row.id), "context.md"), "");
+        // Every open task of the env without a PO gets it.
+        for (const t of this.db.prepare(`SELECT id FROM tasks WHERE env_id = ? AND stage != 'done' AND product_owner_id IS NULL`).all(env.id) as Array<{ id: string }>) {
+            this.db.prepare(`UPDATE tasks SET product_owner_id = ?, updated_at = ? WHERE id = ?`).run(row.id, now(), t.id);
+            this.onTaskChanged(t.id);
+        }
+        this.emit({ poId: row.id, kind: "updated" });
+        return row;
+    }
+    envPo(envId: string): ProductOwnerRow | undefined {
+        return this.db.prepare(`SELECT * FROM product_owners WHERE env_id = ? AND scope_kind = 'env'`).get(envId) as ProductOwnerRow | undefined;
+    }
+
     // The first turn: read the sources and write a first context.md.
     start(poId: string): void {
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
         if (this.messages(poId).length) return;
-        const what = po.scope_kind === "project" ? "Linear project" : "ClickUp epic";
         const n = this.artifacts(poId).length;
+        if (po.scope_kind === "env") {
+            // An environment PO starts only when the human gave it sources to read.
+            if (n) void this.send(poId, `Read the ${n} source(s) the human added, and the product context. File what they teach about the product in your palace wing (update, do not append) and write a first context.md. Then tell me in a few bullets what you learned.`, { system: true }).catch(() => undefined);
+            return;
+        }
+        const what = po.scope_kind === "project" ? "Linear project" : "ClickUp epic";
         void this.send(
             poId,
             `Start the Context phase. Read the ${what} artifact${n > 1 ? ` and the ${n - 1} other source(s) the human added` : ""}, and the product context. Write a first context.md. Then tell me in a few bullets what this project is, what is still unclear, and which sources you need from me.`,
@@ -634,18 +677,22 @@ export class ProductOwners {
             approved: "Approved: Stagehand is creating the tickets. Do not change tickets.json.",
             live: "Live: the tickets exist. Keep context.md current, answer questions, and review task designs on request.",
         };
+        const env = this.db.prepare(`SELECT name FROM envs WHERE id = ?`).get(po.env_id) as { name: string } | undefined;
+        const envPo = po.scope_kind === "env";
         return [
-            `You are the Product Owner of "${po.title}" — ${po.source === "linear" ? "a Linear project" : "a ClickUp epic"}: ${po.scope_url ?? po.scope_id}.`,
+            envPo
+                ? `You are the Product Owner of the environment "${env?.name ?? po.env_id}" as a whole — no single project. You brief and review every task of this environment that has no project PO. Your knowledge is the product context below and this environment's memory: search it before every answer.`
+                : `You are the Product Owner of "${po.title}" — ${po.source === "linear" ? "a Linear project" : "a ClickUp epic"}: ${po.scope_url ?? po.scope_id}.`,
             `Your folder: ${d}. Your palace wing: ${this.wing(po)}. Your diary agent name: ${po.slug}.`,
-            `Phase: ${PHASE_LABEL[po.phase]}. ${phaseNote[po.phase]}`,
+            envPo ? "You plan no project and write no design.md or tickets.json. Keep context.md for what you learn about the product across tasks." : `Phase: ${PHASE_LABEL[po.phase]}. ${phaseNote[po.phase]}`,
             `## Product context (this environment's product — read-only; propose a change in product-context-proposal.md; palace wing ${this.productWing(po.env_id)})\n\n${this.productContext(po.env_id).trim() || "(empty — ask the human for it when you need it)"}`,
             `## Memory of this environment\n\nSearch only these wings: ${this.envWings(po.env_id).join(", ")}. Never use the wings of other environments' Product Owners: they are other products.`,
             `## Your project context (context.md)\n\n${ctx.trim() || "(empty — write it)"}`,
-            `## Issues\n\nEvery issue of the project, with its comments, is in your wing, room \`issues\` (current state in full: issues.md). Stagehand reads them again every hour and tells you what changed.`,
+            ...(envPo ? [] : [`## Issues\n\nEvery issue of the project, with its comments, is in your wing, room \`issues\` (current state in full: issues.md). Stagehand reads them again every hour and tells you what changed.`]),
             `## Artifacts (${arts.length}) — search them in your wing, room \`artifacts\`; read a file only when search is not enough\n\n${arts.map((a) => `- ${a.file} — ${a.title}${a.source_url ? ` (${a.source_url})` : ""} [${a.kind}${a.chunks ? `, ${a.chunks} chunks` : ""}]`).join("\n") || "(none)"}`,
             ((): string => {
                 const tasks = this.projectTasks(po);
-                return `## Tasks of this project (${tasks.length}) — read their files directly, never edit them\n\n${tasks.map((t) => `- ${t.ticket}${t.title ? ` ${t.title}` : ""} — ${t.stage.replace(/_/g, " ")} · ${t.status.replace(/_/g, " ")} — ${t.dir}/${t.files.length ? ` (${t.files.join(", ")})` : " (no files yet)"}`).join("\n") || "(none)"}\n\ndesign.md is the agent's proposal; design.json holds its QA scenarios (seed, steps, expected results) and the baseline result.`;
+                return `## Tasks of ${envPo ? "this environment you own" : "this project"} (${tasks.length}) — read their files directly, never edit them\n\n${tasks.map((t) => `- ${t.ticket}${t.title ? ` ${t.title}` : ""} — ${t.stage.replace(/_/g, " ")} · ${t.status.replace(/_/g, " ")} — ${t.dir}/${t.files.length ? ` (${t.files.join(", ")})` : " (no files yet)"}`).join("\n") || "(none)"}\n\ndesign.md is the agent's proposal; design.json holds its QA scenarios (seed, steps, expected results) and the baseline result.`;
             })(),
             `Local API: ${this.apiUrl} (STAGEHAND_API). Now: ${new Date().toLocaleString()}.`,
         ].join("\n\n");
@@ -759,7 +806,7 @@ export class ProductOwners {
 
     // Open Stagehand tasks whose ticket belongs to this PO's project or epic get it as their Product Owner.
     private async assignExistingTasks(po: ProductOwnerRow): Promise<void> {
-        const tasks = this.db.prepare(`SELECT id, source, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND stage != 'done' AND product_owner_id IS NULL`).all(po.env_id, po.source) as Array<{ id: string; source: "linear" | "clickup"; ticket_id: string }>;
+        const tasks = this.db.prepare(`SELECT id, source, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND stage != 'done' AND (product_owner_id IS NULL OR product_owner_id = ?)`).all(po.env_id, po.source, this.envPo(po.env_id)?.id ?? "") as Array<{ id: string; source: "linear" | "clickup"; ticket_id: string }>;
         for (const t of tasks) {
             const scope = await ticketScopeId(this.cfg, t.source, t.ticket_id);
             if (scope === po.scope_id) {
@@ -800,7 +847,7 @@ export class ProductOwners {
         const tick = async (): Promise<void> => {
             for (const po of this.list()) {
                 const last = po.issues_refreshed_at ? Date.parse(po.issues_refreshed_at) : 0;
-                if (Date.now() - last < ISSUES_REFRESH_MS || this.active.has(po.id) || this.refreshing.has(po.id)) continue;
+                if (po.scope_kind === "env" || Date.now() - last < ISSUES_REFRESH_MS || this.active.has(po.id) || this.refreshing.has(po.id)) continue;
                 await this.refreshIssues(po.id).catch((e: unknown) => console.warn(`[po] issues ${po.slug}: ${String((e as Error).message ?? e).slice(0, 200)}`));
             }
         };
@@ -815,6 +862,7 @@ export class ProductOwners {
     async refreshIssues(poId: string): Promise<{ total: number; added: number; changed: number; removed: number; briefed: boolean }> {
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
+        if (po.scope_kind === "env") throw new Error("an environment PO has no project issues");
         if (this.refreshing.has(poId)) throw new Error("the issues are already being refreshed");
         if (this.active.has(poId)) throw new Error("the Product Owner is answering — refresh after its turn");
         this.checkManager(po);
@@ -899,7 +947,7 @@ export class ProductOwners {
     // Open tasks for one of the project's issues get this PO, so a product ticket and its task are linked.
     private assignTasksOfIssues(po: ProductOwnerRow, issues: TrackedIssue[]): void {
         const ids = new Set(issues.flatMap((i) => [i.identifier.toUpperCase(), i.remoteId]));
-        const tasks = this.db.prepare(`SELECT id, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND product_owner_id IS NULL`).all(po.env_id, po.source) as Array<{ id: string; ticket_id: string }>;
+        const tasks = this.db.prepare(`SELECT id, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND (product_owner_id IS NULL OR product_owner_id = ?)`).all(po.env_id, po.source, this.envPo(po.env_id)?.id ?? "") as Array<{ id: string; ticket_id: string }>;
         for (const t of tasks) {
             if (!ids.has(t.ticket_id.toUpperCase()) && !ids.has(t.ticket_id)) continue;
             this.db.prepare(`UPDATE tasks SET product_owner_id = ?, updated_at = ? WHERE id = ?`).run(po.id, now(), t.id);
@@ -912,6 +960,7 @@ export class ProductOwners {
     async approveDesign(poId: string): Promise<void> {
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
+        if (po.scope_kind === "env") throw new Error("an environment PO plans no project");
         if (!existsSync(join(this.dir(poId), "design.md"))) throw new Error("there is no design.md yet");
         this.touch(poId, { phase: "tickets" });
         void this.send(poId, "I approve the design. Split it into tickets in tickets.json, in the format of your CLAUDE.md. Then summarise the split for me: the epics, the ticket count, and the dependencies.", { system: true }).catch((e: unknown) => console.warn(`[po] ${po.slug}: ${String((e as Error).message ?? e).slice(0, 160)}`));
@@ -922,6 +971,7 @@ export class ProductOwners {
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
         if (this.active.has(poId)) throw new Error("the Product Owner is still answering — wait for it");
+        if (po.scope_kind === "env") throw new Error("an environment PO creates no tickets");
         const raw = join(this.dir(poId), "tickets.json");
         if (!existsSync(raw)) throw new Error("there is no tickets.json yet");
         const { tickets } = PoTickets.parse(JSON.parse(readFileSync(raw, "utf8")));
@@ -988,10 +1038,10 @@ export class ProductOwners {
         const link = this.db.prepare(`SELECT l.po_id FROM po_ticket_links l JOIN product_owners p ON p.id = l.po_id WHERE p.env_id = ? AND p.source = ? AND (UPPER(l.identifier) = UPPER(?) OR l.remote_id = ?)`).get(envId, source, ticketId, ticketId) as { po_id: string } | undefined;
         if (link) return link.po_id;
         if (source !== "linear" && source !== "clickup") return null;
-        const owners = this.db.prepare(`SELECT * FROM product_owners WHERE env_id = ? AND source = ?`).all(envId, source) as ProductOwnerRow[];
-        if (!owners.length) return null;
-        const scope = await ticketScopeId(this.cfg, source, ticketId);
-        return owners.find((o) => o.scope_id === scope)?.id ?? null;
+        const owners = this.db.prepare(`SELECT * FROM product_owners WHERE env_id = ? AND source = ? AND scope_kind != 'env'`).all(envId, source) as ProductOwnerRow[];
+        const scope = owners.length ? await ticketScopeId(this.cfg, source, ticketId) : null;
+        // The project's PO when there is one, else the environment's.
+        return owners.find((o) => o.scope_id === scope)?.id ?? this.envPo(envId)?.id ?? null;
     }
 
     // Briefs in flight, by task id.

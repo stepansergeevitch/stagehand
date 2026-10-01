@@ -73,6 +73,8 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
     const env = envs.find((e) => e.id === envId);
     const manager = env?.ticket_source === "clickup" ? "ClickUp" : "Linear";
     const [url, setUrl] = useState("");
+    // "env" = the environment's own PO: no project; it reviews the env's tasks that have no project PO.
+    const [kind, setKind] = useState<"project" | "env">("project");
     const [sources, setSources] = useState<PendingSource[]>([]);
     const [srcUrl, setSrcUrl] = useState("");
     const [paste, setPaste] = useState<{ title: string; text: string } | null>(null);
@@ -81,10 +83,10 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
     const urlOk = env?.ticket_source === "clickup" ? CLICKUP_TASK.test(url.trim()) : LINEAR_PROJECT.test(url.trim());
     const create = async () => {
         if (!env) return;
-        setProgress("Reading the project…");
+        setProgress(kind === "env" ? "Creating…" : "Reading the project…");
         let po: ProductOwner;
         try {
-            po = await api.createProductOwner(url.trim(), env.id, false);
+            po = kind === "env" ? await api.createEnvProductOwner(env.id) : await api.createProductOwner(url.trim(), env.id, false);
         } catch (e) {
             setProgress(null);
             onError(String((e as Error).message ?? e));
@@ -113,11 +115,19 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
                     {envs.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
                 </select>
             </label>
-            <div className="field-hint">Task manager: <b>{manager}</b> — the Product Owner reads its project and creates tickets only there. Only this environment's tasks get it.</div>
-            <label>{manager === "Linear" ? "Linear project" : "ClickUp epic"}
-                <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={manager === "Linear" ? "https://linear.app/<workspace>/project/…" : "https://app.clickup.com/t/…"} />
-            </label>
-            {url.trim() && !urlOk && <div className="field-hint bad">This is not a {manager === "Linear" ? "Linear project URL" : "ClickUp task URL"}.</div>}
+            <div className="po-kind">
+                <label className="inline"><input type="radio" checked={kind === "project"} onChange={() => setKind("project")} /> <b>Project</b> — one {manager === "Linear" ? "Linear project" : "ClickUp epic"}: plans it, designs it, splits it into tickets</label>
+                <label className="inline"><input type="radio" checked={kind === "env"} onChange={() => setKind("env")} /> <b>Whole environment</b> — no project: briefs and reviews every task of the environment that has no project PO, from the product context and the environment's memory</label>
+            </div>
+            {kind === "project" && (
+                <>
+                    <div className="field-hint">Task manager: <b>{manager}</b> — the Product Owner reads its project and creates tickets only there. Only this environment's tasks get it.</div>
+                    <label>{manager === "Linear" ? "Linear project" : "ClickUp epic"}
+                        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={manager === "Linear" ? "https://linear.app/<workspace>/project/…" : "https://app.clickup.com/t/…"} />
+                    </label>
+                    {url.trim() && !urlOk && <div className="field-hint bad">This is not a {manager === "Linear" ? "Linear project URL" : "ClickUp task URL"}.</div>}
+                </>
+            )}
             <h3>Sources <span className="field-hint">— optional; the Product Owner reads them in its first turn</span></h3>
             {sources.length > 0 && (
                 <ul className="po-pending">
@@ -141,7 +151,7 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
                 </div>
             )}
             <div className="actions">
-                <button className="primary" disabled={!env || !urlOk || !!progress} onClick={() => void create()}>{progress ?? "Create"}</button>
+                <button className="primary" disabled={!env || (kind === "project" && !urlOk) || !!progress} onClick={() => void create()}>{progress ?? "Create"}</button>
                 <button disabled={!!progress} onClick={onClose}>Cancel</button>
             </div>
         </Modal>
@@ -187,7 +197,7 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
     const columns: ListColumn<ProductOwner>[] = [
         { key: "name", label: "Name", kind: "label", render: (po) => <b>{po.title}</b>, sort: (po) => po.title },
         { key: "env", label: "Environment", render: (po) => envName(po.env_id), sort: (po) => envName(po.env_id) },
-        { key: "type", label: "Type", render: (po) => (po.source === "linear" ? "Linear project" : "ClickUp epic"), sort: (po) => po.source },
+        { key: "type", label: "Type", render: (po) => (po.scope_kind === "env" ? "Whole environment" : po.source === "linear" ? "Linear project" : "ClickUp epic"), sort: (po) => `${po.scope_kind}${po.source}` },
         {
             key: "status",
             label: "Status",
@@ -615,7 +625,7 @@ const PoPage = ({ id, tab, onTab, onBack, onError }: { id: string; tab: PoTab; o
             <div className="po-layout">
                 <div className="po-main">
                     <div className="subtabs">
-                        {(["context", "design", "tickets"] as const).map((t) => (
+                        {(d.po.scope_kind === "env" ? (["context"] as const) : (["context", "design", "tickets"] as const)).map((t) => (
                             <button key={t} className={tab === t ? "active" : ""} onClick={() => onTab(t)}>
                                 {t === "context" ? `Context · ${d.artifacts.length} source(s)` : t === "design" ? "Design" : `Tickets${d.tickets ? ` · ${d.tickets.tickets.length}` : ""}`}
                                 {t === "context" && d.proposal && <span className="chip warn">proposal</span>}
@@ -623,8 +633,8 @@ const PoPage = ({ id, tab, onTab, onBack, onError }: { id: string; tab: PoTab; o
                         ))}
                     </div>
                     {tab === "context" && <ContextTab d={d} onError={onError} reload={reload} />}
-                    {tab === "design" && <DesignTab d={d} onError={onError} reload={reload} send={send} />}
-                    {tab === "tickets" && <TicketsTab d={d} onError={onError} reload={reload} send={send} />}
+                    {tab === "design" && d.po.scope_kind !== "env" && <DesignTab d={d} onError={onError} reload={reload} send={send} />}
+                    {tab === "tickets" && d.po.scope_kind !== "env" && <TicketsTab d={d} onError={onError} reload={reload} send={send} />}
                 </div>
                 <PoChat d={d} onError={onError} reload={reload} />
             </div>

@@ -157,6 +157,7 @@ export interface EnvRow {
     // what the branch added, to the base (before a QA baseline on base code). Both run from the worktree.
     migrate_command?: string | null;
     migrate_down_command?: string | null;
+    memory_wings?: string | null;
     // Runs from the worktree after every implementation / PR-fix run; non-zero = the run goes back to the agent with the
     // output (e.g. Django `check --database default` + `makemigrations --check`, which tests and a dev server never run).
     check_command: string | null;
@@ -802,7 +803,9 @@ export interface ProductOwnerRow {
     title: string;
     slug: string;
     source: "linear" | "clickup";
-    scope_kind: "project" | "epic";
+    // "env" = the environment's own PO: no project, no tickets — it reviews and briefs the env's tasks that have no
+    // project PO, from the product context and the env's memory (scope_id = the env id).
+    scope_kind: "project" | "epic" | "env";
     scope_id: string;
     scope_url: string | null;
     team_id: string | null;
@@ -916,6 +919,9 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.depends_on_env_id", `ALTER TABLE envs ADD COLUMN depends_on_env_id TEXT REFERENCES envs(id)`],
     ["envs.rebase_command", `ALTER TABLE envs ADD COLUMN rebase_command TEXT`],
     ["envs.migrate_command", `ALTER TABLE envs ADD COLUMN migrate_command TEXT`],
+    // Palace wings that belong to this environment's memory besides its product wing and its POs' (an imported
+    // palace's knowledge wings, e.g. ["northspyre", "northspyre-deal"]): JSON array.
+    ["envs.memory_wings", `ALTER TABLE envs ADD COLUMN memory_wings TEXT`],
     ["envs.migrate_down_command", `ALTER TABLE envs ADD COLUMN migrate_down_command TEXT`],
     ["envs.qa_auto_fix", `ALTER TABLE envs ADD COLUMN qa_auto_fix TEXT`],
     // Prompter: a message sent while a turn ran is "queued" until the next turn takes it (editable until then).

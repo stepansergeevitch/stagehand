@@ -59,7 +59,7 @@ export interface Env {
     chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
-    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
+    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
     // JSON ReviewChecklist: gstack categories switched off, points added, extra do-not-flag rules for Code Review; null = the full checklist.
     review_checklist?: string | null;
     // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
@@ -273,7 +273,7 @@ export interface Task {
 // Product Owners: one per project of the product (a Linear project, a ClickUp epic).
 export type PoPhase = "context" | "design" | "tickets" | "approved" | "live";
 export interface ProductOwner {
-    id: string; title: string; slug: string; source: "linear" | "clickup"; scope_kind: "project" | "epic"; scope_id: string; scope_url: string | null;
+    id: string; title: string; slug: string; source: "linear" | "clickup"; scope_kind: "project" | "epic" | "env"; scope_id: string; scope_url: string | null;
     team_id: string | null; phase: PoPhase; status: "idle" | "running" | "failed"; status_line: string | null; account_id: string | null; created_at: string; updated_at: string;
     issues_refreshed_at?: string | null; issues_error?: string | null; env_id: string;
     tasks?: number; created?: number; tickets?: number; ticketsDone?: number; progress?: number | null;
@@ -531,6 +531,7 @@ export const api = {
     palaceStatus: () => fetch("/api/product/palace").then((r) => j<{ home: string; total: number; wings: Record<string, Record<string, number>> }>(r)),
     productOwners: () => fetch("/api/product-owners").then((r) => j<ProductOwner[]>(r)),
     createProductOwner: (url: string, envId: string, start = true) => post<ProductOwner>("/api/product-owners", { url, envId, start }),
+    createEnvProductOwner: (envId: string) => post<ProductOwner>("/api/product-owners", { kind: "env", envId }),
     startProductOwner: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/start`),
     productOwner: (id: string) => fetch(`/api/product-owners/${id}`).then((r) => j<PoDetail>(r)),
     deleteProductOwner: (id: string) => fetch(`/api/product-owners/${id}`, { method: "DELETE" }).then((r) => j<{ ok: true }>(r)),
@@ -594,7 +595,7 @@ export const api = {
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
             qaBrowser?: "chrome" | "gstack"; qaAutoFix?: QaAutoFixScope;
             reviewChecklist?: ReviewChecklist | null;
-            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
+            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),

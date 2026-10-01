@@ -792,6 +792,7 @@ app.patch("/api/envs/:id", async (c) => {
             rebaseCommand: z.string().nullable().optional(),
             migrateCommand: z.string().nullable().optional(),
             migrateDownCommand: z.string().nullable().optional(),
+            memoryWings: z.array(z.string().trim().min(1)).nullable().optional(),
             checkCommand: z.string().nullable().optional(),
             components: ComponentList.optional(),
             keepServices: z.boolean().optional(),
@@ -867,6 +868,7 @@ app.patch("/api/envs/:id", async (c) => {
     );
     if (body.qaBrowser !== undefined) db.prepare(`UPDATE envs SET qa_browser = ? WHERE id = ?`).run(body.qaBrowser, env.id);
     if (body.migrateCommand !== undefined) db.prepare(`UPDATE envs SET migrate_command = ? WHERE id = ?`).run(body.migrateCommand, env.id);
+    if (body.memoryWings !== undefined) db.prepare(`UPDATE envs SET memory_wings = ? WHERE id = ?`).run(body.memoryWings && body.memoryWings.length ? JSON.stringify(body.memoryWings) : null, env.id);
     if (body.migrateDownCommand !== undefined) db.prepare(`UPDATE envs SET migrate_down_command = ? WHERE id = ?`).run(body.migrateDownCommand, env.id);
     if (body.qaAutoFix !== undefined) db.prepare(`UPDATE envs SET qa_auto_fix = ? WHERE id = ?`).run(body.qaAutoFix, env.id);
     if (body.reviewChecklist !== undefined) {
@@ -2009,8 +2011,11 @@ app.get("/api/product-owners", (c) =>
     ),
 );
 app.post("/api/product-owners", async (c) => {
-    const body = json(z.object({ url: z.string().min(8), envId: z.string(), accountId: z.string().nullable().optional(), start: z.boolean().optional() }), await c.req.json());
+    // kind "env": the environment's own PO — no project URL.
+    const body = json(z.object({ kind: z.enum(["project", "env"]).default("project"), url: z.string().optional(), envId: z.string(), accountId: z.string().nullable().optional(), start: z.boolean().optional() }), await c.req.json());
     try {
+        if (body.kind === "env") return c.json(productOwners.createEnvPo(body.envId, body.accountId ?? null));
+        if (!body.url || body.url.trim().length < 8) return c.json({ error: "a project PO needs its Linear project or ClickUp epic URL" }, 400);
         return c.json(await productOwners.create(body.url, body.envId, body.accountId ?? null, { start: body.start ?? true }));
     } catch (e) {
         return poErr(c, e);
