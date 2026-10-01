@@ -498,6 +498,17 @@ export class ProductOwners {
         return (po.account_id ? all.find((a) => a.id === po.account_id) : undefined) ?? all.find((a) => a.oauth_token) ?? null;
     }
 
+    // The Stagehand tasks of this PO's project, with their folders: the PO reads their design.md, design.json (the QA
+    // scenarios), research.md and reviews directly; it never edits them.
+    private projectTasks(po: ProductOwnerRow): Array<{ id: string; ticket: string; title: string | null; stage: string; status: string; dir: string; files: string[] }> {
+        const rows = this.db.prepare(`SELECT id, ticket_id, title, stage, status FROM tasks WHERE product_owner_id = ? ORDER BY updated_at DESC`).all(po.id) as Array<{ id: string; ticket_id: string; title: string | null; stage: string; status: string }>;
+        return rows.map((t) => {
+            const dir = join(this.cfg.dataDir, "tasks", t.id);
+            const files = ["research.md", "design.md", "design.json", "po-brief.md", "po-review.md"].filter((f) => existsSync(join(dir, f)));
+            return { id: t.id, ticket: t.ticket_id, title: t.title, stage: t.stage, status: t.status, dir, files };
+        });
+    }
+
     private systemPrompt(po: ProductOwnerRow): string {
         const d = this.dir(po.id);
         const ctx = existsSync(join(d, "context.md")) ? readFileSync(join(d, "context.md"), "utf8") : "";
@@ -517,6 +528,10 @@ export class ProductOwners {
             `## Your project context (context.md)\n\n${ctx.trim() || "(empty — write it)"}`,
             `## Issues\n\nEvery issue of the project, with its comments, is in your wing, room \`issues\` (current state in full: issues.md). Stagehand reads them again every hour and tells you what changed.`,
             `## Artifacts (${arts.length}) — search them in your wing, room \`artifacts\`; read a file only when search is not enough\n\n${arts.map((a) => `- ${a.file} — ${a.title}${a.source_url ? ` (${a.source_url})` : ""} [${a.kind}${a.chunks ? `, ${a.chunks} chunks` : ""}]`).join("\n") || "(none)"}`,
+            ((): string => {
+                const tasks = this.projectTasks(po);
+                return `## Tasks of this project (${tasks.length}) — read their files directly, never edit them\n\n${tasks.map((t) => `- ${t.ticket}${t.title ? ` ${t.title}` : ""} — ${t.stage.replace(/_/g, " ")} · ${t.status.replace(/_/g, " ")} — ${t.dir}/${t.files.length ? ` (${t.files.join(", ")})` : " (no files yet)"}`).join("\n") || "(none)"}\n\ndesign.md is the agent's proposal; design.json holds its QA scenarios (seed, steps, expected results) and the baseline result.`;
+            })(),
             `Local API: ${this.apiUrl} (STAGEHAND_API). Now: ${new Date().toLocaleString()}.`,
         ].join("\n\n");
     }
@@ -553,6 +568,7 @@ export class ProductOwners {
             ...(first ? { sessionId: po.session_id, name: po.slug } : { resume: po.session_id }),
             ...(this.cfg.defaultModel ? { model: this.cfg.defaultModel } : {}),
             maxTurns: 80,
+            addDirs: this.projectTasks(po).map((t) => t.dir),
             appendSystemPrompt: this.systemPrompt(po),
             mcpConfig: this.palace.mcpConfigPath,
             eventLogPath: join(this.dir(poId), "logs", `${Date.now()}.ndjson`),

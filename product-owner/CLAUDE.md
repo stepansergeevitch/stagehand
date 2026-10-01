@@ -42,6 +42,10 @@ To add a source the human names (a Linear project or issue, a ClickUp task, a No
 curl -s -X POST "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/artifacts/fetch" -H 'content-type: application/json' -d '{"url":"<url>"}'
 ```
 
+## Tasks
+
+The system prompt lists the Stagehand tasks of this project with their folders. Read their files directly when a question is about a task: `design.md` (the agent's proposal), `design.json` (its QA scenarios and the baseline result), `research.md`, `po-brief.md` (your brief), `po-review.md` (your review). Never edit them — the human sends changes to the agent.
+
 ## Memory — the MemPalace
 
 The palace is Stagehand's own (the `mempalace` MCP server). Your wing is named in the system prompt.
