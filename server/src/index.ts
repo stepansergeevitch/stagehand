@@ -2156,7 +2156,10 @@ app.post("/api/product-owners/:id/proposal/reject", (c) => {
 const poReviewOf = (taskId: string) => {
     const dir = engine.taskDir(taskId);
     const st = readReviewState(dir);
-    return { running: productOwners.reviewing(taskId), status: st.status ?? null, error: st.error ?? null, at: st.at ?? null, asking: st.asking ?? null, review: readReview(dir) };
+    const running = productOwners.reviewing(taskId);
+    // "running" with no live run: a restart killed it.
+    const lost = !running && (st.status === "running" || !!st.asking);
+    return { running, status: lost ? "failed" : (st.status ?? null), error: lost ? "interrupted by a Stagehand restart — run it again" : (st.error ?? null), at: st.at ?? null, asking: running ? (st.asking ?? null) : null, review: readReview(dir) };
 };
 app.get("/api/tasks/:id/po-review", (c) => (engine.getTask(c.req.param("id")) ? c.json(poReviewOf(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
 // The PO's brief on the ticket (written before research): read it, or have the PO write it again.
@@ -2169,7 +2172,9 @@ const poBriefOf = (taskId: string) => {
     } catch {
         /* no state yet */
     }
-    return { running: productOwners.briefing(taskId), status: state.status ?? null, error: state.error ?? null, at: state.at ?? null, text: read("po-brief.md") };
+    const running = productOwners.briefing(taskId);
+    const lost = !running && state.status === "running";
+    return { running, status: lost ? "failed" : (state.status ?? null), error: lost ? "interrupted by a Stagehand restart — write it again" : (state.error ?? null), at: state.at ?? null, text: read("po-brief.md") };
 };
 app.get("/api/tasks/:id/po-brief", (c) => (engine.getTask(c.req.param("id")) ? c.json(poBriefOf(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
 app.post("/api/tasks/:id/po-brief", (c) => {
