@@ -68,6 +68,7 @@ const palace = new Palace(cfg.dataDir);
 const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev), palace);
 const productOwners = new ProductOwners(db, cfg, palace, (ev) => engine.emit("po", ev), `http://127.0.0.1:${cfg.port}`, (taskId) => engine.touchTask(taskId));
 productOwners.ensureHome();
+productOwners.backfillEnvs();
 productOwners.startIssueRefresh();
 engine.setPoBriefer((task, taskDir) => productOwners.briefTask(task, taskDir, () => engine.touchTask(task.id)));
 
@@ -967,10 +968,11 @@ app.post("/api/tasks", async (c) => {
     );
     const tickets = [...new Set([...(body.ticket ? [body.ticket] : []), ...(body.tickets ?? [])].map((t) => t.trim()).filter(Boolean))];
     if (tickets.length === 0) return c.json({ error: "no ticket given" }, 400);
+    if (body.productOwnerId && productOwners.get(body.productOwnerId)?.env_id !== body.envId) return c.json({ error: "that Product Owner belongs to another environment" }, 400);
     const created = body.mode === "batch" || tickets.length === 1 ? [engine.createTask(body.envId, tickets, body.accountId, body.model, body.notes, body.baseBranch)] : tickets.map((t) => engine.createTask(body.envId, [t], body.accountId, body.model, body.notes, body.baseBranch));
     for (const t of created) {
         if (body.productOwnerId !== undefined) engine.setProductOwner(t.id, body.productOwnerId);
-        else void productOwners.ownerOfTicket(t.source, t.ticket_id).then((po) => po && engine.setProductOwner(t.id, po)).catch(() => undefined);
+        else void productOwners.ownerOfTicket(t.env_id, t.source, t.ticket_id).then((po) => po && engine.setProductOwner(t.id, po)).catch(() => undefined);
     }
     return c.json({ tasks: created });
 });
@@ -1018,7 +1020,9 @@ app.patch("/api/tasks/:id", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
     if (body.productOwnerId !== undefined) {
-        if (body.productOwnerId && !productOwners.get(body.productOwnerId)) return c.json({ error: "no such Product Owner" }, 400);
+        const po = body.productOwnerId ? productOwners.get(body.productOwnerId) : null;
+        if (body.productOwnerId && !po) return c.json({ error: "no such Product Owner" }, 400);
+        if (po && po.env_id !== task.env_id) return c.json({ error: "that Product Owner belongs to another environment" }, 400);
         engine.setProductOwner(task.id, body.productOwnerId);
     }
     const files = sharedFilesOf(task.id, body.files);
@@ -1980,9 +1984,9 @@ app.get("/api/product-owners", (c) =>
     ),
 );
 app.post("/api/product-owners", async (c) => {
-    const body = json(z.object({ url: z.string().min(8), accountId: z.string().nullable().optional() }), await c.req.json());
+    const body = json(z.object({ url: z.string().min(8), envId: z.string(), accountId: z.string().nullable().optional() }), await c.req.json());
     try {
-        return c.json(await productOwners.create(body.url, body.accountId ?? null));
+        return c.json(await productOwners.create(body.url, body.envId, body.accountId ?? null));
     } catch (e) {
         return poErr(c, e);
     }

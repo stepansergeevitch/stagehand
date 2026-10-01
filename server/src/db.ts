@@ -808,6 +808,7 @@ export interface ProductOwnerRow {
     account_id: string | null;
     created_at: string;
     updated_at: string;
+    env_id?: string | null;
     // The last refresh of the project's issues (null = never), and why the last one failed.
     issues_refreshed_at?: string | null;
     issues_error?: string | null;
@@ -926,6 +927,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["po_artifacts.indexed_hash", `ALTER TABLE po_artifacts ADD COLUMN indexed_hash TEXT`],
     ["po_artifacts.chunks", `ALTER TABLE po_artifacts ADD COLUMN chunks INTEGER`],
     ["po_issues.indexed_hash", `ALTER TABLE po_issues ADD COLUMN indexed_hash TEXT`],
+    // The environment a Product Owner belongs to: only that env's tasks get it, and one project may have a PO per env.
+    ["product_owners.env_id", `ALTER TABLE product_owners ADD COLUMN env_id TEXT REFERENCES envs(id)`],
     // A BE/FE that never came up (start timeout, command exited, tmux session gone) — the row stays visible as failed
     // until it is stopped or restarted, so the human sees why and can hand it to the agent.
     ["services.failed_at", `ALTER TABLE services ADD COLUMN failed_at TEXT`],

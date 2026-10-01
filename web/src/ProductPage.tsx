@@ -66,6 +66,10 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
     const [url, setUrl] = useState("");
     const [busy, setBusy] = useState(false);
     const [tab, setTab] = useState<"owners" | "context" | "memory">("owners");
+    const [envs, setEnvs] = useState<Env[]>([]);
+    const [envId, setEnvId] = useState("");
+    useEffect(() => { void api.envs().then((e) => { setEnvs(e); setEnvId((cur) => cur || e[0]?.id || ""); }).catch(() => undefined); }, []);
+    const envName = (id: string | null | undefined) => envs.find((e) => e.id === id)?.name ?? "no environment";
     const load = useCallback(() => {
         void api.productContext().then((r) => setCtx(r.text)).catch((e: Error) => onError(e.message));
         void api.productOwners().then(setPos).catch((e: Error) => onError(e.message));
@@ -82,14 +86,18 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
             {tab === "owners" && <section className="card">
                 <h2>Product owners <span className="field-hint">— one per project of the product: a Linear project or a ClickUp epic</span></h2>
                 <div className="po-row">
-                    <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Linear project URL (linear.app/…/project/…) or ClickUp epic URL (app.clickup.com/t/…)" />
-                    <button className="primary" disabled={busy || url.trim().length < 8} onClick={async () => { setBusy(true); try { const po = await api.createProductOwner(url.trim()); setUrl(""); onOpen(po.id); } catch (e) { onError(String((e as Error).message ?? e)); } finally { setBusy(false); } }}>{busy ? "Reading the project…" : "New product owner"}</button>
+                    <select value={envId} onChange={(e) => setEnvId(e.target.value)} title="The environment this Product Owner belongs to: only its tasks get it">
+                        {envs.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.ticket_source === "linear" ? "Linear" : "ClickUp"})</option>)}
+                    </select>
+                    <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={envs.find((e) => e.id === envId)?.ticket_source === "clickup" ? "ClickUp epic URL (app.clickup.com/t/…)" : "Linear project URL (linear.app/…/project/…)"} />
+                    <button className="primary" disabled={busy || !envId || url.trim().length < 8} onClick={async () => { setBusy(true); try { const po = await api.createProductOwner(url.trim(), envId); setUrl(""); onOpen(po.id); } catch (e) { onError(String((e as Error).message ?? e)); } finally { setBusy(false); } }}>{busy ? "Reading the project…" : "New product owner"}</button>
                 </div>
                 {pos === null ? <div className="empty">loading…</div> : pos.length === 0 ? <div className="empty">No Product Owner yet. Paste a project URL above to start one.</div> : (
                     <div className="po-list">
                         {pos.map((po) => (
                             <div key={po.id} className="po-item" onClick={() => onOpen(po.id)}>
                                 <b>{po.title}</b>
+                                <span className="chip accent" title="Environment">{envName(po.env_id)}</span>
                                 <span className="chip">{po.source === "linear" ? "Linear project" : "ClickUp epic"}</span>
                                 <span className={`chip ${po.phase === "live" ? "ok" : "accent"}`}>{PHASE_LABEL[po.phase]}</span>
                                 {po.status === "running" && <span className="chip wait">answering…</span>}
@@ -311,16 +319,12 @@ const LiveIssue = ({ issue }: { issue: PoIssue }) => (
 const TicketTask = ({ d, identifier, reload, onError }: { d: PoDetail; identifier: string; reload: () => void; onError: (m: string) => void }) => {
     const task = d.tasks.find((t) => t.ticket_id.toUpperCase() === identifier.toUpperCase());
     const [envs, setEnvs] = useState<Env[]>([]);
-    const [env, setEnv] = useState("");
+    const env = d.po.env_id ?? "";
     const [busy, setBusy] = useState(false);
     useEffect(() => {
         if (task) return;
-        void api.envs().then((all) => {
-            const mine = all.filter((e) => e.ticket_source === d.po.source);
-            setEnvs(mine);
-            setEnv((cur) => cur || mine[0]?.id || "");
-        }).catch(() => undefined);
-    }, [task, d.po.source]);
+        void api.envs().then((all) => setEnvs(all.filter((e) => e.id === d.po.env_id))).catch(() => undefined);
+    }, [task, d.po.env_id]);
     if (task) {
         return (
             <div className="po-ticket-task">
@@ -336,11 +340,8 @@ const TicketTask = ({ d, identifier, reload, onError }: { d: PoDetail; identifie
     return (
         <div className="po-ticket-task">
             <b>No task yet.</b>
-            {envs.length === 0 ? <span className="quiet"> No environment uses {d.po.source === "linear" ? "Linear" : "ClickUp"}.</span> : (
-                <>
-                    {envs.length > 1 && <select value={env} onChange={(e) => setEnv(e.target.value)}>{envs.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select>}
-                    <button className="tiny primary" disabled={busy || !env} onClick={() => void create()}>{busy ? "Creating…" : `Create task${envs.length === 1 ? ` in ${envs[0]!.name}` : ""}`}</button>
-                </>
+            {envs.length === 0 ? <span className="quiet"> This Product Owner has no environment.</span> : (
+                <button className="tiny primary" disabled={busy || !env} onClick={() => void create()}>{busy ? "Creating…" : `Create task in ${envs[0]!.name}`}</button>
             )}
         </div>
     );

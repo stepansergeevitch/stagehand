@@ -977,7 +977,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         product owner{" "}
                         <select value={task.product_owner_id ?? ""} onChange={(e) => onAction(() => api.setTaskProductOwner(task.id, e.target.value || null))}>
                             <option value="">none</option>
-                            {owners.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+                            {owners.filter((o) => o.env_id === task.env_id).map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
                         </select>
                     </label>
                 )}

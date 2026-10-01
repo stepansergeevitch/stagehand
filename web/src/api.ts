@@ -275,7 +275,7 @@ export type PoPhase = "context" | "design" | "tickets" | "approved" | "live";
 export interface ProductOwner {
     id: string; title: string; slug: string; source: "linear" | "clickup"; scope_kind: "project" | "epic"; scope_id: string; scope_url: string | null;
     team_id: string | null; phase: PoPhase; status: "idle" | "running" | "failed"; status_line: string | null; account_id: string | null; created_at: string; updated_at: string;
-    issues_refreshed_at?: string | null; issues_error?: string | null;
+    issues_refreshed_at?: string | null; issues_error?: string | null; env_id?: string | null;
     tasks?: number; created?: number;
 }
 export interface PoMessage { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
@@ -523,7 +523,7 @@ export const api = {
     palaceSearch: (q: string, wing?: string) => fetch(`/api/product/search?${new URLSearchParams({ q, ...(wing ? { wing } : {}) })}`).then((r) => j<{ results: PalaceHit[] }>(r)),
     palaceStatus: () => fetch("/api/product/palace").then((r) => j<{ home: string; total: number; wings: Record<string, Record<string, number>> }>(r)),
     productOwners: () => fetch("/api/product-owners").then((r) => j<ProductOwner[]>(r)),
-    createProductOwner: (url: string) => post<ProductOwner>("/api/product-owners", { url }),
+    createProductOwner: (url: string, envId: string) => post<ProductOwner>("/api/product-owners", { url, envId }),
     productOwner: (id: string) => fetch(`/api/product-owners/${id}`).then((r) => j<PoDetail>(r)),
     deleteProductOwner: (id: string) => fetch(`/api/product-owners/${id}`, { method: "DELETE" }).then((r) => j<{ ok: true }>(r)),
     poSend: (id: string, text: string) => post<{ started: true }>(`/api/product-owners/${id}/messages`, { text }),

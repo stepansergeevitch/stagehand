@@ -733,7 +733,7 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                     <select value={owner} onChange={(e) => setOwner(e.target.value)}>
                         <option value="">automatic — the one whose project the ticket belongs to</option>
                         <option value="none">none</option>
-                        {owners.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+                        {owners.filter((o) => o.env_id === env.id).map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
                     </select>
                 </label>
             )}

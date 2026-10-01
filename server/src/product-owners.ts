@@ -311,9 +311,12 @@ export class ProductOwners {
 
     // ---------- creation ----------
 
-    async create(url: string, accountId: string | null): Promise<ProductOwnerRow> {
+    async create(url: string, envId: string, accountId: string | null): Promise<ProductOwnerRow> {
+        const env = this.db.prepare(`SELECT id, name, ticket_source FROM envs WHERE id = ?`).get(envId) as { id: string; name: string; ticket_source: string } | undefined;
+        if (!env) throw new Error("no such environment");
         const scope = await fetchScope(this.cfg, url);
-        const existing = this.db.prepare(`SELECT * FROM product_owners WHERE source = ? AND scope_id = ?`).get(scope.source, scope.id) as ProductOwnerRow | undefined;
+        if (env.ticket_source !== scope.source) throw new Error(`environment "${env.name}" uses ${env.ticket_source === "linear" ? "Linear" : "ClickUp"}, and this is a ${scope.source === "linear" ? "Linear project" : "ClickUp epic"}`);
+        const existing = this.db.prepare(`SELECT * FROM product_owners WHERE env_id = ? AND source = ? AND scope_id = ?`).get(env.id, scope.source, scope.id) as ProductOwnerRow | undefined;
         if (existing) return existing;
         let slug = `po-${slugify(scope.title)}`;
         for (let i = 2; this.db.prepare(`SELECT 1 FROM product_owners WHERE slug = ?`).get(slug); i++) slug = `po-${slugify(scope.title)}-${i}`;
@@ -333,10 +336,11 @@ export class ProductOwners {
             account_id: accountId,
             created_at: now(),
             updated_at: now(),
+            env_id: env.id,
         };
         this.db
-            .prepare(`INSERT INTO product_owners (id, title, slug, source, scope_kind, scope_id, scope_url, team_id, phase, status, status_line, session_id, account_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .run(row.id, row.title, row.slug, row.source, row.scope_kind, row.scope_id, row.scope_url, row.team_id, row.phase, row.status, row.status_line, row.session_id, row.account_id, row.created_at, row.updated_at);
+            .prepare(`INSERT INTO product_owners (id, title, slug, source, scope_kind, scope_id, scope_url, team_id, phase, status, status_line, session_id, account_id, created_at, updated_at, env_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(row.id, row.title, row.slug, row.source, row.scope_kind, row.scope_id, row.scope_url, row.team_id, row.phase, row.status, row.status_line, row.session_id, row.account_id, row.created_at, row.updated_at, row.env_id);
         mkdirSync(join(this.dir(row.id), "artifacts"), { recursive: true });
         writeFileSync(join(this.dir(row.id), "context.md"), "");
         this.addArtifactText(row.id, scope.source, `${scope.kind === "project" ? "Linear project" : "ClickUp epic"}: ${scope.title}`, scope.url, scope.markdown);
@@ -644,7 +648,7 @@ export class ProductOwners {
 
     // Open Stagehand tasks whose ticket belongs to this PO's project or epic get it as their Product Owner.
     private async assignExistingTasks(po: ProductOwnerRow): Promise<void> {
-        const tasks = this.db.prepare(`SELECT id, source, ticket_id FROM tasks WHERE source = ? AND stage != 'done' AND product_owner_id IS NULL`).all(po.source) as Array<{ id: string; source: "linear" | "clickup"; ticket_id: string }>;
+        const tasks = this.db.prepare(`SELECT id, source, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND stage != 'done' AND product_owner_id IS NULL`).all(po.env_id ?? "", po.source) as Array<{ id: string; source: "linear" | "clickup"; ticket_id: string }>;
         for (const t of tasks) {
             const scope = await ticketScopeId(this.cfg, t.source, t.ticket_id);
             if (scope === po.scope_id) {
@@ -664,6 +668,19 @@ export class ProductOwners {
 
     // Every few minutes: refresh the issues of each PO whose last refresh is an hour old. A PO that is answering waits
     // for the next look, so its brief never collides with a turn.
+    // A PO from before environments: it belongs to the env of its tasks, else to the one env on its task manager.
+    backfillEnvs(): void {
+        for (const po of this.db.prepare(`SELECT * FROM product_owners WHERE env_id IS NULL`).all() as ProductOwnerRow[]) {
+            const byTasks = this.db.prepare(`SELECT env_id, COUNT(*) n FROM tasks WHERE product_owner_id = ? GROUP BY env_id ORDER BY n DESC`).get(po.id) as { env_id: string } | undefined;
+            const envs = this.db.prepare(`SELECT id FROM envs WHERE ticket_source = ?`).all(po.source) as Array<{ id: string }>;
+            const env = byTasks?.env_id ?? (envs.length === 1 ? envs[0]!.id : null);
+            if (!env) continue;
+            this.db.prepare(`UPDATE product_owners SET env_id = ? WHERE id = ?`).run(env, po.id);
+            // Tasks of other envs drop a PO that is not theirs.
+            this.db.prepare(`UPDATE tasks SET product_owner_id = NULL WHERE product_owner_id = ? AND env_id != ?`).run(po.id, env);
+        }
+    }
+
     startIssueRefresh(): void {
         if (this.refreshTimer) return;
         const tick = async (): Promise<void> => {
@@ -767,7 +784,7 @@ export class ProductOwners {
     // Open tasks for one of the project's issues get this PO, so a product ticket and its task are linked.
     private assignTasksOfIssues(po: ProductOwnerRow, issues: TrackedIssue[]): void {
         const ids = new Set(issues.flatMap((i) => [i.identifier.toUpperCase(), i.remoteId]));
-        const tasks = this.db.prepare(`SELECT id, ticket_id FROM tasks WHERE source = ? AND product_owner_id IS NULL`).all(po.source) as Array<{ id: string; ticket_id: string }>;
+        const tasks = this.db.prepare(`SELECT id, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND product_owner_id IS NULL`).all(po.env_id ?? "", po.source) as Array<{ id: string; ticket_id: string }>;
         for (const t of tasks) {
             if (!ids.has(t.ticket_id.toUpperCase()) && !ids.has(t.ticket_id)) continue;
             this.db.prepare(`UPDATE tasks SET product_owner_id = ?, updated_at = ? WHERE id = ?`).run(po.id, now(), t.id);
@@ -851,11 +868,11 @@ export class ProductOwners {
     // ---------- tasks ----------
 
     // The PO of a ticket: one that created it, else the one whose project or epic the ticket belongs to.
-    async ownerOfTicket(source: string, ticketId: string): Promise<string | null> {
-        const link = this.db.prepare(`SELECT l.po_id FROM po_ticket_links l JOIN product_owners p ON p.id = l.po_id WHERE p.source = ? AND (UPPER(l.identifier) = UPPER(?) OR l.remote_id = ?)`).get(source, ticketId, ticketId) as { po_id: string } | undefined;
+    async ownerOfTicket(envId: string, source: string, ticketId: string): Promise<string | null> {
+        const link = this.db.prepare(`SELECT l.po_id FROM po_ticket_links l JOIN product_owners p ON p.id = l.po_id WHERE p.env_id = ? AND p.source = ? AND (UPPER(l.identifier) = UPPER(?) OR l.remote_id = ?)`).get(envId, source, ticketId, ticketId) as { po_id: string } | undefined;
         if (link) return link.po_id;
         if (source !== "linear" && source !== "clickup") return null;
-        const owners = this.db.prepare(`SELECT * FROM product_owners WHERE source = ?`).all(source) as ProductOwnerRow[];
+        const owners = this.db.prepare(`SELECT * FROM product_owners WHERE env_id = ? AND source = ?`).all(envId, source) as ProductOwnerRow[];
         if (!owners.length) return null;
         const scope = await ticketScopeId(this.cfg, source, ticketId);
         return owners.find((o) => o.scope_id === scope)?.id ?? null;
