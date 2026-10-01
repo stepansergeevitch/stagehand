@@ -1820,6 +1820,7 @@ const PoReviewCommentCard = ({ c, busy, asking, onPick, onNote, onAsk }: { c: Po
                 </label>
                 <span className={`chip ${SEVERITY_CHIP[c.severity]}`}>{c.severity}</span>
                 <span className="chip">{c.area}</span>
+                {c.laterTicket && <span className="chip accent" title="This task's design makes this later ticket harder; the comment says what to change here">for {c.laterTicket}</span>}
                 <b>{c.id} · {c.title}</b>
                 {c.withdrawn && <span className="chip">withdrawn</span>}
                 {c.sentAt && <span className="chip ok" title={new Date(c.sentAt).toLocaleString()}>sent</span>}

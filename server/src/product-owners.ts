@@ -60,6 +60,9 @@ export const PoReviewComment = z.object({
     // Unset = by severity: high and medium go to the next round, low does not.
     include: z.boolean().optional(),
     withdrawn: z.boolean().default(false),
+    // A comment about a later ticket: this task's design makes that ticket harder, and the comment says what to change
+    // here. Its identifier (INV-155); null = about this ticket's own work.
+    laterTicket: z.string().nullable().default(null),
     // The human's own note on the comment (editable); it goes to the design agent with the comment.
     note: z.string().nullable().default(null),
     // When it went to the design agent (null = not yet).
@@ -69,7 +72,7 @@ export const PoReviewComment = z.object({
 export const PoReviewResult = z.object({ verdict: z.enum(["approve", "changes"]), summary: z.string(), comments: z.array(PoReviewComment) });
 export type PoReviewComment = z.infer<typeof PoReviewComment>;
 export type PoReviewResult = z.infer<typeof PoReviewResult>;
-const REVIEW_SHAPE = `{ "verdict": "approve" | "changes", "summary": "…", "comments": [ { "id": "C1", "severity": "high" | "medium" | "low", "area": "product" | "scope" | "acceptance" | "qa" | "question", "title": "…", "body": "markdown" } ] }`;
+const REVIEW_SHAPE = `{ "verdict": "approve" | "changes", "summary": "…", "comments": [ { "id": "C1", "severity": "high" | "medium" | "low", "area": "product" | "scope" | "acceptance" | "qa" | "question", "laterTicket": null | "INV-155", "title": "…", "body": "markdown" } ] }`;
 const withDefaults = (r: PoReviewResult): PoReviewResult => ({ ...r, comments: r.comments.map((c) => ({ ...c, include: c.include ?? (!c.withdrawn && c.severity !== "low") })) });
 
 // The review's run state (po-review-state.json): status, error, the review's session, the comment being discussed.
@@ -102,7 +105,7 @@ export const reviewNotes = (r: PoReviewResult, poTitle: string | null): string =
         `The project's Product Owner reviewed this proposal as product. The human picked these ${picked.length} comment(s) for this round${skipped ? `; ${skipped} other(s) are skipped for now — do not act on them` : ""}. Address every one.`,
         ...picked.map((c) =>
             [
-                `### ${c.id} · ${c.severity} · ${c.area} — ${c.title}`,
+                `### ${c.id} · ${c.severity} · ${c.area}${c.laterTicket ? ` · for ${c.laterTicket}` : ""} — ${c.title}`,
                 c.body,
                 c.note?.trim() ? `**The human's note:** ${c.note.trim()}` : "",
                 c.thread.length ? `**Discussion with the human:**\n${c.thread.map((m) => `- **${m.role === "user" ? "Human" : "Product Owner"}:** ${m.text.replace(/\n+/g, " ")}`).join("\n")}` : "",
@@ -1013,7 +1016,8 @@ export class ProductOwners {
         const prompt = [
             `Write a brief on ticket ${task.ticket_id}${task.title ? ` (${task.title})` : ""} for the agent that researches it next, as the Product Owner of "${po.title}".`,
             `Read ${taskDir}/ticket.json${existsSync(join(taskDir, "tickets")) ? ` and ${taskDir}/tickets/` : ""}. Search your wing for what you know about this ticket and its area: rooms \`issues\` (its comments and the neighbouring issues), \`decisions\`, \`features\`, \`artifacts\`. Read a file only when search is not enough.`,
-            `Give only what the ticket text does not already say and the research must not miss: product decisions that apply (name the source — a decision id, a comment and its author), constraints, related or dependent tickets and how they touch this one, open questions and contradictions, the user intent behind the ticket.`,
+            this.taskTicketLine(po, task),
+            `Give only what the ticket text does not already say and the research must not miss, for this ticket's work: product decisions that apply (name the source — a decision id, a comment and its author), constraints, related or dependent tickets and how they touch this one, open questions and contradictions, the user intent behind the ticket.`,
             `Write ${out}: 200 words or fewer, bullets only, each with a **bold lead-in**. When you know nothing beyond the ticket, write "Nothing beyond the ticket." Do not change any other file of the task.`,
             `Then answer with one line: DONE.`,
         ].join("\n\n");
@@ -1046,6 +1050,28 @@ export class ProductOwners {
         return this.reviews.has(taskId);
     }
 
+    // Which ticket a task implements, in the PO's plan: its key in tickets.json and the other tickets (other tasks).
+    private taskTicketLine(po: ProductOwnerRow, task: TaskRow): string {
+        const id = task.ticket_id.toUpperCase();
+        const links = this.links(po.id);
+        let tickets: PoTicket[] = [];
+        try {
+            const parsed = PoTickets.safeParse(JSON.parse(readFileSync(join(this.dir(po.id), "tickets.json"), "utf8")));
+            if (parsed.success) tickets = parsed.data.tickets;
+        } catch {
+            /* no plan yet */
+        }
+        const identOf = (t: PoTicket): string | null => links.find((l) => l.key === t.key)?.identifier ?? t.existing ?? null;
+        const mine = tickets.find((t) => identOf(t)?.toUpperCase() === id);
+        const others = tickets.filter((t) => t !== mine).map((t) => `${identOf(t) ?? t.key} ${t.title}`);
+        return [
+            `**This task implements ${task.ticket_id} only**${mine ? ` (${mine.key} "${mine.title}" in your tickets.json)` : ""}. Its ticket, comments and acceptance criteria are in your memory (room \`issues\`) and your files.`,
+            others.length ? `The other tickets of the project are other tasks — not this one's work: ${others.join("; ")}.` : "",
+        ]
+            .filter(Boolean)
+            .join(" ");
+    }
+
     // "Review by Product owner": a fresh session in the PO's context reads the task's proposal and writes po-review.json
     // — a short verdict and graded comments the human picks for the next design round, each with its own chat with the
     // PO (askReviewComment, resuming the review's session). It never edits the proposal itself.
@@ -1064,7 +1090,9 @@ export class ProductOwners {
         const prompt = [
             `Review the design proposal of task ${task.ticket_id}${task.title ? ` (${task.title})` : ""} as the Product Owner of "${po.title}".`,
             `Read ${taskDir}/design.md, ${taskDir}/design.json (its QA scenarios), ${taskDir}/research.md and ${taskDir}/ticket.json. Search your environment's wings for the product facts that matter. ${task.worktree_path ? `The code is in ${task.worktree_path}; read it only to check a claim.` : ""}`,
-            `Judge the proposal as product, not as code: does it solve the ticket's problem for its users, does the scope match the ticket and the project, are the acceptance criteria met, do the QA scenarios test what the user needs, what does it miss or break for other parts of the product.`,
+            this.taskTicketLine(po, task),
+            `Judge the proposal as product, not as code: does it solve this ticket's problem for its users, does its scope match this ticket, are this ticket's acceptance criteria met, do the QA scenarios test what the user needs, what does it break for other parts of the product.`,
+            `**Every comment is about this task's work.** Never ask it to do another ticket's work, and make no comment about a gap another ticket owns. A later ticket matters only when this task's design makes that ticket harder (a model, a name, an API shape it will have to undo): then set \`laterTicket\` to that ticket and say what to change in this task now.`,
             `Write ${out} with exactly this JSON shape:\n\n\`\`\`json\n${REVIEW_SHAPE}\n\`\`\`\n\n- **verdict** — "approve" when nothing high is left, else "changes".\n- **summary** — 20 words or fewer: the verdict and the main reason.\n- **comments** — one problem each, ids C1, C2, … in order of importance. Grade each: **high** = must change before implementation (wrong for the users, breaks the scope or an acceptance criterion); **medium** = a real gap the next round should close; **low** = a nice-to-have or a question. **area**: product, scope, acceptance, qa or question. **title**: 12 words or fewer. **body**: 80 words or fewer — what is wrong, why it matters for the product, what to do; name the source (a decision, a comment and its author). No comment for things that are right.`,
             `Do not change any other file of the task. Then answer with one line: DONE.`,
         ].join("\n\n");
@@ -1116,7 +1144,8 @@ export class ProductOwners {
         writeFileSync(join(taskDir, "po-review.json"), JSON.stringify(review, null, 2));
         writeReviewState(taskDir, { ...state, asking: commentId });
         const prompt = [
-            `The human asks about your review comment ${c.id} (${c.severity}, ${c.area}): "${c.title}" — ${c.body}`,
+            `The human asks about your review comment ${c.id} (${c.severity}, ${c.area}${c.laterTicket ? `, for ${c.laterTicket}` : ""}): "${c.title}" — ${c.body}`,
+            `This task implements ${task.ticket_id} only; keep the answer to this task's work.`,
             ...(c.note?.trim() ? [`The human's note on this comment: ${c.note.trim()}`] : []),
             `Their message: ${text}`,
             `Answer in 120 words or fewer, as the Product Owner, by the writing rules. Check the proposal and the palace again when the question needs it. Do not change any file.`,

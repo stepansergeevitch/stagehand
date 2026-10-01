@@ -299,7 +299,7 @@ export interface PalaceHit { text: string; wing: string; room: string; similarit
 export interface PoReview { running: boolean; status: string | null; error: string | null; at: string | null; text: string | null }
 // The PO's review of a design proposal: a verdict and graded comments the human picks and discusses.
 export interface PoReviewComment {
-    id: string; severity: "high" | "medium" | "low"; area: "product" | "scope" | "acceptance" | "qa" | "question"; title: string; body: string;
+    id: string; severity: "high" | "medium" | "low"; area: "product" | "scope" | "acceptance" | "qa" | "question"; title: string; body: string; laterTicket: string | null;
     include?: boolean; withdrawn: boolean; note: string | null; sentAt: string | null; thread: Array<{ role: "user" | "po"; text: string; at: string }>;
 }
 export interface PoDesignReview { running: boolean; status: string | null; error: string | null; at: string | null; asking: string | null; review: { verdict: "approve" | "changes"; summary: string; comments: PoReviewComment[] } | null }
