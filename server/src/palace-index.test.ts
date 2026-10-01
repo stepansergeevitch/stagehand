@@ -22,6 +22,7 @@ describe("palace index chunks", () => {
         expect(c).toHaveLength(1);
         expect(c[0]!.section).toBe("conversation: Austin, Stepan");
         expect(looksLikeConversation("# Title\nplain text\nmore text\nand more")).toBe(false);
+        expect(looksLikeConversation("# Plan\n## Decisions\nRejected: one\nAccepted: two\nRejected: three\nAccepted: four")).toBe(false);
     });
     it("files an issue head and one drawer per comment", () => {
         const d = issueDrawers({ identifier: "INV-1", remoteId: "r", url: "u", title: "Units", status: "Backlog", description: "Do units.", labels: ["Backend"], assignee: null, priority: null, estimate: null, parent: null, comments: [{ id: "c1", author: "Ann", at: "t", body: "Looks good" }] });

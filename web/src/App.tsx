@@ -52,6 +52,47 @@ const NAV: { group: string | null; items: { id: Page; label: string; hint: strin
         ],
     },
 ];
+type NavItem = (typeof NAV)[number]["items"][number];
+// The sidebar as a tree: a group is a node like a page, collapsible (remembered per browser); a collapsed group whose
+// page is open shows as active.
+const SidebarTree = ({ page, renderItem }: { page: Page; renderItem: (n: NavItem, child: boolean) => React.ReactNode }) => {
+    const [closed, setClosed] = useState<Set<string>>(() => {
+        try {
+            return new Set(JSON.parse(localStorage.getItem("stagehand.sidebar.closed") ?? "[]") as string[]);
+        } catch {
+            return new Set();
+        }
+    });
+    const toggle = (g: string): void =>
+        setClosed((cur) => {
+            const next = new Set(cur);
+            if (next.has(g)) next.delete(g);
+            else next.add(g);
+            try {
+                localStorage.setItem("stagehand.sidebar.closed", JSON.stringify([...next]));
+            } catch {
+                /* the tree still works, unremembered */
+            }
+            return next;
+        });
+    return (
+        <>
+            {NAV.map((g) => {
+                if (!g.group) return g.items.map((n) => renderItem(n, false));
+                const open = !closed.has(g.group);
+                const within = g.items.some((n) => n.id === page);
+                return [
+                    <button key={`group-${g.group}`} className={`sidebar-node${!open && within ? " active" : ""}`} aria-expanded={open} onClick={() => toggle(g.group!)}>
+                        <span className="caret">{open ? "▾" : "▸"}</span>
+                        {g.group}
+                    </button>,
+                    ...(open ? g.items.map((n) => renderItem(n, true)) : []),
+                ];
+            })}
+        </>
+    );
+};
+
 // The list pages ManagePage renders, by route page.
 const MANAGE_TAB: Partial<Record<Page, ManageTab>> = { envs: "envs", "config-dirs": "dirs", accounts: "accounts", integrations: "integrations" };
 
@@ -340,18 +381,15 @@ export const App = () => {
             </header>
             <div className="body">
                 <nav className="sidebar" aria-label="Sections">
-                    {NAV.map((g, gi) => [
-                        g.group ? <span key={`g${gi}`} className="sidebar-group">{g.group}</span> : <span key={`g${gi}`} className="sidebar-gap" />,
-                        ...g.items.map((n) => (
-                        <button key={n.id} className={page === n.id ? "active" : ""} title={n.hint} onClick={() => navigate(n.id === "tasks" ? listRoute() : { page: n.id })}>
+                    <SidebarTree page={page} renderItem={(n, child) => (
+                        <button key={n.id} className={`${page === n.id ? "active" : ""}${child ? " child" : ""}`} title={n.hint} onClick={() => navigate(n.id === "tasks" ? listRoute() : { page: n.id })}>
                             {n.label}
                             {n.id === "dashboard" && attention > 0 && <span className="count alert">{attention}</span>}
                             {n.id === "tasks" && visible.length > 0 && <span className="count">{visible.length}</span>}
                             {n.id === "envs" && envs.length > 0 && <span className="count">{envs.length}</span>}
                             {n.id === "accounts" && accounts.length > 0 && <span className="count">{accounts.length}</span>}
                         </button>
-                        )),
-                    ])}
+                    )} />
                 </nav>
                 {page === "dashboard" && (
                     <div className="main page">

@@ -85,6 +85,8 @@ const TURN = /^\s*(?:\[[^\]]{1,24}\]\s*)?(?:\*\*[^*\n]{1,40}\*\*|[\p{Lu}][\p{L}.
 export const looksLikeConversation = (text: string): boolean => {
     const lines = text.split("\n").filter((l) => l.trim());
     if (lines.length < 4) return false;
+    // A document with headings is a document, even when its lines read "Label: value" ("Rejected: …").
+    if (lines.filter((l) => /^#{1,3}\s/.test(l)).length >= 2) return false;
     const turns = lines.filter((l) => TURN.test(l)).length;
     return turns >= 4 && turns / lines.length >= 0.15;
 };
