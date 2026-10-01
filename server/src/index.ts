@@ -790,6 +790,8 @@ app.patch("/api/envs/:id", async (c) => {
             envVars: z.string().nullable().optional(),
             cleanupCommand: z.string().nullable().optional(),
             rebaseCommand: z.string().nullable().optional(),
+            migrateCommand: z.string().nullable().optional(),
+            migrateDownCommand: z.string().nullable().optional(),
             checkCommand: z.string().nullable().optional(),
             components: ComponentList.optional(),
             keepServices: z.boolean().optional(),
@@ -864,6 +866,8 @@ app.patch("/api/envs/:id", async (c) => {
         env.id,
     );
     if (body.qaBrowser !== undefined) db.prepare(`UPDATE envs SET qa_browser = ? WHERE id = ?`).run(body.qaBrowser, env.id);
+    if (body.migrateCommand !== undefined) db.prepare(`UPDATE envs SET migrate_command = ? WHERE id = ?`).run(body.migrateCommand, env.id);
+    if (body.migrateDownCommand !== undefined) db.prepare(`UPDATE envs SET migrate_down_command = ? WHERE id = ?`).run(body.migrateDownCommand, env.id);
     if (body.qaAutoFix !== undefined) db.prepare(`UPDATE envs SET qa_auto_fix = ? WHERE id = ?`).run(body.qaAutoFix, env.id);
     if (body.reviewChecklist !== undefined) {
         const json = reviewChecklistJson(
@@ -1307,6 +1311,8 @@ app.get("/api/tasks/:id", (c) => {
     const artifacts = engine.artifacts(task.id);
     return c.json({
         task,
+        // A QA baseline has the worktree on base code right now (migrations.ts).
+        onBase: engine.onBaseCode(task.id),
         runs: engine.listRuns(task.id),
         artifacts,
         research: engine.readArtifactJson(task.id, "research.json"),

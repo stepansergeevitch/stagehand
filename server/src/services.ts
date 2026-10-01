@@ -1,3 +1,4 @@
+import { runMigration } from "./migrations.js";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -341,6 +342,11 @@ export class Services {
         const command = render(template, vars);
         const logDir = join(this.cfg.dataDir, "tasks", task.id, "logs");
         mkdirSync(logDir, { recursive: true });
+        // Migrations are their own step (migrations.ts): the database is brought up to the worktree's code before the
+        // BE starts, so the BE command carries no migrate of its own.
+        if (kind === "be" && env.migrate_command) {
+            await runMigration(env.migrate_command, { worktree: vars.worktree!, envPath: env.path, vars: parseEnvVars(env.env_vars), logPath: join(logDir, "migrate.log"), label: "migrate" });
+        }
         const logPath = join(logDir, `${kind}.log`);
         const tmux = serviceSessionName(task.ticket_id, kind);
         const cwd = task.worktree_path ?? env.path;

@@ -1,3 +1,4 @@
+import { BaseCheckout } from "./migrations.js";
 import { EventEmitter } from "node:events";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -213,6 +214,8 @@ interface DispatchOpts {
     backgroundResumed?: boolean;
     extraVars?: Record<string, string>;
     servicesReady?: boolean;
+    // QA baseline: the worktree is on base code for this pass (or needed no switch).
+    onBase?: boolean;
     // Browser stages: the orchestrator has already executed the scenarios' `shell:` seed steps for this dispatch.
     seedsDone?: boolean;
     // Browser stages: a live probe just confirmed the Chrome extension answers for this dispatch — skip re-probing.
@@ -557,6 +560,8 @@ const describeRepoLayout = (env: RepoLayout, worktree: string | null): string =>
 
 export class Engine extends EventEmitter {
     private readonly active = new Map<string, ClaudeRun>();
+    // The QA baseline runs on base code: the worktree switched to the base for the pass (migrations.ts).
+    private readonly baseCheckout: BaseCheckout;
     // Ad-hoc instruction runs (Chat → Do), keyed by task: no `runs` row, so Stop finds them here.
     private readonly instructing = new Map<string, ClaudeRun>();
     private timer: NodeJS.Timeout | null = null;
@@ -567,6 +572,7 @@ export class Engine extends EventEmitter {
         private readonly services: Services,
     ) {
         super();
+        this.baseCheckout = new BaseCheckout(cfg.dataDir);
     }
 
     // ---------- lifecycle ----------
@@ -581,7 +587,8 @@ export class Engine extends EventEmitter {
         // No run survives a restart, so no cloned Chrome profile should either.
         void sweepClones(new Set()).then((n) => n && console.log(`[stagehand] ${n} leftover cloned Chrome profile(s) removed`));
         void this.sweepGstackBrowsers();
-        void this.recoverInterrupted();
+        // A worktree a restart caught on the base goes back to its branch before any run resumes.
+        void this.restoreBaseCheckouts().then(() => this.recoverInterrupted());
         const n = backfillUsage(this.db, this.cfg.dataDir);
         if (n) console.log(`[stagehand] usage backfilled for ${n} run(s)`);
         const c = backfillCalibration(this.db, this.cfg.dataDir);
@@ -2657,7 +2664,73 @@ export class Engine extends EventEmitter {
         const next = this.getTask(taskId);
         if (next && prev && prev.status !== status) this.recordTaskEvent(taskId, next.stage, status);
         this.emit("task", next);
+        // The baseline pass ended (blocked, questions, stopped, failed, done): the worktree goes back to its branch.
+        if (status !== "running" && this.baseCheckout.isOn(taskId) && !this.hasLiveRun(taskId)) void this.fromBase(taskId);
         if (opts.notify !== false && next && prev && NEEDS_HUMAN.has(status) && (prev.status !== status || prev.status_line !== next.status_line)) this.notifyNeedsHuman(next);
+    }
+
+    private hasLiveRun(taskId: string): boolean {
+        const ids = (this.db.prepare(`SELECT id FROM runs WHERE task_id = ? AND status = 'running'`).all(taskId) as Array<{ id: string }>).map((r) => r.id);
+        return ids.some((id) => this.active.has(id)) || [...this.qaGroups.values()].some((g) => g.taskId === taskId);
+    }
+
+    // ---------- the QA baseline on base code ----------
+
+    private migrationOpts(task: TaskRow, env: EnvRow) {
+        return { worktree: task.worktree_path!, envPath: env.path, vars: parseEnvVars(env.env_vars), logPath: join(this.taskDir(task.id), "logs", "migrate.log") };
+    }
+
+    // Switches the worktree to the base when its branch has commits or changes: the servers stop, migrations go down
+    // on the branch's code, uncommitted work is stashed, each changed repo is checked out at its merge-base. False (and
+    // blocked, the worktree back on its branch) when that fails.
+    private async toBase(taskId: string): Promise<boolean> {
+        const task = this.getTask(taskId);
+        if (!task?.worktree_path) return true;
+        const env = this.env(task.env_id);
+        const m = this.migrationOpts(task, env);
+        const repos = await this.baseCheckout.changedRepos(this.layoutOf(task, env), task.worktree_path, m.vars).catch(() => []);
+        if (!repos.length) return true;
+        const where = repos.map((r) => r.dir || "the worktree").join(", ");
+        this.setTaskStatus(taskId, "running", `QA Baseline · switching ${where} to the base${env.migrate_down_command ? " (migrations down first)" : ""} — the baseline runs on code without this change`);
+        try {
+            await this.services.stopAll(taskId);
+            await this.baseCheckout.enter(taskId, repos, { ...m, downCommand: env.migrate_down_command ?? null });
+            this.emitTask(taskId);
+            return true;
+        } catch (e) {
+            const why = String((e as Error).message ?? e).slice(0, 400);
+            await this.baseCheckout.exit(taskId, { ...m, upCommand: env.migrate_command ?? null }).catch(() => undefined);
+            this.setTaskStatus(taskId, "blocked", `QA Baseline · cannot run on the base code: ${why} — the worktree stays on its branch; fix the env's Migrate down command and Retry, or Skip the baseline`);
+            return false;
+        }
+    }
+
+    // Back to the branch after the baseline: servers stop (they ran base code), the branch and its stash come back,
+    // migrations go up.
+    private async fromBase(taskId: string): Promise<boolean> {
+        const task = this.getTask(taskId);
+        if (!task?.worktree_path || !this.baseCheckout.isOn(taskId)) return true;
+        const env = this.env(task.env_id);
+        try {
+            await this.services.stopAll(taskId);
+            await this.baseCheckout.exit(taskId, { ...this.migrationOpts(task, env), upCommand: env.migrate_command ?? null });
+            this.emitTask(taskId);
+            return true;
+        } catch (e) {
+            this.setTaskStatus(taskId, "blocked", `The worktree is still on the base after the QA baseline: ${String((e as Error).message ?? e).slice(0, 400)} — fix it, then Retry restores the branch`);
+            return false;
+        }
+    }
+
+    private async restoreBaseCheckouts(): Promise<void> {
+        for (const t of this.db.prepare(`SELECT id FROM tasks WHERE worktree_path IS NOT NULL`).all() as Array<{ id: string }>) {
+            if (this.baseCheckout.isOn(t.id)) await this.fromBase(t.id);
+        }
+    }
+
+    // True while a QA baseline has the worktree on the base (the task page says so).
+    onBaseCode(taskId: string): boolean {
+        return this.baseCheckout.isOn(taskId);
     }
 
     // The one push a PR's checks earn when they all pass; failures go through notifyNeedsHuman (blocked), once.
@@ -3365,8 +3438,18 @@ export class Engine extends EventEmitter {
         // A continuation of an earlier dispatch (BE/FE brought up, seeds run, Chrome checked) must not start the run
         // when the task was stopped or moved to another stage meanwhile (INV-132, 2026-09-22: Stop during "starting
         // BE/FE", the human moved the task to User Review, and a Manual QA run began a minute later anyway).
-        if ((opts.servicesReady || opts.seedsDone || opts.chromeVerified || opts.chromeFlagsVerified) && (task.status === "stopped" || task.stage !== stage)) {
+        if ((opts.onBase || opts.servicesReady || opts.seedsDone || opts.chromeVerified || opts.chromeFlagsVerified) && (task.status === "stopped" || task.stage !== stage)) {
             console.log(`[stagehand] ${task.ticket_id}: dropped a ${def.label} continuation — task is ${task.status} at ${task.stage}`);
+            return;
+        }
+        // The QA baseline records what the app does BEFORE the change: it runs on base code. Every other run needs the
+        // branch, so a worktree still on the base goes back first.
+        if (stage === "qa_baseline" && !opts.onBase && !opts.shard && !this.baseCheckout.isOn(taskId)) {
+            void this.toBase(taskId).then((ok) => ok && this.dispatch(taskId, stage, { ...opts, onBase: true }));
+            return;
+        }
+        if (stage !== "qa_baseline" && this.baseCheckout.isOn(taskId)) {
+            void this.fromBase(taskId).then((ok) => ok && this.dispatch(taskId, stage, opts));
             return;
         }
         if (stage === "pr_creation_review" && this.skipPrCreationIfDone(taskId)) return;

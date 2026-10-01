@@ -1112,6 +1112,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 })}
             </div>
 
+            {detail.onBase && (
+                <div className="review-box">
+                    <b>The worktree is on base code for the QA baseline.</b> The baseline records what the app does without this change, so the branch (with its uncommitted work stashed and its migrations rolled back) is switched out for the pass. Code changes and the dev servers show the base until it ends; then the branch, its stash and its migrations come back.
+                </div>
+            )}
             {asking && task.status === "waiting_user" && (
                 <QuestionsBox round={asking} onSend={(answers, files) => onAction(async () => api.answerQuestions(task.id, asking.id, answers, await api.uploadFiles(task.id, files)))} />
             )}

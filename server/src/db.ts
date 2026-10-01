@@ -152,6 +152,11 @@ export interface EnvRow {
     cleanup_command: string | null;
     // Runs from the worktree after every successful rebase (plain or agent-resolved): rebuild what the rebase made stale.
     rebase_command: string | null;
+    // Database migrations, apart from setup and the BE command (see migrations.ts): `migrate_command` brings the
+    // worktree's database up to its code (Stagehand runs it before every BE start); `migrate_down_command` rolls back
+    // what the branch added, to the base (before a QA baseline on base code). Both run from the worktree.
+    migrate_command?: string | null;
+    migrate_down_command?: string | null;
     // Runs from the worktree after every implementation / PR-fix run; non-zero = the run goes back to the agent with the
     // output (e.g. Django `check --database default` + `makemigrations --check`, which tests and a dev server never run).
     check_command: string | null;
@@ -910,6 +915,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.pr_draft", `ALTER TABLE envs ADD COLUMN pr_draft INTEGER NOT NULL DEFAULT 0`],
     ["envs.depends_on_env_id", `ALTER TABLE envs ADD COLUMN depends_on_env_id TEXT REFERENCES envs(id)`],
     ["envs.rebase_command", `ALTER TABLE envs ADD COLUMN rebase_command TEXT`],
+    ["envs.migrate_command", `ALTER TABLE envs ADD COLUMN migrate_command TEXT`],
+    ["envs.migrate_down_command", `ALTER TABLE envs ADD COLUMN migrate_down_command TEXT`],
     ["envs.qa_auto_fix", `ALTER TABLE envs ADD COLUMN qa_auto_fix TEXT`],
     // Prompter: a message sent while a turn ran is "queued" until the next turn takes it (editable until then).
     ["prompter_messages.state", `ALTER TABLE prompter_messages ADD COLUMN state TEXT NOT NULL DEFAULT 'sent'`],

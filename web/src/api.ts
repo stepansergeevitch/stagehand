@@ -59,7 +59,7 @@ export interface Env {
     chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
-    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
+    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
     // JSON ReviewChecklist: gstack categories switched off, points added, extra do-not-flag rules for Code Review; null = the full checklist.
     review_checklist?: string | null;
     // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
@@ -378,7 +378,7 @@ export interface ReviewFinding {
 }
 export interface ReviewResult { summary: string; findings: ReviewFinding[] }
 export interface TaskDetail {
-    task: Task; runs: Run[]; artifacts: Array<{ path: string; size: number }>;
+    task: Task; onBase?: boolean; runs: Run[]; artifacts: Array<{ path: string; size: number }>;
     // Raw research.json as written by the agent — optional fields may be missing when the file predates them or the agent skipped them.
     research: { classification: string; title: string; branchName: string; summary: string; affectedAreas?: string[] } | null;
     design: Design | null; impl: Impl | null; qaBefore: QaPass | null; qaAfter: QaPass | null;
@@ -594,7 +594,7 @@ export const api = {
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
             qaBrowser?: "chrome" | "gstack"; qaAutoFix?: QaAutoFixScope;
             reviewChecklist?: ReviewChecklist | null;
-            cleanupCommand?: string | null; rebaseCommand?: string | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
+            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),

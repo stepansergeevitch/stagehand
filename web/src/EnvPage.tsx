@@ -132,7 +132,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     const [s, setS] = useState({
         appUrl: env.app_url ?? "", beCommand: env.be_command ?? "", feCommand: env.fe_command ?? "", beUrlTemplate: env.be_url_template ?? "", feUrlTemplate: env.fe_url_template ?? "",
         bePort: env.be_port ? String(env.be_port) : "", fePort: env.fe_port ? String(env.fe_port) : "", setupCommand: env.setup_command ?? "", envVars: env.env_vars ?? "",
-        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", checkCommand: env.check_command ?? "",
+        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", checkCommand: env.check_command ?? "",
     });
     // ---- optional components (a worker, a scheduler): saved with the Services section
     const [comps, setComps] = useState<EnvComponent[]>(() => componentsOf(env));
@@ -272,7 +272,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
             <Section title="Services" hint="Placeholders: {{port}}, {{url}}, {{bePort}}, {{beUrl}} (FE only), {{worktree}}, {{taskDir}}, {{envPath}} (setup only). Commands run from the task's worktree in tmux." saving={saving === "services"} onSave={() => save("services", {
                 appUrl: nul(s.appUrl), beCommand: nul(s.beCommand), feCommand: nul(s.feCommand), beUrlTemplate: nul(s.beUrlTemplate), feUrlTemplate: nul(s.feUrlTemplate),
                 bePort: s.bePort.trim() ? Number(s.bePort) : null, fePort: s.fePort.trim() ? Number(s.fePort) : null, setupCommand: nul(s.setupCommand), envVars: nul(s.envVars),
-                qaSeedHints: nul(s.qaSeedHints), cleanupCommand: nul(s.cleanupCommand), rebaseCommand: nul(s.rebaseCommand), checkCommand: nul(s.checkCommand),
+                qaSeedHints: nul(s.qaSeedHints), cleanupCommand: nul(s.cleanupCommand), rebaseCommand: nul(s.rebaseCommand), migrateCommand: nul(s.migrateCommand), migrateDownCommand: nul(s.migrateDownCommand), checkCommand: nul(s.checkCommand),
                 components: comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
                 keepServices,
                 qaBrowser,
@@ -287,6 +287,8 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 </div>
                 <label>Environment variables (KEY=VALUE per line; exported into git, setup, BE/FE, Claude runs and the terminal) <textarea value={s.envVars} onChange={ss("envVars")} /></label>
                 <label>Worktree setup command (runs once after a worktree is created) <textarea value={s.setupCommand} onChange={ss("setupCommand")} /></label>
+                <label>Migrate command (brings the database up to the worktree's code; Stagehand runs it from the worktree before every BE start, and after a QA baseline on base code; {"{{worktree}}"} / {"{{envPath}}"}) <textarea value={s.migrateCommand} onChange={ss("migrateCommand")} placeholder="optional — e.g. cd backend && poetry run python manage.py migrate --noinput" /></label>
+                <label>Migrate down command (rolls back the migrations the branch added, to the base; runs from the worktree on the branch's code before a QA baseline switches it to the base. {"{{baseRef}}"} = the base commit of the root repo, {"{{baseRef:<dir>}}"} of a sub-repo; also $STAGEHAND_BASE_REF and $STAGEHAND_BASE_REF_&lt;DIR&gt;) <textarea value={s.migrateDownCommand} onChange={ss("migrateDownCommand")} placeholder="optional — without it a branch that adds migrations runs its baseline against the branch's schema" /></label>
                 <label>Cleanup command (runs from the worktree when a task is cleaned up, after BE/FE stop and before the worktree is removed — drop a per-task database, free caches; {"{{worktree}}"} / {"{{envPath}}"}) <textarea value={s.cleanupCommand} onChange={ss("cleanupCommand")} placeholder="optional" /></label>
                 <label>Rebase command (runs from the worktree after every successful rebase onto the base branch — rebuild what a rebase makes stale, e.g. drop and recreate the per-task test databases; {"{{worktree}}"} / {"{{envPath}}"}) <textarea value={s.rebaseCommand} onChange={ss("rebaseCommand")} placeholder="optional" /></label>
                 <label>Verification command (runs from the worktree after every Implementation and PR Fix run; a non-zero exit sends the output back to the agent, twice, then blocks for you — put here what tests and a dev server never exercise, e.g. Django <code>manage.py check --database default && manage.py makemigrations --check --dry-run</code>) <textarea value={s.checkCommand} onChange={ss("checkCommand")} placeholder="optional" /></label>
