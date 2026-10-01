@@ -1802,8 +1802,9 @@ const PoBriefCard = ({ task, onError }: { task: TaskDetail["task"]; onError: (m:
 const SEVERITY_CHIP: Record<PoReviewComment["severity"], string> = { high: "bad", medium: "warn", low: "" };
 
 // One review comment: pick it for the next round, read it, discuss it with the PO.
-const PoReviewCommentCard = ({ c, busy, asking, onPick, onAsk }: { c: PoReviewComment; busy: boolean; asking: boolean; onPick: (v: boolean) => void; onAsk: (text: string) => Promise<void> }) => {
+const PoReviewCommentCard = ({ c, busy, asking, onPick, onNote, onAsk }: { c: PoReviewComment; busy: boolean; asking: boolean; onPick: (v: boolean) => void; onNote: (note: string | null) => Promise<void>; onAsk: (text: string) => Promise<void> }) => {
     const [open, setOpen] = useState(c.thread.length > 0);
+    const [note, setNote] = useState<string | null>(null);
     const [text, setText] = useState("");
     const send = async (): Promise<void> => {
         const t = text.trim();
@@ -1824,6 +1825,25 @@ const PoReviewCommentCard = ({ c, busy, asking, onPick, onAsk }: { c: PoReviewCo
                 {c.sentAt && <span className="chip ok" title={new Date(c.sentAt).toLocaleString()}>sent</span>}
             </div>
             <Markdown source={c.body} />
+            {note !== null ? (
+                <div className="po-human-note">
+                    <AgentInput placeholder="Your note on this comment — it goes to the design agent with it" value={note} onChange={setNote} rows={3} />
+                    <div className="actions" style={{ marginBottom: 0 }}>
+                        <button className="primary" onClick={() => void onNote(note.trim() || null).then(() => setNote(null))}>Save note</button>
+                        <button onClick={() => setNote(null)}>Cancel</button>
+                    </div>
+                </div>
+            ) : c.note ? (
+                <div className="po-human-note">
+                    <div className="chat-msg-head"><b>Your note</b></div>
+                    <Markdown source={c.note} />
+                    <div className="actions" style={{ marginBottom: 0 }}>
+                        <button className="tiny" onClick={() => setNote(c.note ?? "")}>Edit</button>
+                        <button className="tiny danger" onClick={() => void onNote(null)}>Delete</button>
+                    </div>
+                </div>
+            ) : null}
+            {note === null && !c.note && <button className="tiny" onClick={() => setNote("")}>+ Add note</button>}{" "}
             <button className="tiny" onClick={() => setOpen((o) => !o)}>{open ? "▾" : "▸"} Discuss with Product owner{c.thread.length ? ` (${c.thread.length})` : ""}</button>
             {open && (
                 <div className="line-thread" style={{ marginLeft: 0 }}>
@@ -1890,7 +1910,8 @@ const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["t
                             c={c}
                             busy={r.running}
                             asking={r.asking === c.id}
-                            onPick={(v) => void call(() => api.pickPoReviewComment(task.id, c.id, v))}
+                            onPick={(v) => void call(() => api.patchPoReviewComment(task.id, c.id, { include: v }))}
+                            onNote={(note) => call(() => api.patchPoReviewComment(task.id, c.id, { note }))}
                             onAsk={(text) => call(() => api.askPoReviewComment(task.id, c.id, text))}
                         />
                     ))}

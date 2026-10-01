@@ -300,7 +300,7 @@ export interface PoReview { running: boolean; status: string | null; error: stri
 // The PO's review of a design proposal: a verdict and graded comments the human picks and discusses.
 export interface PoReviewComment {
     id: string; severity: "high" | "medium" | "low"; area: "product" | "scope" | "acceptance" | "qa" | "question"; title: string; body: string;
-    include?: boolean; withdrawn: boolean; sentAt: string | null; thread: Array<{ role: "user" | "po"; text: string; at: string }>;
+    include?: boolean; withdrawn: boolean; note: string | null; sentAt: string | null; thread: Array<{ role: "user" | "po"; text: string; at: string }>;
 }
 export interface PoDesignReview { running: boolean; status: string | null; error: string | null; at: string | null; asking: string | null; review: { verdict: "approve" | "changes"; summary: string; comments: PoReviewComment[] } | null }
 export interface TaskLabel { text: string; color: string }
@@ -559,7 +559,7 @@ export const api = {
     startPoBrief: (taskId: string) => post<PoReview>(`/api/tasks/${taskId}/po-brief`),
     poReview: (taskId: string) => fetch(`/api/tasks/${taskId}/po-review`).then((r) => j<PoDesignReview>(r)),
     startPoReview: (taskId: string) => post<PoDesignReview>(`/api/tasks/${taskId}/po-review`),
-    pickPoReviewComment: (taskId: string, cid: string, include: boolean) => fetch(`/api/tasks/${taskId}/po-review/comments/${encodeURIComponent(cid)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ include }) }).then((r) => j<PoDesignReview>(r)),
+    patchPoReviewComment: (taskId: string, cid: string, patch: { include?: boolean; note?: string | null }) => fetch(`/api/tasks/${taskId}/po-review/comments/${encodeURIComponent(cid)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) }).then((r) => j<PoDesignReview>(r)),
     askPoReviewComment: (taskId: string, cid: string, text: string) => post<PoDesignReview>(`/api/tasks/${taskId}/po-review/comments/${encodeURIComponent(cid)}/ask`, { text }),
     sendPoReview: (taskId: string) => post<Task>(`/api/tasks/${taskId}/po-review/send`),
     setTaskProductOwner: (taskId: string, productOwnerId: string | null) => fetch(`/api/tasks/${taskId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ productOwnerId }) }).then((r) => j<Task>(r)),

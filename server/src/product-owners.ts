@@ -60,6 +60,8 @@ export const PoReviewComment = z.object({
     // Unset = by severity: high and medium go to the next round, low does not.
     include: z.boolean().optional(),
     withdrawn: z.boolean().default(false),
+    // The human's own note on the comment (editable); it goes to the design agent with the comment.
+    note: z.string().nullable().default(null),
     // When it went to the design agent (null = not yet).
     sentAt: z.string().nullable().default(null),
     thread: z.array(z.object({ role: z.enum(["user", "po"]), text: z.string(), at: z.string() })).default([]),
@@ -102,6 +104,7 @@ export const reviewNotes = (r: PoReviewResult, poTitle: string | null): string =
             [
                 `### ${c.id} · ${c.severity} · ${c.area} — ${c.title}`,
                 c.body,
+                c.note?.trim() ? `**The human's note:** ${c.note.trim()}` : "",
                 c.thread.length ? `**Discussion with the human:**\n${c.thread.map((m) => `- **${m.role === "user" ? "Human" : "Product Owner"}:** ${m.text.replace(/\n+/g, " ")}`).join("\n")}` : "",
             ]
                 .filter(Boolean)
@@ -1114,6 +1117,7 @@ export class ProductOwners {
         writeReviewState(taskDir, { ...state, asking: commentId });
         const prompt = [
             `The human asks about your review comment ${c.id} (${c.severity}, ${c.area}): "${c.title}" — ${c.body}`,
+            ...(c.note?.trim() ? [`The human's note on this comment: ${c.note.trim()}`] : []),
             `Their message: ${text}`,
             `Answer in 120 words or fewer, as the Product Owner, by the writing rules. Check the proposal and the palace again when the question needs it. Do not change any file.`,
             `When the discussion changes your view, end with one line: "SEVERITY: high", "SEVERITY: medium" or "SEVERITY: low" to regrade the comment, or "WITHDRAW" to drop it. Otherwise end without such a line.`,

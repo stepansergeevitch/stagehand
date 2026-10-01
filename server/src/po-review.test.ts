@@ -12,7 +12,7 @@ describe("PO design review", () => {
             verdict: "changes",
             summary: "Density rule contradicts D16.",
             comments: [
-                { id: "C1", severity: "high", area: "scope", title: "Density must lock", body: "D16 says lock after first use." },
+                { id: "C1", severity: "high", area: "scope", title: "Density must lock", body: "D16 says lock after first use.", note: "Keep the existing EA items unlocked." },
                 { id: "C2", severity: "low", area: "question", title: "Label wording", body: "Minor." },
                 { id: "C3", severity: "medium", area: "qa", title: "No QA for M3", body: "Add one.", thread: [{ role: "user", text: "Needed?", at: "t" }, { role: "po", text: "Yes, M3 is common.", at: "t" }] },
             ],
@@ -27,6 +27,7 @@ describe("PO design review", () => {
         expect(notes).toContain("### C1 · high · scope — Density must lock");
         expect(notes).toContain("### C3 · medium · qa");
         expect(notes).toContain("**Product Owner:** Yes, M3 is common.");
+        expect(notes).toContain("**The human's note:** Keep the existing EA items unlocked.");
         expect(notes).not.toContain("Label wording");
         expect(notes).toContain("1 other(s) are skipped");
     });

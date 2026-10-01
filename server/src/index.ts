@@ -2199,12 +2199,13 @@ app.post("/api/tasks/:id/po-review", async (c) => {
 app.patch("/api/tasks/:id/po-review/comments/:cid", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
-    const body = json(z.object({ include: z.boolean() }), await c.req.json());
+    const body = json(z.object({ include: z.boolean().optional(), note: z.string().max(8000).nullable().optional() }), await c.req.json());
     const dir = engine.taskDir(task.id);
     const review = readReview(dir);
     const cm = review?.comments.find((x) => x.id === c.req.param("cid"));
     if (!review || !cm) return c.json({ error: "no such review comment" }, 404);
-    cm.include = body.include;
+    if (body.include !== undefined) cm.include = body.include;
+    if (body.note !== undefined) cm.note = body.note?.trim() ? body.note.trim() : null;
     writeFileSync(join(dir, "po-review.json"), JSON.stringify(review, null, 2));
     engine.touchTask(task.id);
     return c.json(poReviewOf(task.id));
