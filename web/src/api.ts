@@ -59,7 +59,7 @@ export interface Env {
     chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
-    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
+    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; ci_autopilot?: number; test_command?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
     // JSON ReviewChecklist: gstack categories switched off, points added, extra do-not-flag rules for Code Review; null = the full checklist.
     review_checklist?: string | null;
     // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
@@ -268,7 +268,7 @@ export const pendingQuestions = (d: Pick<TaskDetail, "questions">): QuestionRoun
 export interface Task {
     id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
     branch: string | null; base_branch: string | null; skip_qa?: number; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
-    pinned: number; notes: string | null; extra_tickets: string | null; labels?: string | null; product_owner_id?: string | null; created_at: string; updated_at: string;
+    pinned: number; notes: string | null; extra_tickets: string | null; labels?: string | null; product_owner_id?: string | null; ci_autopilot?: number | null; created_at: string; updated_at: string;
 }
 // Product Owners: one per project of the product (a Linear project, a ClickUp epic).
 export type PoPhase = "context" | "design" | "tickets" | "approved" | "live";
@@ -328,6 +328,18 @@ export interface PrFixReplies {
     replies: Array<{ repo: string; commentId: number; sha: string; posted?: string | null; error?: string | null }>;
     commits: Record<string, Array<{ sha: string; subject: string }>>;
 }
+// The CI autopilot of a task (server ci-autopilot.ts): its rounds, from the triage to the push.
+export interface AutopilotFailure {
+    check: string; kind: "own_migration" | "own_test" | "affected_test" | "own_lint" | "other"; what: string; tests: string[]; locations: string[]; evidence: string;
+    verdict: "allow" | "deny"; reason: string; allowed: boolean; why: string; keep: string[];
+}
+export interface AutopilotRound {
+    id: string; repo: string; prNumber: number; headSha: string; at: string;
+    phase: "triage" | "fixing" | "reviewing" | "addressing" | "pushing" | "pushed" | "denied" | "failed" | "stopped";
+    triage?: { summary: string }; verified?: AutopilotFailure[]; review?: { summary: string; findings: Array<{ severity: string; confidence: number; file: string; line?: number | null; title: string; detail: string }> };
+    pushed?: Record<string, string>; error?: string; endedAt?: string;
+}
+export interface CiAutopilot { on: boolean; busy: boolean; consecutive: number; stopped: string | null; rounds: AutopilotRound[] }
 export interface TaskLabel { text: string; color: string }
 export const labelsOf = (t: Pick<Task, "labels">): TaskLabel[] => {
     try {
@@ -628,7 +640,7 @@ export const api = {
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
             qaBrowser?: "chrome" | "gstack"; qaAutoFix?: QaAutoFixScope;
             reviewChecklist?: ReviewChecklist | null;
-            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
+            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
@@ -655,7 +667,8 @@ export const api = {
     // Remote branch names of one repository of an env ("" = the single repo), for the base-branch pickers.
     branches: (envId: string, repo = "") => fetch(`/api/envs/${envId}/branches?repo=${encodeURIComponent(repo)}`).then((r) => j<{ branches: string[] }>(r)),
     labelSuggestions: () => fetch("/api/labels").then((r) => j<Array<TaskLabel & { count: number }>>(r)),
-    patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[]; baseBranch?: string | Record<string, string> | null; files?: SharedFile[] }) =>
+    ciAutopilot: (id: string) => fetch(`/api/tasks/${id}/ci-autopilot`).then((r) => j<CiAutopilot>(r)),
+    patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[]; baseBranch?: string | Record<string, string> | null; files?: SharedFile[]; ciAutopilot?: boolean | null }) =>
         fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Task>(r)),
     returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[]; skipQa?: boolean; files?: SharedFile[] }) => post<Task>(`/api/tasks/${id}/return`, body),
     patchPrDraft: (id: string, body: { repo: string; title?: string; body?: string; base?: string }) =>

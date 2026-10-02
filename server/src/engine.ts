@@ -1,4 +1,5 @@
 import { BaseCheckout } from "./migrations.js";
+import { activeRound, addedFiles, AutopilotReview, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
 import { EventEmitter } from "node:events";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -595,6 +596,7 @@ export class Engine extends EventEmitter {
         void sweepClones(new Set()).then((n) => n && console.log(`[stagehand] ${n} leftover cloned Chrome profile(s) removed`));
         void this.sweepGstackBrowsers();
         // A worktree a restart caught on the base goes back to its branch before any run resumes.
+        this.recoverAutopilot();
         void this.restoreBaseCheckouts().then(() => this.recoverInterrupted());
         const n = backfillUsage(this.db, this.cfg.dataDir);
         if (n) console.log(`[stagehand] usage backfilled for ${n} run(s)`);
@@ -1626,6 +1628,7 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
+        this.autopilotHuman(taskId);
         const idx = STAGES.indexOf(stage);
         const cur = STAGES.indexOf(task.stage);
         if (idx < 0 || idx > cur) throw new Error(`cannot return to ${stage} from ${task.stage}`);
@@ -1738,6 +1741,7 @@ export class Engine extends EventEmitter {
             input.verdict === "approve" && input.repo !== undefined && task.status !== "running" && (task.stage === "pr_waiting" || task.stage === "pr_fix" || task.stage === "pr_green") && !this.prRow(taskId, input.repo)?.number;
         if (task.status !== "waiting_user" && !lateDraftApproval) throw new Error("task is not waiting for review");
         if (this.pendingQuestions(taskId)) throw new Error("the agent is waiting for answers to its questions — answer (or dismiss) them first");
+        this.autopilotHuman(taskId);
         const comments = input.comments ?? [];
         const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE task_id = ? AND stage = ? AND verdict = 'changes'`).get(taskId, task.stage) as { n: number };
         this.db
@@ -2420,7 +2424,10 @@ export class Engine extends EventEmitter {
     }
 
     // One repository's PR in a word, from its stored row.
-    private prRepoSummary(row: PrStateRow | undefined): { kind: "none" | "manual" | "pending" | "failed" | "green" | "approved" | "merged" | "closed"; text: string } {
+    private prRepoSummary(row: PrStateRow | undefined): { kind: "none" | "manual" | "pending" | "failed" | "green" | "approved" | "merged" | "closed"; text: string; pending: number } {
+        return { pending: 0, ...this.prRepoSummaryOf(row) };
+    }
+    private prRepoSummaryOf(row: PrStateRow | undefined): { kind: "none" | "manual" | "pending" | "failed" | "green" | "approved" | "merged" | "closed"; text: string; pending?: number } {
         if (!row?.number) return row?.approved_at ? { kind: "manual", text: "not on GitHub yet — push / open it" } : { kind: "none", text: "not approved yet" };
         const n = `#${row.number}`;
         if (row.merged_at) return { kind: "merged", text: `${n} merged` };
@@ -2436,7 +2443,7 @@ export class Engine extends EventEmitter {
         const pending = gated.filter((c) => !c.conclusion && !/SUCCESS|FAILURE|ERROR/i.test(c.state ?? "") && (c.status ?? "") !== "COMPLETED");
         const cancelled = gated.filter(isCancelledCheck);
         const justPushed = !!row.pushed_at && Date.now() - new Date(row.pushed_at).getTime() < Engine.CHECKS_GRACE_MS;
-        if (failed.length) return { kind: "failed", text: `${n} ${failed.length} check(s) failing (${failed.map((c) => c.name ?? c.context ?? "check").join(", ")})` };
+        if (failed.length) return { kind: "failed", pending: pending.length, text: `${n} ${failed.length} check(s) failing (${failed.map((c) => c.name ?? c.context ?? "check").join(", ")})${pending.length ? `, ${pending.length} running` : ""}` };
         if (pending.length) return { kind: "pending", text: `${n} ${pending.length} check(s) running` };
         if (gated.length === 0 && justPushed) return { kind: "pending", text: `${n} pushed, waiting for checks to start` };
         if (row.review_decision === "APPROVED") return { kind: "approved", text: `${n} approved, waiting for merge` };
@@ -2499,7 +2506,13 @@ export class Engine extends EventEmitter {
             }
             return set("done", "done", `merged · ${rows.map((r) => r.url).filter(Boolean).join(" ")}`);
         }
-        if (kinds.has("failed")) return set("pr_waiting", "blocked", `PR Waiting · ${line} — click Fix CI on the failing PR, or fix it yourself`);
+        if (kinds.has("failed")) {
+            if (cur.stage !== "pr_fix" && this.autopilotGate(cur, env, summaries)) {
+                if (cur.stage !== "pr_waiting") this.setStage(taskId, "pr_waiting");
+                return;
+            }
+            return set("pr_waiting", "blocked", `PR Waiting · ${line} — click Fix CI on the failing PR, or fix it yourself`);
+        }
         if (kinds.has("none") || kinds.has("manual") || kinds.has("pending")) return set("pr_waiting", "idle", `PR Waiting · ${line}`);
         if (summaries.every((s) => s.kind === "closed" || s.kind === "merged")) return set("pr_waiting", "stopped", `PR closed without merge · ${line}`);
         if (summaries.every((s) => s.kind === "approved" || s.kind === "merged")) return set("pr_approved", "idle", `PR Approved · ${line}`);
@@ -2522,11 +2535,374 @@ export class Engine extends EventEmitter {
         };
         const failed = (pr.statusCheckRollup ?? []).filter((c) => !isApprovalGateCheck(c) && isFailedCheck(c));
         if (!failed.length) throw new Error("no failing checks right now — re-poll first");
+        this.autopilotHuman(taskId);
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         const names = failed.map((c) => c.name ?? c.context ?? "check").join(", ");
         await this.recordFixComments(task, []);
         this.setStage(taskId, "pr_fix");
         this.startPrRound(taskId, { [repo]: `${repoScopeNote(repo)}Failing checks on PR #${row.number}: ${names}. Read their logs with \`gh pr checks ${row.number}\` and \`gh run view --log-failed <run-id>\` (run inside that repository) before changing anything.` }, { attempt: rounds.n + 1, operation: "pr_fix_ci" });
+    }
+
+    // ---------- CI autopilot (ci-autopilot.ts, docs/ci-autopilot.md) ----------
+
+    // Tasks whose autopilot step is in flight (a triage, a fix review, a push) — headless work outside the stage machinery.
+    private readonly autopilotRuns = new Set<string>();
+    private async autopilotStep(taskId: string, fn: () => Promise<void>): Promise<void> {
+        this.autopilotRuns.add(taskId);
+        try {
+            await fn();
+        } finally {
+            this.autopilotRuns.delete(taskId);
+            this.emitTask(taskId);
+        }
+    }
+
+    autopilotOn(task: TaskRow): boolean {
+        if (task.ci_autopilot === 0) return false;
+        if (task.ci_autopilot === 1) return true;
+        return (this.env(task.env_id).ci_autopilot ?? 1) !== 0;
+    }
+    setAutopilot(taskId: string, on: boolean | null): void {
+        this.db.prepare(`UPDATE tasks SET ci_autopilot = ?, updated_at = ? WHERE id = ?`).run(on === null ? null : on ? 1 : 0, now(), taskId);
+        this.autopilotHuman(taskId);
+        this.emitTask(taskId);
+    }
+    autopilotState(taskId: string): AutopilotState & { on: boolean; busy: boolean } {
+        const task = this.getTask(taskId);
+        return { ...readAutopilot(this.taskDir(taskId)), on: task ? this.autopilotOn(task) : false, busy: this.autopilotRuns.has(taskId) };
+    }
+    // The human acted on the task: the autopilot's run count starts again, and a stop is lifted.
+    private autopilotHuman(taskId: string): void {
+        const dir = this.taskDir(taskId);
+        if (!existsSync(join(dir, "ci-autopilot.json"))) return;
+        const s = readAutopilot(dir);
+        const r = activeRound(s);
+        if (r && !this.autopilotRuns.has(taskId)) {
+            r.phase = "stopped";
+            r.error = "the human took over";
+            r.endedAt = now();
+        }
+        writeAutopilot(dir, { ...s, consecutive: 0, stopped: null });
+    }
+    private autopilotSave(taskId: string, fn: (s: AutopilotState) => void): AutopilotState {
+        const dir = this.taskDir(taskId);
+        const s = readAutopilot(dir);
+        fn(s);
+        writeAutopilot(dir, s);
+        this.emitTask(taskId);
+        return s;
+    }
+    // A restart ends every triage and fix review: their rounds are dropped (triage) or failed, and the next poll looks again.
+    private recoverAutopilot(): void {
+        for (const t of this.db.prepare(`SELECT id FROM tasks WHERE stage IN ('pr_waiting', 'pr_fix', 'pr_green')`).all() as Array<{ id: string }>) {
+            const dir = this.taskDir(t.id);
+            if (!existsSync(join(dir, "ci-autopilot.json"))) continue;
+            const s = readAutopilot(dir);
+            const before = s.rounds.length;
+            s.rounds = s.rounds.filter((r) => r.phase !== "triage");
+            for (const r of s.rounds) if (r.phase === "reviewing") { r.phase = "failed"; r.error = "the fix review was interrupted by a restart — Retry"; r.endedAt = now(); }
+            if (before !== s.rounds.length || s.rounds.some((r) => r.error?.includes("restart"))) writeAutopilot(dir, s);
+        }
+    }
+
+    // From syncPrTaskState, for a task whose PRs have a red check: true when the autopilot holds the task (waiting for the
+    // run to finish, triaging, fixing) — the caller then does not mark it blocked.
+    private autopilotGate(task: TaskRow, env: EnvRow, summaries: Array<{ repo: string; kind: string; pending: number; text: string }>): boolean {
+        if (!this.autopilotOn(task) || task.status === "running") return false;
+        // The autopilot ends in a push: an env that forbids agent pushes leaves CI to the human.
+        if (!rulesOf(this.configDirOf(env)).allowPush) return false;
+        const dir = this.taskDir(task.id);
+        const s = readAutopilot(dir);
+        if (this.autopilotRuns.has(task.id)) return true;
+        const stale = activeRound(s);
+        if (stale) {
+            // Its PR Fix round was stopped or failed and the task moved on: the round is over.
+            stale.phase = "stopped";
+            stale.error = "its fix round ended without the autopilot";
+            stale.endedAt = now();
+            writeAutopilot(dir, s);
+        }
+        const red = summaries.filter((x) => x.kind === "failed");
+        // Not partially red: a PR with checks still running waits for them.
+        if (red.some((x) => x.pending > 0)) {
+            const line = `PR Waiting · ${summaries.map((x) => x.text).join(" · ")} — CI autopilot waits for the run to finish`;
+            if (task.status !== "idle" || task.status_line !== line) this.setTaskStatus(task.id, "idle", line);
+            return true;
+        }
+        if (s.stopped) return false;
+        if (s.consecutive >= MAX_AUTOPILOT_ROUNDS) {
+            this.autopilotSave(task.id, (x) => { x.stopped = `${MAX_AUTOPILOT_ROUNDS} autopilot rounds in a row — the next red run is yours`; });
+            this.addAgentNote(task.id, `CI autopilot paused: ${MAX_AUTOPILOT_ROUNDS} rounds in a row. Fix CI yourself, or act on the task to let it run again.`);
+            return false;
+        }
+        for (const x of red) {
+            const row = this.prRow(task.id, x.repo);
+            if (!row?.number) continue;
+            const cwd = this.checkoutOf(task, env, x.repo);
+            let head = "";
+            try {
+                head = execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+            } catch {
+                continue;
+            }
+            // Once per head commit: a run the autopilot already looked at is the human's.
+            if (s.rounds.some((r) => r.repo === x.repo && r.headSha === head)) continue;
+            void this.autopilotStep(task.id, () => this.autopilotTriage(task.id, x.repo, row.number!, head)).catch((e: unknown) => console.warn(`[autopilot] ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+            // One repository at a time; the next poll takes the next one.
+            return true;
+        }
+        return false;
+    }
+
+    private autopilotAccount(task: TaskRow, env: EnvRow): { acc: AccountRow; cd: ConfigDirRow } {
+        const cd = this.configDirOf(env);
+        const usable = this.usableAccounts(cd.path);
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
+        return { acc, cd };
+    }
+
+    // A fresh read-only session that reads the failed logs and the branch diff, and writes ci-triage.json.
+    private async autopilotTriage(taskId: string, repo: string, prNumber: number, headSha: string): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task?.branch) return;
+        const env = this.env(task.env_id);
+        const cwd = this.checkoutOf(task, env, repo);
+        const row = this.prRow(taskId, repo);
+        let checks: Array<{ name?: string; context?: string; conclusion?: string; state?: string }> = [];
+        try {
+            checks = row?.checks_json ? JSON.parse(row.checks_json) : [];
+        } catch {
+            checks = [];
+        }
+        const failed = checks.filter((c) => !isApprovalGateCheck(c) && isFailedCheck(c)).map((c) => c.name ?? c.context ?? "check");
+        if (!failed.length) return;
+        const round: AutopilotRound = { id: randomUUID(), repo, prNumber, headSha, at: now(), phase: "triage" };
+        this.autopilotSave(taskId, (s) => { s.rounds.push(round); });
+        this.setTaskStatus(taskId, "idle", `PR Waiting · #${prNumber} ${failed.length} check(s) failed — CI autopilot is triaging`);
+        const dir = this.taskDir(taskId);
+        const out = join(dir, `ci-triage-${round.id.slice(0, 8)}.json`);
+        const fail = (error: string): void => {
+            this.autopilotSave(taskId, (s) => { const r = s.rounds.find((x) => x.id === round.id); if (r) { r.phase = "failed"; r.error = error; r.endedAt = now(); } });
+            this.setTaskStatus(taskId, "blocked", `PR Waiting · #${prNumber} ${failed.length} check(s) failing — CI autopilot could not triage (${error.slice(0, 120)}); click Fix CI, or fix it yourself`, { notify: true });
+        };
+        let acc: AccountRow;
+        let cd: ConfigDirRow;
+        try {
+            ({ acc, cd } = this.autopilotAccount(task, env));
+        } catch (e) {
+            fail(String((e as Error).message ?? e));
+            return;
+        }
+        const prompt = renderPrompt("ci-triage.md", {
+            ticketId: task.ticket_id, prNumber: String(prNumber), cwd, branch: task.branch, baseBranch: this.baseBranchOf(task, env, repo), headSha, failedChecks: failed.map((f) => `\`${f}\``).join(", "), outputFile: out,
+        });
+        const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path ?? cwd, this.cfg.dataDir);
+        const model = this.modelForOperation(task, "pr_fix_ci");
+        const run = startClaude({
+            prompt, cwd, configDir: cd.path, extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
+            sessionId: randomUUID(), maxTurns: 60, addDirs: [dir], eventLogPath: join(dir, `ci-triage-${round.id.slice(0, 8)}.ndjson`), ...(model ? { model } : {}),
+        });
+        const outcome = await run.done;
+        if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "pr_fix", stage: "pr_fix" }, outcome.result);
+        if (!existsSync(out)) return fail(`no ${out.split("/").pop()} written (${outcome.stderr.trim().split("\n").pop()?.slice(0, 120) || `exit ${outcome.exitCode}`})`);
+        let triage: TriageResult;
+        try {
+            triage = TriageResult.parse(JSON.parse(readFileSync(out, "utf8")));
+        } catch (e) {
+            return fail(`the triage does not match its shape: ${String((e as Error).message ?? e).slice(0, 160)}`);
+        }
+        const current = this.getTask(taskId);
+        // Meanwhile the human (or a push) moved the task on: the triage is kept, nothing is fixed.
+        if (!current || current.status === "running" || !["pr_waiting", "pr_green"].includes(current.stage) || (await this.headSha(cwd, env)) !== headSha) {
+            this.autopilotSave(taskId, (s) => { const r = s.rounds.find((x) => x.id === round.id); if (r) { r.triage = triage; r.phase = "stopped"; r.error = "the task moved on during the triage"; r.endedAt = now(); } });
+            return;
+        }
+        const verified = await this.autopilotVerify(current, env, repo, cwd, triage);
+        const ok = verified.filter((v) => v.allowed);
+        const prev = readAutopilot(dir).rounds.filter((r) => r.id !== round.id && r.phase === "pushed").pop();
+        const again = prev ? ok.filter((v) => prev.verified?.some((p) => p.allowed && failureKey(p) === failureKey(v))) : [];
+        if (again.length) {
+            this.autopilotSave(taskId, (s) => {
+                const r = s.rounds.find((x) => x.id === round.id)!;
+                Object.assign(r, { triage, verified, phase: "stopped", error: `the same failure came back after the last autopilot fix: ${again.map((v) => v.what || v.check).join("; ")}`, endedAt: now() });
+                s.stopped = r.error!;
+            });
+            this.setTaskStatus(taskId, "blocked", `PR Waiting · #${prNumber} — CI autopilot stopped: the failure it fixed came back · click Fix CI, or fix it yourself`, { notify: true });
+            return;
+        }
+        if (!ok.length) {
+            this.autopilotSave(taskId, (s) => { Object.assign(s.rounds.find((x) => x.id === round.id)!, { triage, verified, phase: "denied", endedAt: now() }); });
+            const no = verified.map((v) => `${v.check}: ${v.why}`).join("; ");
+            this.addAgentNote(taskId, `CI autopilot — PR #${prNumber}: nothing on its list, left for you.\n\n${verified.map((v) => `- **${v.check}** (${v.kind.replace(/_/g, " ")}) ${v.what} — ${v.why}`).join("\n")}`);
+            this.setTaskStatus(taskId, "blocked", `PR Waiting · #${prNumber} ${verified.length} failure(s) outside the CI autopilot's list (${no.slice(0, 140)}) — click Fix CI, or fix it yourself`, { notify: true });
+            return;
+        }
+        const fixFrom: Record<string, string> = {};
+        for (const r of this.prRepos(env)) {
+            const p = this.checkoutOf(current, env, r);
+            if (existsSync(p)) fixFrom[r] = (await this.headSha(p, env)) ?? "";
+        }
+        this.autopilotSave(taskId, (s) => {
+            Object.assign(s.rounds.find((x) => x.id === round.id)!, { triage, verified, fixFrom, phase: "fixing" });
+            s.consecutive += 1;
+        });
+        this.addAgentNote(taskId, `CI autopilot — PR #${prNumber}: fixing ${ok.length} failure(s) this branch caused${verified.length > ok.length ? `; ${verified.length - ok.length} left for you` : ""}.\n\n${verified.map((v) => `- ${v.allowed ? "fix" : "yours"} · **${v.check}** (${v.kind.replace(/_/g, " ")}) ${v.what} — ${v.why}`).join("\n")}`);
+        await this.recordFixComments(current, []);
+        this.setStage(taskId, "pr_fix");
+        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
+        this.startPrRound(taskId, { [repo]: `${repoScopeNote(repo)}${fixBrief(prNumber, verified)}` }, { attempt: rounds.n + 1, operation: "pr_fix_ci" });
+    }
+
+    // Every "allow" of the triage, checked against the branch diff and the base (ci-autopilot.ts verifyFailure).
+    private async autopilotVerify(task: TaskRow, env: EnvRow, repo: string, cwd: string, triage: TriageResult): Promise<VerifiedFailure[]> {
+        const baseBranch = this.baseBranchOf(task, env, repo);
+        const base = await this.git(cwd, ["merge-base", "HEAD", `origin/${baseBranch}`], env).catch(() => this.git(cwd, ["merge-base", "HEAD", baseBranch], env));
+        const changed = changedRanges(await this.git(cwd, ["diff", "-U0", "-M", "--no-color", `${base}..HEAD`], env));
+        const added = addedFiles(await this.git(cwd, ["diff", "--name-status", "-M", `${base}..HEAD`], env));
+        const tracked = new Set((await this.git(cwd, ["ls-files"], env)).split("\n"));
+        let baseRuns: Array<{ name: string; conclusion: string | null }> | null = null;
+        const ctx: VerifyCtx = {
+            changed,
+            added,
+            known: (p) => tracked.has(p),
+            headFile: (p) => {
+                try {
+                    return readFileSync(join(cwd, p), "utf8");
+                } catch {
+                    return null;
+                }
+            },
+            baseHasFile: (p) => this.git(cwd, ["cat-file", "-e", `${base}:${p}`], env).then(() => true, () => false),
+            baseCheck: async (check) => {
+                if (!baseRuns) {
+                    try {
+                        const repoName = await this.gh(cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], env);
+                        const raw = await this.gh(cwd, ["api", `repos/${repoName}/commits/${base}/check-runs?per_page=100`, "-q", ".check_runs | map({name, conclusion})"], env);
+                        baseRuns = JSON.parse(raw || "[]") as Array<{ name: string; conclusion: string | null }>;
+                    } catch {
+                        baseRuns = [];
+                    }
+                }
+                const runs = baseRuns.filter((r) => r.name === check);
+                if (!runs.length) return "none";
+                return runs.some((r) => r.conclusion === "success") ? "success" : "failure";
+            },
+            localBase: (tests) => this.autopilotBaseRun(task, env, repo, cwd, base, tests),
+        };
+        const out: VerifiedFailure[] = [];
+        for (const f of triage.failures) out.push(await verifyFailure(f, ctx));
+        return out;
+    }
+
+    // The named tests on a checkout of the base (a detached worktree, removed after): the env's test command with {{tests}}.
+    private async autopilotBaseRun(task: TaskRow, env: EnvRow, repo: string, cwd: string, base: string, tests: string[]): Promise<"pass" | "fail" | null> {
+        if (!env.test_command?.trim()) return null;
+        const tmp = join(this.cfg.dataDir, "tmp", `base-${task.id.slice(0, 8)}-${Date.now()}`);
+        mkdirSync(join(this.cfg.dataDir, "tmp"), { recursive: true });
+        const vars = parseEnvVars(env.env_vars);
+        try {
+            await this.git(cwd, ["worktree", "add", "--detach", tmp, base], env);
+            if (!repo && env.setup_command) await runWorktreeSetup(tmp, env.path, env.setup_command, vars).catch(() => "");
+            const command = env.test_command.replace(/\{\{tests\}\}/g, tests.map((t) => `'${t.replace(/'/g, "'\\''")}'`).join(" "));
+            const ok = await execFileAsync("bash", loginShellArgs(command), { cwd: tmp, env: loginShellEnv(vars), timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024 }).then(() => true, () => false);
+            return ok ? "pass" : "fail";
+        } catch (e) {
+            console.warn(`[autopilot] base run ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`);
+            return null;
+        } finally {
+            await this.git(cwd, ["worktree", "remove", "--force", tmp], env).catch(() => rmSync(tmp, { recursive: true, force: true }));
+        }
+    }
+
+    // After a PR Fix round the autopilot started: the fix is reviewed (fresh session, read-only); serious findings go back
+    // to the fixer once; then the push. Returns false when the round is not the autopilot's.
+    private autopilotAfterFix(taskId: string): boolean {
+        const s = readAutopilot(this.taskDir(taskId));
+        const r = activeRound(s);
+        if (!r || !["fixing", "reviewing", "addressing"].includes(r.phase)) return false;
+        if (r.phase === "addressing") {
+            void this.autopilotStep(taskId, () => this.autopilotPush(taskId, r.id));
+            return true;
+        }
+        void this.autopilotStep(taskId, () => this.autopilotReview(taskId, r.id)).catch((e: unknown) => {
+            this.autopilotSave(taskId, (x) => { const rr = x.rounds.find((y) => y.id === r.id); if (rr) { rr.phase = "failed"; rr.error = String((e as Error).message ?? e).slice(0, 300); rr.endedAt = now(); } });
+            this.setTaskStatus(taskId, "waiting_user", `PR Fix · CI autopilot could not review its fix (${String((e as Error).message ?? e).slice(0, 120)}) — review the diff yourself`, { notify: true });
+        });
+        return true;
+    }
+
+    private async autopilotReview(taskId: string, roundId: string): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) return;
+        const env = this.env(task.env_id);
+        const dir = this.taskDir(taskId);
+        const round = readAutopilot(dir).rounds.find((x) => x.id === roundId)!;
+        this.autopilotSave(taskId, (s) => { s.rounds.find((x) => x.id === roundId)!.phase = "reviewing"; });
+        this.setTaskStatus(taskId, "running", "PR Fix · CI autopilot is reviewing its fix");
+        const diffs: string[] = [];
+        for (const [repo, from] of Object.entries(round.fixFrom ?? {})) {
+            const p = this.checkoutOf(task, env, repo);
+            const head = (await this.headSha(p, env)) ?? "";
+            if (from && head && from !== head) diffs.push(`- ${repoLabel(repo)}: \`git -C ${p} diff ${from}..HEAD\``);
+        }
+        if (!diffs.length) {
+            this.autopilotSave(taskId, (s) => { Object.assign(s.rounds.find((x) => x.id === roundId)!, { phase: "failed", error: "the fix round committed nothing", endedAt: now() }); });
+            this.setStage(taskId, "pr_waiting");
+            this.setTaskStatus(taskId, "blocked", `PR Waiting · #${round.prNumber} — CI autopilot's fix committed nothing · click Fix CI, or fix it yourself`, { notify: true });
+            return;
+        }
+        const { acc, cd } = this.autopilotAccount(task, env);
+        const out = join(dir, `ci-autopilot-review-${roundId.slice(0, 8)}.json`);
+        const prompt = renderPrompt("ci-autopilot-review.md", {
+            ticketId: task.ticket_id, worktree: task.worktree_path ?? env.path, branch: task.branch ?? "", fixDiffs: diffs.join("\n"), brief: fixBrief(round.prNumber, round.verified ?? []), outputFile: out,
+        });
+        const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path ?? env.path, this.cfg.dataDir);
+        const model = this.modelForOperation(task, "pr_fix_ci");
+        const run = startClaude({
+            prompt, cwd: task.worktree_path ?? env.path, configDir: cd.path, extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
+            sessionId: randomUUID(), maxTurns: 50, addDirs: [dir], eventLogPath: join(dir, `ci-autopilot-review-${roundId.slice(0, 8)}.ndjson`), ...(model ? { model } : {}),
+        });
+        const outcome = await run.done;
+        if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "pr_fix", stage: "pr_fix" }, outcome.result);
+        if (this.getTask(taskId)?.status === "stopped") return;
+        let review: AutopilotReview;
+        try {
+            review = AutopilotReview.parse(JSON.parse(readFileSync(out, "utf8")));
+        } catch (e) {
+            throw new Error(`no usable review (${existsSync(out) ? String((e as Error).message ?? e).slice(0, 120) : "no file written"})`);
+        }
+        const serious = review.findings.filter((f) => /^P[01]$/i.test(f.severity) && f.confidence >= 7);
+        this.autopilotSave(taskId, (s) => { const r = s.rounds.find((x) => x.id === roundId)!; r.review = review; r.phase = serious.length ? "addressing" : "pushing"; });
+        this.addAgentNote(taskId, `🔎 CI autopilot review: ${review.summary || "done"}${review.findings.length ? `\n\n${review.findings.map((f) => `- **${f.severity}** (${f.confidence}/10) \`${f.file}${f.line ? `:${f.line}` : ""}\` — ${f.title}`).join("\n")}` : ""}`);
+        if (!serious.length) return this.autopilotPush(taskId, roundId);
+        const notes =
+            `## The review of your CI fix found ${serious.length} serious finding(s) — address them, then the fix is pushed\n\n` +
+            serious.map((f) => `- **${f.severity}** (${f.confidence}/10) \`${f.file}${f.line ? `:${f.line}` : ""}\` — ${f.title}\n  ${f.detail}`).join("\n") +
+            `\n\nFix each at its root cause within the scope of the original brief, keep the tests green, commit, and rewrite the output file.`;
+        const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
+        this.startPrRound(taskId, { [round.repo]: `${repoScopeNote(round.repo)}${fixBrief(round.prNumber, round.verified ?? [])}` }, { attempt: rounds.n + 1, operation: "pr_fix_ci", notes });
+    }
+
+    private async autopilotPush(taskId: string, roundId: string): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) return;
+        const env = this.env(task.env_id);
+        this.autopilotSave(taskId, (s) => { s.rounds.find((x) => x.id === roundId)!.phase = "pushing"; });
+        await this.pushPrFix(taskId);
+        const after = this.getTask(taskId);
+        const round = readAutopilot(this.taskDir(taskId)).rounds.find((x) => x.id === roundId)!;
+        if (after?.status === "failed") {
+            this.autopilotSave(taskId, (s) => { Object.assign(s.rounds.find((x) => x.id === roundId)!, { phase: "failed", error: after.status_line ?? "push failed", endedAt: now() }); });
+            return;
+        }
+        const pushed: Record<string, string> = {};
+        for (const repo of Object.keys(round.fixFrom ?? {})) pushed[repo] = (await this.headSha(this.checkoutOf(task, env, repo), env)) ?? "";
+        this.autopilotSave(taskId, (s) => { Object.assign(s.rounds.find((x) => x.id === roundId)!, { phase: "pushed", pushed, endedAt: now() }); });
+        const fixed = (round.verified ?? []).filter((v) => v.allowed).length;
+        const text = `CI autopilot fixed ${fixed} failure(s) on #${round.prNumber} and pushed ${Object.values(pushed).map((x) => x.slice(0, 7)).join(", ")}`;
+        this.addAgentNote(taskId, text);
+        void notify(this.cfg, { title: `${task.ticket_id} CI autopilot pushed a fix`, message: text, priority: "default", tags: ["robot"], ...(taskLink(this.cfg, task.id) ? { url: taskLink(this.cfg, task.id)! } : {}), localUrl: localTaskLink(this.cfg, task.id), group: `stagehand-${task.id}` });
     }
 
     // Line comments and notes the human left on Code changes while the task sits at a PR stage (nothing posted to
@@ -2547,6 +2923,7 @@ export class Engine extends EventEmitter {
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         this.setStage(taskId, "pr_fix");
         this.startPrRound(taskId, { "": failureOutput }, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
+        this.autopilotHuman(taskId);
     }
 
     // Human-triggered only (checkbox picks on the PR comments tab). Same commit-locally-then-review-the-diff cycle as
@@ -2565,6 +2942,7 @@ export class Engine extends EventEmitter {
         await this.recordFixComments(task, [{ repo, comments: picked }]);
         this.setStage(taskId, "pr_fix");
         this.startPrRound(taskId, { [repo]: failureOutput }, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
+        this.autopilotHuman(taskId);
     }
 
     // The picked comments of one PR, freshly fetched so a stale checkbox never addresses a comment that changed.
@@ -4943,6 +5321,7 @@ export class Engine extends EventEmitter {
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         this.setStage(taskId, "pr_fix");
         this.startPrRound(taskId, jobs, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
+        this.autopilotHuman(taskId);
         return { started: true, note: summary.join(" · ") };
     }
 
@@ -6148,6 +6527,7 @@ export class Engine extends EventEmitter {
             this.afterDesign(taskId);
             return;
         }
+        if (def.stage === "pr_fix" && this.autopilotAfterFix(taskId)) return;
         if (def.kind === "wait") {
             this.setTaskStatus(taskId, "waiting_user", `${def.label} · needs you`);
             if (def.stage === "pr_creation_review") void this.annotateStackedDrafts(taskId);

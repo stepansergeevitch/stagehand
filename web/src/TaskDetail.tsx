@@ -11,7 +11,7 @@ import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
-import { anchorOf, type Env, type LineComment, type PoDesignReview, type PoReview, type PrFixReplies as PrFixRepliesData, type PoReviewComment, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
+import { anchorOf, type Env, type LineComment, type PoDesignReview, type PoReview, type PrFixReplies as PrFixRepliesData, type CiAutopilot, type PoReviewComment, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
 
 const isResolved = (c: PrComment): boolean => c.kind === "line" && c.resolved;
 
@@ -1277,6 +1277,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             {task.stage === "pr_fix" && reviewBox}
                             {task.stage === "pr_fix" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
                             <PrPanel detail={detail} onAction={onAction} focusRepo={prFocusRepo} onFocusRepo={setPrFocusRepo} />
+                            <CiAutopilotCard task={task} onAction={onAction} />
                             {/* A repository whose draft was never approved (the task moved on when another repository's PR opened): still reviewable here. */}
                             {(pr?.drafts ?? []).some((d) => !prStateOf(detail, d.repo)?.number) && (
                                 <>
@@ -1788,6 +1789,70 @@ const QaTests = ({ taskId, design, before }: { taskId: string; design: NonNullab
 // here and goes to the design agent as the notes of another round.
 // At the fix review: for each PR comment the round addressed, a reply "Addressed in <commit>" from the human's GitHub
 // account, posted once the fix is pushed. Off by default: it speaks in the human's name.
+// The CI autopilot: the per-task switch, and each round from the triage to the push.
+const AUTOPILOT_PHASE: Record<string, [string, string]> = {
+    triage: ["triaging", "wait"], fixing: ["fixing", "wait"], reviewing: ["reviewing the fix", "wait"], addressing: ["addressing the review", "wait"], pushing: ["pushing", "wait"],
+    pushed: ["pushed", "ok"], denied: ["left for you", "warn"], failed: ["failed", "bad"], stopped: ["stopped", ""],
+};
+const CiAutopilotCard = ({ task, onAction }: { task: TaskDetail["task"]; onAction: (fn: () => Promise<unknown>) => Promise<void> }) => {
+    const [d, setD] = useState<CiAutopilot | null>(null);
+    useEffect(() => { void api.ciAutopilot(task.id).then(setD).catch(() => undefined); }, [task.id, task.updated_at, task.status_line]);
+    if (!d) return null;
+    const explicit = task.ci_autopilot === 0 || task.ci_autopilot === 1;
+    return (
+        <Card title="CI autopilot" badge={<span className={`chip ${d.on ? "ok" : ""}`}>{d.on ? "on" : "off"}</span>}>
+            <div className="po-comment-top">
+                <label className="inline" title="When the PR's checks finish red, fix the failures this branch caused (its migrations, its tests, untouched tests it broke that pass on base, lint on its own lines), review the fix, and push">
+                    <input type="checkbox" checked={d.on} onChange={(e) => void onAction(() => api.patchTask(task.id, { ciAutopilot: e.target.checked }))} /> Fix this task's own CI failures by itself
+                </label>
+                {explicit && <button className="tiny" onClick={() => void onAction(() => api.patchTask(task.id, { ciAutopilot: null }))}>Use the environment's default</button>}
+                {!explicit && <span className="field-hint">the environment's default</span>}
+                {d.on && <span className="field-hint">· {d.consecutive} of 5 rounds in a row{d.busy ? " · working…" : ""}</span>}
+            </div>
+            {d.stopped && <div className="field-hint bad">Stopped: {d.stopped}. Any action of yours on the task lets it run again.</div>}
+            {[...d.rounds].reverse().map((r) => {
+                const [label, chip] = AUTOPILOT_PHASE[r.phase] ?? [r.phase, ""];
+                return (
+                    <details key={r.id} className="po-comment-card" open={r === d.rounds[d.rounds.length - 1]}>
+                        <summary className="po-comment-top">
+                            <b>#{r.prNumber}</b>{r.repo && <span className="chip">{r.repo}</span>} <code>{r.headSha.slice(0, 7)}</code>
+                            <span className={`chip ${chip}`}>{label}</span>
+                            {r.verified && <span className="field-hint">{r.verified.filter((v) => v.allowed).length} to fix · {r.verified.filter((v) => !v.allowed).length} yours</span>}
+                            <span className="field-hint">{new Date(r.at).toLocaleString()}</span>
+                        </summary>
+                        {r.error && <div className="field-hint bad">{r.error}</div>}
+                        {r.triage?.summary && <p>{r.triage.summary}</p>}
+                        {r.verified && r.verified.length > 0 && (
+                            <table className="usage-table">
+                                <thead><tr><th>Check</th><th>Kind</th><th>Failure</th><th>Verdict</th><th>Why</th></tr></thead>
+                                <tbody>
+                                    {r.verified.map((v, i) => (
+                                        <tr key={i}>
+                                            <td>{v.check}</td>
+                                            <td>{v.kind.replace(/_/g, " ")}</td>
+                                            <td>{v.what}{v.keep.length > 0 && <div className="field-hint">{v.keep.join(", ")}</div>}</td>
+                                            <td><span className={`chip ${v.allowed ? "ok" : "warn"}`}>{v.allowed ? "fix" : "yours"}</span></td>
+                                            <td className="field-hint">{v.why}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                        {r.review && (
+                            <div className="po-human-note">
+                                <b>Review of the fix:</b> {r.review.summary}
+                                {r.review.findings.length > 0 && <ul className="plain">{r.review.findings.map((f, i) => <li key={i}><span className="chip">{f.severity}</span> ({f.confidence}/10) <code>{f.file}{f.line ? `:${f.line}` : ""}</code> {f.title}</li>)}</ul>}
+                            </div>
+                        )}
+                        {r.pushed && <div className="field-hint">Pushed: {Object.entries(r.pushed).map(([repo, sha]) => `${repo || "repo"} ${sha.slice(0, 7)}`).join(", ")}</div>}
+                    </details>
+                );
+            })}
+            {d.rounds.length === 0 && <div className="quiet">No red CI run yet.</div>}
+        </Card>
+    );
+};
+
 const PrFixReplies = ({ taskId, updatedAt }: { taskId: string; updatedAt: string }) => {
     const [d, setD] = useState<PrFixRepliesData | null>(null);
     const [err, setErr] = useState<string | null>(null);

@@ -794,6 +794,8 @@ app.patch("/api/envs/:id", async (c) => {
             migrateCommand: z.string().nullable().optional(),
             migrateDownCommand: z.string().nullable().optional(),
             memoryWings: z.array(z.string().trim().min(1)).nullable().optional(),
+            ciAutopilot: z.boolean().optional(),
+            testCommand: z.string().nullable().optional(),
             checkCommand: z.string().nullable().optional(),
             components: ComponentList.optional(),
             keepServices: z.boolean().optional(),
@@ -870,6 +872,8 @@ app.patch("/api/envs/:id", async (c) => {
     if (body.qaBrowser !== undefined) db.prepare(`UPDATE envs SET qa_browser = ? WHERE id = ?`).run(body.qaBrowser, env.id);
     if (body.migrateCommand !== undefined) db.prepare(`UPDATE envs SET migrate_command = ? WHERE id = ?`).run(body.migrateCommand, env.id);
     if (body.memoryWings !== undefined) db.prepare(`UPDATE envs SET memory_wings = ? WHERE id = ?`).run(body.memoryWings && body.memoryWings.length ? JSON.stringify(body.memoryWings) : null, env.id);
+    if (body.ciAutopilot !== undefined) db.prepare(`UPDATE envs SET ci_autopilot = ? WHERE id = ?`).run(body.ciAutopilot ? 1 : 0, env.id);
+    if (body.testCommand !== undefined) db.prepare(`UPDATE envs SET test_command = ? WHERE id = ?`).run(body.testCommand?.trim() || null, env.id);
     if (body.migrateDownCommand !== undefined) db.prepare(`UPDATE envs SET migrate_down_command = ? WHERE id = ?`).run(body.migrateDownCommand, env.id);
     if (body.qaAutoFix !== undefined) db.prepare(`UPDATE envs SET qa_auto_fix = ? WHERE id = ?`).run(body.qaAutoFix, env.id);
     if (body.reviewChecklist !== undefined) {
@@ -1022,6 +1026,8 @@ app.patch("/api/tasks/:id", async (c) => {
             // Files attached to the instructions: listed by path at the end of the notes, so every stage sees them.
             files: z.array(SharedFileSchema).optional(),
             productOwnerId: z.string().nullable().optional(),
+            // CI autopilot: true / false, or null = the env's default.
+            ciAutopilot: z.boolean().nullable().optional(),
         }),
         await c.req.json(),
     );
@@ -1036,6 +1042,7 @@ app.patch("/api/tasks/:id", async (c) => {
     const files = sharedFilesOf(task.id, body.files);
     if (body.notes !== undefined || files.length) engine.setNotes(task.id, `${body.notes === undefined ? (task.notes ?? "") : (body.notes ?? "")}${renderSharedFiles(files, engine.taskDir(task.id))}`.trim() || null);
     if (body.labels !== undefined) engine.setLabels(task.id, body.labels);
+    if (body.ciAutopilot !== undefined) engine.setAutopilot(task.id, body.ciAutopilot);
     if (body.baseBranch !== undefined) engine.setBaseBranch(task.id, body.baseBranch);
     return c.json(engine.getTask(task.id));
 });
@@ -2291,6 +2298,8 @@ const poReviewOf = (taskId: string) => {
     const lost = !running && (st.status === "running" || !!st.asking);
     return { running, status: lost ? "failed" : (st.status ?? null), error: lost ? "interrupted by a Stagehand restart — run it again" : (st.error ?? null), at: st.at ?? null, asking: running ? (st.asking ?? null) : null, review: readReview(dir) };
 };
+// The CI autopilot of a task: on or off, its rounds (triage, verification, fix review, push).
+app.get("/api/tasks/:id/ci-autopilot", (c) => (engine.getTask(c.req.param("id")) ? c.json(engine.autopilotState(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
 app.get("/api/tasks/:id/po-review", (c) => (engine.getTask(c.req.param("id")) ? c.json(poReviewOf(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
 // The PO's brief on the ticket (written before research): read it, or have the PO write it again.
 const poBriefOf = (taskId: string) => {

@@ -158,6 +158,10 @@ export interface EnvRow {
     migrate_command?: string | null;
     migrate_down_command?: string | null;
     memory_wings?: string | null;
+    // CI autopilot (ci-autopilot.ts): 1 = new tasks fix their own CI failures by themselves (the default);
+    // `test_command` runs named tests ({{tests}}) on a base checkout, to prove an untouched test passes there.
+    ci_autopilot?: number;
+    test_command?: string | null;
     // Runs from the worktree after every implementation / PR-fix run; non-zero = the run goes back to the agent with the
     // output (e.g. Django `check --database default` + `makemigrations --check`, which tests and a dev server never run).
     check_command: string | null;
@@ -326,6 +330,8 @@ export interface TaskRow {
     skip_qa: number;
     // The Product Owner (product-owners.ts) whose project this ticket belongs to: reviews the design on request.
     product_owner_id: string | null;
+    // CI autopilot for this task: 1 on, 0 off, null = its env's default.
+    ci_autopilot?: number | null;
     worktree_path: string | null;
     stage: Stage;
     status: TaskStatus;
@@ -989,6 +995,9 @@ const MIGRATIONS: Array<[string, string]> = [
     // One-shot "skip Manual QA (and QA baseline) this pass", set from Request changes / Return to a stage.
     ["tasks.skip_qa", `ALTER TABLE tasks ADD COLUMN skip_qa INTEGER NOT NULL DEFAULT 0`],
     ["tasks.product_owner_id", `ALTER TABLE tasks ADD COLUMN product_owner_id TEXT`],
+    ["envs.ci_autopilot", `ALTER TABLE envs ADD COLUMN ci_autopilot INTEGER NOT NULL DEFAULT 1`],
+    ["envs.test_command", `ALTER TABLE envs ADD COLUMN test_command TEXT`],
+    ["tasks.ci_autopilot", `ALTER TABLE tasks ADD COLUMN ci_autopilot INTEGER`],
     ["product_owners.issues_refreshed_at", `ALTER TABLE product_owners ADD COLUMN issues_refreshed_at TEXT`],
     ["product_owners.issues_error", `ALTER TABLE product_owners ADD COLUMN issues_error TEXT`],
     // The hash of the text last filed in the palace as chunks (null = not filed yet), and how many chunks it made.
