@@ -230,6 +230,8 @@ interface DispatchOpts {
     cloneFailed?: boolean;
     // PR Fix: what started the round — failing checks or picked comments — for config.operationModels.
     operation?: "pr_fix_ci" | "pr_fix_comments";
+    // The env's QA session command already ran for this dispatch (refreshQaSession).
+    sessionReady?: boolean;
     // QA stages: this dispatch is one shard of a pass split into parallel runs (qa-shards.ts).
     shard?: QaShard | PrShard;
     // Browser stages on a gstack env: this run's headless daemon is up and its session cookies are in.
@@ -3992,6 +3994,13 @@ export class Engine extends EventEmitter {
                 .then(() => this.runShellSeeds(task, env, def, qaPass, { only }))
                 .then((report) => this.dispatch(taskId, stage, { ...opts, seedsDone: true, extraVars: { ...(opts.extraVars ?? {}), seedReport: report, qaPass } }))
                 .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · seeding failed: ${String((e as Error).message ?? e).slice(0, 160)}`));
+            return;
+        }
+        // A QA run with no session yet (a resumed or answered pass, after a restart): sign in first.
+        if (def.chrome && !opts.sessionReady && env.qa_session_command?.trim() && !this.qaSessions.has(task.id)) {
+            void this.refreshQaSession(task, env)
+                .then(() => this.dispatch(taskId, stage, { ...opts, sessionReady: true }))
+                .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · ${String((e as Error).message ?? e).slice(0, 200)}`));
             return;
         }
         // Seeds are in: a pass with more than one shard runs as a group of parallel runs from here (qa-shards.ts).
