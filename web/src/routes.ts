@@ -51,7 +51,7 @@ export type Route =
     // The global product context and the Product Owners; `po` opens one, on its `tab`.
     | { page: "product"; po?: string; tab?: PoTab };
 export type PoTab = "context" | "design" | "questions" | "tickets" | "events" | "corrections";
-export const PO_TABS: readonly PoTab[] = ["context", "design", "questions", "tickets", "events", "corrections"];
+export const PO_TABS: readonly PoTab[] = ["design", "questions", "corrections", "context", "tickets", "events"];
 
 export type Page = Route["page"];
 

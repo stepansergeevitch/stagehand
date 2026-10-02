@@ -614,14 +614,16 @@ const PoChat = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => v
     );
 };
 
-const PoPage = ({ id, tab, onTab, onBack, onError }: { id: string; tab: PoTab; onTab: (t: PoTab) => void; onBack: () => void; onError: (m: string) => void }) => {
+const PoPage = ({ id, tab: tabArg, onTab, onBack, onError }: { id: string; tab: PoTab | undefined; onTab: (t: PoTab) => void; onBack: () => void; onError: (m: string) => void }) => {
     const [d, setD] = useState<PoDetail | null>(null);
     const reload = useCallback(() => void api.productOwner(id).then(setD).catch((e: Error) => onError(e.message)), [id, onError]);
     useEffect(reload, [reload]);
     const send = (t: string) => void api.poSend(id, t).then(reload).catch((e: Error) => onError(e.message));
     if (!d) return <div className="empty">loading…</div>;
     const idx = PHASES.indexOf(d.po.phase);
-    const tabs: PoTab[] = d.po.scope_kind === "env" ? ["context", "questions", "events", "corrections"] : ["context", "design", "questions", "tickets", "events", "corrections"];
+    const tabs: PoTab[] = d.po.scope_kind === "env" ? ["questions", "corrections", "context", "events"] : ["design", "questions", "corrections", "context", "tickets", "events"];
+    // No tab in the URL: the first one.
+    const tab = tabArg ?? tabs[0]!;
     const openQuestions = d.questions.filter((q) => q.status === "open" || q.status === "proposed").length;
     const proposed = d.questions.filter((q) => q.status === "proposed").length;
     const unread = d.events.filter((e) => e.status === "unread" || e.status === "failed").length;
@@ -666,4 +668,4 @@ const PoPage = ({ id, tab, onTab, onBack, onError }: { id: string; tab: PoTab; o
 };
 
 export const ProductPage = ({ po, tab, onNavigate, onError }: { po?: string; tab?: PoTab; onNavigate: (po?: string, tab?: PoTab) => void; onError: (m: string) => void }) =>
-    po ? <PoPage key={po} id={po} tab={tab ?? "context"} onTab={(t) => onNavigate(po, t)} onBack={() => onNavigate()} onError={onError} /> : <ProductHome onOpen={(id) => onNavigate(id)} onError={onError} />;
+    po ? <PoPage key={po} id={po} tab={tab} onTab={(t) => onNavigate(po, t)} onBack={() => onNavigate()} onError={onError} /> : <ProductHome onOpen={(id) => onNavigate(id)} onError={onError} />;
