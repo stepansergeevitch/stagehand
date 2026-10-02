@@ -1,5 +1,5 @@
 import { runMigration } from "./migrations.js";
-import { envVarsOf } from "./env-scripts.js";
+import { withPrepare } from "./env-config.js";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -340,13 +340,13 @@ export class Services {
             worktree: task.worktree_path ?? env.path,
             taskDir: join(this.cfg.dataDir, "tasks", task.id),
         };
-        const command = render(template, vars);
+        const command = withPrepare(env, render(template, vars));
         const logDir = join(this.cfg.dataDir, "tasks", task.id, "logs");
         mkdirSync(logDir, { recursive: true });
         // Migrations are their own step (migrations.ts): the database is brought up to the worktree's code before the
         // BE starts, so the BE command carries no migrate of its own.
         if (kind === "be" && env.migrate_command) {
-            await runMigration(env.migrate_command, { worktree: vars.worktree!, envPath: env.path, vars: envVarsOf(env), logPath: join(logDir, "migrate.log"), label: "migrate" });
+            await runMigration(withPrepare(env, env.migrate_command), { worktree: vars.worktree!, envPath: env.path, vars: parseEnvVars(env.env_vars), logPath: join(logDir, "migrate.log"), label: "migrate" });
         }
         const logPath = join(logDir, `${kind}.log`);
         const tmux = serviceSessionName(task.ticket_id, kind);
@@ -354,9 +354,10 @@ export class Services {
         // The command may be an && chain; run it in a subshell so its whole stdout+stderr reaches the log. The pane
         // runs in tmux's default shell (the user's — zsh here, where the pipe statuses are `pipestatus[1]`; bash's
         // is `PIPESTATUS[0]`), so both spellings are tried before falling back to tee's own status.
-        const wrapped = `cd ${JSON.stringify(cwd)}; echo "[stagehand] ${kind.toUpperCase()} on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command} ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind.toUpperCase()} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
+        const wrapped = `cd ${JSON.stringify(cwd)}; echo "[stagehand] ${kind.toUpperCase()} on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command}
+ ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind.toUpperCase()} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
         await ensureSession(tmux, cwd, wrapped, {
-            ...envVarsOf(env),
+            ...parseEnvVars(env.env_vars),
             PORT: String(port),
             STAGEHAND_PORT: String(port),
             STAGEHAND_BE_URL: be?.url ?? "",
@@ -579,14 +580,15 @@ export class Services {
         else port = await this.pickFreePort(Services.DEP_PORT_RANGE);
         const urlTemplate = dep.be_url_template ?? "http://localhost:{{port}}";
         const url = render(urlTemplate, { port: String(port) });
-        const command = render(dep.be_command, { port: String(port), url, bePort: "", beUrl: "", worktree: dep.path, taskDir: "" });
+        const command = withPrepare(dep, render(dep.be_command, { port: String(port), url, bePort: "", beUrl: "", worktree: dep.path, taskDir: "" }));
         const logPath = this.dependencyLog(dep);
         mkdirSync(join(this.cfg.dataDir, "envs", dep.id), { recursive: true });
         const tmux = this.dependencyTmux(dep);
         // Same start/exit markers as a task's services (kind DEPENDENCY), so dependencyState reads the log the same way.
         const kind = DEPENDENCY_KIND.toUpperCase();
-        const wrapped = `cd ${JSON.stringify(dep.path)}; echo "[stagehand] ${kind} on ${url} · ${dep.name}, for ${env.name} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command} ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
-        await ensureSession(tmux, dep.path, wrapped, { ...envVarsOf(dep), PORT: String(port), STAGEHAND_PORT: String(port) });
+        const wrapped = `cd ${JSON.stringify(dep.path)}; echo "[stagehand] ${kind} on ${url} · ${dep.name}, for ${env.name} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command}
+ ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
+        await ensureSession(tmux, dep.path, wrapped, { ...parseEnvVars(dep.env_vars), PORT: String(port), STAGEHAND_PORT: String(port) });
         this.db.prepare(`DELETE FROM env_services WHERE env_id = ?`).run(dep.id);
         this.db
             .prepare(`INSERT INTO env_services (env_id, port, url, tmux, command, log_path, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)

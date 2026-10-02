@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, autopilotRulesOf, AUTOPILOT_KINDS, envScriptsOf, type EnvScript, componentsOf, reviewChecklistOf, type AutopilotRules, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
+import { accountOrderOf, accountUsableWith, api, autopilotRulesOf, AUTOPILOT_KINDS,  componentsOf, reviewChecklistOf, type AutopilotRules, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -132,15 +132,12 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     const [s, setS] = useState({
         appUrl: env.app_url ?? "", beCommand: env.be_command ?? "", feCommand: env.fe_command ?? "", beUrlTemplate: env.be_url_template ?? "", feUrlTemplate: env.fe_url_template ?? "",
         bePort: env.be_port ? String(env.be_port) : "", fePort: env.fe_port ? String(env.fe_port) : "", setupCommand: env.setup_command ?? "", envVars: env.env_vars ?? "",
-        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "",
+        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "", prepareCommand: env.prepare_command ?? "",
         callbackPorts: ((): string => { try { return (JSON.parse(env.callback_ports ?? "[]") as Array<{ port: number; relay?: boolean }>).map((p) => `${p.port}${p.relay ? "*" : ""}`).join(", "); } catch { return ""; } })(),
     });
     // ---- optional components (a worker, a scheduler): saved with the Services section
     const [comps, setComps] = useState<EnvComponent[]>(() => componentsOf(env));
     const [keepServices, setKeepServices] = useState(env.keep_services === 1);
-    // ---- scripts
-    const [scripts, setScripts] = useState<EnvScript[]>(() => envScriptsOf(env));
-    const setScript = (i: number, patch: Partial<EnvScript>) => setScripts((xs) => xs.map((x, j) => (j === i ? { ...x, ...patch } : x)));
     // ---- CI autopilot
     const [ciAutopilot, setCiAutopilot] = useState((env.ci_autopilot ?? 1) !== 0);
     const [testCommand, setTestCommand] = useState(env.test_command ?? "");
@@ -282,6 +279,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 appUrl: nul(s.appUrl), beCommand: nul(s.beCommand), feCommand: nul(s.feCommand), beUrlTemplate: nul(s.beUrlTemplate), feUrlTemplate: nul(s.feUrlTemplate),
                 bePort: s.bePort.trim() ? Number(s.bePort) : null, fePort: s.fePort.trim() ? Number(s.fePort) : null, setupCommand: nul(s.setupCommand), envVars: nul(s.envVars),
                 qaSeedHints: nul(s.qaSeedHints), cleanupCommand: nul(s.cleanupCommand), rebaseCommand: nul(s.rebaseCommand), migrateCommand: nul(s.migrateCommand), migrateDownCommand: nul(s.migrateDownCommand), memoryWings: s.memoryWings.split(",").map((w) => w.trim()).filter(Boolean), checkCommand: nul(s.checkCommand),
+                prepareCommand: nul(s.prepareCommand),
                 callbackPorts: s.callbackPorts.split(",").map((x) => x.trim()).filter((x) => /^\d+\*?$/.test(x)).map((x) => ({ port: Number(x.replace("*", "")), relay: x.endsWith("*") })),
                 components: comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
                 keepServices,
@@ -296,6 +294,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                     <label>FE URL template <input value={s.feUrlTemplate} onChange={ss("feUrlTemplate")} placeholder="http://localhost:{{port}}" /></label>
                 </div>
                 <label>Environment variables (KEY=VALUE per line; exported into git, setup, BE/FE, Claude runs and the terminal) <textarea value={s.envVars} onChange={ss("envVars")} /></label>
+                <label>Prepare (bash that runs before every command of this environment — setup, BE, FE, components, migrate, cleanup, rebase, verification — e.g. bring up the datastores it needs; a non-zero exit stops the command) <textarea className="tall" spellCheck={false} value={s.prepareCommand} onChange={ss("prepareCommand")} placeholder="optional" /></label>
                 <label>Worktree setup command (runs once after a worktree is created) <textarea value={s.setupCommand} onChange={ss("setupCommand")} /></label>
                 <label>Migrate command (brings the database up to the worktree's code; Stagehand runs it from the worktree before every BE start, and after a QA baseline on base code; {"{{worktree}}"} / {"{{envPath}}"}) <textarea value={s.migrateCommand} onChange={ss("migrateCommand")} placeholder="optional — e.g. cd backend && poetry run python manage.py migrate --noinput" /></label>
                 <label>Migrate down command (rolls back the migrations the branch added, to the base; runs from the worktree on the branch's code before a QA baseline switches it to the base. {"{{baseRef}}"} = the base commit of the root repo, {"{{baseRef:<dir>}}"} of a sub-repo; also $STAGEHAND_BASE_REF and $STAGEHAND_BASE_REF_&lt;DIR&gt;) <textarea value={s.migrateDownCommand} onChange={ss("migrateDownCommand")} placeholder="optional — without it a branch that adds migrations runs its baseline against the branch's schema" /></label>
@@ -336,21 +335,6 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                     <button className="tiny" onClick={() => setComps((cs) => [...cs, { key: "", label: "", command: "", autoStart: false }])}>+ component</button>
                 </div>
                 <label>Seeding hints for QA (how agents create test data here: local DB connection and key tables, API auth, seed scripts; given to the Design and QA prompts verbatim) <textarea value={s.qaSeedHints} onChange={ss("qaSeedHints")} className="tall" placeholder={"Local Postgres: PGPASSWORD=… psql -h localhost -p 5433 -U … -d …\nDeals live in deal, pro formas in pro_forma; sources in pro_forma_source (source_type_id …)\nPrefer SQL for numeric inputs; the pro forma table UI is slow to edit."} /></label>
-            </Section>
-
-            <Section title="Scripts" hint="This environment's own scripts — a QA teardown, a session helper, the datastores it needs up. They are part of the environment's config: Stagehand writes them to one folder and exports it as $STAGEHAND_SCRIPTS to every command, seed hint and agent run of this environment. Refer to one as $STAGEHAND_SCRIPTS/<name>." saving={saving === "scripts"} onSave={() => save("scripts", { scripts: scripts.filter((x) => x.name.trim()).map((x) => ({ name: x.name.trim(), content: x.content })) })}>
-                {scripts.map((x, i) => (
-                    <details key={i} className="po-comment-card" open={!x.content}>
-                        <summary className="po-comment-top">
-                            <code>$STAGEHAND_SCRIPTS/{x.name || "…"}</code> <span className="field-hint">{x.content.split("\n").length} line(s)</span>
-                            <span className="spacer" />
-                            <button className="tiny danger" onClick={(e) => { e.preventDefault(); setScripts((xs) => xs.filter((_, j) => j !== i)); }}>remove</button>
-                        </summary>
-                        <label>Name <input value={x.name} placeholder="qa-teardown.py" onChange={(e) => setScript(i, { name: e.target.value })} /></label>
-                        <textarea className="tall" spellCheck={false} style={{ fontFamily: "var(--mono, monospace)", minHeight: 240 }} value={x.content} onChange={(e) => setScript(i, { content: e.target.value })} />
-                    </details>
-                ))}
-                <button className="tiny" onClick={() => setScripts((xs) => [...xs, { name: "", content: "" }])}>+ script</button>
             </Section>
 
             <Section title="CI autopilot" hint="When a PR's checks finish red, the task fixes by itself the failures it caused, has the fix reviewed, and pushes. Stagehand verifies each built-in kind against the branch diff and the base; your own allow rules rest on the triage's judgement; a deny rule wins over everything." saving={saving === "autopilot"} onSave={() => save("autopilot", {

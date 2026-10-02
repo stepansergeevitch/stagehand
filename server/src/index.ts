@@ -1,5 +1,4 @@
 import { serve } from "@hono/node-server";
-import { envVarsOf, materializeEnvScripts, SCRIPT_NAME, setEnvScriptsRoot } from "./env-scripts.js";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
@@ -44,8 +43,6 @@ import { attach, capturePane, ensureSession, killSession, loginSessionName, pipe
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cfg = loadConfig();
 const db = openDb(cfg.dataDir);
-setEnvScriptsRoot(cfg.dataDir);
-for (const e of db.prepare(`SELECT id, scripts FROM envs`).all() as Array<Pick<EnvRow, "id" | "scripts">>) materializeEnvScripts(e);
 migrateAccountsToConfigDirs(db, { mainConfigDir: cfg.mainConfigDir, scratchAccountsDir: cfg.accountsDir });
 const services = new Services(db, cfg);
 if (!PREVIEW) services.startWatch();
@@ -799,10 +796,10 @@ app.patch("/api/envs/:id", async (c) => {
             memoryWings: z.array(z.string().trim().min(1)).nullable().optional(),
             ciAutopilot: z.boolean().optional(),
             testCommand: z.string().nullable().optional(),
-            // The env's own scripts, written to $STAGEHAND_SCRIPTS: the whole list.
             // The identity provider's fixed login-callback ports; `relay`: Stagehand holds the port and redirects (any browser).
             callbackPorts: z.array(z.object({ port: z.number().int().min(1).max(65535), relay: z.boolean().default(false) })).nullable().optional(),
-            scripts: z.array(z.object({ name: z.string().regex(SCRIPT_NAME, "a script name is letters, digits, . _ -"), content: z.string().max(500_000) })).optional(),
+            // Bash run before every command of the env (env-config.ts).
+            prepareCommand: z.string().nullable().optional(),
             ciAutopilotRules: z
                 .object({ disabled: z.array(z.string()).default([]), custom: z.array(z.object({ key: z.string().optional(), title: z.string().trim().min(1), verdict: z.enum(["allow", "deny"]), detail: z.string().default("") })).default([]) })
                 .nullable()
@@ -891,14 +888,8 @@ app.patch("/api/envs/:id", async (c) => {
         const json = disabled.length || custom.length ? JSON.stringify({ disabled, custom: custom.map((x, i) => ({ key: x.key?.trim() || `r${Date.now().toString(36)}${i}`, title: x.title, verdict: x.verdict, detail: (x.detail ?? "").trim() })) }) : null;
         db.prepare(`UPDATE envs SET ci_autopilot_rules = ? WHERE id = ?`).run(json, env.id);
     }
+    if (body.prepareCommand !== undefined) db.prepare(`UPDATE envs SET prepare_command = ? WHERE id = ?`).run(body.prepareCommand?.trim() || null, env.id);
     if (body.callbackPorts !== undefined) db.prepare(`UPDATE envs SET callback_ports = ? WHERE id = ?`).run(body.callbackPorts && body.callbackPorts.length ? JSON.stringify(body.callbackPorts) : null, env.id);
-    if (body.scripts !== undefined) {
-        const names = body.scripts.map((x) => x.name);
-        if (new Set(names).size !== names.length) return c.json({ error: "two scripts have the same name" }, 400);
-        const json = body.scripts.length ? JSON.stringify(body.scripts) : null;
-        db.prepare(`UPDATE envs SET scripts = ? WHERE id = ?`).run(json, env.id);
-        materializeEnvScripts({ id: env.id, scripts: json });
-    }
     if (body.testCommand !== undefined) db.prepare(`UPDATE envs SET test_command = ? WHERE id = ?`).run(body.testCommand?.trim() || null, env.id);
     if (body.migrateDownCommand !== undefined) db.prepare(`UPDATE envs SET migrate_down_command = ? WHERE id = ?`).run(body.migrateDownCommand, env.id);
     if (body.qaAutoFix !== undefined) db.prepare(`UPDATE envs SET qa_auto_fix = ? WHERE id = ?`).run(body.qaAutoFix, env.id);
@@ -974,7 +965,7 @@ app.get("/api/envs/:id/branches", async (c) => {
     const hit = branchCache.get(cwd);
     if (hit && Date.now() - hit.at < 60_000) return c.json({ branches: hit.names });
     try {
-        const { stdout } = await execFileAsync("git", ["-C", cwd, "ls-remote", "--heads", "origin"], { env: { ...process.env, ...envVarsOf(env) }, maxBuffer: 8 * 1024 * 1024, timeout: 30_000 });
+        const { stdout } = await execFileAsync("git", ["-C", cwd, "ls-remote", "--heads", "origin"], { env: { ...process.env, ...parseEnvVars(env.env_vars) }, maxBuffer: 8 * 1024 * 1024, timeout: 30_000 });
         const names = stdout.split("\n").map((l) => l.split("\t")[1] ?? "").filter((r) => r.startsWith("refs/heads/")).map((r) => r.slice("refs/heads/".length));
         // Trunk first, then the rest alphabetically.
         names.sort((a, b) => (a === env.base_branch ? -1 : b === env.base_branch ? 1 : a.localeCompare(b)));
@@ -1925,7 +1916,7 @@ app.post("/api/tasks/:id/terminal", async (c) => {
         name,
         task.worktree_path ?? env.path,
         `claude --resume ${task.session_id}; echo; echo '[stagehand] claude exited — press Enter to close'; read -r`,
-        { ...envVarsOf(env), ...authEnv(acc), CLAUDE_CONFIG_DIR: cd.path },
+        { ...parseEnvVars(env.env_vars), ...authEnv(acc), CLAUDE_CONFIG_DIR: cd.path },
     );
     return c.json({ terminal: name });
 });

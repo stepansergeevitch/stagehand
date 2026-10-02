@@ -59,7 +59,7 @@ export interface Env {
     chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
-    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; ci_autopilot?: number; test_command?: string | null; ci_autopilot_rules?: string | null; scripts?: string | null; callback_ports?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
+    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; ci_autopilot?: number; test_command?: string | null; ci_autopilot_rules?: string | null; callback_ports?: string | null; prepare_command?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
     // JSON ReviewChecklist: gstack categories switched off, points added, extra do-not-flag rules for Code Review; null = the full checklist.
     review_checklist?: string | null;
     // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
@@ -214,16 +214,6 @@ export type ReviewPass = "critical" | "informational";
 export interface ReviewCategoryDef { key: string; title: string; pass: ReviewPass; detail: string }
 export interface ReviewPoint { key: string; title: string; pass: ReviewPass; detail: string }
 export interface ReviewChecklist { disabled: string[]; custom: ReviewPoint[]; doNotFlag: string[] }
-// An env's own scripts: config, written by Stagehand to $STAGEHAND_SCRIPTS for its commands and runs.
-export interface EnvScript { name: string; content: string }
-export const envScriptsOf = (env: Pick<Env, "scripts"> | undefined): EnvScript[] => {
-    try {
-        const v: unknown = env?.scripts ? JSON.parse(env.scripts) : [];
-        return Array.isArray(v) ? (v as EnvScript[]) : [];
-    } catch {
-        return [];
-    }
-};
 // The CI autopilot's list per env: built-in kinds switched off, and the env's own allow / deny rules.
 export const AUTOPILOT_KINDS = [
     { key: "own_migration", title: "Migrations of this branch", detail: "a migration conflict, or a migration the branch added that fails to apply" },
@@ -666,7 +656,7 @@ export const api = {
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
             qaBrowser?: "chrome" | "gstack"; qaAutoFix?: QaAutoFixScope;
             reviewChecklist?: ReviewChecklist | null;
-            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; ciAutopilotRules?: AutopilotRules | null; scripts?: EnvScript[]; callbackPorts?: Array<{ port: number; relay: boolean }> | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
+            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; ciAutopilotRules?: AutopilotRules | null; prepareCommand?: string | null; callbackPorts?: Array<{ port: number; relay: boolean }> | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),

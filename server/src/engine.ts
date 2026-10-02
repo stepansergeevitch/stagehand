@@ -1,5 +1,5 @@
 import { BaseCheckout } from "./migrations.js";
-import { callbackPortsOf, envVarsOf } from "./env-scripts.js";
+import { callbackPortsOf, withPrepare } from "./env-config.js";
 import { activeRound, addedFiles, AutopilotReview, autopilotRulesOf, describeRules, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
 import { EventEmitter } from "node:events";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -646,7 +646,7 @@ export class Engine extends EventEmitter {
             const parsed = ResultEvent.safeParse(raw);
             if (parsed.success) recordUsage(this.db, { accountId: account?.id ?? null, envId: env.id, taskId, runId: null, kind: "ticket-fetch", stage: null }, parsed.data);
         };
-        const fetchOne = (r: TicketRef, file: string): Promise<Ticket> => fetchTicket(r, this.cfg, cd.path, env.path, this.taskDir(taskId), { ...envVarsOf(env), ...authEnv(account) }, onResult, file);
+        const fetchOne = (r: TicketRef, file: string): Promise<Ticket> => fetchTicket(r, this.cfg, cd.path, env.path, this.taskDir(taskId), { ...parseEnvVars(env.env_vars), ...authEnv(account) }, onResult, file);
         if (extras.length) mkdirSync(join(this.taskDir(taskId), "tickets"), { recursive: true });
         void fetchOne(ref, "ticket.json")
             .then(async (ticket) => {
@@ -1579,7 +1579,7 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task?.worktree_path) return [];
         const env = this.env(task.env_id);
-        return worktreeDiff(this.layoutOf(task, env), task.worktree_path, envVarsOf(env));
+        return worktreeDiff(this.layoutOf(task, env), task.worktree_path, parseEnvVars(env.env_vars));
     }
 
     // Sub-repos ("" for a single-repo env) whose base branch was rewritten under this branch — see git.baseDrift.
@@ -1587,7 +1587,7 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task?.worktree_path) return [];
         const env = this.env(task.env_id);
-        return baseDrift(this.layoutOf(task, env), task.worktree_path, envVarsOf(env));
+        return baseDrift(this.layoutOf(task, env), task.worktree_path, parseEnvVars(env.env_vars));
     }
 
     // The same changes narrowed to a set of commits, or to what is not committed yet.
@@ -1595,7 +1595,7 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task?.worktree_path) return [];
         const env = this.env(task.env_id);
-        const vars = envVarsOf(env);
+        const vars = parseEnvVars(env.env_vars);
         const layout = this.layoutOf(task, env);
         return "uncommitted" in filter ? [await uncommittedGroup(layout, task.worktree_path, vars)] : commitsDiff(layout, task.worktree_path, filter.shas, vars);
     }
@@ -1604,7 +1604,7 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task?.worktree_path) return { commits: [], uncommitted: false, dirty: [] };
         const env = this.env(task.env_id);
-        return branchCommits(this.layoutOf(task, env), task.worktree_path, envVarsOf(env));
+        return branchCommits(this.layoutOf(task, env), task.worktree_path, parseEnvVars(env.env_vars));
     }
 
     setAccount(taskId: string, accountId: string): void {
@@ -1684,7 +1684,7 @@ export class Engine extends EventEmitter {
     // instead of refusing, since deleting is meant to work regardless.
     private async doCleanup(task: TaskRow, force: boolean, opts: { removeWorktree: boolean }): Promise<{ done: string[]; skipped: string[] }> {
         const env = this.env(task.env_id);
-        const vars = envVarsOf(env);
+        const vars = parseEnvVars(env.env_vars);
         const done: string[] = [];
         const skipped: string[] = [];
         if (opts.removeWorktree && task.worktree_path && task.branch) {
@@ -1738,7 +1738,7 @@ export class Engine extends EventEmitter {
     private async runCleanupCommand(task: TaskRow, env: EnvRow, vars: Record<string, string>): Promise<string | null> {
         if (!env.cleanup_command || !task.worktree_path || !existsSync(task.worktree_path)) return null;
         try {
-            await runWorktreeSetup(task.worktree_path, env.path, env.cleanup_command, vars);
+            await runWorktreeSetup(task.worktree_path, env.path, withPrepare(env, env.cleanup_command), vars);
             return null;
         } catch (e) {
             return String((e as Error).message ?? e).slice(0, 160);
@@ -1799,7 +1799,7 @@ export class Engine extends EventEmitter {
     }
 
     private async git(cwd: string, args: string[], env: EnvRow): Promise<string> {
-        const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], { env: { ...process.env, ...envVarsOf(env) }, maxBuffer: 4 * 1024 * 1024 });
+        const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], { env: { ...process.env, ...parseEnvVars(env.env_vars) }, maxBuffer: 4 * 1024 * 1024 });
         return stdout.trim();
     }
 
@@ -1854,7 +1854,7 @@ export class Engine extends EventEmitter {
             const log = await this.git(cwd, ["log", "-p", "-U0", "--no-merges", "--format=commit %H", ...range], env);
             const commits = (await this.git(cwd, ["rev-list", "--count", "--no-merges", ...range], env).then(Number)) || 0;
             const out = await new Promise<string>((resolve, reject) => {
-                const p = spawn("git", ["-C", cwd, "patch-id", "--stable"], { env: { ...process.env, ...envVarsOf(env) } });
+                const p = spawn("git", ["-C", cwd, "patch-id", "--stable"], { env: { ...process.env, ...parseEnvVars(env.env_vars) } });
                 let text = "";
                 p.stdout.on("data", (d: Buffer) => (text += d.toString()));
                 p.on("error", reject);
@@ -1883,7 +1883,7 @@ export class Engine extends EventEmitter {
     }
 
     private async gh(cwd: string, args: string[], env: EnvRow): Promise<string> {
-        const { stdout } = await execFileAsync("gh", args, { cwd, env: { ...process.env, ...envVarsOf(env) }, maxBuffer: 4 * 1024 * 1024 });
+        const { stdout } = await execFileAsync("gh", args, { cwd, env: { ...process.env, ...parseEnvVars(env.env_vars) }, maxBuffer: 4 * 1024 * 1024 });
         return stdout.trim();
     }
 
@@ -2512,7 +2512,7 @@ export class Engine extends EventEmitter {
                 // Nor its per-task databases and caches: run the env's cleanup command now instead of waiting for "Clean up"
                 // (DualEntry, 2026-09-22: 20 test-database clones of done and parked tasks sat on the shared Postgres).
                 // The worktree stays for the human; the command runs again, harmlessly, when they clean up or delete.
-                void this.runCleanupCommand(cur, env, envVarsOf(env)).then((error) => {
+                void this.runCleanupCommand(cur, env, parseEnvVars(env.env_vars)).then((error) => {
                     if (error) this.addAgentNote(cur.id, `cleanup command failed after merge: ${error}`);
                 });
             }
@@ -2712,7 +2712,7 @@ export class Engine extends EventEmitter {
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path ?? cwd, this.cfg.dataDir);
         const model = this.modelForOperation(task, "pr_fix_ci");
         const run = startClaude({
-            prompt, cwd, configDir: cd.path, extraEnv: { ...envVarsOf(env), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
+            prompt, cwd, configDir: cd.path, extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
             sessionId: randomUUID(), maxTurns: 60, addDirs: [dir], eventLogPath: join(dir, `ci-triage-${round.id.slice(0, 8)}.ndjson`), ...(model ? { model } : {}),
         });
         const outcome = await run.done;
@@ -2813,12 +2813,12 @@ export class Engine extends EventEmitter {
         if (!env.test_command?.trim()) return null;
         const tmp = join(this.cfg.dataDir, "tmp", `base-${task.id.slice(0, 8)}-${Date.now()}`);
         mkdirSync(join(this.cfg.dataDir, "tmp"), { recursive: true });
-        const vars = envVarsOf(env);
+        const vars = parseEnvVars(env.env_vars);
         try {
             await this.git(cwd, ["worktree", "add", "--detach", tmp, base], env);
-            if (!repo && env.setup_command) await runWorktreeSetup(tmp, env.path, env.setup_command, vars).catch(() => "");
+            if (!repo && env.setup_command) await runWorktreeSetup(tmp, env.path, withPrepare(env, env.setup_command), vars).catch(() => "");
             const command = env.test_command.replace(/\{\{tests\}\}/g, tests.map((t) => `'${t.replace(/'/g, "'\\''")}'`).join(" "));
-            const ok = await execFileAsync("bash", loginShellArgs(command), { cwd: tmp, env: loginShellEnv(vars), timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024 }).then(() => true, () => false);
+            const ok = await execFileAsync("bash", loginShellArgs(withPrepare(env, command)), { cwd: tmp, env: loginShellEnv(vars), timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024 }).then(() => true, () => false);
             return ok ? "pass" : "fail";
         } catch (e) {
             console.warn(`[autopilot] base run ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`);
@@ -2873,7 +2873,7 @@ export class Engine extends EventEmitter {
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path ?? env.path, this.cfg.dataDir);
         const model = this.modelForOperation(task, "pr_fix_ci");
         const run = startClaude({
-            prompt, cwd: task.worktree_path ?? env.path, configDir: cd.path, extraEnv: { ...envVarsOf(env), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
+            prompt, cwd: task.worktree_path ?? env.path, configDir: cd.path, extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
             sessionId: randomUUID(), maxTurns: 50, addDirs: [dir], eventLogPath: join(dir, `ci-autopilot-review-${roundId.slice(0, 8)}.ndjson`), ...(model ? { model } : {}),
         });
         const outcome = await run.done;
@@ -3158,7 +3158,7 @@ export class Engine extends EventEmitter {
     // ---------- the QA baseline on base code ----------
 
     private migrationOpts(task: TaskRow, env: EnvRow) {
-        return { worktree: task.worktree_path!, envPath: env.path, vars: envVarsOf(env), logPath: join(this.taskDir(task.id), "logs", "migrate.log") };
+        return { worktree: task.worktree_path!, envPath: env.path, vars: parseEnvVars(env.env_vars), logPath: join(this.taskDir(task.id), "logs", "migrate.log") };
     }
 
     // Switches the worktree to the base when its branch has commits or changes: the servers stop, migrations go down
@@ -3175,12 +3175,12 @@ export class Engine extends EventEmitter {
         this.setTaskStatus(taskId, "running", `QA Baseline · switching ${where} to the base${env.migrate_down_command ? " (migrations down first)" : ""} — the baseline runs on code without this change`);
         try {
             await this.services.stopAll(taskId);
-            await this.baseCheckout.enter(taskId, repos, { ...m, downCommand: env.migrate_down_command ?? null });
+            await this.baseCheckout.enter(taskId, repos, { ...m, downCommand: env.migrate_down_command ? withPrepare(env, env.migrate_down_command) : null });
             this.emitTask(taskId);
             return true;
         } catch (e) {
             const why = String((e as Error).message ?? e).slice(0, 400);
-            await this.baseCheckout.exit(taskId, { ...m, upCommand: env.migrate_command ?? null }).catch(() => undefined);
+            await this.baseCheckout.exit(taskId, { ...m, upCommand: env.migrate_command ? withPrepare(env, env.migrate_command) : null }).catch(() => undefined);
             this.setTaskStatus(taskId, "blocked", `QA Baseline · cannot run on the base code: ${why} — the worktree stays on its branch; fix the env's Migrate down command and Retry, or Skip the baseline`);
             return false;
         }
@@ -3194,7 +3194,7 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         try {
             await this.services.stopAll(taskId);
-            await this.baseCheckout.exit(taskId, { ...this.migrationOpts(task, env), upCommand: env.migrate_command ?? null });
+            await this.baseCheckout.exit(taskId, { ...this.migrationOpts(task, env), upCommand: env.migrate_command ? withPrepare(env, env.migrate_command) : null });
             this.emitTask(taskId);
             return true;
         } catch (e) {
@@ -3428,7 +3428,7 @@ export class Engine extends EventEmitter {
             prompt: prompt + renderSharedFiles(files, this.taskDir(taskId)),
             cwd: task.worktree_path ?? env.path,
             configDir: cd.path,
-            extraEnv: { ...envVarsOf(env), ...authEnv(acc) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             ...this.sessionArgs(task),
             maxTurns: 15,
             // The task dir holds the files the human shares (and the artifacts a question may be about).
@@ -3487,7 +3487,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd,
             configDir: cd.path,
-            extraEnv: { ...envVarsOf(env), ...authEnv(acc) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...this.sessionArgs(task),
@@ -3543,7 +3543,7 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         const cwd = this.checkoutOf(task, env, repo);
         if (!existsSync(cwd)) throw new Error(`${repoLabel(repo)}: no worktree checkout yet`);
-        const dirty = await dirtyPaths(cwd, envVarsOf(env)).catch(() => []);
+        const dirty = await dirtyPaths(cwd, parseEnvVars(env.env_vars)).catch(() => []);
         if (dirty.length) throw new Error(`${repoLabel(repo)}: the worktree has uncommitted changes — commit or discard them first: ${describePaths(dirty)}`);
         const own = await this.ownCommitShas(cwd, this.layoutOf(task, env));
         const full = own.has(sha) ? sha : [...own].find((s) => s.startsWith(sha));
@@ -3559,7 +3559,7 @@ export class Engine extends EventEmitter {
         if (!text) throw new Error("the commit message cannot be empty");
         if (/\n/.test(text)) throw new Error("one line only — the same rule as a normal commit here");
         const { env, cwd } = await this.gitEditPreflight(taskId, repo, sha);
-        const gitEnv = { ...process.env, ...envVarsOf(env) };
+        const gitEnv = { ...process.env, ...parseEnvVars(env.env_vars) };
         const chain = (await this.git(cwd, ["rev-list", "--reverse", `${sha}^..HEAD`], env)).split("\n").filter(Boolean);
         let parent = (await this.git(cwd, ["rev-parse", `${sha}^`], env)).trim();
         for (const commit of chain) {
@@ -3609,7 +3609,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd,
             configDir: cd.path,
-            extraEnv: { ...envVarsOf(env), ...authEnv(acc) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             ...this.sessionArgs(task),
             maxTurns: 60,
             ...((): { model?: string } => {
@@ -4180,7 +4180,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: runDir,
-            extraEnv: { ...envVarsOf(env), ...runAuth, ...(gstackState ? { BROWSE_STATE_FILE: gstackState, B: this.gstackBin() ?? "", GSTACK_TELEMETRY_OFF: "1" } : {}) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...runAuth, ...(gstackState ? { BROWSE_STATE_FILE: gstackState, B: this.gstackBin() ?? "", GSTACK_TELEMETRY_OFF: "1" } : {}) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...(isPrShard(shard)
@@ -4740,7 +4740,7 @@ export class Engine extends EventEmitter {
         try {
             const { stdout } = await execFileAsync("bash", loginShellArgs(djangoBatchCommand(prefix)), {
                 cwd: task.worktree_path ?? env.path,
-                env: loginShellEnv({ ...envVarsOf(env), ...djangoBatchEnv(items, mode) }),
+                env: loginShellEnv({ ...parseEnvVars(env.env_vars), ...djangoBatchEnv(items, mode) }),
                 timeout: 120_000 + 60_000 * items.length,
                 maxBuffer: 8 * 1024 * 1024,
             });
@@ -4770,7 +4770,7 @@ export class Engine extends EventEmitter {
             try {
                 const { stdout } = await execFileAsync("bash", loginShellArgs(cmd), {
                     cwd: task.worktree_path ?? env.path,
-                    env: loginShellEnv(envVarsOf(env)),
+                    env: loginShellEnv(parseEnvVars(env.env_vars)),
                     timeout: 120_000,
                     maxBuffer: 4 * 1024 * 1024,
                 });
@@ -5114,7 +5114,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd: task.worktree_path,
             configDir: cd.path,
-            extraEnv: { ...envVarsOf(env), ...authEnv(acc) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...this.sessionArgs(task),
@@ -5160,7 +5160,7 @@ export class Engine extends EventEmitter {
             for (const repo of allRepos) {
                 const base = this.baseBranchOf(task, env, repo);
                 const cwd = this.checkoutOf(task, env, repo);
-                const dirty = await dirtyPaths(cwd, envVarsOf(env)).catch(() => []);
+                const dirty = await dirtyPaths(cwd, parseEnvVars(env.env_vars)).catch(() => []);
                 if (dirty.length) {
                     const label = `stagehand: set aside for the rebase of ${task.branch} at ${now()}`;
                     try {
@@ -5401,7 +5401,7 @@ export class Engine extends EventEmitter {
         if (env.rebase_command?.trim() && task.worktree_path && repos.length) {
             try {
                 const wt = task.worktree_path;
-                await this.serialSetup(wt, () => runWorktreeSetup(wt, env.path, env.rebase_command!, envVarsOf(env)));
+                await this.serialSetup(wt, () => runWorktreeSetup(wt, env.path, withPrepare(env, env.rebase_command!), parseEnvVars(env.env_vars)));
                 lines.push("🧹 rebase command ran");
             } catch (e) {
                 lines.push(`❌ rebase command failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
@@ -5528,7 +5528,7 @@ export class Engine extends EventEmitter {
         if (changed.length === 0) return null;
         try {
             const wt = task.worktree_path;
-            const out = await this.serialSetup(wt, () => runWorktreeSetup(wt, env.path, env.setup_command!, envVarsOf(env)));
+            const out = await this.serialSetup(wt, () => runWorktreeSetup(wt, env.path, withPrepare(env, env.setup_command!), parseEnvVars(env.env_vars)));
             console.error(`[setup] ${task.ticket_id} (after rebase) ${task.worktree_path}\n${out.slice(-1500)}`);
             // Build caches compiled against the old dependency tree must go too: Next's Turbopack dev cache (.next)
             // built before an `npm ci` crashed the dev server with "turbo-tasks: an internal panic occurred outside
@@ -5567,7 +5567,7 @@ export class Engine extends EventEmitter {
         const cwd = task.worktree_path ?? env.path;
         const be = kind === "fe" ? this.services.get(taskId, "be") : undefined;
         const serviceEnv: Record<string, string> = {
-            ...envVarsOf(env),
+            ...parseEnvVars(env.env_vars),
             PORT: String(row.port),
             STAGEHAND_PORT: String(row.port),
             ...(be ? { STAGEHAND_BE_URL: be.url, STAGEHAND_BE_PORT: String(be.port) } : {}),
@@ -5591,7 +5591,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd,
             configDir: cd.path,
-            extraEnv: { ...envVarsOf(env), ...authEnv(acc) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
             ...this.sessionArgs(task),
             maxTurns: 60,
             ...((): { model?: string } => {
@@ -6223,7 +6223,7 @@ export class Engine extends EventEmitter {
                 if (bare) {
                     const interp = bare[1]!;
                     try {
-                        await execFileAsync("bash", loginShellArgs(`command -v ${interp}`), { cwd, env: loginShellEnv(envVarsOf(env)), timeout: 10_000 });
+                        await execFileAsync("bash", loginShellArgs(`command -v ${interp}`), { cwd, env: loginShellEnv(parseEnvVars(env.env_vars)), timeout: 10_000 });
                     } catch {
                         problems.push(`${label} runs \`${interp}\` directly, which is not on the orchestrator's PATH — invoke it the way the repository's own commands do (\`poetry run ${interp} …\`, \`uv run ${interp} …\`, \`npx …\`)`);
                     }
@@ -6237,7 +6237,7 @@ export class Engine extends EventEmitter {
                 const dry = wrapPsqlInRollback(cmd);
                 if (dry === cmd) continue;
                 try {
-                    await execFileAsync("bash", loginShellArgs(dry), { cwd, env: loginShellEnv(envVarsOf(env)), timeout: 60_000, maxBuffer: 1024 * 1024 });
+                    await execFileAsync("bash", loginShellArgs(dry), { cwd, env: loginShellEnv(parseEnvVars(env.env_vars)), timeout: 60_000, maxBuffer: 1024 * 1024 });
                 } catch (e) {
                     const err = e as { stderr?: string; stdout?: string; message?: string };
                     const text = String(err.stderr ?? err.stdout ?? err.message ?? e);
@@ -6464,7 +6464,7 @@ export class Engine extends EventEmitter {
         let out = "";
         let ok = true;
         try {
-            out = await runWorktreeSetup(task.worktree_path, env.path, env.check_command, envVarsOf(env));
+            out = await runWorktreeSetup(task.worktree_path, env.path, withPrepare(env, env.check_command), parseEnvVars(env.env_vars));
         } catch (e) {
             ok = false;
             const err = e as { stdout?: string; stderr?: string; message?: string };
@@ -6513,7 +6513,7 @@ export class Engine extends EventEmitter {
             const branch = prefix && !r.branchName.startsWith(prefix) ? `${prefix}${r.branchName}` : r.branchName;
             this.db.prepare(`UPDATE tasks SET title = ?, branch = ?, updated_at = ? WHERE id = ?`).run(r.title, branch, now(), taskId);
             this.setTaskStatus(taskId, "running", "creating worktree");
-            const envVars = envVarsOf(env);
+            const envVars = parseEnvVars(env.env_vars);
             void createWorktree(this.layoutOf(this.getTask(taskId) ?? { base_branch: null }, env), branch, envVars)
                 .then(async (wt) => {
                     this.db.prepare(`UPDATE tasks SET worktree_path = ?, updated_at = ? WHERE id = ?`).run(wt.path, now(), taskId);
@@ -6527,7 +6527,7 @@ export class Engine extends EventEmitter {
                     }
                     if (env.setup_command) {
                         this.setTaskStatus(taskId, "running", "running worktree setup");
-                        const out = await runWorktreeSetup(wt.path, env.path, env.setup_command, envVars);
+                        const out = await runWorktreeSetup(wt.path, env.path, withPrepare(env, env.setup_command), envVars);
                         // The tail of what setup printed goes to server.log: an `npm ci` that skips a native binding
                         // only says so here (npm WARN EBADENGINE), and the FE fails minutes later with no trace of why.
                         if (out) console.error(`[setup] ${task.ticket_id} ${wt.path}\n${out.slice(-1500)}`);
