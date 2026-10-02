@@ -36,7 +36,7 @@ import { mergeQuestions, mergeScenarios, planQaShards, shardFiles, type QaShard 
 import { flagSubstitutions, isNetworkError } from "./qa-grade.js";
 import { jevAsk, jevEnabled } from "./jev.js";
 import { djangoBatchCommand, djangoBatchEnv, parseBatchOutput, planSeedUnits, type SeedItem } from "./seed-batch.js";
-import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, ReviewResult, type AgentQuestion, type QaScenario } from "./stages/contracts.js";
+import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, ReviewResult, type AgentQuestion, QaScenario } from "./stages/contracts.js";
 
 // A comment anchored to one line of the review diff. `line` is the new-file line for add/context lines, the old-file line for deletions.
 export interface LineComment {
@@ -428,7 +428,15 @@ const MAX_DESIGN_BASELINE_ROUNDS = 3;
 const stableJson = (v: unknown): string =>
     Array.isArray(v) ? `[${v.map(stableJson).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson((v as Record<string, unknown>)[k])}`).join(",")}}` : JSON.stringify(v ?? null);
 const sha1 = (s: string): string => createHash("sha1").update(s).digest("hex");
-export const scenarioHashes = (design: DesignResult | null): Record<string, string> => Object.fromEntries((design?.qa ?? []).map((s) => [s.id, sha1(stableJson(s))]));
+// Defaults are not content either: a scenario is hashed as the contract reads it, so a rewrite that drops
+// `"exclusive": false` or `"shot": false` keeps its baseline (INV-149, 2026-10-02: such a rewrite reran all four).
+const normalScenario = (s: unknown): unknown => {
+    const parsed = QaScenario.safeParse(s);
+    return parsed.success ? parsed.data : s;
+};
+export const scenarioHashes = (design: DesignResult | null): Record<string, string> => Object.fromEntries((design?.qa ?? []).map((s) => [s.id, sha1(stableJson(normalScenario(s)))]));
+// Hashes recorded before normalisation took the scenario as written.
+const rawScenarioHashes = (design: DesignResult | null): Record<string, string> => Object.fromEntries((design?.qa ?? []).map((s) => [s.id, sha1(stableJson(s))]));
 const qaHashOf = (design: DesignResult | null): string => sha1(stableJson(scenarioHashes(design)));
 // What the design agent reads after a baseline pass: every scenario's outcome and observation, and why the pass stopped.
 const renderDesignBaselineNotes = (qa: QaPassResult, round: number, stopped: string | null): string => {
@@ -5000,6 +5008,7 @@ export class Engine extends EventEmitter {
     private afterDesign(taskId: string): void {
         const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
         const cur = scenarioHashes(design);
+        const raw = rawScenarioHashes(design);
         const ids = Object.keys(cur);
         const prev = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
         const wait = (line: string): void => this.setTaskStatus(taskId, "waiting_user", `Design Proposal · needs you${line ? ` — ${line}` : ""}`);
@@ -5011,7 +5020,7 @@ export class Engine extends EventEmitter {
         // A record from before per-scenario hashes: its one whole-set hash still says whether nothing changed.
         const known = prev?.hashes ?? (prev && prev.qaHash === sha1(JSON.stringify(design?.qa ?? [])) ? cur : {});
         const before = this.readArtifactJson<QaPassResult>(taskId, "qa/before.json");
-        const cached = (before?.scenarios ?? []).filter((r) => cur[r.id] !== undefined && known[r.id] === cur[r.id] && (inLoop || r.outcome !== "blocked"));
+        const cached = (before?.scenarios ?? []).filter((r) => cur[r.id] !== undefined && (known[r.id] === cur[r.id] || known[r.id] === raw[r.id]) && (inLoop || r.outcome !== "blocked"));
         const toRun = ids.filter((id) => !cached.some((c) => c.id === id));
         const beforePath = join(this.taskDir(taskId), "qa", "before.json");
         if (!toRun.length) {
@@ -5055,9 +5064,11 @@ export class Engine extends EventEmitter {
     // The design stage's baseline pairs with the approved scenarios: the separate baseline stage has nothing to add.
     private designBaselineCurrent(taskId: string): boolean {
         const m = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
-        const cur = scenarioHashes(this.readArtifactJson<DesignResult>(taskId, "design.json"));
+        const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+        const cur = scenarioHashes(design);
+        const raw = rawScenarioHashes(design);
         const recorded = new Set((this.readArtifactJson<QaPassResult>(taskId, "qa/before.json")?.scenarios ?? []).map((r) => r.id));
-        return m?.status === "done" && Object.entries(cur).every(([id, h]) => m.hashes?.[id] === h && recorded.has(id));
+        return m?.status === "done" && Object.entries(cur).every(([id, h]) => (m.hashes?.[id] === h || m.hashes?.[id] === raw[id]) && recorded.has(id));
     }
 
     private clearPassFiles(taskId: string, pass: "before" | "after"): void {

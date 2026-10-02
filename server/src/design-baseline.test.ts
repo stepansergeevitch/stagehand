@@ -17,4 +17,12 @@ describe("scenarioHashes", () => {
         expect(b["S1"]).toBe(a["S1"]);
         expect(b["S2"]).not.toBe(a["S2"]);
     });
+    it("ignores fields left at their default", () => {
+        const base = { id: "S1", title: "t", url: "/x", steps: [{ action: "a", assert: "b" }] };
+        const a = scenarioHashes(design([base]));
+        const b = scenarioHashes(design([{ ...base, exclusive: false, services: [], steps: [{ action: "a", assert: "b", shot: false }] }]));
+        const c = scenarioHashes(design([{ ...base, exclusive: true }]));
+        expect(b["S1"]).toBe(a["S1"]);
+        expect(c["S1"]).not.toBe(a["S1"]);
+    });
 });
