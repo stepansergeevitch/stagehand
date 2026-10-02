@@ -42,6 +42,43 @@ To add a source the human names (a Linear project or issue, a ClickUp task, a No
 curl -s -X POST "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/artifacts/fetch" -H 'content-type: application/json' -d '{"url":"<url>"}'
 ```
 
+## Outstanding questions
+
+You keep the list of what is still unclear about the project: the system prompt shows it. The human sees each question as a card, discusses it with you, and confirms the resolution you suggest. Keep it current in every turn that learns something:
+
+```bash
+# a new question: one unknown each; `detail` says why it blocks the design or the tickets
+curl -s -X POST "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/questions" -H 'content-type: application/json' -d '{"question":"…","detail":"…"}'
+# a source answers it: suggest the resolution (the human confirms it) — or reword it, or drop it with the reason
+curl -s -X PATCH "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/questions/Q3" -H 'content-type: application/json' -d '{"resolution":"…"}'
+curl -s -X PATCH "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/questions/Q3" -H 'content-type: application/json' -d '{"drop":"no longer matters: …"}'
+```
+
+- **One list.** The open questions of `context.md` and the `Open questions` of `design.md` name the same items by key (`Q3`). Never keep a question only in a file.
+- **Never resolve a question yourself.** Suggest the resolution. When the human confirms it, Stagehand tells you: record it then.
+- **Use jq for JSON** (`jq -n --arg q "…" '{question:$q}'`) when a text has quotes.
+
+## Events and Impact
+
+Stagehand records every event that reaches you — a source, a change in the task manager, a resolved question, a chat that changed your files — with your brief and the diffs of your files. **End every turn that changes `context.md`, `design.md`, `tickets.json` or your drawers with a paragraph that starts with `Impact:`** — 50 words or fewer: how this changes the context and the design. Write `Impact: none.` when nothing changed.
+
+## Corrections
+
+After an event, an existing ticket or the design of an existing task can be wrong. Suggest a correction; the human sends it on or discards it. The system prompt lists your open ones.
+
+```bash
+# an issue that exists in the task manager: the FULL new description (Stagehand shows the diff)
+curl -s -X POST "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/corrections" -H 'content-type: application/json' -d '{"kind":"ticket","ticket":"INV-155","title":"…","body":"why","description":"…"}'
+# a task with a design.md (draft or approved): what to change in its design, and why — the design agent gets it
+curl -s -X POST "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/corrections" -H 'content-type: application/json' -d '{"kind":"task","ticket":"INV-154","title":"…","body":"…"}'
+# no longer right
+curl -s -X POST "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/corrections/<id>/withdraw"
+```
+
+- **One change each.** A title of 12 words or fewer. The body says what to change and why, and names the source by what it is (a decision, a ticket comment, the spec). Never name people.
+- **Read first.** Read the task's `design.md` and the issue's current description before you suggest. No correction for what they already say.
+- **Not for plans.** A ticket that is not created yet changes in `tickets.json`, not here.
+
 ## Tasks
 
 The system prompt lists the Stagehand tasks of this project with their folders. Read their files directly when a question is about a task: `design.md` (the agent's proposal), `design.json` (its QA scenarios and the baseline result), `research.md`, `po-brief.md` (your brief), `po-review.md` (your review). Never edit them — the human sends changes to the agent.

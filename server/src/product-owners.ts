@@ -13,6 +13,7 @@ import { createClickUpTask, createLinearIssue, downloadLinearUpload, fetchProjec
 import { sharedFileName } from "./tickets.js";
 import { chunkText, drawerText, issueDrawers } from "./palace-index.js";
 import { describeImage, extractDocText, isConvertibleDoc, isImage } from "./media.js";
+import { PoJournal, type PoEventChanges, type PoEventKind, type PoEventRefs, type PoMemoryWrite } from "./po-journal.js";
 
 // Product Owners — one per project of the product (a Linear project, a ClickUp epic). The human plans the project with
 // its PO in a chat while the PO keeps three documents the UI shows as pages: context.md (the living project context),
@@ -156,6 +157,54 @@ export const lineDiff = (a: string, b: string): string[] => {
     return out;
 };
 
+// A diff for the eye: changed lines with `ctx` unchanged lines around them ("  "), "…" between distant hunks.
+export const unifiedDiff = (a: string, b: string, ctx = 2): string[] => {
+    const x = a.split("\n");
+    const y = b.split("\n");
+    if (a === b) return [];
+    if (x.length * y.length > 4_000_000) return lineDiff(a, b);
+    const L: number[][] = Array.from({ length: x.length + 1 }, () => new Array<number>(y.length + 1).fill(0));
+    for (let i = x.length - 1; i >= 0; i--) for (let j = y.length - 1; j >= 0; j--) L[i]![j] = x[i] === y[j] ? L[i + 1]![j + 1]! + 1 : Math.max(L[i + 1]![j]!, L[i]![j + 1]!);
+    const all: string[] = [];
+    let i = 0;
+    let j = 0;
+    while (i < x.length || j < y.length) {
+        if (i < x.length && j < y.length && x[i] === y[j]) { all.push(`  ${x[i]}`); i++; j++; }
+        else if (j < y.length && (i >= x.length || L[i]![j + 1]! > L[i + 1]![j]!)) all.push(`+ ${y[j++]}`);
+        else all.push(`- ${x[i++]}`);
+    }
+    const keep = all.map(() => false);
+    all.forEach((l, n) => {
+        if (l.startsWith("  ")) return;
+        for (let k = Math.max(0, n - ctx); k <= Math.min(all.length - 1, n + ctx); k++) keep[k] = true;
+    });
+    const out: string[] = [];
+    all.forEach((l, n) => {
+        if (keep[n]) out.push(l);
+        else if (out.length && out[out.length - 1] !== "…") out.push("…");
+    });
+    while (out[out.length - 1] === "…") out.pop();
+    return out;
+};
+
+// The paragraph a turn ends with, "Impact: …": the PO's short brief of what the event changes.
+export const impactOf = (reply: string): string | null => {
+    const m = /(?:^|\n)\s*\**Impact:?\**:?\s*([\s\S]+)$/i.exec(reply);
+    return m ? m[1]!.trim() : null;
+};
+
+// What the PO must do at the end of a turn that processed an event (a source, a task-manager change, a resolution).
+const EVENT_RULES = [
+    "Then, by CLAUDE.md:",
+    "- **Questions** — keep your outstanding questions current: add the new ones this raises, suggest a resolution for one it answers, drop one that no longer matters.",
+    "- **Corrections** — if this changes what an existing ticket or the design of an existing task must say, suggest a correction. Never for a ticket not created yet: change tickets.json.",
+    "- **Impact** — end your answer with a paragraph that starts with `Impact:` — 50 words or fewer: how this changes the context and the design, or `Impact: none.`",
+].join("\n");
+
+const MEMORY_WRITE = /^mcp__mempalace__(?!.*(search|list|get|status|query|traverse|read|find|check|stats|taxonomy|duplicate)).*(add|update|delete|write|invalidate|remove|file|store|create|set)/i;
+
+type QueueItem = { text: string; events: string[]; merge?: "artifact" };
+
 const quote = (t: string): string => t.split("\n").map((l) => `> ${l}`).join("\n");
 
 // What changed in one issue between two refreshes, as markdown bullets.
@@ -245,6 +294,13 @@ export class ProductOwners {
     private readonly reviews = new Map<string, ClaudeRun>();
     private readonly refreshing = new Set<string>();
     private refreshTimer: NodeJS.Timeout | null = null;
+    readonly journal: PoJournal;
+    // System turns waiting for the PO to finish its current one, by PO.
+    private readonly queue = new Map<string, QueueItem[]>();
+    // The event of the turn in flight, by PO: questions and corrections the PO files through the API link to it.
+    private readonly turnEvent = new Map<string, string>();
+    // Discussions of outstanding questions in flight, by question id.
+    private readonly questionRuns = new Map<string, ClaudeRun>();
 
     constructor(
         private readonly db: DB,
@@ -257,6 +313,7 @@ export class ProductOwners {
         this.root = join(cfg.dataDir, "product-owners");
         this.configDir = join(this.root, "claude");
         this.productDir = join(cfg.dataDir, "product");
+        this.journal = new PoJournal(db);
     }
 
     // ---------- the config dir and folders ----------
@@ -367,6 +424,10 @@ export class ProductOwners {
             revisions: this.revisions(id),
             issues: this.issues(id),
             refreshingIssues: this.refreshing.has(id),
+            questions: this.journal.questions(id),
+            askingQuestions: this.journal.questions(id).filter((q) => this.questionRuns.has(q.id)).map((q) => q.id),
+            events: this.journal.events(id).map((e) => ({ ...e, linked: this.journal.linked(e.id) })),
+            corrections: this.journal.corrections(id).map((c) => (c.kind === "ticket" ? { ...c, diff: unifiedDiff(c.before ?? "", c.after ?? "", 3) } : c)),
         };
     }
 
@@ -413,8 +474,11 @@ export class ProductOwners {
         if (!existsSync(p)) throw new Error("no product context proposal");
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
-        await this.setProductContext(po.env_id, readFileSync(p, "utf8"));
+        const before = this.productContext(po.env_id);
+        const after = readFileSync(p, "utf8");
+        await this.setProductContext(po.env_id, after);
         rmSync(p);
+        this.journal.addEvent({ poId, kind: "context", title: "You accepted the Product Owner's product context", body: `The product context of the environment, replaced:\n\n\`\`\`diff\n${unifiedDiff(before, after).join("\n")}\n\`\`\``, status: "done", brief: null });
         this.addMessage(poId, "system", "You accepted the proposed product context. It is now the product context of every Product Owner of this environment.");
         this.emit({ poId, kind: "updated" });
     }
@@ -429,8 +493,22 @@ export class ProductOwners {
     async setContext(poId: string, text: string): Promise<void> {
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
+        const before = this.readFile(poId, "context.md");
         writeFileSync(join(this.dir(poId), "context.md"), text);
         await this.syncContext(po);
+        if (before !== text) this.journal.addEvent({ poId, kind: "edit", title: "You edited context.md", status: "done", changes: { context: unifiedDiff(before, text), revisions: this.snapshot(poId) } });
+        this.emit({ poId, kind: "updated" });
+    }
+    private readFile(poId: string, f: string): string {
+        const p = join(this.dir(poId), f);
+        return existsSync(p) ? readFileSync(p, "utf8") : "";
+    }
+    // The human edits tickets.json on the Tickets page.
+    setTickets(poId: string, data: { tickets: PoTicket[] }): void {
+        const before = this.readFile(poId, "tickets.json");
+        const after = JSON.stringify(data, null, 2);
+        writeFileSync(join(this.dir(poId), "tickets.json"), after);
+        if (before !== after) this.journal.addEvent({ poId, kind: "edit", title: "You edited tickets.json", status: "done", changes: { tickets: unifiedDiff(before, after), revisions: this.snapshot(poId) } });
         this.emit({ poId, kind: "updated" });
     }
     private async syncContext(po: ProductOwnerRow): Promise<void> {
@@ -515,18 +593,17 @@ export class ProductOwners {
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
         if (this.messages(poId).length) return;
-        const n = this.artifacts(poId).length;
-        if (po.scope_kind === "env") {
-            // An environment PO starts only when the human gave it sources to read.
-            if (n) void this.send(poId, `Read the ${n} source(s) the human added, and the product context. File what they teach about the product in your palace wing (update, do not append) and write a first context.md. Then tell me in a few bullets what you learned.`, { system: true }).catch(() => undefined);
-            return;
-        }
+        const arts = this.artifacts(poId);
+        const n = arts.length;
+        // An environment PO starts only when the human gave it sources to read.
+        if (po.scope_kind === "env" && !n) return;
         const what = po.scope_kind === "project" ? "Linear project" : "ClickUp epic";
-        void this.send(
-            poId,
-            `Start the Context phase. Read the ${what} artifact${n > 1 ? ` and the ${n - 1} other source(s) the human added` : ""}, and the product context. Write a first context.md. Then tell me in a few bullets what this project is, what is still unclear, and which sources you need from me.`,
-            { system: true },
-        ).catch((e: unknown) => console.warn(`[po] start ${po.slug}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+        const text =
+            po.scope_kind === "env"
+                ? `Read the ${n} source(s) the human added, and the product context. File what they teach about the product in your palace wing (update, do not append) and write a first context.md. List what is still unclear as your outstanding questions (CLAUDE.md, Questions). Then tell me in a few bullets what you learned.`
+                : `Start the Context phase. Read the ${what} artifact${n > 1 ? ` and the ${n - 1} other source(s) the human added` : ""}, and the product context. Write a first context.md. File what is still unclear as your outstanding questions (CLAUDE.md, Questions). Then tell me in a few bullets what this project is, what is still unclear, and which sources you need from me. End with a paragraph that starts with \`Impact:\` — what the first context holds, in 50 words or fewer.`;
+        const ev = this.journal.addEvent({ poId, kind: "created", title: "Product Owner created", body: `Sources at the start (${n}):\n\n${arts.map((a) => `- **${a.title}** — ${a.kind}${a.source_url ? ` · ${a.source_url}` : ""}`).join("\n") || "(none)"}`, prompt: text, status: "pending", refs: { artifacts: arts.map((a) => a.id) } });
+        this.brief(poId, text, [ev.id]);
     }
 
     // A PO works only with its environment's task manager: the env must still use the PO's.
@@ -540,6 +617,8 @@ export class ProductOwners {
         this.active.get(poId)?.kill();
         this.db.prepare(`UPDATE tasks SET product_owner_id = NULL WHERE product_owner_id = ?`).run(poId);
         for (const t of ["po_messages", "po_artifacts", "po_ticket_links", "po_issues"]) this.db.prepare(`DELETE FROM ${t} WHERE po_id = ?`).run(poId);
+        this.journal.remove(poId);
+        this.queue.delete(poId);
         this.db.prepare(`DELETE FROM product_owners WHERE id = ?`).run(poId);
         rmSync(this.dir(poId), { recursive: true, force: true });
     }
@@ -561,8 +640,20 @@ export class ProductOwners {
         if (!this.get(poId)) throw new Error("product owner not found");
         const src = await fetchSource(this.cfg, url);
         const a = this.addArtifactText(poId, src.kind, src.title, src.url, src.markdown);
-        void this.ingestUploads(poId, src.markdown);
+        const uploads = await this.ingestUploads(poId, src.markdown);
+        this.artifactEvent(poId, a, `Fetched "${a.title}"`, `${src.url}\n\n${src.markdown.slice(0, 3000)}${src.markdown.length > 3000 ? "\n\n…" : ""}${uploads ? `\n\n${uploads} attached file(s) became artifacts too.` : ""}`, "now");
         return a;
+    }
+
+    // An artifact the human added to a PO that has started: an event the PO reads — now, after its description or
+    // text is ready ("media"), or when the human asks ("later").
+    private artifactEvent(poId: string, a: PoArtifactRow, title: string, body: string, when: "now" | "media" | "later"): void {
+        if (!this.messages(poId).length) return; // before the first turn: the start event covers the sources
+        const media = isImage(a.mime, a.file) ? `It is an image: Stagehand describes it (search room \`artifacts\`, or open the file to look at it).` : isConvertibleDoc(a.mime, a.file) ? `Its text is extracted next to it (${a.file}.txt).` : "";
+        const prompt = `I added a source: ${a.file} — "${a.title}" (${a.kind}). ${media} Read it. Bring context.md up to date with the decisions, facts and open questions it holds, and file them in your palace drawers (update, do not append). If it contradicts design.md or tickets.json, say so.\n\n${EVENT_RULES}`;
+        const ev = this.journal.addEvent({ poId, kind: "artifact", title, body, prompt, status: when === "now" ? "pending" : when === "media" ? "waiting" : "unread", refs: { artifacts: [a.id] } });
+        if (when === "now") this.brief(poId, prompt, [ev.id], "artifact");
+        this.emit({ poId, kind: "updated" });
     }
     // Text the human pastes (a conversation with people, notes): a markdown source like any other. With `tell`, the PO
     // gets a turn to read it and bring its context and palace up to date (unless it is answering).
@@ -570,8 +661,7 @@ export class ProductOwners {
         if (!this.get(poId)) throw new Error("product owner not found");
         const name = title.trim() || `Pasted text ${now().slice(0, 16).replace("T", " ")}`;
         const a = this.addArtifactText(poId, "text", name, null, `# ${name}\nPasted by the human · ${new Date().toLocaleString()}\n\n${text.trim()}`);
-        if (tell)
-            this.brief(poId, `I added a source: ${a.file} — "${name}", text I pasted (often a conversation with people). Read it. Bring context.md up to date with the decisions, facts and open questions it holds, and file them in your palace drawers (update, do not append). If it contradicts design.md or tickets.json, say so. Then answer with a short summary of what it changed.`);
+        this.artifactEvent(poId, a, `Pasted "${name}"`, `${text.trim().slice(0, 3000)}${text.trim().length > 3000 ? "\n\n…" : ""}`, tell ? "now" : "later");
         return a;
     }
     uploadArtifact(poId: string, name: string, bytes: Buffer, mime: string | null): PoArtifactRow {
@@ -579,6 +669,8 @@ export class ProductOwners {
         const file = `artifacts/${randomUUID().slice(0, 8)}-${sharedFileName(name)}`;
         writeFileSync(join(this.dir(poId), file), bytes);
         const a = this.insertArtifact({ id: randomUUID(), po_id: poId, kind: "upload", title: name, source_url: null, file, mime, size: bytes.length, created_at: now() });
+        const media = isImage(mime, file) || isConvertibleDoc(mime, file);
+        this.artifactEvent(poId, a, `Uploaded "${name}"`, `${name} · ${mime ?? "?"} · ${Math.max(1, Math.round(bytes.length / 1024))} KB`, media ? "media" : "now");
         this.queueMedia(poId, a.id);
         return a;
     }
@@ -612,7 +704,7 @@ export class ProductOwners {
             .then(async () => {
                 const po = this.get(poId);
                 const a = this.db.prepare(`SELECT * FROM po_artifacts WHERE id = ? AND po_id = ?`).get(artifactId, poId) as PoArtifactRow | undefined;
-                if (!po || !a || a.description || a.text_file) return;
+                if (!po || !a || a.description || a.text_file) return this.releaseWaiting(poId, artifactId);
                 const path = join(this.dir(poId), a.file);
                 if (isImage(a.mime, a.file)) {
                     const acc = this.account(po);
@@ -624,11 +716,22 @@ export class ProductOwners {
                     const textFile = `${a.file}.txt`;
                     writeFileSync(join(this.dir(poId), textFile), text);
                     this.db.prepare(`UPDATE po_artifacts SET text_file = ? WHERE id = ?`).run(textFile, a.id);
-                } else return;
+                } else return this.releaseWaiting(poId, artifactId);
                 this.emit({ poId, kind: "updated" });
                 await this.indexArtifact(poId, a.id);
+                this.releaseWaiting(poId, artifactId);
             })
-            .catch((e: unknown) => console.warn(`[po] media ${artifactId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+            .catch((e: unknown) => {
+                console.warn(`[po] media ${artifactId}: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                this.releaseWaiting(poId, artifactId);
+            });
+    }
+    // The events that waited for this artifact's description or text go to the PO now.
+    private releaseWaiting(poId: string, artifactId: string): void {
+        for (const ev of this.journal.waitingFor(poId, artifactId)) {
+            this.journal.setEventStatus(ev.id, "pending");
+            this.brief(poId, ev.prompt ?? "", [ev.id], "artifact");
+        }
     }
     removeArtifact(poId: string, artifactId: string): void {
         const a = this.db.prepare(`SELECT * FROM po_artifacts WHERE id = ? AND po_id = ?`).get(artifactId, poId) as PoArtifactRow | undefined;
@@ -726,18 +829,24 @@ export class ProductOwners {
 
     // ---------- revisions ----------
 
-    // Every version of design.md and tickets.json the agent writes is kept, so the page can show what a round changed.
-    private snapshot(poId: string): void {
+    // Every version of context.md, design.md and tickets.json is kept, so the page can show what a round changed and
+    // an event can name the full text it left. Returns the revisions written now, by file.
+    private snapshot(poId: string): Record<string, string> {
         const d = this.dir(poId);
         mkdirSync(join(d, "revisions"), { recursive: true });
-        for (const f of ["design.md", "tickets.json"]) {
+        const written: Record<string, string> = {};
+        for (const f of ["context.md", "design.md", "tickets.json"]) {
             const p = join(d, f);
             if (!existsSync(p)) continue;
             const text = readFileSync(p, "utf8");
             const prev = this.revisions(poId).filter((r) => r.file === f).pop();
             if (prev && readFileSync(join(d, "revisions", prev.name), "utf8") === text) continue;
-            writeFileSync(join(d, "revisions", `${f}.${Date.now()}`), text);
+            if (!prev && !text.trim()) continue;
+            const name = `${f}.${Date.now()}`;
+            writeFileSync(join(d, "revisions", name), text);
+            written[f] = name;
         }
+        return written;
     }
     revisions(poId: string): Array<{ file: string; name: string; at: string }> {
         const dir = join(this.dir(poId), "revisions");
@@ -801,6 +910,20 @@ export class ProductOwners {
                 const tasks = this.projectTasks(po);
                 return `## Tasks of ${envPo ? "this environment you own" : "this project"} (${tasks.length}) — read their files directly, never edit them\n\n${tasks.map((t) => `- ${t.ticket}${t.title ? ` ${t.title}` : ""} — ${t.stage.replace(/_/g, " ")} · ${t.status.replace(/_/g, " ")} — ${t.dir}/${t.files.length ? ` (${t.files.join(", ")})` : " (no files yet)"}`).join("\n") || "(none)"}\n\ndesign.md is the agent's proposal; design.json holds its QA scenarios (seed, steps, expected results) and the baseline result.`;
             })(),
+            ((): string => {
+                const qs = this.journal.questions(po.id);
+                const live = qs.filter((q) => q.status === "open" || q.status === "proposed");
+                const resolved = qs.filter((q) => q.status === "resolved").slice(-12);
+                return [
+                    `## Your outstanding questions (${live.length}) — you keep this list (CLAUDE.md, Questions)`,
+                    live.map((q) => `- **${q.key}**${q.status === "proposed" ? " [resolution suggested, waiting for the human]" : ""} — ${q.question}${q.detail ? ` (${q.detail.replace(/\n+/g, " ").slice(0, 200)})` : ""}`).join("\n") || "(none)",
+                    resolved.length ? `Resolved by the human (the latest ${resolved.length}):\n${resolved.map((q) => `- **${q.key}** — ${q.question} → ${(q.resolution ?? "").replace(/\n+/g, " ").slice(0, 240)}`).join("\n")}` : "",
+                ].filter(Boolean).join("\n\n");
+            })(),
+            ((): string => {
+                const open = this.journal.corrections(po.id).filter((c) => c.status === "open");
+                return `## Your open corrections (${open.length}) — withdraw one that is no longer right (CLAUDE.md, Corrections)\n\n${open.map((c) => `- ${c.id} — ${c.kind} ${c.kind === "task" ? this.taskLabel(c.target) : c.target}: ${c.title}`).join("\n") || "(none)"}`;
+            })(),
             `Local API: ${this.apiUrl} (STAGEHAND_API). Now: ${new Date().toLocaleString()}.`,
         ].join("\n\n");
     }
@@ -818,13 +941,21 @@ export class ProductOwners {
         };
     }
 
-    // One chat turn: the human's message (or a system brief), in the PO's own session.
-    async send(poId: string, text: string, opts: { system?: boolean } = {}): Promise<void> {
+    // One chat turn: the human's message (or a system brief), in the PO's own session. `events`: the events this turn
+    // processes — it fills their brief, diffs and memory writes. A turn with no event that changes the PO's files or
+    // memory (a chat) gets an event of its own.
+    async send(poId: string, text: string, opts: { system?: boolean; events?: string[] } = {}): Promise<void> {
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
         if (this.active.has(poId)) throw new Error("the Product Owner is still answering — wait for it, or stop it");
         const acc = this.account(po);
         if (!acc?.oauth_token) throw new Error("no AI account with a token — set one up on the AI accounts page");
+        const events = opts.events ?? [];
+        const ownEvent = randomUUID();
+        const before = { context: this.readFile(poId, "context.md"), design: this.readFile(poId, "design.md"), tickets: this.readFile(poId, "tickets.json") };
+        const memory: PoMemoryWrite[] = [];
+        for (const id of events) this.journal.setEventStatus(id, "processing");
+        this.turnEvent.set(poId, events[0] ?? ownEvent);
         this.addMessage(poId, opts.system ? "system" : "user", text);
         const first = !this.messages(poId).some((m) => m.role === "agent");
         this.trust(poId);
@@ -854,6 +985,7 @@ export class ProductOwners {
                     this.emit({ poId, kind: "text", text: answer });
                 } else if (block["type"] === "tool_use") {
                     const input = block["input"] as Record<string, unknown> | undefined;
+                    if (MEMORY_WRITE.test(String(block["name"]))) memory.push({ tool: String(block["name"]).replace(/^mcp__mempalace__/, ""), input: JSON.stringify(input ?? {}).slice(0, 4000) });
                     const hint = String(input?.["query"] ?? input?.["file_path"] ?? input?.["command"] ?? "").slice(0, 90);
                     this.emit({ poId, kind: "activity", text: `${String(block["name"]).replace(/^mcp__mempalace__/, "palace: ")} ${hint}`.trim() });
                 }
@@ -864,9 +996,36 @@ export class ProductOwners {
         if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: null, taskId: null, runId: null, kind: "product_owner", stage: null }, outcome.result);
         const reply = (outcome.result?.result?.trim() || answer.trim()).trim();
         if (reply) this.addMessage(poId, "agent", reply);
-        await this.afterTurn(poId);
+        const revisions = await this.afterTurn(poId);
         const failed = !reply ? outcome.stderr.trim().split("\n").pop()?.slice(0, 300) || `exited with ${outcome.exitCode ?? "?"}` : null;
+        this.recordTurn(poId, { text, system: !!opts.system, events, ownEvent, before, revisions, memory, reply, failed });
+        this.turnEvent.delete(poId);
         this.touch(poId, { status: failed ? "failed" : "idle", status_line: failed });
+        setTimeout(() => this.drain(poId), 0);
+    }
+
+    // What a turn did, on its events: the PO's brief (its Impact paragraph), the diffs of its files, its memory writes.
+    private recordTurn(poId: string, t: { text: string; system: boolean; events: string[]; ownEvent: string; before: { context: string; design: string; tickets: string }; revisions: Record<string, string>; memory: PoMemoryWrite[]; reply: string; failed: string | null }): void {
+        const after = { context: this.readFile(poId, "context.md"), design: this.readFile(poId, "design.md"), tickets: this.readFile(poId, "tickets.json") };
+        const changes: PoEventChanges = {};
+        for (const f of ["context", "design", "tickets"] as const) if (t.before[f] !== after[f]) changes[f] = unifiedDiff(t.before[f], after[f]);
+        if (Object.keys(t.revisions).length) changes.revisions = t.revisions;
+        const changed = Object.keys(changes).length > 0;
+        const brief = impactOf(t.reply) ?? (t.reply ? t.reply.slice(0, 600) : null);
+        const result = { status: t.failed ? ("failed" as const) : ("done" as const), brief, changes: changed ? changes : null, memory: t.memory, error: t.failed };
+        if (t.events.length) {
+            for (const id of t.events) this.journal.finishEvent(id, result);
+        } else {
+            const linked = this.journal.linked(t.ownEvent);
+            if (!changed && !t.memory.length && !linked.questions.length && !linked.corrections) return;
+            const firstDesign = !t.before.design.trim() && !!after.design.trim();
+            const kind: PoEventKind = firstDesign ? "design" : t.system ? "system" : "chat";
+            const head = t.text.split("\n").find((l) => l.trim())?.trim() ?? "";
+            const title = firstDesign ? "Initial design written" : t.system ? head.slice(0, 120) : `After your message: "${head.slice(0, 90)}${head.length > 90 ? "…" : ""}"`;
+            const ev = this.journal.addEvent({ id: t.ownEvent, poId, kind, title, body: t.system ? t.text : quote(t.text), status: "pending", refs: { turn: t.system ? "system" : "chat" } });
+            this.journal.finishEvent(ev.id, result);
+        }
+        this.emit({ poId, kind: "updated" });
     }
 
     stop(poId: string): void {
@@ -874,11 +1033,12 @@ export class ProductOwners {
     }
 
     // After a turn: file context.md in the palace, keep a revision of what changed, and say what is wrong with tickets.json.
-    private async afterTurn(poId: string): Promise<void> {
+    // Returns the revisions written.
+    private async afterTurn(poId: string): Promise<Record<string, string>> {
         const po = this.get(poId);
-        if (!po) return;
+        if (!po) return {};
         await this.syncContext(po);
-        this.snapshot(poId);
+        const revisions = this.snapshot(poId);
         const p = join(this.dir(poId), "tickets.json");
         if (existsSync(p)) {
             try {
@@ -890,6 +1050,7 @@ export class ProductOwners {
         }
         if (po.phase === "context" && existsSync(join(this.dir(poId), "design.md"))) this.touch(poId, { phase: "design" });
         await this.linkExisting(po);
+        return revisions;
     }
 
     // Tickets that name an existing issue get their link (id, url) once, so the Tickets page and task assignment see them.
@@ -1058,14 +1219,16 @@ export class ProductOwners {
             let briefed = false;
             const commented = fetched.filter((i) => i.comments.length).length;
             if (first && commented && !projectChanged) {
-                briefed = this.brief(poId, `Stagehand now tracks every issue of the project: issues.md in your folder holds each one with its status, labels and comments (${commented} of ${fetched.length} have comments). Read the comments. Bring context.md up to date with the decisions, answers and changes of scope they record. File them in your palace drawers (update, do not append). Then answer with a short summary: what the comments changed in what you know, and what conflicts with design.md or tickets.json.`);
+                const prompt = `Stagehand now tracks every issue of the project: issues.md in your folder holds each one with its status, labels and comments (${commented} of ${fetched.length} have comments). Read the comments. Bring context.md up to date with the decisions, answers and changes of scope they record. File them in your palace drawers (update, do not append). Then answer with a short summary: what the comments changed in what you know, and what conflicts with design.md or tickets.json.\n\n${EVENT_RULES}`;
+                const ev = this.journal.addEvent({ poId, kind: "tracker", title: `Task manager: ${fetched.length} issue(s) now tracked`, body: `${fetched.length} issue(s), ${commented} with comments — issues.md holds them.`, prompt, status: "pending" });
+                briefed = this.brief(poId, prompt, [ev.id]);
             } else if (sections.length) {
                 const report = `# Project and issue changes — ${new Date(at).toLocaleString()}\n\n${projectChanged ? "The project itself changed. " : ""}Issues: ${added} new, ${changed} changed, ${removed} gone.\n\n${sections.join("\n\n")}`;
                 const art = this.addArtifactText(poId, po.source, `Project changes ${at.slice(0, 16).replace("T", " ")}`, po.scope_url, report);
-                briefed = this.brief(
-                    poId,
-                    `The project or its issues changed since the last refresh (the full report is ${art.file}; project.md and issues.md hold the current state):\n\n${report.length > 30_000 ? `${report.slice(0, 30_000)}\n\n… (cut; read the report)` : report}\n\nBring context.md up to date where a change alters what you know. Update the palace drawers it touches (update, do not append). If a change contradicts design.md or tickets.json, say so; change tickets.json only for tickets that are not created yet. Then answer with a short summary: what changed and what you updated.`,
-                );
+                const prompt = `The project or its issues changed since the last refresh (the full report is ${art.file}; project.md and issues.md hold the current state):\n\n${report.length > 30_000 ? `${report.slice(0, 30_000)}\n\n… (cut; read the report)` : report}\n\nBring context.md up to date where a change alters what you know. Update the palace drawers it touches (update, do not append). If a change contradicts design.md or tickets.json, say so; change tickets.json only for tickets that are not created yet. Then answer with a short summary: what changed and what you updated.\n\n${EVENT_RULES}`;
+                const what = [projectChanged ? "project changed" : "", added ? `${added} new` : "", changed ? `${changed} changed` : "", removed ? `${removed} gone` : "", uploads ? `${uploads} attachment(s)` : ""].filter(Boolean).join(", ");
+                const ev = this.journal.addEvent({ poId, kind: "tracker", title: `Task manager: ${what || "changes"}`, body: report, prompt, status: "pending", refs: { artifacts: [art.id] } });
+                briefed = this.brief(poId, prompt, [ev.id]);
             }
             this.emit({ poId, kind: "updated" });
             return { total: fetched.length, added, changed, removed, briefed };
@@ -1075,11 +1238,46 @@ export class ProductOwners {
         }
     }
 
-    // A system turn for the PO, unless one is running (then the report artifact and issues.md carry the change).
-    private brief(poId: string, text: string): boolean {
-        if (this.active.has(poId)) return false;
-        void this.send(poId, text, { system: true }).catch((e: unknown) => console.warn(`[po] brief ${poId}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+    // A system turn for the PO: now, or after the turn it is in. Queued sources ("artifact") read in one turn.
+    private brief(poId: string, text: string, events: string[] = [], merge?: "artifact"): boolean {
+        const q = this.queue.get(poId) ?? [];
+        q.push({ text, events, ...(merge ? { merge } : {}) });
+        this.queue.set(poId, q);
+        this.drain(poId);
         return true;
+    }
+    private drain(poId: string): void {
+        if (this.active.has(poId)) return;
+        const q = this.queue.get(poId);
+        if (!q?.length) return;
+        let item = q.shift()!;
+        if (item.merge === "artifact" && q[0]?.merge === "artifact") {
+            const group = [item];
+            while (q[0]?.merge === "artifact") group.push(q.shift()!);
+            const files = group.map((g) => /^I added a source: (.+?)(?: It is| Its| Read it)/.exec(g.text)?.[1] ?? "").filter(Boolean);
+            item = {
+                text: `I added ${group.length} sources:\n${files.map((f) => `- ${f}`).join("\n")}\n\nRead each one (images: search room \`artifacts\` for the description, or open the file). Bring context.md up to date with the decisions, facts and open questions they hold, and file them in your palace drawers (update, do not append). If one contradicts design.md or tickets.json, say so.\n\n${EVENT_RULES}`,
+                events: group.flatMap((g) => g.events),
+            };
+        }
+        if (!q.length) this.queue.delete(poId);
+        void this.send(poId, item.text, { system: true, events: item.events }).catch((e: unknown) => {
+            const msg = String((e as Error).message ?? e).slice(0, 300);
+            console.warn(`[po] brief ${poId}: ${msg.slice(0, 160)}`);
+            for (const id of item.events) this.journal.setEventStatus(id, "unread", msg);
+            this.emit({ poId, kind: "updated" });
+        });
+    }
+
+    // The human asks the PO to read an event it has not read (added "later", or interrupted).
+    readEvent(poId: string, eventId: string): void {
+        const ev = this.journal.event(eventId);
+        if (!ev || ev.po_id !== poId) throw new Error("no such event");
+        if (!ev.prompt) throw new Error("this event has nothing for the Product Owner to read");
+        if (ev.status === "pending" || ev.status === "processing") throw new Error("the Product Owner is already on it");
+        this.journal.setEventStatus(ev.id, "pending");
+        this.brief(poId, ev.prompt, [ev.id]);
+        this.emit({ poId, kind: "updated" });
     }
 
     // Open tasks for one of the project's issues get this PO, so a product ticket and its task are linked.
@@ -1101,7 +1299,9 @@ export class ProductOwners {
         if (po.scope_kind === "env") throw new Error("an environment PO plans no project");
         if (!existsSync(join(this.dir(poId), "design.md"))) throw new Error("there is no design.md yet");
         this.touch(poId, { phase: "tickets" });
-        void this.send(poId, "I approve the design. Split it into tickets in tickets.json, in the format of your CLAUDE.md. Then summarise the split for me: the epics, the ticket count, and the dependencies.", { system: true }).catch((e: unknown) => console.warn(`[po] ${po.slug}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+        const prompt = "I approve the design. Split it into tickets in tickets.json, in the format of your CLAUDE.md. Then summarise the split for me: the epics, the ticket count, and the dependencies. End with a paragraph that starts with `Impact:` — the split in 50 words or fewer.";
+        const ev = this.journal.addEvent({ poId, kind: "design", title: "You approved the design", body: "The Product Owner splits it into tickets.", prompt, status: "pending" });
+        this.brief(poId, prompt, [ev.id]);
     }
 
     // Creates the approved tickets in the task manager, parents first, skipping the ones created before (a retry).
@@ -1157,11 +1357,9 @@ export class ProductOwners {
         const list = tickets.map((t) => `- ${t.key} → ${done.get(t.key)?.identifier ?? "?"} ${t.title}`).join("\n");
         this.touch(poId, { phase: "live", status: "idle", status_line: null });
         this.addMessage(poId, "system", `Stagehand created ${created} ticket(s) in ${po.source === "linear" ? "Linear" : "ClickUp"}.`);
-        void this.send(
-            poId,
-            `The tickets exist now:\n${list}\n\nConsolidate what this project taught you: bring context.md up to date; file the product knowledge in your wing's features, users, decisions and glossary rooms (update, do not append); add knowledge-graph facts for product entities; write a diary entry for this planning round. If the project changes the product-wide picture, write product-context-proposal.md. Then answer with a short summary of what you filed.`,
-            { system: true },
-        ).catch((e: unknown) => console.warn(`[po] consolidation ${po.slug}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+        const prompt = `The tickets exist now:\n${list}\n\nConsolidate what this project taught you: bring context.md up to date; file the product knowledge in your wing's features, users, decisions and glossary rooms (update, do not append); add knowledge-graph facts for product entities; write a diary entry for this planning round. If the project changes the product-wide picture, write product-context-proposal.md. Then answer with a short summary of what you filed. End with a paragraph that starts with \`Impact:\` — 50 words or fewer.`;
+        const ev = this.journal.addEvent({ poId, kind: "tickets", title: `Tickets created in ${po.source === "linear" ? "Linear" : "ClickUp"} (${created})`, body: list, prompt, status: "pending" });
+        this.brief(poId, prompt, [ev.id]);
         return { created, skipped: tickets.length - created };
     }
 
@@ -1381,5 +1579,207 @@ export class ProductOwners {
             writeReviewState(taskDir, rest);
             onChange();
         });
+    }
+
+    // ---------- outstanding questions ----------
+
+    private taskLabel(taskId: string): string {
+        const t = this.db.prepare(`SELECT ticket_id FROM tasks WHERE id = ?`).get(taskId) as { ticket_id: string } | undefined;
+        return t?.ticket_id ?? taskId;
+    }
+
+    // The PO files a question (through the local API, in a turn): it links to the turn's event.
+    addQuestion(poId: string, question: string, detail: string): { id: string; key: string } {
+        if (!this.get(poId)) throw new Error("product owner not found");
+        const q = this.journal.addQuestion(poId, question, detail, this.turnEvent.get(poId) ?? null);
+        this.emit({ poId, kind: "updated" });
+        return { id: q.id, key: q.key };
+    }
+    // The PO rewords a question, suggests its resolution, or drops it (with the reason).
+    patchQuestion(poId: string, ref: string, p: { question?: string | undefined; detail?: string | undefined; resolution?: string | undefined; drop?: string | undefined }): void {
+        const q = this.journal.question(poId, ref);
+        if (!q) throw new Error(`no question ${ref}`);
+        if (q.status === "resolved") throw new Error(`${q.key} is resolved — the human confirmed it; file a new question if it opens again`);
+        const patch: Parameters<PoJournal["patchQuestion"]>[1] = {};
+        if (p.question?.trim()) patch.question = p.question.trim();
+        if (p.detail !== undefined) patch.detail = p.detail.trim();
+        if (p.resolution?.trim()) {
+            patch.resolution = p.resolution.trim();
+            patch.status = "proposed";
+            this.journal.pushThread(q.id, { role: "po", text: `Suggested resolution${this.turnEvent.has(poId) ? ` (after "${this.journal.event(this.turnEvent.get(poId)!)?.title ?? "a turn"}")` : ""}: ${p.resolution.trim()}`, at: now() });
+        }
+        if (p.drop?.trim()) {
+            patch.status = "dropped";
+            patch.resolution = p.drop.trim();
+        }
+        this.journal.patchQuestion(q.id, patch);
+        this.emit({ poId, kind: "updated" });
+    }
+
+    asking(questionId: string): boolean {
+        return this.questionRuns.has(questionId);
+    }
+
+    // The human discusses one question with the PO, in the question's own session. The PO may end with a suggested
+    // resolution ("RESOLUTION: …"), which the human confirms or discusses further.
+    askQuestion(poId: string, ref: string, text: string): void {
+        const po = this.get(poId);
+        if (!po) throw new Error("product owner not found");
+        const q = this.journal.question(poId, ref);
+        if (!q) throw new Error(`no question ${ref}`);
+        if (q.status === "resolved") throw new Error(`${q.key} is resolved`);
+        if (this.questionRuns.has(q.id)) throw new Error("the Product Owner is still answering about this question");
+        const acc = this.account(po);
+        if (!acc?.oauth_token) throw new Error("no AI account with a token — set one up on the AI accounts page");
+        this.journal.pushThread(q.id, { role: "user", text, at: now() });
+        if (q.status === "dropped") this.journal.patchQuestion(q.id, { status: "open", resolution: null });
+        const first = !q.session_id;
+        const sessionId = q.session_id ?? randomUUID();
+        if (first) this.journal.patchQuestion(q.id, { session_id: sessionId });
+        this.trust(poId);
+        mkdirSync(join(this.dir(poId), "logs"), { recursive: true });
+        const prompt = [
+            first ? `The human discusses your outstanding question **${q.key}**: "${q.question}"${q.detail ? ` — ${q.detail}` : ""}` : `More on **${q.key}** ("${q.question}").`,
+            q.status === "proposed" && q.resolution ? `Your suggested resolution so far: ${q.resolution}` : "",
+            `Their message: ${text}`,
+            `Answer in 150 words or fewer, as the Product Owner, by the writing rules. Search your memory and sources when the question needs it. Do not change any file and do not call the Stagehand API.`,
+            `When you understand the answer, end with a paragraph that starts with \`RESOLUTION:\` — the answer as a decision, 60 words or fewer, as it will go into context.md. The human confirms it or discusses further. Otherwise end without it.`,
+        ].filter(Boolean).join("\n\n");
+        const run = startClaude({
+            prompt,
+            cwd: this.dir(poId),
+            configDir: this.configDir,
+            extraEnv: this.runEnv(po, acc),
+            ...(first ? { sessionId, name: `${po.slug}-${q.key}` } : { resume: sessionId }),
+            ...(this.cfg.defaultModel ? { model: this.cfg.defaultModel } : {}),
+            maxTurns: 30,
+            addDirs: this.projectTasks(po).map((t) => t.dir),
+            appendSystemPrompt: this.systemPrompt(po),
+            mcpConfig: this.palace.mcpConfigPath,
+            eventLogPath: join(this.dir(poId), "logs", `question-${q.key}-${Date.now()}.ndjson`),
+        });
+        this.questionRuns.set(q.id, run);
+        this.emit({ poId, kind: "updated" });
+        void run.done.then((outcome) => {
+            this.questionRuns.delete(q.id);
+            if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: po.env_id, taskId: null, runId: null, kind: "product_owner", stage: null }, outcome.result);
+            let reply = (outcome.result?.result ?? "").trim() || `(no answer: ${outcome.stderr.trim().split("\n").pop()?.slice(0, 200) || "the run failed"})`;
+            const m = /(?:^|\n)\s*\**RESOLUTION:?\**:?\s*([\s\S]+)$/i.exec(reply);
+            if (m) {
+                const resolution = m[1]!.trim();
+                reply = reply.slice(0, m.index).trim() || "I can suggest a resolution.";
+                this.journal.pushThread(q.id, { role: "po", text: reply, at: now() });
+                this.journal.patchQuestion(q.id, { status: "proposed", resolution });
+            } else this.journal.pushThread(q.id, { role: "po", text: reply, at: now() });
+            this.emit({ poId, kind: "updated" });
+        });
+    }
+
+    // The human confirms a question's resolution (the PO's, or their own wording): the PO records it in its context.
+    confirmQuestion(poId: string, ref: string, resolution?: string): void {
+        const q = this.journal.question(poId, ref);
+        if (!q) throw new Error(`no question ${ref}`);
+        if (q.status === "resolved") throw new Error(`${q.key} is already resolved`);
+        const text = resolution?.trim() || q.resolution?.trim();
+        if (!text) throw new Error("there is no resolution to confirm — discuss the question first, or write the resolution");
+        if (this.questionRuns.has(q.id)) throw new Error("the Product Owner is still answering about this question");
+        this.journal.patchQuestion(q.id, { status: "resolved", resolution: text, resolved_at: now() });
+        const thread = this.journal.thread(q.id);
+        const prompt = [
+            `The human confirmed the resolution of your outstanding question **${q.key}**: "${q.question}"`,
+            `**Resolution:** ${text}`,
+            thread.length ? `The discussion:\n${thread.map((m) => `- **${m.role === "user" ? "Human" : "You"}:** ${m.text.replace(/\n+/g, " ")}`).join("\n")}` : "",
+            `Record it: in context.md (from the open questions to the decisions), in design.md when it has this question (Open questions → Decisions), and in your palace room \`decisions\` (update, do not append).`,
+            EVENT_RULES,
+        ].filter(Boolean).join("\n\n");
+        const ev = this.journal.addEvent({ poId, kind: "question", title: `${q.key} resolved — ${q.question}`, body: `**Question:** ${q.question}${q.detail ? `\n\n${q.detail}` : ""}\n\n**Resolution:** ${text}`, prompt, status: "pending", refs: { question: q.id } });
+        this.brief(poId, prompt, [ev.id]);
+        this.emit({ poId, kind: "updated" });
+    }
+
+    // ---------- corrections ----------
+
+    // The PO suggests a correction (through the local API, in a turn): a new description for an existing ticket, or a
+    // change to the design of an existing task of this PO.
+    addCorrection(poId: string, c: { kind: "ticket" | "task"; ticket?: string | undefined; task?: string | undefined; title: string; body?: string | undefined; description?: string | undefined }): { id: string } {
+        const po = this.get(poId);
+        if (!po) throw new Error("product owner not found");
+        const eventId = this.turnEvent.get(poId) ?? null;
+        if (c.kind === "ticket") {
+            const id = (c.ticket ?? "").trim().toUpperCase();
+            const row = this.db.prepare(`SELECT * FROM po_issues WHERE po_id = ? AND UPPER(identifier) = ?`).get(poId, id) as PoIssueRow | undefined;
+            if (!row) throw new Error(`${c.ticket ?? "(no ticket)"} is not an issue of this project — for a ticket not created yet, change tickets.json`);
+            if (!c.description?.trim()) throw new Error("a ticket correction needs the full new `description`");
+            const issue = JSON.parse(row.data) as TrackedIssue;
+            if (issue.description.trim() === c.description.trim()) throw new Error("the new description is the same as the current one");
+            const r = this.journal.addCorrection({ po_id: poId, kind: "ticket", target: issue.identifier, title: c.title.trim(), body: c.body?.trim() ?? "", before: issue.description, after: c.description.trim(), event_id: eventId });
+            this.emit({ poId, kind: "updated" });
+            return { id: r.id };
+        }
+        const ref = (c.task ?? c.ticket ?? "").trim();
+        const task = this.projectTasks(po).find((t) => t.id === ref || t.ticket.toUpperCase() === ref.toUpperCase());
+        if (!task) throw new Error(`${ref || "(no task)"} is not a task of this Product Owner`);
+        if (!task.files.includes("design.md")) throw new Error(`task ${task.ticket} has no design yet — its research and design will read your context`);
+        if (!c.body?.trim()) throw new Error("a task correction needs a `body`: what to change in the design, and why");
+        const r = this.journal.addCorrection({ po_id: poId, kind: "task", target: task.id, title: c.title.trim(), body: c.body.trim(), before: null, after: null, event_id: eventId });
+        this.emit({ poId, kind: "updated" });
+        return { id: r.id };
+    }
+    withdrawCorrection(poId: string, id: string): void {
+        const c = this.journal.correction(poId, id);
+        if (!c) throw new Error("no such correction");
+        if (c.status !== "open") throw new Error(`this correction is ${c.status}`);
+        this.journal.setCorrectionStatus([id], "withdrawn");
+        this.emit({ poId, kind: "updated" });
+    }
+    setCorrections(poId: string, ids: string[], status: "discarded" | "applied" | "sent"): void {
+        for (const id of ids) {
+            const c = this.journal.correction(poId, id);
+            if (!c) throw new Error("no such correction");
+            if (c.status !== "open") throw new Error(`a correction is already ${c.status}`);
+        }
+        this.journal.setCorrectionStatus(ids, status);
+        this.emit({ poId, kind: "updated" });
+    }
+    // The picked corrections of one task, as the notes of its next design round.
+    correctionNotes(poId: string, ids: string[]): { taskId: string; notes: string } {
+        const po = this.get(poId);
+        if (!po) throw new Error("product owner not found");
+        const cs = ids.map((id) => this.journal.correction(poId, id));
+        if (!cs.length || cs.some((c) => !c || c.kind !== "task" || c.status !== "open")) throw new Error("pick open task corrections");
+        const taskId = cs[0]!.target;
+        if (cs.some((c) => c!.target !== taskId)) throw new Error("the corrections are for different tasks — send each task's on its own");
+        const events = [...new Set(cs.map((c) => c!.event_id).filter((x): x is string => !!x))].map((id) => this.journal.event(id)).filter((e) => !!e);
+        const notes = [
+            `## Product Owner corrections — ${po.title}`,
+            `The project's Product Owner learned something new that changes this task's design${events.length ? ` (${events.map((e) => `"${e!.title}", ${new Date(e!.created_at).toLocaleDateString()}`).join("; ")})` : ""}. The human picked these ${cs.length} correction(s). Update design.md and design.json for every one.`,
+            ...cs.map((c) => `### ${c!.title}\n\n${c!.body}`),
+        ].join("\n\n");
+        return { taskId, notes };
+    }
+
+    // ---------- events from before the journal ----------
+
+    // A PO from before events: its sources, task-manager reports and design revisions become past events, once.
+    backfillEvents(): void {
+        this.journal.interrupted();
+        for (const po of this.list()) {
+            if (this.journal.countEvents(po.id)) continue;
+            const old = "Recorded before Stagehand kept events: no brief.";
+            this.journal.addEvent({ poId: po.id, kind: "created", title: "Product Owner created", status: "done", at: po.created_at, brief: old });
+            for (const a of this.artifacts(po.id)) {
+                const report = /^(Project|Issue) changes /.test(a.title);
+                const text = report ? this.readFile(po.id, a.file) : a.description ?? "";
+                this.journal.addEvent({ poId: po.id, kind: report ? "tracker" : "artifact", title: report ? `Task manager: ${a.title}` : `Source "${a.title}"`, body: report ? text : `${a.kind}${a.source_url ? ` · ${a.source_url}` : ""}${text ? `\n\n${text}` : ""}`, status: "done", at: a.created_at, brief: old, refs: { artifacts: [a.id] } });
+            }
+            const revs = this.revisions(po.id);
+            const prev: Record<string, string> = {};
+            for (const r of revs) {
+                const text = this.revision(po.id, r.name);
+                const key = r.file === "design.md" ? "design" : r.file === "tickets.json" ? "tickets" : "context";
+                this.journal.addEvent({ poId: po.id, kind: prev[r.file] === undefined && key === "design" ? "design" : "system", title: prev[r.file] === undefined ? `${r.file} written` : `${r.file} revised`, status: "done", at: r.at, brief: old, changes: { [key]: unifiedDiff(prev[r.file] ?? "", text), revisions: { [r.file]: r.name } } });
+                prev[r.file] = text;
+            }
+        }
     }
 }

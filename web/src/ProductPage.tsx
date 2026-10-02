@@ -5,6 +5,7 @@ import { Modal } from "./Modal";
 import { ListTable, type ListColumn } from "./ListTable";
 import { poBus } from "./poBus";
 import type { PoTab } from "./routes";
+import { CorrectionsTab, EventsTab, QuestionsTab } from "./PoJournal";
 
 // The Product section: the global product context, the Product Owners (one per project of the product), and the
 // palace search. A PO page shows its three documents as pages — context, design, tickets — beside the chat that
@@ -620,6 +621,11 @@ const PoPage = ({ id, tab, onTab, onBack, onError }: { id: string; tab: PoTab; o
     const send = (t: string) => void api.poSend(id, t).then(reload).catch((e: Error) => onError(e.message));
     if (!d) return <div className="empty">loading…</div>;
     const idx = PHASES.indexOf(d.po.phase);
+    const tabs: PoTab[] = d.po.scope_kind === "env" ? ["context", "questions", "events", "corrections"] : ["context", "design", "questions", "tickets", "events", "corrections"];
+    const openQuestions = d.questions.filter((q) => q.status === "open" || q.status === "proposed").length;
+    const proposed = d.questions.filter((q) => q.status === "proposed").length;
+    const unread = d.events.filter((e) => e.status === "unread" || e.status === "failed").length;
+    const openCorrections = d.corrections.filter((c) => c.status === "open").length;
     return (
         <div className="po-page">
             <div className="po-head">
@@ -635,16 +641,23 @@ const PoPage = ({ id, tab, onTab, onBack, onError }: { id: string; tab: PoTab; o
             <div className="po-layout">
                 <div className="po-main">
                     <div className="subtabs">
-                        {(d.po.scope_kind === "env" ? (["context"] as const) : (["context", "design", "tickets"] as const)).map((t) => (
+                        {tabs.map((t) => (
                             <button key={t} className={tab === t ? "active" : ""} onClick={() => onTab(t)}>
-                                {t === "context" ? `Context · ${d.artifacts.length} source(s)` : t === "design" ? "Design" : `Tickets${d.tickets ? ` · ${d.tickets.tickets.length}` : ""}`}
+                                {t === "context" ? `Context · ${d.artifacts.length} source(s)` : t === "design" ? "Design" : t === "questions" ? "Questions" : t === "events" ? "Events" : t === "corrections" ? "Corrections" : `Tickets${d.tickets ? ` · ${d.tickets.tickets.length}` : ""}`}
                                 {t === "context" && d.proposal && <span className="chip warn">proposal</span>}
+                                {t === "questions" && openQuestions > 0 && <span className="chip">{openQuestions}</span>}
+                                {t === "questions" && proposed > 0 && <span className="chip accent" title="Resolutions to confirm">{proposed} to confirm</span>}
+                                {t === "events" && unread > 0 && <span className="chip warn" title="Events the Product Owner has not read">{unread}</span>}
+                                {t === "corrections" && openCorrections > 0 && <span className="chip warn">{openCorrections}</span>}
                             </button>
                         ))}
                     </div>
                     {tab === "context" && <ContextTab d={d} onError={onError} reload={reload} />}
                     {tab === "design" && d.po.scope_kind !== "env" && <DesignTab d={d} onError={onError} reload={reload} send={send} />}
+                    {tab === "questions" && <QuestionsTab d={d} onError={onError} reload={reload} />}
                     {tab === "tickets" && d.po.scope_kind !== "env" && <TicketsTab d={d} onError={onError} reload={reload} send={send} />}
+                    {tab === "events" && <EventsTab d={d} onError={onError} reload={reload} />}
+                    {tab === "corrections" && <CorrectionsTab d={d} onError={onError} reload={reload} />}
                 </div>
                 <PoChat d={d} onError={onError} reload={reload} />
             </div>

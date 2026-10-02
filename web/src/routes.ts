@@ -50,7 +50,8 @@ export type Route =
     | { page: "resources" }
     // The global product context and the Product Owners; `po` opens one, on its `tab`.
     | { page: "product"; po?: string; tab?: PoTab };
-export type PoTab = "context" | "design" | "tickets";
+export type PoTab = "context" | "design" | "questions" | "tickets" | "events" | "corrections";
+export const PO_TABS: readonly PoTab[] = ["context", "design", "questions", "tickets", "events", "corrections"];
 
 export type Page = Route["page"];
 
@@ -119,7 +120,7 @@ export const parseRoute = (hash: string): Route => {
         case "resources":
             return { page: "resources" };
         case "product":
-            return { page: "product", ...(a ? { po: a } : {}), ...(b === "context" || b === "design" || b === "tickets" ? { tab: b } : {}) };
+            return { page: "product", ...(a ? { po: a } : {}), ...(PO_TABS.includes(b as PoTab) ? { tab: b as PoTab } : {}) };
         default:
             return { page: "dashboard" };
     }

@@ -293,6 +293,24 @@ export interface PoDetail {
     proposal: string | null; messages: PoMessage[]; artifacts: PoArtifact[]; links: PoTicketLink[]; revisions: Array<{ file: string; name: string; at: string }>;
     issues: PoIssue[]; refreshingIssues: boolean;
     tasks: Array<{ id: string; ticket_id: string; title: string | null; stage: Stage; status: TaskStatus; env_id: string }>;
+    questions: PoQuestion[]; askingQuestions: string[]; events: PoJournalEvent[]; corrections: PoCorrection[];
+}
+// The PO's outstanding questions: it keeps the list; the human discusses each and confirms the suggested resolution.
+export interface PoQuestion {
+    id: string; key: string; question: string; detail: string; status: "open" | "proposed" | "resolved" | "dropped"; resolution: string | null;
+    thread: Array<{ role: "user" | "po"; text: string; at: string }>; event_id: string | null; created_at: string; updated_at: string; resolved_at: string | null;
+}
+// What reached the PO and what its turn changed.
+export interface PoJournalEvent {
+    id: string; kind: string; title: string; body: string; status: "pending" | "waiting" | "processing" | "done" | "unread" | "failed"; brief: string | null; error: string | null;
+    changes: { context?: string[]; design?: string[]; tickets?: string[]; revisions?: Record<string, string> } | null;
+    memory: Array<{ tool: string; input: string }>; refs: { artifacts?: string[]; question?: string; turn?: string }; retryable: boolean;
+    created_at: string; processed_at: string | null; linked: { questions: string[]; corrections: number };
+}
+// A change the PO suggests after an event: a new description for an existing ticket, or a change to a task's design.
+export interface PoCorrection {
+    id: string; kind: "ticket" | "task"; target: string; title: string; body: string; before: string | null; after: string | null;
+    status: "open" | "sent" | "discarded" | "applied" | "withdrawn"; event_id: string | null; created_at: string; updated_at: string; diff?: string[];
 }
 export type PoEvent = { poId: string; kind: "updated" } | { poId: string; kind: "text"; text: string } | { poId: string; kind: "activity"; text: string } | { poId: string; kind: "message"; message: PoMessage };
 export interface PalaceHit { text: string; wing: string; room: string; similarity?: number; source_file?: string }
@@ -559,6 +577,11 @@ export const api = {
     poRevision: (id: string, name: string) => fetch(`/api/product-owners/${id}/revisions/${encodeURIComponent(name)}`).then((r) => j<{ text: string }>(r)),
     poApproveDesign: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/approve-design`),
     poApproveTickets: (id: string) => post<{ created: number; skipped: number }>(`/api/product-owners/${id}/approve-tickets`),
+    poAskQuestion: (id: string, q: string, text: string) => post<{ ok: true }>(`/api/product-owners/${id}/questions/${q}/ask`, { text }),
+    poConfirmQuestion: (id: string, q: string, resolution?: string) => post<{ ok: true }>(`/api/product-owners/${id}/questions/${q}/confirm`, resolution ? { resolution } : {}),
+    poReadEvent: (id: string, eventId: string) => post<{ ok: true }>(`/api/product-owners/${id}/events/${eventId}/read`),
+    poSendCorrections: (id: string, ids: string[]) => post<{ ok: true }>(`/api/product-owners/${id}/corrections/send`, { ids }),
+    poCorrectionsStatus: (id: string, ids: string[], status: "discarded" | "applied") => post<{ ok: true }>(`/api/product-owners/${id}/corrections/status`, { ids, status }),
     poRefreshIssues: (id: string) => post<{ total: number; added: number; changed: number; removed: number; briefed: boolean }>(`/api/product-owners/${id}/refresh-issues`),
     poSetPhase: (id: string, phase: PoPhase) => post<{ ok: true }>(`/api/product-owners/${id}/phase`, { phase }),
     poAcceptProposal: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/proposal/accept`),

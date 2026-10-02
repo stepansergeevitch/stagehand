@@ -793,6 +793,57 @@ CREATE TABLE IF NOT EXISTS po_issues (
     changed_at TEXT NOT NULL,
     PRIMARY KEY (po_id, identifier)
 );
+-- What reached a Product Owner and what it did with it (see po-journal.ts): a source, a task-manager change, a chat, a
+-- resolved question. The turn that processed it fills the PO's brief, the diffs of its files and its memory writes,
+-- so the context, design and memory can be replayed from the events.
+CREATE TABLE IF NOT EXISTS po_events (
+    id TEXT PRIMARY KEY,
+    po_id TEXT NOT NULL REFERENCES product_owners(id),
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    prompt TEXT,
+    status TEXT NOT NULL,
+    brief TEXT,
+    changes TEXT,
+    memory TEXT,
+    refs TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    processed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS po_events_po ON po_events (po_id, created_at);
+-- The PO's outstanding questions: it keeps the list; the human discusses each one and confirms its resolution.
+CREATE TABLE IF NOT EXISTS po_questions (
+    id TEXT PRIMARY KEY,
+    po_id TEXT NOT NULL REFERENCES product_owners(id),
+    key TEXT NOT NULL,
+    question TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    resolution TEXT,
+    thread TEXT NOT NULL DEFAULT '[]',
+    session_id TEXT,
+    event_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+-- Changes the PO suggests after an event: a new description for an existing ticket, or a change to a task's design.
+CREATE TABLE IF NOT EXISTS po_corrections (
+    id TEXT PRIMARY KEY,
+    po_id TEXT NOT NULL REFERENCES product_owners(id),
+    kind TEXT NOT NULL,
+    target TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    before TEXT,
+    after TEXT,
+    status TEXT NOT NULL,
+    event_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 `;
 
 // A Product Owner: one project of the product (a Linear project, a ClickUp epic) with its context, sources, design
@@ -825,6 +876,9 @@ export interface ProductOwnerRow {
 export interface PoMessageRow { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
 export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; indexed_hash?: string | null; chunks?: number | null; description?: string | null; text_file?: string | null }
 export interface PoIssueRow { po_id: string; identifier: string; remote_id: string; hash: string; data: string; fetched_at: string; changed_at: string; indexed_hash?: string | null }
+export interface PoEventRow { id: string; po_id: string; kind: string; title: string; body: string; prompt: string | null; status: "pending" | "waiting" | "processing" | "done" | "unread" | "failed"; brief: string | null; changes: string | null; memory: string | null; refs: string | null; error: string | null; created_at: string; processed_at: string | null }
+export interface PoQuestionRow { id: string; po_id: string; key: string; question: string; detail: string; status: "open" | "proposed" | "resolved" | "dropped"; resolution: string | null; thread: string; session_id: string | null; event_id: string | null; created_at: string; updated_at: string; resolved_at: string | null }
+export interface PoCorrectionRow { id: string; po_id: string; kind: "ticket" | "task"; target: string; title: string; body: string; before: string | null; after: string | null; status: "open" | "sent" | "discarded" | "applied" | "withdrawn"; event_id: string | null; created_at: string; updated_at: string }
 export interface PoTicketLinkRow { po_id: string; key: string; remote_id: string; identifier: string | null; url: string | null; created_at: string }
 
 // One row per change of a task's (stage, status) — the timing analytics read how long a task sat where (working,

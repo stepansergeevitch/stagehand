@@ -69,6 +69,7 @@ const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev), pala
 const productOwners = new ProductOwners(db, cfg, palace, (ev) => engine.emit("po", ev), `http://127.0.0.1:${cfg.port}`, (taskId) => engine.touchTask(taskId));
 productOwners.ensureHome();
 productOwners.backfillEnvs();
+productOwners.backfillEvents();
 void productOwners.migrateGlobalContext().catch((e: unknown) => console.warn(`[po] product context migration: ${String((e as Error).message ?? e)}`));
 productOwners.startIssueRefresh();
 engine.setPoBriefer((task, taskDir) => productOwners.briefTask(task, taskDir, () => engine.touchTask(task.id)));
@@ -2083,8 +2084,7 @@ app.put("/api/product-owners/:id/tickets", async (c) => {
     if (!po) return c.json({ error: "not found" }, 404);
     const parsed = PoTickets.safeParse(await c.req.json());
     if (!parsed.success) return c.json({ error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") }, 400);
-    writeFileSync(join(productOwners.dir(po.id), "tickets.json"), JSON.stringify(parsed.data, null, 2));
-    engine.emit("po", { poId: po.id, kind: "updated" });
+    productOwners.setTickets(po.id, parsed.data);
     return c.json({ ok: true });
 });
 app.post("/api/product-owners/:id/artifacts/fetch", async (c) => {
@@ -2163,6 +2163,105 @@ app.post("/api/product-owners/:id/phase", async (c) => {
 app.post("/api/product-owners/:id/proposal/accept", async (c) => {
     try {
         await productOwners.acceptProposal(c.req.param("id"));
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+// ---------- a PO's outstanding questions, events and corrections ----------
+
+// The PO keeps its questions through these (curl in a turn); the human discusses and confirms them on the page.
+app.get("/api/product-owners/:id/questions", (c) => c.json(productOwners.journal.questions(c.req.param("id"))));
+app.post("/api/product-owners/:id/questions", async (c) => {
+    const body = json(z.object({ question: z.string().trim().min(3).max(2000), detail: z.string().max(4000).default("") }), await c.req.json());
+    try {
+        return c.json(productOwners.addQuestion(c.req.param("id"), body.question, body.detail ?? ""));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.patch("/api/product-owners/:id/questions/:q", async (c) => {
+    const body = json(z.object({ question: z.string().max(2000).optional(), detail: z.string().max(4000).optional(), resolution: z.string().max(4000).optional(), drop: z.string().max(2000).optional() }), await c.req.json());
+    try {
+        productOwners.patchQuestion(c.req.param("id"), c.req.param("q"), body);
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.post("/api/product-owners/:id/questions/:q/ask", async (c) => {
+    const body = json(z.object({ text: z.string().trim().min(1).max(8000) }), await c.req.json());
+    try {
+        productOwners.askQuestion(c.req.param("id"), c.req.param("q"), body.text);
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.post("/api/product-owners/:id/questions/:q/confirm", async (c) => {
+    const body = json(z.object({ resolution: z.string().max(4000).optional() }), await c.req.json().catch(() => ({})));
+    try {
+        productOwners.confirmQuestion(c.req.param("id"), c.req.param("q"), body.resolution);
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+// The PO reads an event it has not read yet (added for later, or interrupted).
+app.post("/api/product-owners/:id/events/:eid/read", (c) => {
+    try {
+        productOwners.readEvent(c.req.param("id"), c.req.param("eid"));
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+// The PO suggests a correction (curl in a turn): {kind:"ticket", ticket, title, body, description} or {kind:"task", ticket|task, title, body}.
+app.get("/api/product-owners/:id/corrections", (c) => c.json(productOwners.journal.corrections(c.req.param("id"))));
+app.post("/api/product-owners/:id/corrections", async (c) => {
+    const body = json(
+        z.object({ kind: z.enum(["ticket", "task"]), ticket: z.string().optional(), task: z.string().optional(), title: z.string().trim().min(3).max(300), body: z.string().max(8000).optional(), description: z.string().max(100_000).optional() }),
+        await c.req.json(),
+    );
+    try {
+        return c.json(productOwners.addCorrection(c.req.param("id"), body));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.post("/api/product-owners/:id/corrections/:cid/withdraw", (c) => {
+    try {
+        productOwners.withdrawCorrection(c.req.param("id"), c.req.param("cid"));
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+// The human discards corrections, or marks ticket ones applied (done by hand in the task manager).
+app.post("/api/product-owners/:id/corrections/status", async (c) => {
+    const body = json(z.object({ ids: z.array(z.string()).min(1), status: z.enum(["discarded", "applied"]) }), await c.req.json());
+    try {
+        productOwners.setCorrections(c.req.param("id"), body.ids, body.status);
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+// The picked corrections of one task go to its agent: another design round (a proposal waiting for review gets them as
+// Request changes; a task past its design goes back to Design proposal, and the later stages run again).
+app.post("/api/product-owners/:id/corrections/send", async (c) => {
+    const body = json(z.object({ ids: z.array(z.string()).min(1) }), await c.req.json());
+    try {
+        const { taskId, notes } = productOwners.correctionNotes(c.req.param("id"), body.ids);
+        const task = engine.getTask(taskId);
+        if (!task) return c.json({ error: "the task no longer exists" }, 404);
+        if (task.status === "running") return c.json({ error: `${task.ticket_id} is running — send when its run ends` }, 409);
+        const design = STAGES.indexOf("design_proposal");
+        const at = STAGES.indexOf(task.stage);
+        if (at < design) return c.json({ error: `${task.ticket_id} has not reached its design yet` }, 400);
+        if (task.stage === "design_proposal" && task.status === "waiting_user") engine.review(task.id, { verdict: "changes", notes });
+        else engine.returnTo(task.id, "design_proposal", notes);
+        productOwners.setCorrections(c.req.param("id"), body.ids, "sent");
         return c.json({ ok: true });
     } catch (e) {
         return poErr(c, e);
