@@ -132,7 +132,8 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     const [s, setS] = useState({
         appUrl: env.app_url ?? "", beCommand: env.be_command ?? "", feCommand: env.fe_command ?? "", beUrlTemplate: env.be_url_template ?? "", feUrlTemplate: env.fe_url_template ?? "",
         bePort: env.be_port ? String(env.be_port) : "", fePort: env.fe_port ? String(env.fe_port) : "", setupCommand: env.setup_command ?? "", envVars: env.env_vars ?? "",
-        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "", prepareCommand: env.prepare_command ?? "", qaSessionCommand: env.qa_session_command ?? "",
+        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "", prepareCommand: env.prepare_command ?? "", qaSessionCommand: env.qa_session_command ?? "", dbHostsCommand: env.db_hosts_command ?? "",
+        allowedDbHosts: ((): string => { try { return (JSON.parse(env.allowed_db_hosts ?? "[]") as string[]).join(", "); } catch { return ""; } })(),
         callbackPorts: ((): string => { try { return (JSON.parse(env.callback_ports ?? "[]") as Array<{ port: number; relay?: boolean }>).map((p) => `${p.port}${p.relay ? "*" : ""}`).join(", "); } catch { return ""; } })(),
     });
     // ---- optional components (a worker, a scheduler): saved with the Services section
@@ -281,6 +282,8 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 qaSeedHints: nul(s.qaSeedHints), cleanupCommand: nul(s.cleanupCommand), rebaseCommand: nul(s.rebaseCommand), migrateCommand: nul(s.migrateCommand), migrateDownCommand: nul(s.migrateDownCommand), memoryWings: s.memoryWings.split(",").map((w) => w.trim()).filter(Boolean), checkCommand: nul(s.checkCommand),
                 prepareCommand: nul(s.prepareCommand),
                 qaSessionCommand: nul(s.qaSessionCommand),
+                dbHostsCommand: nul(s.dbHostsCommand),
+                allowedDbHosts: s.allowedDbHosts.split(",").map((h) => h.trim()).filter(Boolean),
                 callbackPorts: s.callbackPorts.split(",").map((x) => x.trim()).filter((x) => /^\d+\*?$/.test(x)).map((x) => ({ port: Number(x.replace("*", "")), relay: x.endsWith("*") })),
                 components: comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
                 keepServices,
@@ -296,6 +299,8 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 </div>
                 <label>Environment variables (KEY=VALUE per line; exported into git, setup, BE/FE, Claude runs and the terminal) <textarea value={s.envVars} onChange={ss("envVars")} /></label>
                 <label>Prepare (bash that runs before every command of this environment — setup, BE, FE, components, migrate, cleanup, rebase, verification — e.g. bring up the datastores it needs; a non-zero exit stops the command) <textarea className="tall" spellCheck={false} value={s.prepareCommand} onChange={ss("prepareCommand")} placeholder="optional" /></label>
+                <label>DB host check (prints the database hosts the worktree's app would connect to — e.g. every Django DATABASES host; Stagehand runs it before agent runs, BE/FE/component starts and migrations, and blocks the task when a host is not allowed below) <textarea className="tall" spellCheck={false} value={s.dbHostsCommand} onChange={ss("dbHostsCommand")} placeholder="optional" /></label>
+                <label>Allowed DB hosts (comma-separated; empty = localhost, 127.0.0.1, ::1) <input value={s.allowedDbHosts} onChange={ss("allowedDbHosts")} placeholder="localhost" /></label>
                 <label>Worktree setup command (runs once after a worktree is created) <textarea value={s.setupCommand} onChange={ss("setupCommand")} /></label>
                 <label>Migrate command (brings the database up to the worktree's code; Stagehand runs it from the worktree before every BE start, and after a QA baseline on base code; {"{{worktree}}"} / {"{{envPath}}"}) <textarea value={s.migrateCommand} onChange={ss("migrateCommand")} placeholder="optional — e.g. cd backend && poetry run python manage.py migrate --noinput" /></label>
                 <label>Migrate down command (rolls back the migrations the branch added, to the base; runs from the worktree on the branch's code before a QA baseline switches it to the base. {"{{baseRef}}"} = the base commit of the root repo, {"{{baseRef:<dir>}}"} of a sub-repo; also $STAGEHAND_BASE_REF and $STAGEHAND_BASE_REF_&lt;DIR&gt;) <textarea value={s.migrateDownCommand} onChange={ss("migrateDownCommand")} placeholder="optional — without it a branch that adds migrations runs its baseline against the branch's schema" /></label>

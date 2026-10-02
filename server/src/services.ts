@@ -1,5 +1,6 @@
 import { runMigration } from "./migrations.js";
 import { withPrepare } from "./env-config.js";
+import { assertDbHosts } from "./db-hosts.js";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -345,6 +346,8 @@ export class Services {
         mkdirSync(logDir, { recursive: true });
         // Migrations are their own step (migrations.ts): the database is brought up to the worktree's code before the
         // BE starts, so the BE command carries no migrate of its own.
+        // Never start an app, or migrate, against a database the env does not allow (db-hosts.ts).
+        await assertDbHosts(env, vars.worktree!);
         if (kind === "be" && env.migrate_command) {
             await runMigration(withPrepare(env, env.migrate_command), { worktree: vars.worktree!, envPath: env.path, vars: parseEnvVars(env.env_vars), logPath: join(logDir, "migrate.log"), label: "migrate" });
         }

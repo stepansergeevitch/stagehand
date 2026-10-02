@@ -1,5 +1,6 @@
 import { BaseCheckout } from "./migrations.js";
 import { callbackPortsOf, withPrepare } from "./env-config.js";
+import { assertDbHosts } from "./db-hosts.js";
 import { activeRound, addedFiles, AutopilotReview, autopilotRulesOf, describeRules, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
 import { EventEmitter } from "node:events";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -232,6 +233,8 @@ interface DispatchOpts {
     operation?: "pr_fix_ci" | "pr_fix_comments";
     // The env's QA session command already ran for this dispatch (refreshQaSession).
     sessionReady?: boolean;
+    // The env's DB host check passed for this dispatch (db-hosts.ts).
+    dbHostsChecked?: boolean;
     // QA stages: this dispatch is one shard of a pass split into parallel runs (qa-shards.ts).
     shard?: QaShard | PrShard;
     // Browser stages on a gstack env: this run's headless daemon is up and its session cookies are in.
@@ -3177,6 +3180,7 @@ export class Engine extends EventEmitter {
         this.setTaskStatus(taskId, "running", `QA Baseline · switching ${where} to the base${env.migrate_down_command ? " (migrations down first)" : ""} — the baseline runs on code without this change`);
         try {
             await this.services.stopAll(taskId);
+            await assertDbHosts(env, task.worktree_path);
             await this.baseCheckout.enter(taskId, repos, { ...m, downCommand: env.migrate_down_command ? withPrepare(env, env.migrate_down_command) : null });
             this.emitTask(taskId);
             return true;
@@ -3196,6 +3200,7 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         try {
             await this.services.stopAll(taskId);
+            await assertDbHosts(env, task.worktree_path);
             await this.baseCheckout.exit(taskId, { ...this.migrationOpts(task, env), upCommand: env.migrate_command ? withPrepare(env, env.migrate_command) : null });
             this.emitTask(taskId);
             return true;
@@ -3924,6 +3929,16 @@ export class Engine extends EventEmitter {
         if ((opts.onBase || opts.servicesReady || opts.seedsDone || opts.chromeVerified || opts.chromeFlagsVerified) && (task.status === "stopped" || task.stage !== stage)) {
             console.log(`[stagehand] ${task.ticket_id}: dropped a ${def.label} continuation — task is ${task.status} at ${task.stage}`);
             return;
+        }
+        // Nothing runs against a database the env does not allow (db-hosts.ts).
+        if (!opts.dbHostsChecked && task.worktree_path) {
+            const env0 = this.env(task.env_id);
+            if (env0.db_hosts_command?.trim()) {
+                void assertDbHosts(env0, task.worktree_path)
+                    .then(() => this.dispatch(taskId, stage, { ...opts, dbHostsChecked: true }))
+                    .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · ${String((e as Error).message ?? e).slice(0, 300)}`, { notify: true }));
+                return;
+            }
         }
         // The QA baseline records what the app does BEFORE the change: it runs on base code. Every other run needs the
         // branch, so a worktree still on the base goes back first.

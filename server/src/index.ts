@@ -802,6 +802,9 @@ app.patch("/api/envs/:id", async (c) => {
             prepareCommand: z.string().nullable().optional(),
             // Run by Stagehand before a QA pass; its last output line is the pass's $STAGEHAND_QA_SESSION.
             qaSessionCommand: z.string().nullable().optional(),
+            // The DB host check: a command printing the hosts the worktree's app uses, and the hosts allowed.
+            dbHostsCommand: z.string().nullable().optional(),
+            allowedDbHosts: z.array(z.string().trim().min(1)).nullable().optional(),
             ciAutopilotRules: z
                 .object({ disabled: z.array(z.string()).default([]), custom: z.array(z.object({ key: z.string().optional(), title: z.string().trim().min(1), verdict: z.enum(["allow", "deny"]), detail: z.string().default("") })).default([]) })
                 .nullable()
@@ -890,6 +893,8 @@ app.patch("/api/envs/:id", async (c) => {
         const json = disabled.length || custom.length ? JSON.stringify({ disabled, custom: custom.map((x, i) => ({ key: x.key?.trim() || `r${Date.now().toString(36)}${i}`, title: x.title, verdict: x.verdict, detail: (x.detail ?? "").trim() })) }) : null;
         db.prepare(`UPDATE envs SET ci_autopilot_rules = ? WHERE id = ?`).run(json, env.id);
     }
+    if (body.dbHostsCommand !== undefined) db.prepare(`UPDATE envs SET db_hosts_command = ? WHERE id = ?`).run(body.dbHostsCommand?.trim() || null, env.id);
+    if (body.allowedDbHosts !== undefined) db.prepare(`UPDATE envs SET allowed_db_hosts = ? WHERE id = ?`).run(body.allowedDbHosts && body.allowedDbHosts.length ? JSON.stringify(body.allowedDbHosts) : null, env.id);
     if (body.qaSessionCommand !== undefined) db.prepare(`UPDATE envs SET qa_session_command = ? WHERE id = ?`).run(body.qaSessionCommand?.trim() || null, env.id);
     if (body.prepareCommand !== undefined) db.prepare(`UPDATE envs SET prepare_command = ? WHERE id = ?`).run(body.prepareCommand?.trim() || null, env.id);
     if (body.callbackPorts !== undefined) db.prepare(`UPDATE envs SET callback_ports = ? WHERE id = ?`).run(body.callbackPorts && body.callbackPorts.length ? JSON.stringify(body.callbackPorts) : null, env.id);
