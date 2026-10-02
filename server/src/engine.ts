@@ -2021,10 +2021,9 @@ export class Engine extends EventEmitter {
         const opened = repos.filter((r) => rows.find((x) => x.repo === r)?.number);
         for (const r of opened) if (!rows.find((x) => x.repo === r)?.approved_at) this.upsertPrRow(taskId, r, { approved_at: now() });
         if (opened.length < repos.length) return false;
-        this.setStage(taskId, "pr_waiting");
-        this.setTaskStatus(taskId, "idle", `PR Waiting · ${opened.map((r) => `${repoPrefix(r, repos)}#${rows.find((x) => x.repo === r)!.number}`).join(", ")} already open — skipped PR Creation Review`);
-        this.syncPrTaskState(taskId, { force: true });
-        this.pollPrSoon(taskId);
+        // The PRs are open from an earlier round (the task went back to an earlier stage): the approved commits still
+        // have to reach them (INV-154, 2026-10-02: approved at User Review, both repositories stayed ahead of their PRs).
+        void this.pushPrFix(taskId, { approved: true }).catch((e: unknown) => console.warn(`[stagehand] push approved ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         return true;
     }
 
@@ -3069,7 +3068,8 @@ export class Engine extends EventEmitter {
         if (failed.length) this.addAgentNote(task.id, `${failed.length} GitHub repl${failed.length === 1 ? "y" : "ies"} failed: ${failed.map((r) => r.error).join("; ")}`);
     }
 
-    private async pushPrFix(taskId: string): Promise<void> {
+    // `opts.approved`: the push after an approval at User Review for PRs that are already open (no fix replies).
+    private async pushPrFix(taskId: string, opts: { approved?: boolean } = {}): Promise<void> {
         const task = this.getTask(taskId);
         if (!task?.branch) return;
         const env = this.env(task.env_id);
@@ -3079,7 +3079,7 @@ export class Engine extends EventEmitter {
             this.setTaskStatus(taskId, "idle", `PR Waiting · this env forbids agent pushes — push \`${task.branch}\` yourself; Stagehand resumes polling once you do`);
             return;
         }
-        this.setTaskStatus(taskId, "running", "PR Fix · pushing the approved fix");
+        this.setTaskStatus(taskId, "running", opts.approved ? "PR Waiting · pushing the approved changes to the open PRs" : "PR Fix · pushing the approved fix");
         let current = "";
         try {
             for (const repo of this.prRepos(env)) {
@@ -3102,7 +3102,7 @@ export class Engine extends EventEmitter {
         // A fix can land while a repository's draft is still unapproved (its PR never opened before CI on another
         // repository's PR failed): that draft still needs the human — back to PR Creation Review for it, not on to
         // PR Waiting where nothing offers to open it.
-        await this.postFixReplies(task, env).catch((e: unknown) => console.warn(`[stagehand] fix replies ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+        if (!opts.approved) await this.postFixReplies(task, env).catch((e: unknown) => console.warn(`[stagehand] fix replies ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         const repos = this.draftRepos(taskId, env);
         const rows = this.prRows(taskId);
         const missing = repos.filter((r) => !rows.find((x) => x.repo === r)?.number);
