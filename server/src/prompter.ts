@@ -149,6 +149,7 @@ export class Prompter {
 
     // Copies the Stagehand knowledge out of another palace (see scripts/seed-prompter-palace.py). Re-runnable.
     async seed(): Promise<{ ok: boolean; detail: string; result?: unknown }> {
+        if (!this.cfg.prompter.seedFrom.trim()) return { ok: false, detail: "no palace to seed from — set Prompter → Seed from first" };
         const script = join(REPO_ROOT, "scripts", "seed-prompter-palace.py");
         const args = [script, "--src", this.cfg.prompter.seedFrom, "--dst", this.palace.home, "--diary", "wing_claude", "--mention", "stagehand"];
         for (const w of this.cfg.prompter.seedWings) args.push("--wing", w);

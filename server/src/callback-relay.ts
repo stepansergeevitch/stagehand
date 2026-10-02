@@ -1,14 +1,14 @@
 import { createServer, type Server } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-// A login-callback relay on an identity provider's fixed callback port (Northspyre Core: Auth0 accepts only
-// https://localhost:7777/auth/callback). An app on a Stagehand port pins that redirect_uri, so after logging in the
-// browser lands on :7777 — where nothing listens, in any browser (the Chrome-only hop watcher never saw Safari tabs,
-// 2026-09-28). While at least one such app is up, this listens on the port and redirects the request, path and query
-// unchanged, to the app it came from: the origin in the `stagehand_app_origin` cookie the patched login page sets
-// (cookies are per host, not per port, so :7777 receives it), else the only app that is up; with several and no cookie
-// it lists them. It binds loopback only, and gives the port back as soon as no such app runs — a port someone else
-// already holds (the human's own dev server) is left alone and retried a minute later.
+// A login-callback relay on an identity provider's fixed callback port (an env's `callback_ports` entry with `relay`).
+// An app on a Stagehand port pins that redirect_uri, so after logging in the browser lands on the fixed port — where
+// nothing listens, in any browser (the Chrome-only hop watcher never saw Safari tabs, 2026-09-28). While at least one
+// such app is up, this listens on the port and redirects the request, path and query unchanged, to the app it came
+// from: the origin in the `stagehand_app_origin` cookie the patched login page sets (cookies are per host, not per
+// port, so the fixed port receives it), else the only app that is up; with several and no cookie it lists them. It
+// binds loopback only, and gives the port back as soon as no such app runs — a port someone else already holds (the
+// human's own dev server) is left alone and retried a minute later.
 export class CallbackRelay {
     private servers: Server[] = [];
     private retryAt = 0;

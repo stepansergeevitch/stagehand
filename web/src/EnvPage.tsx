@@ -133,6 +133,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
         appUrl: env.app_url ?? "", beCommand: env.be_command ?? "", feCommand: env.fe_command ?? "", beUrlTemplate: env.be_url_template ?? "", feUrlTemplate: env.fe_url_template ?? "",
         bePort: env.be_port ? String(env.be_port) : "", fePort: env.fe_port ? String(env.fe_port) : "", setupCommand: env.setup_command ?? "", envVars: env.env_vars ?? "",
         qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "",
+        callbackPorts: ((): string => { try { return (JSON.parse(env.callback_ports ?? "[]") as Array<{ port: number; relay?: boolean }>).map((p) => `${p.port}${p.relay ? "*" : ""}`).join(", "); } catch { return ""; } })(),
     });
     // ---- optional components (a worker, a scheduler): saved with the Services section
     const [comps, setComps] = useState<EnvComponent[]>(() => componentsOf(env));
@@ -281,6 +282,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 appUrl: nul(s.appUrl), beCommand: nul(s.beCommand), feCommand: nul(s.feCommand), beUrlTemplate: nul(s.beUrlTemplate), feUrlTemplate: nul(s.feUrlTemplate),
                 bePort: s.bePort.trim() ? Number(s.bePort) : null, fePort: s.fePort.trim() ? Number(s.fePort) : null, setupCommand: nul(s.setupCommand), envVars: nul(s.envVars),
                 qaSeedHints: nul(s.qaSeedHints), cleanupCommand: nul(s.cleanupCommand), rebaseCommand: nul(s.rebaseCommand), migrateCommand: nul(s.migrateCommand), migrateDownCommand: nul(s.migrateDownCommand), memoryWings: s.memoryWings.split(",").map((w) => w.trim()).filter(Boolean), checkCommand: nul(s.checkCommand),
+                callbackPorts: s.callbackPorts.split(",").map((x) => x.trim()).filter((x) => /^\d+\*?$/.test(x)).map((x) => ({ port: Number(x.replace("*", "")), relay: x.endsWith("*") })),
                 components: comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
                 keepServices,
                 qaBrowser,
@@ -301,6 +303,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 <label>Cleanup command (runs from the worktree when a task is cleaned up, after BE/FE stop and before the worktree is removed — drop a per-task database, free caches; {"{{worktree}}"} / {"{{envPath}}"}) <textarea value={s.cleanupCommand} onChange={ss("cleanupCommand")} placeholder="optional" /></label>
                 <label>Rebase command (runs from the worktree after every successful rebase onto the base branch — rebuild what a rebase makes stale, e.g. drop and recreate the per-task test databases; {"{{worktree}}"} / {"{{envPath}}"}) <textarea value={s.rebaseCommand} onChange={ss("rebaseCommand")} placeholder="optional" /></label>
                 <label>Verification command (runs from the worktree after every Implementation and PR Fix run; a non-zero exit sends the output back to the agent, twice, then blocks for you — put here what tests and a dev server never exercise, e.g. Django <code>manage.py check --database default && manage.py makemigrations --check --dry-run</code>) <textarea value={s.checkCommand} onChange={ss("checkCommand")} placeholder="optional" /></label>
+                <label>Login callback ports (the identity provider accepts only these as its callback — e.g. 3000; after a login on a task's port, Stagehand moves the tab back to the task's app. Add * to have Stagehand hold the port and redirect, for any browser — e.g. 7777*) <input value={s.callbackPorts} onChange={ss("callbackPorts")} placeholder="optional — comma-separated" /></label>
                 <label>BE command <textarea value={s.beCommand} onChange={ss("beCommand")} /></label>
                 <label>FE command <textarea value={s.feCommand} onChange={ss("feCommand")} /></label>
                 <label>QA browser for browser scenarios

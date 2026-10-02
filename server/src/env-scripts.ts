@@ -43,3 +43,13 @@ export const materializeEnvScripts = (env: Pick<EnvRow, "id" | "scripts">): void
 
 // The env's variables for its commands and runs: its own KEY=VALUE lines, and $STAGEHAND_SCRIPTS.
 export const envVarsOf = (env: Pick<EnvRow, "id" | "env_vars">): Record<string, string> => ({ STAGEHAND_SCRIPTS: envScriptsDir(env.id), ...parseEnvVars(env.env_vars) });
+
+// The fixed login-callback ports of an env's identity provider (envs.callback_ports): JSON [{ port, relay }].
+export const callbackPortsOf = (json: string | null | undefined): Array<{ port: number; relay: boolean }> => {
+    try {
+        const v: unknown = json ? JSON.parse(json) : [];
+        return Array.isArray(v) ? v.filter((p): p is { port: number; relay?: boolean } => !!p && Number.isInteger(p.port) && p.port > 0 && p.port < 65536).map((p) => ({ port: p.port, relay: p.relay === true })) : [];
+    } catch {
+        return [];
+    }
+};

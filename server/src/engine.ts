@@ -1,5 +1,5 @@
 import { BaseCheckout } from "./migrations.js";
-import { envVarsOf } from "./env-scripts.js";
+import { callbackPortsOf, envVarsOf } from "./env-scripts.js";
 import { activeRound, addedFiles, AutopilotReview, autopilotRulesOf, describeRules, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
 import { EventEmitter } from "node:events";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -897,7 +897,7 @@ export class Engine extends EventEmitter {
     appUrlFor(task: TaskRow, env: EnvRow): string {
         const be = this.services.get(task.id, "be");
         const fe = this.services.get(task.id, "fe");
-        return (env.app_url ?? (fe ? "{{feUrl}}" : "https://localhost:3000")).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{beUrl\}\}/g, be?.url ?? "");
+        return (env.app_url ?? (fe ? "{{feUrl}}" : "{{beUrl}}")).replace(/\{\{feUrl\}\}/g, fe?.url ?? "").replace(/\{\{beUrl\}\}/g, be?.url ?? "");
     }
 
     // ---------- gstack's headless browser (config.gstackDir, envs.qa_browser = "gstack") ----------
@@ -1277,9 +1277,8 @@ export class Engine extends EventEmitter {
     }
 
     // Opens the app in the QA Chrome profile and waits for a human to log in there — no agent: the server polls Chrome's
-    // tabs through osascript. The profile persists, so this is needed once per app session lifetime (core: 365 days;
-    // deal: the Auth0 tenant's session). Deal alt-port hack: Auth0 sends the browser back to https://localhost:3000/?code=…
-    // (whatever listens there); the poll moves such a tab to the task's real port, where the SDK completes the login.
+    // tabs through osascript. The profile persists, so this is needed once per app session lifetime. A provider that
+    // sends the browser back to the env's fixed callback port is handled by the hop watcher (startCallbackHopWatcher).
     async qaLogin(taskId: string): Promise<"logged_in" | "timeout" | "failed"> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
@@ -1341,46 +1340,59 @@ export class Engine extends EventEmitter {
 
     // ---------- the login callback hop, always on ----------
     //
-    // Identity providers (Auth0, WorkOS) typically only accept the app's usual port as a callback — https://localhost:3000
-    // (Deal, DualEntry FEs), https://localhost:7777 (Northspyre Core, whose backend serves the page) — so an app on a
-    // Stagehand port pins that redirect and the browser lands on whatever holds that port after logging in (an error
-    // page, or another app). Below, ":3000" stands for either callback origin. The QA prompt and the login helper move such a tab to the right port themselves — but a human who opens
-    // the app from the App widget or a Session and logs in by hand had nobody doing it, and the login failed. This
-    // watcher does it for every Chrome tab (all profiles) as long as any task's FE is up on a port other than 3000.
-    // It remembers which Stagehand FE origin each tab was on, and handles both ways a login can end on :3000:
-    // - nothing (or a foreign app) holds :3000 → the tab sits on the callback URL (`/?code=…` for an SPA, `/auth/callback?code=…`
-    //   for a server-side flow); once it has been there for two polls (an app that genuinely lives on 3000 consumes that
-    //   query within a second) the same path+query is re-opened on the origin the tab came from, where the app finishes
-    //   the exchange (the state cookie is host-scoped, so it is there on any port);
-    // - another instance of the same app holds :3000 (the human's own dev server) → it consumes the callback at once,
+    // Identity providers typically accept only the app's usual port as a callback (https://localhost:<port>), so an app
+    // on a Stagehand port pins that redirect and the browser lands on whatever holds that port after logging in (an
+    // error page, or another app). Each env names its provider's fixed callback ports (envs.callback_ports, JSON
+    // [{ port, relay }]); Stagehand knows no port of its own. The QA prompt and the login helper move such a tab to the
+    // right port themselves — but a human who opens the app from the App widget or a Session and logs in by hand had
+    // nobody doing it, and the login failed. This watcher does it for every Chrome tab (all profiles) while an app of
+    // such an env is up. It remembers which Stagehand app origin each tab was on, and handles both ways a login can end
+    // on a callback port:
+    // - nothing (or a foreign app) holds the port → the tab sits on the callback URL (`/?code=…` for an SPA,
+    //   `/auth/callback?code=…` for a server-side flow); once it has been there for two polls (an app that genuinely
+    //   lives there consumes that query within a second) the same path+query is re-opened on the origin the tab came
+    //   from, where the app finishes the exchange (the state cookie is host-scoped, so it is there on any port);
+    // - another instance of the same app holds the port (the human's own dev server) → it consumes the callback at once,
     //   sets the login cookie (host-scoped: valid on every port) and lands the tab on its own pages. The tab is moved
     //   to the same path on the origin it came from, where it is now logged in. Recognised by the sequence
-    //   task FE → identity provider → localhost:3000, and done at most once a minute per tab so an app whose login is
+    //   task app → identity provider → callback port, and done at most once a minute per tab so an app whose login is
     //   per-origin (an SPA with tokens in storage) cannot ping-pong between the two ports.
-    // Any browser (Safari too): while a task app that the backend serves is up (Northspyre Core, app URL {{beUrl}}),
-    // Stagehand holds Auth0's fixed callback port 7777 and redirects the callback to that app — see CallbackRelay. TLS
-    // from the same locally trusted pair the dev UI uses.
+    // Any browser (Safari too): for a port the env marks `relay`, Stagehand holds the port while one of its apps is up
+    // and redirects the callback to that app — see CallbackRelay. TLS from the same locally trusted pair the dev UI uses.
+
+    // The running apps of envs with callback ports: each app's origin (its FE, or its BE when the env's app URL is the
+    // BE) with its env's ports.
+    private callbackApps(): Array<{ origin: string; ports: Array<{ port: number; relay: boolean }> }> {
+        const rows = this.db
+            .prepare(
+                `SELECT s.url, e.callback_ports FROM services s JOIN tasks t ON t.id = s.task_id JOIN envs e ON e.id = t.env_id
+                 WHERE s.stopped_at IS NULL AND s.failed_at IS NULL AND e.callback_ports IS NOT NULL
+                   AND ((s.kind = 'fe' AND COALESCE(e.app_url, '') NOT LIKE '%{{beUrl}}%') OR (s.kind = 'be' AND e.app_url LIKE '%{{beUrl}}%'))`,
+            )
+            .all() as Array<{ url: string; callback_ports: string }>;
+        return rows.map((r) => ({ origin: new URL(r.url).origin, ports: callbackPortsOf(r.callback_ports) })).filter((a) => a.ports.length);
+    }
+
+    private readonly relays = new Map<number, CallbackRelay>();
     private startCallbackRelay(): void {
         const tlsDir = join(this.cfg.dataDir, "tls");
-        const relay = new CallbackRelay(
-            7777,
-            () => {
-                const cert = join(tlsDir, "cert.pem");
-                const key = join(tlsDir, "key.pem");
-                return existsSync(cert) && existsSync(key) ? { cert: readFileSync(cert), key: readFileSync(key) } : null;
-            },
-            () => {
-                const rows = this.db
-                    .prepare(
-                        `SELECT s.url FROM services s JOIN tasks t ON t.id = s.task_id JOIN envs e ON e.id = t.env_id
-                         WHERE s.kind = 'be' AND s.stopped_at IS NULL AND s.failed_at IS NULL AND e.app_url LIKE '%{{beUrl}}%'`,
-                    )
-                    .all() as Array<{ url: string }>;
-                return [...new Set(rows.map((r) => new URL(r.url).origin))].filter((o) => !/:7777$/.test(o));
-            },
-        );
-        relay.sync();
-        setInterval(() => relay.sync(), 5_000).unref();
+        const tls = () => {
+            const cert = join(tlsDir, "cert.pem");
+            const key = join(tlsDir, "key.pem");
+            return existsSync(cert) && existsSync(key) ? { cert: readFileSync(cert), key: readFileSync(key) } : null;
+        };
+        const sync = (): void => {
+            const declared = new Set<number>();
+            for (const e of this.db.prepare(`SELECT callback_ports FROM envs WHERE callback_ports IS NOT NULL`).all() as Array<{ callback_ports: string }>)
+                for (const p of callbackPortsOf(e.callback_ports)) if (p.relay) declared.add(p.port);
+            for (const port of declared) {
+                if (this.relays.has(port)) continue;
+                this.relays.set(port, new CallbackRelay(port, tls, () => [...new Set(this.callbackApps().filter((a) => a.ports.some((p) => p.port === port && p.relay)).map((a) => a.origin))].filter((o) => !o.endsWith(`:${port}`))));
+            }
+            for (const r of this.relays.values()) r.sync();
+        };
+        sync();
+        setInterval(sync, 5_000).unref();
     }
 
     private readonly tabOrigins = new Map<string, { origin: string; at: number }>();
@@ -1388,23 +1400,23 @@ export class Engine extends EventEmitter {
     private readonly tabHoppedAt = new Map<string, number>();
     private hopSeen = "";
     private startCallbackHopWatcher(): void {
-        const on3000 = (u: string) => /^https?:\/\/localhost:(3000|7777)(\/|$)/.test(u);
-        const isCallback = (u: string) => on3000(u) && /\?(?=.*\bcode=)(?=.*\bstate=)/.test(u);
+        let ports = new Set<number>();
+        const portOf = (u: string): number | null => {
+            const m = /^https?:\/\/localhost:(\d+)(\/|$)/.exec(u);
+            return m ? Number(m[1]) : null;
+        };
+        const onCallbackPort = (u: string) => ports.has(portOf(u) ?? -1);
+        const isCallback = (u: string) => onCallbackPort(u) && /\?(?=.*\bcode=)(?=.*\bstate=)/.test(u);
         const isIdp = (u: string) => /^https:\/\/[^/]*(auth0\.com|authkit\.app|workos\.com|okta\.com|login\.microsoftonline\.com|accounts\.google\.com)\//.test(u);
         const pathAndQuery = (u: string): string => {
             const x = new URL(u);
             return `${x.pathname}${x.search}${x.hash}`;
         };
         const tick = async (): Promise<void> => {
-            // The app of each running task: its FE, or its BE where the env's app URL is the BE (Core serves the page itself).
-            const rows = this.db
-                .prepare(
-                    `SELECT s.url FROM services s JOIN tasks t ON t.id = s.task_id JOIN envs e ON e.id = t.env_id
-                     WHERE s.stopped_at IS NULL AND s.failed_at IS NULL
-                       AND (s.kind = 'fe' OR (s.kind = 'be' AND e.app_url LIKE '%{{beUrl}}%'))`,
-                )
-                .all() as Array<{ url: string }>;
-            const origins = [...new Set(rows.map((r) => new URL(r.url).origin))].filter((o) => !on3000(`${o}/`));
+            // The app of each running task of an env with callback ports, and those ports.
+            const apps = this.callbackApps();
+            ports = new Set(apps.flatMap((a) => a.ports.map((p) => p.port)));
+            const origins = [...new Set(apps.map((a) => a.origin))].filter((o) => !onCallbackPort(`${o}/`));
             if (origins.length === 0) {
                 this.tabOrigins.clear();
                 this.tabPrevUrl.clear();
@@ -1425,26 +1437,26 @@ export class Engine extends EventEmitter {
             const remember = (): void => {
                 for (const t of tabs) this.tabPrevUrl.set(`${t.window}:${t.tab}`, t.url);
             };
-            // Case 2: the callback was consumed by the app on :3000 — the tab came from a task FE, went through the
-            // identity provider, and is now on :3000 without a callback query.
+            // Case 2: the callback was consumed by the app on the callback port — the tab came from a task app, went through
+            // the identity provider, and is now on the callback port without a callback query.
             for (const t of tabs) {
                 const key = `${t.window}:${t.tab}`;
-                if (!on3000(t.url) || isCallback(t.url)) continue;
+                if (!onCallbackPort(t.url) || isCallback(t.url)) continue;
                 const prev = this.tabPrevUrl.get(key) ?? "";
                 const from = this.tabOrigins.get(key);
                 if (!from || now_ - from.at > 10 * 60_000) continue;
                 // A provider with a live SSO session bounces faster than one poll: the previous poll then still shows
-                // the task FE itself, so a tab that was on it a moment ago and is on :3000 now counts as well.
+                // the task FE itself, so a tab that was on it a moment ago and is on the callback port now counts as well.
                 const straightFromFe = prev.startsWith(from.origin) && now_ - from.at <= 2 * LOGIN_POLL_MS + 500;
                 if (!(isIdp(prev) || isCallback(prev) || straightFromFe)) continue;
                 if (now_ - (this.tabHoppedAt.get(key) ?? 0) < 60_000) continue;
                 this.tabHoppedAt.set(key, now_);
                 await setChromeTabUrl(t, `${from.origin}${pathAndQuery(t.url)}`, "Google");
-                console.log(`[stagehand] login landed on localhost:3000 (consumed by the app there); tab moved back to ${from.origin}${pathAndQuery(t.url)}`);
+                console.log(`[stagehand] login landed on callback port ${portOf(t.url)} (consumed by the app there); tab moved back to ${from.origin}${pathAndQuery(t.url)}`);
                 remember();
                 return;
             }
-            // Case 1: the callback is sitting unconsumed on :3000.
+            // Case 1: the callback is sitting unconsumed on the callback port.
             const cb = tabs.find((t) => isCallback(t.url));
             if (!cb) {
                 this.hopSeen = "";
@@ -1460,12 +1472,12 @@ export class Engine extends EventEmitter {
             this.hopSeen = "";
             const target = this.tabOrigins.get(`${cb.window}:${cb.tab}`)?.origin ?? (origins.length === 1 ? origins[0] : undefined);
             if (!target) {
-                console.warn(`[stagehand] login callback on :3000 in a tab never seen on a task FE and ${origins.length} alt-port FEs are up — not hopping`);
+                console.warn(`[stagehand] login callback on port ${portOf(cb.url)} in a tab never seen on a task app and ${origins.length} task apps are up — not hopping`);
                 remember();
                 return;
             }
             await setChromeTabUrl(cb, `${target}${pathAndQuery(cb.url)}`, "Google");
-            console.log(`[stagehand] login callback hopped from localhost:3000 to ${target}${pathAndQuery(cb.url)}`);
+            console.log(`[stagehand] login callback hopped from port ${portOf(cb.url)} to ${target}${pathAndQuery(cb.url)}`);
             remember();
         };
         let busy = false;
@@ -1481,8 +1493,8 @@ export class Engine extends EventEmitter {
     }
 
     // Polls every tab (all profiles) until one sits on the app, not on a login page and not on an Auth0 callback, for
-    // three consecutive polls. A callback that landed on https://localhost:3000 (alt-port deal FE) is moved to the
-    // app's port by the always-on hop watcher (startCallbackHopWatcher) — this loop only waits for the result.
+    // three consecutive polls. A callback that landed on the env's fixed callback port is moved to the app's port by the
+    // always-on hop watcher (startCallbackHopWatcher) — this loop only waits for the result.
     private async waitForLogin(appUrl: string, browserKind: string, budgetMs: number, stale: Set<string>): Promise<"logged_in" | "timeout"> {
         const origin = new URL(appUrl).origin;
         const loginish = (t: ChromeTabLike) => /auth0\.com|\/callback|[?&](code|error)=/.test(t.url) || /welcome|log ?in|sign ?in/i.test(t.title);
@@ -3847,7 +3859,7 @@ export class Engine extends EventEmitter {
                 ? [
                       `1. ${vars["chromeSelect"]} Then load the browser tools in ONE ToolSearch call: \`select:mcp__claude-in-chrome__tabs_context_mcp,mcp__claude-in-chrome__tabs_create_mcp,mcp__claude-in-chrome__navigate,mcp__claude-in-chrome__javascript_tool,mcp__claude-in-chrome__read_page,mcp__claude-in-chrome__find,mcp__claude-in-chrome__form_input,mcp__claude-in-chrome__computer,mcp__claude-in-chrome__get_page_text,mcp__claude-in-chrome__read_network_requests,mcp__claude-in-chrome__browser_batch\`. If \`tabs_context_mcp\` errors with "extension is not connected", wait 5 seconds and call it once more before giving up (blocker: "browser extension not connected").`,
                       `2. Call \`tabs_context_mcp\` once, then \`tabs_create_mcp\` — do not reuse existing tabs. **Work in that one tab for the whole run and never create another** (a second tab drops yours into the background, where Chrome stops rendering popovers — that looks like an app bug and is not one; if a popover opens empty, check \`document.visibilityState\` with \`javascript_tool\`: \`hidden\` = record \`blocked\` with blocker \`app tab hidden in Chrome\`). Never call \`resize_window\` to change the viewport (it zooms the page instead). After the first page load run \`javascript_tool\` once with \`({ zoom: Math.round(outerWidth / innerWidth * 100), ow: outerWidth, oh: outerHeight })\`; if \`zoom\` is outside 95–105: \`resize_window\` with exactly \`ow\` × \`oh\`, then if still off \`computer\` \`action: "key"\`, \`text: "cmd+0"\`; only if both fail add the blocker "page zoom is <zoom>% in the QA Chrome profile and could not be reset — press ⌘0 on the app tab" and continue (\`devicePixelRatio\` is not a zoom signal; a zoom you corrected is not mentioned in the output).`,
-                      `3. The app base URL is \`${appUrl}\`; every browser scenario URL below is relative to it. Navigate to \`${appUrl}${firstBrowser.url}\`. If the page redirects to Auth0 (\`*.auth0.com\`), or shows a splash/"Sign in"/welcome page instead of the application, wait 5 seconds and re-read once (silent auth may still be completing); if it is still a login page, the app needs a login that you must NOT perform: write the output file with every browser scenario \`blocked\`, \`blockers: ["login required in the automation Chrome window"]\`, and stop (API scenarios still run).\n   **Login callback on the wrong port:** if the tab ends up on a URL like \`https://localhost:3000/?code=…&state=…\` (a different port than \`${appUrl}\`, usually an error page), the login itself succeeded; navigate the SAME tab to \`${appUrl}/?code=…&state=…\` with the identical query string (call \`tabs_context_mcp\` to read the exact URL). The app then completes the login and shows the requested page; continue normally.`,
+                      `3. The app base URL is \`${appUrl}\`; every browser scenario URL below is relative to it. Navigate to \`${appUrl}${firstBrowser.url}\`. If the page redirects to the identity provider's login page, or shows a splash/"Sign in"/welcome page instead of the application, wait 5 seconds and re-read once (silent auth may still be completing); if it is still a login page, the app needs a login that you must NOT perform: write the output file with every browser scenario \`blocked\`, \`blockers: ["login required in the automation Chrome window"]\`, and stop (API scenarios still run).\n   **Login callback on the wrong port:** if the tab ends up on a URL like \`https://localhost:3000/?code=…&state=…\` (a different port than \`${appUrl}\`, usually an error page), the login itself succeeded; navigate the SAME tab to \`${appUrl}/?code=…&state=…\` with the identical query string (call \`tabs_context_mcp\` to read the exact URL). The app then completes the login and shows the requested page; continue normally.`,
                       `4. If a page shows a connection error, retry once after 5 seconds, then record \`blocked\` with the error.`,
                   ].join("\n")
                 : `1. Every scenario below is an **API scenario**: this pass needs no browser — do NOT load or call any \`mcp__claude-in-chrome__*\` tool. The backend answers at \`${beUrl || "(see the BE log for its port)"}\`, the frontend at \`${appUrl}\`; the commands below already carry the right host and port.`;

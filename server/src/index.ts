@@ -800,6 +800,8 @@ app.patch("/api/envs/:id", async (c) => {
             ciAutopilot: z.boolean().optional(),
             testCommand: z.string().nullable().optional(),
             // The env's own scripts, written to $STAGEHAND_SCRIPTS: the whole list.
+            // The identity provider's fixed login-callback ports; `relay`: Stagehand holds the port and redirects (any browser).
+            callbackPorts: z.array(z.object({ port: z.number().int().min(1).max(65535), relay: z.boolean().default(false) })).nullable().optional(),
             scripts: z.array(z.object({ name: z.string().regex(SCRIPT_NAME, "a script name is letters, digits, . _ -"), content: z.string().max(500_000) })).optional(),
             ciAutopilotRules: z
                 .object({ disabled: z.array(z.string()).default([]), custom: z.array(z.object({ key: z.string().optional(), title: z.string().trim().min(1), verdict: z.enum(["allow", "deny"]), detail: z.string().default("") })).default([]) })
@@ -889,6 +891,7 @@ app.patch("/api/envs/:id", async (c) => {
         const json = disabled.length || custom.length ? JSON.stringify({ disabled, custom: custom.map((x, i) => ({ key: x.key?.trim() || `r${Date.now().toString(36)}${i}`, title: x.title, verdict: x.verdict, detail: (x.detail ?? "").trim() })) }) : null;
         db.prepare(`UPDATE envs SET ci_autopilot_rules = ? WHERE id = ?`).run(json, env.id);
     }
+    if (body.callbackPorts !== undefined) db.prepare(`UPDATE envs SET callback_ports = ? WHERE id = ?`).run(body.callbackPorts && body.callbackPorts.length ? JSON.stringify(body.callbackPorts) : null, env.id);
     if (body.scripts !== undefined) {
         const names = body.scripts.map((x) => x.name);
         if (new Set(names).size !== names.length) return c.json({ error: "two scripts have the same name" }, 400);
