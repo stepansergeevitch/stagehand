@@ -132,7 +132,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     const [s, setS] = useState({
         appUrl: env.app_url ?? "", beCommand: env.be_command ?? "", feCommand: env.fe_command ?? "", beUrlTemplate: env.be_url_template ?? "", feUrlTemplate: env.fe_url_template ?? "",
         bePort: env.be_port ? String(env.be_port) : "", fePort: env.fe_port ? String(env.fe_port) : "", setupCommand: env.setup_command ?? "", envVars: env.env_vars ?? "",
-        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "", prepareCommand: env.prepare_command ?? "",
+        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "", prepareCommand: env.prepare_command ?? "", qaSessionCommand: env.qa_session_command ?? "",
         callbackPorts: ((): string => { try { return (JSON.parse(env.callback_ports ?? "[]") as Array<{ port: number; relay?: boolean }>).map((p) => `${p.port}${p.relay ? "*" : ""}`).join(", "); } catch { return ""; } })(),
     });
     // ---- optional components (a worker, a scheduler): saved with the Services section
@@ -280,6 +280,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 bePort: s.bePort.trim() ? Number(s.bePort) : null, fePort: s.fePort.trim() ? Number(s.fePort) : null, setupCommand: nul(s.setupCommand), envVars: nul(s.envVars),
                 qaSeedHints: nul(s.qaSeedHints), cleanupCommand: nul(s.cleanupCommand), rebaseCommand: nul(s.rebaseCommand), migrateCommand: nul(s.migrateCommand), migrateDownCommand: nul(s.migrateDownCommand), memoryWings: s.memoryWings.split(",").map((w) => w.trim()).filter(Boolean), checkCommand: nul(s.checkCommand),
                 prepareCommand: nul(s.prepareCommand),
+                qaSessionCommand: nul(s.qaSessionCommand),
                 callbackPorts: s.callbackPorts.split(",").map((x) => x.trim()).filter((x) => /^\d+\*?$/.test(x)).map((x) => ({ port: Number(x.replace("*", "")), relay: x.endsWith("*") })),
                 components: comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
                 keepServices,
@@ -334,6 +335,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                     ))}
                     <button className="tiny" onClick={() => setComps((cs) => [...cs, { key: "", label: "", command: "", autoStart: false }])}>+ component</button>
                 </div>
+                <label>QA session command (Stagehand runs it from the worktree before every QA pass; the last line it prints reaches the QA run and its seed steps as $STAGEHAND_QA_SESSION — e.g. a signed session cookie for API scenarios, so the agent never handles the app's secrets) <textarea className="tall" spellCheck={false} value={s.qaSessionCommand} onChange={ss("qaSessionCommand")} placeholder="optional" /></label>
                 <label>Seeding hints for QA (how agents create test data here: local DB connection and key tables, API auth, seed scripts; given to the Design and QA prompts verbatim) <textarea value={s.qaSeedHints} onChange={ss("qaSeedHints")} className="tall" placeholder={"Local Postgres: PGPASSWORD=… psql -h localhost -p 5433 -U … -d …\nDeals live in deal, pro formas in pro_forma; sources in pro_forma_source (source_type_id …)\nPrefer SQL for numeric inputs; the pro forma table UI is slow to edit."} /></label>
             </Section>
 

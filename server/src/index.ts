@@ -800,6 +800,8 @@ app.patch("/api/envs/:id", async (c) => {
             callbackPorts: z.array(z.object({ port: z.number().int().min(1).max(65535), relay: z.boolean().default(false) })).nullable().optional(),
             // Bash run before every command of the env (env-config.ts).
             prepareCommand: z.string().nullable().optional(),
+            // Run by Stagehand before a QA pass; its last output line is the pass's $STAGEHAND_QA_SESSION.
+            qaSessionCommand: z.string().nullable().optional(),
             ciAutopilotRules: z
                 .object({ disabled: z.array(z.string()).default([]), custom: z.array(z.object({ key: z.string().optional(), title: z.string().trim().min(1), verdict: z.enum(["allow", "deny"]), detail: z.string().default("") })).default([]) })
                 .nullable()
@@ -888,6 +890,7 @@ app.patch("/api/envs/:id", async (c) => {
         const json = disabled.length || custom.length ? JSON.stringify({ disabled, custom: custom.map((x, i) => ({ key: x.key?.trim() || `r${Date.now().toString(36)}${i}`, title: x.title, verdict: x.verdict, detail: (x.detail ?? "").trim() })) }) : null;
         db.prepare(`UPDATE envs SET ci_autopilot_rules = ? WHERE id = ?`).run(json, env.id);
     }
+    if (body.qaSessionCommand !== undefined) db.prepare(`UPDATE envs SET qa_session_command = ? WHERE id = ?`).run(body.qaSessionCommand?.trim() || null, env.id);
     if (body.prepareCommand !== undefined) db.prepare(`UPDATE envs SET prepare_command = ? WHERE id = ?`).run(body.prepareCommand?.trim() || null, env.id);
     if (body.callbackPorts !== undefined) db.prepare(`UPDATE envs SET callback_ports = ? WHERE id = ?`).run(body.callbackPorts && body.callbackPorts.length ? JSON.stringify(body.callbackPorts) : null, env.id);
     if (body.testCommand !== undefined) db.prepare(`UPDATE envs SET test_command = ? WHERE id = ?`).run(body.testCommand?.trim() || null, env.id);

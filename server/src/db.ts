@@ -168,6 +168,8 @@ export interface EnvRow {
     callback_ports?: string | null;
     // Shell text run before every command of the env (env-config.ts withPrepare).
     prepare_command?: string | null;
+    // Run by Stagehand before a QA pass; its last output line reaches the pass as $STAGEHAND_QA_SESSION.
+    qa_session_command?: string | null;
     // Runs from the worktree after every implementation / PR-fix run; non-zero = the run goes back to the agent with the
     // output (e.g. Django `check --database default` + `makemigrations --check`, which tests and a dev server never run).
     check_command: string | null;
@@ -1006,6 +1008,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.ci_autopilot_rules", `ALTER TABLE envs ADD COLUMN ci_autopilot_rules TEXT`],
     ["envs.callback_ports", `ALTER TABLE envs ADD COLUMN callback_ports TEXT`],
     ["envs.prepare_command", `ALTER TABLE envs ADD COLUMN prepare_command TEXT`],
+    ["envs.qa_session_command", `ALTER TABLE envs ADD COLUMN qa_session_command TEXT`],
     ["tasks.ci_autopilot", `ALTER TABLE tasks ADD COLUMN ci_autopilot INTEGER`],
     ["product_owners.issues_refreshed_at", `ALTER TABLE product_owners ADD COLUMN issues_refreshed_at TEXT`],
     ["product_owners.issues_error", `ALTER TABLE product_owners ADD COLUMN issues_error TEXT`],

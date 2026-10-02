@@ -3988,7 +3988,8 @@ export class Engine extends EventEmitter {
             const only = new Set(forPass.map((s) => s.id).filter((id) => !resumeOnly || resumeOnly.includes(id)));
             // Teardown, then seed steps written as commands are run here, without an agent; only `ui:` steps reach the QA runner.
             this.setTaskStatus(taskId, "running", `${def.label} · resetting and seeding data`);
-            void this.runShellSeeds(task, env, def, qaPass, { only })
+            void this.refreshQaSession(task, env)
+                .then(() => this.runShellSeeds(task, env, def, qaPass, { only }))
                 .then((report) => this.dispatch(taskId, stage, { ...opts, seedsDone: true, extraVars: { ...(opts.extraVars ?? {}), seedReport: report, qaPass } }))
                 .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · seeding failed: ${String((e as Error).message ?? e).slice(0, 160)}`));
             return;
@@ -4180,7 +4181,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: runDir,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...runAuth, ...(gstackState ? { BROWSE_STATE_FILE: gstackState, B: this.gstackBin() ?? "", GSTACK_TELEMETRY_OFF: "1" } : {}) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...this.qaSessionEnv(task.id, def), ...runAuth, ...(gstackState ? { BROWSE_STATE_FILE: gstackState, B: this.gstackBin() ?? "", GSTACK_TELEMETRY_OFF: "1" } : {}) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...(isPrShard(shard)
@@ -4754,6 +4755,31 @@ export class Engine extends EventEmitter {
     }
 
     // `opts.only`: seed only these scenarios (a QA pass resumed after questions re-seeds just the scenarios still to run).
+    // The env's QA session command (envs.qa_session_command): Stagehand runs it before a QA pass — from the worktree, after
+    // Prepare — and gives the last line it prints to the pass as $STAGEHAND_QA_SESSION (e.g. `token=<jwt>` for a Cookie
+    // header), so API scenarios sign in without the agent ever handling the app's secrets.
+    private readonly qaSessions = new Map<string, string>();
+    private async refreshQaSession(task: TaskRow, env: EnvRow): Promise<void> {
+        this.qaSessions.delete(task.id);
+        const tpl = env.qa_session_command?.trim();
+        if (!tpl) return;
+        const cwd = task.worktree_path ?? env.path;
+        const cmd = withPrepare(env, tpl.replace(/\{\{worktree\}\}/g, cwd).replace(/\{\{envPath\}\}/g, env.path));
+        try {
+            const { stdout } = await execFileAsync("bash", loginShellArgs(cmd), { cwd, env: loginShellEnv(parseEnvVars(env.env_vars)), timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
+            const line = stdout.trim().split("\n").filter((l) => l.trim()).pop()?.trim();
+            if (!line) throw new Error("it printed nothing");
+            this.qaSessions.set(task.id, line);
+        } catch (e) {
+            const err = e as { stderr?: string; stdout?: string; message?: string };
+            throw new Error(`the environment's QA session command failed: ${String(err.stderr?.trim() || err.stdout?.trim() || err.message || e).split("\n").slice(-3).join(" ").slice(0, 240)}`);
+        }
+    }
+    private qaSessionEnv(taskId: string, def: StageDef): Record<string, string> {
+        const v = def.chrome ? this.qaSessions.get(taskId) : undefined;
+        return v ? { STAGEHAND_QA_SESSION: v } : {};
+    }
+
     private async runShellSeeds(task: TaskRow, env: EnvRow, def: StageDef, qaPass: string, opts?: { only?: Set<string> }): Promise<string> {
         const design = this.readArtifactJson<DesignResult>(task.id, "design.json");
         const pass = def.stage === "qa_baseline" ? "before" : "after";
@@ -4770,7 +4796,7 @@ export class Engine extends EventEmitter {
             try {
                 const { stdout } = await execFileAsync("bash", loginShellArgs(cmd), {
                     cwd: task.worktree_path ?? env.path,
-                    env: loginShellEnv(parseEnvVars(env.env_vars)),
+                    env: loginShellEnv({ ...parseEnvVars(env.env_vars), ...this.qaSessionEnv(task.id, def) }),
                     timeout: 120_000,
                     maxBuffer: 4 * 1024 * 1024,
                 });
