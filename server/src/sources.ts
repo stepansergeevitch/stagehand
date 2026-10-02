@@ -135,6 +135,27 @@ export const createClickUpTask = async (cfg: Config, input: { listId: string; pa
     return { id: t.id, identifier: t.custom_id ?? t.id, url: t.url };
 };
 
+// ---------- issue descriptions (PO ticket corrections) ----------
+
+// The live description of an issue, by its remote id.
+export const issueDescription = async (cfg: Config, source: "linear" | "clickup", remoteId: string): Promise<string> => {
+    if (source === "linear") {
+        const d = await linear<{ issue: { description: string | null } | null }>(cfg, `query($id: String!) { issue(id: $id) { description } }`, { id: remoteId });
+        if (!d.issue) throw new Error("Linear: the issue no longer exists");
+        return d.issue.description ?? "";
+    }
+    const t = await clickupTask(cfg, remoteId);
+    return t.markdown_description ?? t.description ?? "";
+};
+export const updateIssueDescription = async (cfg: Config, source: "linear" | "clickup", remoteId: string, description: string): Promise<void> => {
+    if (source === "linear") {
+        const d = await linear<{ issueUpdate: { success: boolean } }>(cfg, `mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }`, { id: remoteId, input: { description } });
+        if (!d.issueUpdate.success) throw new Error("Linear: issueUpdate did not succeed");
+        return;
+    }
+    await clickup(cfg, `/task/${encodeURIComponent(remoteId)}`, { method: "PUT", body: JSON.stringify({ markdown_description: description }) });
+};
+
 // ---------- Notion ----------
 
 type NotionRich = { plain_text: string; href?: string | null; annotations?: { bold?: boolean; italic?: boolean; code?: boolean } };

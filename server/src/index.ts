@@ -2237,6 +2237,15 @@ app.post("/api/product-owners/:id/corrections/:cid/withdraw", (c) => {
         return poErr(c, e);
     }
 });
+// The human applies a ticket correction: its description is written to the task manager.
+app.post("/api/product-owners/:id/corrections/:cid/apply", async (c) => {
+    try {
+        await productOwners.applyCorrection(c.req.param("id"), c.req.param("cid"));
+        return c.json({ ok: true });
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
 // The human discards corrections, or marks ticket ones applied (done by hand in the task manager).
 app.post("/api/product-owners/:id/corrections/status", async (c) => {
     const body = json(z.object({ ids: z.array(z.string()).min(1), status: z.enum(["discarded", "applied"]) }), await c.req.json());

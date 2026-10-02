@@ -581,6 +581,7 @@ export const api = {
     poConfirmQuestion: (id: string, q: string, resolution?: string) => post<{ ok: true }>(`/api/product-owners/${id}/questions/${q}/confirm`, resolution ? { resolution } : {}),
     poReadEvent: (id: string, eventId: string) => post<{ ok: true }>(`/api/product-owners/${id}/events/${eventId}/read`),
     poSendCorrections: (id: string, ids: string[]) => post<{ ok: true }>(`/api/product-owners/${id}/corrections/send`, { ids }),
+    poApplyCorrection: (id: string, cid: string) => post<{ ok: true }>(`/api/product-owners/${id}/corrections/${cid}/apply`),
     poCorrectionsStatus: (id: string, ids: string[], status: "discarded" | "applied") => post<{ ok: true }>(`/api/product-owners/${id}/corrections/status`, { ids, status }),
     poRefreshIssues: (id: string) => post<{ total: number; added: number; changed: number; removed: number; briefed: boolean }>(`/api/product-owners/${id}/refresh-issues`),
     poSetPhase: (id: string, phase: PoPhase) => post<{ ok: true }>(`/api/product-owners/${id}/phase`, { phase }),

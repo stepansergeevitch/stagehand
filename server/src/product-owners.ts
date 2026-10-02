@@ -9,7 +9,7 @@ import { authEnv } from "./claude/accounts.js";
 import { startClaude, type ActivityEvent, type ClaudeRun } from "./claude/runner.js";
 import { recordUsage } from "./usage.js";
 import type { Palace } from "./palace.js";
-import { createClickUpTask, createLinearIssue, downloadLinearUpload, fetchProjectState, fetchScope, fetchScopeIssues, fetchSource, findIssue, linearUploads, ticketScopeId, type TrackedIssue, type TrackedProject } from "./sources.js";
+import { createClickUpTask, createLinearIssue, issueDescription, updateIssueDescription, downloadLinearUpload, fetchProjectState, fetchScope, fetchScopeIssues, fetchSource, findIssue, linearUploads, ticketScopeId, type TrackedIssue, type TrackedProject } from "./sources.js";
 import { sharedFileName } from "./tickets.js";
 import { chunkText, drawerText, issueDrawers } from "./palace-index.js";
 import { describeImage, extractDocText, isConvertibleDoc, isImage } from "./media.js";
@@ -1729,6 +1729,27 @@ export class ProductOwners {
         const r = this.journal.addCorrection({ po_id: poId, kind: "task", target: task.id, title: c.title.trim(), body: c.body.trim(), before: null, after: null, event_id: eventId });
         this.emit({ poId, kind: "updated" });
         return { id: r.id };
+    }
+    // The human applies a ticket correction: the new description goes to the task manager, unless the issue changed
+    // there since the PO suggested it. The stored issue takes the new text, so the next refresh reports no change.
+    async applyCorrection(poId: string, id: string): Promise<void> {
+        const po = this.get(poId);
+        if (!po) throw new Error("product owner not found");
+        const c = this.journal.correction(poId, id);
+        if (!c || c.kind !== "ticket") throw new Error("no such ticket correction");
+        if (c.status !== "open") throw new Error(`this correction is ${c.status}`);
+        this.checkManager(po);
+        const row = this.db.prepare(`SELECT * FROM po_issues WHERE po_id = ? AND UPPER(identifier) = UPPER(?)`).get(poId, c.target) as PoIssueRow | undefined;
+        if (!row) throw new Error(`${c.target} is no longer an issue of this project`);
+        const live = await issueDescription(this.cfg, po.source, row.remote_id);
+        if (live.trim() !== (c.before ?? "").trim()) throw new Error(`${c.target} changed in ${po.source === "linear" ? "Linear" : "ClickUp"} since the Product Owner suggested this — refresh the issues; the Product Owner suggests it again on the new text`);
+        await updateIssueDescription(this.cfg, po.source, row.remote_id, c.after ?? "");
+        const issue = { ...(JSON.parse(row.data) as TrackedIssue), description: c.after ?? "" };
+        this.db.prepare(`UPDATE po_issues SET data = ?, hash = ?, changed_at = ? WHERE po_id = ? AND identifier = ?`).run(JSON.stringify(issue), issueHash(issue), now(), poId, row.identifier);
+        this.queueIssueIndex(po, row.identifier);
+        this.journal.setCorrectionStatus([id], "applied");
+        this.journal.addEvent({ poId, kind: "edit", title: `You applied a correction to ${c.target}: ${c.title}`, body: `The description of ${c.target} in ${po.source === "linear" ? "Linear" : "ClickUp"}, changed:\n\n\`\`\`diff\n${unifiedDiff(c.before ?? "", c.after ?? "").join("\n")}\n\`\`\``, status: "done" });
+        this.emit({ poId, kind: "updated" });
     }
     withdrawCorrection(poId: string, id: string): void {
         const c = this.journal.correction(poId, id);

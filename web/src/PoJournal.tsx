@@ -216,10 +216,10 @@ export const EventsTab = ({ d, onError, reload }: Props) => {
 
 // ---------- corrections ----------
 
-const TicketCorrection = ({ c, d, busy, onStatus }: { c: PoCorrection; d: PoDetail; busy: boolean; onStatus: (s: "discarded" | "applied") => void }) => {
+const TicketCorrection = ({ c, d, busy, onApply, onDiscard }: { c: PoCorrection; d: PoDetail; busy: boolean; onApply: () => void; onDiscard: () => void }) => {
     const issue = d.issues.find((i) => i.identifier.toUpperCase() === c.target.toUpperCase());
     const ev = d.events.find((e) => e.id === c.event_id);
-    const [copied, setCopied] = useState(false);
+    const manager = d.po.source === "clickup" ? "ClickUp" : "Linear";
     return (
         <div className="po-comment-card">
             <div className="po-comment-top">
@@ -236,9 +236,8 @@ const TicketCorrection = ({ c, d, busy, onStatus }: { c: PoCorrection; d: PoDeta
                 <DiffLines lines={c.diff ?? []} />
             </details>
             <div className="actions" style={{ marginBottom: 0 }}>
-                <button onClick={() => void navigator.clipboard.writeText(c.after ?? "").then(() => setCopied(true))}>{copied ? "Copied" : "Copy new description"}</button>
-                <button disabled={busy} onClick={() => onStatus("applied")} title="You changed the ticket in the task manager">Mark applied</button>
-                <button className="danger" disabled={busy} onClick={() => onStatus("discarded")}>Discard</button>
+                <button className="primary" disabled={busy} title={`Write the new description to ${c.target} in ${manager}`} onClick={() => { if (confirm(`Replace the description of ${c.target} in ${manager} with the new one?`)) onApply(); }}>Apply</button>
+                <button className="danger" disabled={busy} onClick={onDiscard}>Discard</button>
             </div>
         </div>
     );
@@ -311,7 +310,7 @@ export const CorrectionsTab = ({ d, onError, reload }: Props) => {
                 <TaskGroup key={`${taskId}:${items.map((c) => c.id).join(",")}`} taskId={taskId} items={items} d={d} busy={busy} onSend={(ids) => void call(() => api.poSendCorrections(d.po.id, ids))} onDiscard={(ids) => void call(() => api.poCorrectionsStatus(d.po.id, ids, "discarded"))} />
             ))}
             {tickets.length > 0 && <h2>Tickets</h2>}
-            {tickets.map((c) => <TicketCorrection key={c.id} c={c} d={d} busy={busy} onStatus={(s) => void call(() => api.poCorrectionsStatus(d.po.id, [c.id], s))} />)}
+            {tickets.map((c) => <TicketCorrection key={c.id} c={c} d={d} busy={busy} onApply={() => void call(() => api.poApplyCorrection(d.po.id, c.id))} onDiscard={() => void call(() => api.poCorrectionsStatus(d.po.id, [c.id], "discarded"))} />)}
             {done.length > 0 && (
                 <details className="po-history">
                     <summary>Done ({done.length})</summary>
