@@ -43,7 +43,7 @@ const ctx = (over: Partial<VerifyCtx> = {}): VerifyCtx => {
         ...over,
     };
 };
-const f = (x: Partial<TriageFailure>): TriageFailure => ({ check: "tests", kind: "other", what: "", tests: [], locations: [], evidence: "", verdict: "allow", reason: "", ...x });
+const f = (x: Partial<TriageFailure>): TriageFailure => ({ check: "tests", kind: "other", rule: null, what: "", tests: [], locations: [], evidence: "", verdict: "allow", reason: "", ...x });
 
 describe("git facts", () => {
     it("reads new-side ranges and added files", () => {
@@ -90,6 +90,14 @@ describe("verifyFailure", () => {
         expect(v.allowed).toBe(false);
         expect(v.why).toMatch(/fail on base/);
         expect((await verifyFailure(budget, ctx({ baseCheck: async () => "none" }))).allowed).toBe(false);
+    });
+    it("applies the env's rules: a deny rule wins, a kind can be off, a custom allow needs its rule", async () => {
+        const rules = { disabled: ["own_lint"], custom: [{ key: "gen", title: "Generated FE types", verdict: "deny" as const, detail: "" }, { key: "snap", title: "Storybook snapshots", verdict: "allow" as const, detail: "" }] };
+        const lint = f({ kind: "own_lint", locations: ["app/views.py:12"] });
+        expect((await verifyFailure(lint, ctx(), rules)).why).toMatch(/switched off/);
+        expect((await verifyFailure(f({ kind: "own_test", rule: "gen", tests: ["tests/test_items.py::test_mine"] }), ctx(), rules)).allowed).toBe(false);
+        expect((await verifyFailure(f({ kind: "custom", rule: "snap", locations: ["x.snap"] }), ctx(), rules)).allowed).toBe(true);
+        expect((await verifyFailure(f({ kind: "custom", rule: "nope" }), ctx(), rules)).allowed).toBe(false);
     });
     it("never allows a denied or other failure", async () => {
         expect((await verifyFailure(f({ kind: "other" }), ctx())).allowed).toBe(false);

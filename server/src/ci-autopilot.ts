@@ -10,11 +10,53 @@ import { z } from "zod";
 //   own_test       a test the branch added or changed fails
 //   affected_test  a test the branch did not touch fails, and it passes on base (CI green there, or a local base run)
 //   own_lint       a lint error on a line the branch added or changed
+//   custom         a failure an env rule allows (the triage's judgement — no mechanical check)
 //   other          anything else — the human's
+//
+// Each env can switch built-in kinds off and add its own rules (envs.ci_autopilot_rules): an allow rule widens the
+// list, a deny rule ("generated FE types of an unmerged backend change: leave red") wins over every kind.
+
+export const BUILTIN_KINDS = [
+    { key: "own_migration", title: "Migrations of this branch", detail: "a migration conflict, or a migration the branch added that fails to apply" },
+    { key: "own_test", title: "Tests of this branch", detail: "a test the branch added or changed fails" },
+    { key: "affected_test", title: "Tests this branch broke", detail: "a test the branch did not touch fails because of it, and passes on base (a query budget, a snapshot)" },
+    { key: "own_lint", title: "Lint on this branch's lines", detail: "lint or format errors on lines the branch added or changed — not elsewhere in a touched file" },
+] as const;
+export type BuiltinKind = (typeof BUILTIN_KINDS)[number]["key"];
+export interface AutopilotRule { key: string; title: string; verdict: "allow" | "deny"; detail: string }
+export interface AutopilotRules { disabled: string[]; custom: AutopilotRule[] }
+export const autopilotRulesOf = (json: string | null | undefined): AutopilotRules => {
+    try {
+        const v = json ? (JSON.parse(json) as Partial<AutopilotRules>) : null;
+        return {
+            disabled: Array.isArray(v?.disabled) ? v.disabled.filter((k): k is string => typeof k === "string") : [],
+            custom: Array.isArray(v?.custom) ? v.custom.filter((r): r is AutopilotRule => !!r && typeof r.title === "string" && !!r.key).map((r) => ({ key: r.key, title: r.title, verdict: r.verdict === "allow" ? "allow" : "deny", detail: r.detail ?? "" })) : [],
+        };
+    } catch {
+        return { disabled: [], custom: [] };
+    }
+};
+// The list as the triage reads it.
+export const describeRules = (rules: AutopilotRules): string => {
+    const on = BUILTIN_KINDS.filter((k) => !rules.disabled.includes(k.key));
+    const off = BUILTIN_KINDS.filter((k) => rules.disabled.includes(k.key));
+    const allow = rules.custom.filter((r) => r.verdict === "allow");
+    const deny = rules.custom.filter((r) => r.verdict === "deny");
+    return [
+        `Kinds the autopilot may fix here:\n${on.map((k) => `- **${k.key}** — ${k.detail}`).join("\n") || "- (none)"}`,
+        off.length ? `Switched off in this environment (always \`other\`): ${off.map((k) => `\`${k.key}\``).join(", ")}.` : "",
+        allow.length ? `This environment's own allow rules — kind \`custom\`, \`rule\` = the key:\n${allow.map((r) => `- \`${r.key}\` **${r.title}** — ${r.detail}`).join("\n")}` : "",
+        deny.length ? `This environment's deny rules — they win over every kind: when one applies, set \`rule\` to its key and \`verdict\` to \`deny\`:\n${deny.map((r) => `- \`${r.key}\` **${r.title}** — ${r.detail}`).join("\n")}` : "",
+    ]
+        .filter(Boolean)
+        .join("\n\n");
+};
 
 export const TriageFailure = z.object({
     check: z.string(),
-    kind: z.enum(["own_migration", "own_test", "affected_test", "own_lint", "other"]),
+    kind: z.enum(["own_migration", "own_test", "affected_test", "own_lint", "custom", "other"]),
+    // The key of the env rule that applies (custom allow, or a deny rule), else null.
+    rule: z.string().nullable().default(null),
     what: z.string().default(""),
     // Test ids as the runner names them: `tests/test_items.py::TestList::test_budget`, `src/items.test.ts`.
     tests: z.array(z.string()).default([]),
@@ -154,9 +196,16 @@ export interface VerifyCtx {
 const deny = (f: TriageFailure, why: string): VerifiedFailure => ({ ...f, allowed: false, why, keep: [] });
 const allow = (f: TriageFailure, why: string, keep: string[]): VerifiedFailure => ({ ...f, allowed: true, why, keep });
 
-// Each "allow" of the triage, checked on git and CI facts. Anything not proven stays the human's.
-export const verifyFailure = async (f: TriageFailure, ctx: VerifyCtx): Promise<VerifiedFailure> => {
+// Each "allow" of the triage, checked on git and CI facts and the env's rules. Anything not proven stays the human's.
+export const verifyFailure = async (f: TriageFailure, ctx: VerifyCtx, rules: AutopilotRules = { disabled: [], custom: [] }): Promise<VerifiedFailure> => {
+    const rule = f.rule ? rules.custom.find((r) => r.key === f.rule) : undefined;
+    if (rule?.verdict === "deny") return deny(f, `env rule "${rule.title}"`);
     if (f.verdict !== "allow" || f.kind === "other") return deny(f, f.reason || "not on the autopilot's list");
+    if (f.kind === "custom") {
+        if (rule?.verdict !== "allow") return deny(f, "no allow rule of this environment matches");
+        return allow(f, `env rule "${rule.title}" (the triage's judgement)`, [...f.tests, ...f.locations]);
+    }
+    if (rules.disabled.includes(f.kind)) return deny(f, `"${f.kind.replace(/_/g, " ")}" is switched off for this environment`);
     if (f.kind === "own_lint") {
         const locs = f.locations.map((l) => ({ raw: l, loc: location(l) })).filter((x) => x.loc);
         if (!locs.length) return deny(f, "the triage named no file:line for the lint errors");
@@ -262,7 +311,8 @@ export const writeAutopilot = (taskDir: string, s: AutopilotState): void => writ
 export const activeRound = (s: AutopilotState): AutopilotRound | undefined => s.rounds.find((r) => ["triage", "fixing", "reviewing", "addressing", "pushing"].includes(r.phase));
 
 // The PR Fix brief for the verified failures, with the others named as not to touch.
-export const fixBrief = (prNumber: number, verified: VerifiedFailure[]): string => {
+export const fixBrief = (prNumber: number, verified: VerifiedFailure[], rules: AutopilotRules = { disabled: [], custom: [] }): string => {
+    const denyRules = rules.custom.filter((r) => r.verdict === "deny");
     const ok = verified.filter((v) => v.allowed);
     const no = verified.filter((v) => !v.allowed);
     const item = (v: VerifiedFailure): string =>
@@ -278,6 +328,7 @@ export const fixBrief = (prNumber: number, verified: VerifiedFailure[]): string 
         `CI autopilot — PR #${prNumber}: fix ONLY these failures; this branch caused them (verified against the diff and the base):`,
         ok.map(item).join("\n"),
         no.length ? `Do NOT touch these — they are not this branch's to fix here:\n${no.map((v) => `- ${v.check}: ${v.what} (${v.why})`).join("\n")}` : "",
+        denyRules.length ? `This environment never lets the autopilot fix:\n${denyRules.map((r) => `- **${r.title}** — ${r.detail}`).join("\n")}` : "",
         `Rules: change only what these failures need — no refactor, no other file. Never weaken, skip or delete a test or an assertion, never disable a lint rule or add an ignore comment, never edit a migration the base already has. A query-budget or snapshot test that fails because this branch does more work: make the code do less when that is right, else update the budget or snapshot and say why in the summary. Read the logs with \`gh pr checks ${prNumber}\` and \`gh run view --log-failed <run-id>\`.`,
     ]
         .filter(Boolean)

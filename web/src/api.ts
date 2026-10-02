@@ -59,7 +59,7 @@ export interface Env {
     chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
-    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; ci_autopilot?: number; test_command?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
+    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; ci_autopilot?: number; test_command?: string | null; ci_autopilot_rules?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
     // JSON ReviewChecklist: gstack categories switched off, points added, extra do-not-flag rules for Code Review; null = the full checklist.
     review_checklist?: string | null;
     // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
@@ -214,6 +214,22 @@ export type ReviewPass = "critical" | "informational";
 export interface ReviewCategoryDef { key: string; title: string; pass: ReviewPass; detail: string }
 export interface ReviewPoint { key: string; title: string; pass: ReviewPass; detail: string }
 export interface ReviewChecklist { disabled: string[]; custom: ReviewPoint[]; doNotFlag: string[] }
+// The CI autopilot's list per env: built-in kinds switched off, and the env's own allow / deny rules.
+export const AUTOPILOT_KINDS = [
+    { key: "own_migration", title: "Migrations of this branch", detail: "a migration conflict, or a migration the branch added that fails to apply" },
+    { key: "own_test", title: "Tests of this branch", detail: "a test the branch added or changed fails" },
+    { key: "affected_test", title: "Tests this branch broke", detail: "a test the branch did not touch fails because of it, and passes on base (a query budget, a snapshot)" },
+    { key: "own_lint", title: "Lint on this branch's lines", detail: "lint or format errors on lines the branch added or changed — not elsewhere in a touched file" },
+] as const;
+export interface AutopilotRules { disabled: string[]; custom: Array<{ key: string; title: string; verdict: "allow" | "deny"; detail: string }> }
+export const autopilotRulesOf = (env: Pick<Env, "ci_autopilot_rules"> | undefined): AutopilotRules => {
+    try {
+        const v = env?.ci_autopilot_rules ? (JSON.parse(env.ci_autopilot_rules) as Partial<AutopilotRules>) : null;
+        return { disabled: Array.isArray(v?.disabled) ? v.disabled : [], custom: Array.isArray(v?.custom) ? v.custom.map((r) => ({ key: r.key, title: r.title, verdict: r.verdict === "allow" ? "allow" : "deny", detail: r.detail ?? "" })) : [] };
+    } catch {
+        return { disabled: [], custom: [] };
+    }
+};
 export const reviewChecklistOf = (env: Pick<Env, "review_checklist"> | undefined): ReviewChecklist => {
     try {
         const v = env?.review_checklist ? (JSON.parse(env.review_checklist) as Partial<ReviewChecklist>) : null;
@@ -330,7 +346,7 @@ export interface PrFixReplies {
 }
 // The CI autopilot of a task (server ci-autopilot.ts): its rounds, from the triage to the push.
 export interface AutopilotFailure {
-    check: string; kind: "own_migration" | "own_test" | "affected_test" | "own_lint" | "other"; what: string; tests: string[]; locations: string[]; evidence: string;
+    check: string; kind: "own_migration" | "own_test" | "affected_test" | "own_lint" | "custom" | "other"; rule?: string | null; what: string; tests: string[]; locations: string[]; evidence: string;
     verdict: "allow" | "deny"; reason: string; allowed: boolean; why: string; keep: string[];
 }
 export interface AutopilotRound {
@@ -640,7 +656,7 @@ export const api = {
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
             qaBrowser?: "chrome" | "gstack"; qaAutoFix?: QaAutoFixScope;
             reviewChecklist?: ReviewChecklist | null;
-            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
+            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; ciAutopilotRules?: AutopilotRules | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),

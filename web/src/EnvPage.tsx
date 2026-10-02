@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, componentsOf, reviewChecklistOf, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
+import { accountOrderOf, accountUsableWith, api, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, type AutopilotRules, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -132,12 +132,16 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     const [s, setS] = useState({
         appUrl: env.app_url ?? "", beCommand: env.be_command ?? "", feCommand: env.fe_command ?? "", beUrlTemplate: env.be_url_template ?? "", feUrlTemplate: env.fe_url_template ?? "",
         bePort: env.be_port ? String(env.be_port) : "", fePort: env.fe_port ? String(env.fe_port) : "", setupCommand: env.setup_command ?? "", envVars: env.env_vars ?? "",
-        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "", testCommand: env.test_command ?? "",
+        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "",
     });
     // ---- optional components (a worker, a scheduler): saved with the Services section
     const [comps, setComps] = useState<EnvComponent[]>(() => componentsOf(env));
     const [keepServices, setKeepServices] = useState(env.keep_services === 1);
+    // ---- CI autopilot
     const [ciAutopilot, setCiAutopilot] = useState((env.ci_autopilot ?? 1) !== 0);
+    const [testCommand, setTestCommand] = useState(env.test_command ?? "");
+    const [apRules, setApRules] = useState<AutopilotRules>(() => autopilotRulesOf(env));
+    const setApRule = (i: number, patch: Partial<AutopilotRules["custom"][number]>) => setApRules((r) => ({ ...r, custom: r.custom.map((x, j) => (j === i ? { ...x, ...patch } : x)) }));
     const [qaBrowser, setQaBrowser] = useState<"chrome" | "gstack">(env.qa_browser ?? "chrome");
     const [qaAutoFix, setQaAutoFix] = useState<QaAutoFixScope>((env.qa_auto_fix as QaAutoFixScope | null | undefined) ?? "seeds+steps");
     // ---- code review: which of gstack's categories run here, points added, extra do-not-flag rules
@@ -276,8 +280,6 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 qaSeedHints: nul(s.qaSeedHints), cleanupCommand: nul(s.cleanupCommand), rebaseCommand: nul(s.rebaseCommand), migrateCommand: nul(s.migrateCommand), migrateDownCommand: nul(s.migrateDownCommand), memoryWings: s.memoryWings.split(",").map((w) => w.trim()).filter(Boolean), checkCommand: nul(s.checkCommand),
                 components: comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
                 keepServices,
-                ciAutopilot,
-                testCommand: nul(s.testCommand),
                 qaBrowser,
                 qaAutoFix,
             })}>
@@ -296,8 +298,6 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 <label>Cleanup command (runs from the worktree when a task is cleaned up, after BE/FE stop and before the worktree is removed — drop a per-task database, free caches; {"{{worktree}}"} / {"{{envPath}}"}) <textarea value={s.cleanupCommand} onChange={ss("cleanupCommand")} placeholder="optional" /></label>
                 <label>Rebase command (runs from the worktree after every successful rebase onto the base branch — rebuild what a rebase makes stale, e.g. drop and recreate the per-task test databases; {"{{worktree}}"} / {"{{envPath}}"}) <textarea value={s.rebaseCommand} onChange={ss("rebaseCommand")} placeholder="optional" /></label>
                 <label>Verification command (runs from the worktree after every Implementation and PR Fix run; a non-zero exit sends the output back to the agent, twice, then blocks for you — put here what tests and a dev server never exercise, e.g. Django <code>manage.py check --database default && manage.py makemigrations --check --dry-run</code>) <textarea value={s.checkCommand} onChange={ss("checkCommand")} placeholder="optional" /></label>
-                <label className="inline"><input type="checkbox" checked={ciAutopilot} onChange={(e) => setCiAutopilot(e.target.checked)} /> CI autopilot for new tasks — when a PR's checks finish red, the task fixes by itself the failures it caused (its migrations, its tests, untouched tests it broke that pass on base, lint on its own lines), has the fix reviewed, and pushes; each task can turn it off</label>
-                <label>Test command for the CI autopilot (runs named tests on a checkout of the base, to prove an untouched failing test passes there when CI has no green run on the base; {"{{tests}}"} = the test ids; runs from the base checkout of the repository) <textarea value={s.testCommand} onChange={ss("testCommand")} placeholder="optional — e.g. cd backend && poetry run pytest {{tests}}" /></label>
                 <label>BE command <textarea value={s.beCommand} onChange={ss("beCommand")} /></label>
                 <label>FE command <textarea value={s.feCommand} onChange={ss("feCommand")} /></label>
                 <label>QA browser for browser scenarios
@@ -330,6 +330,41 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                     <button className="tiny" onClick={() => setComps((cs) => [...cs, { key: "", label: "", command: "", autoStart: false }])}>+ component</button>
                 </div>
                 <label>Seeding hints for QA (how agents create test data here: local DB connection and key tables, API auth, seed scripts; given to the Design and QA prompts verbatim) <textarea value={s.qaSeedHints} onChange={ss("qaSeedHints")} className="tall" placeholder={"Local Postgres: PGPASSWORD=… psql -h localhost -p 5433 -U … -d …\nDeals live in deal, pro formas in pro_forma; sources in pro_forma_source (source_type_id …)\nPrefer SQL for numeric inputs; the pro forma table UI is slow to edit."} /></label>
+            </Section>
+
+            <Section title="CI autopilot" hint="When a PR's checks finish red, the task fixes by itself the failures it caused, has the fix reviewed, and pushes. Stagehand verifies each built-in kind against the branch diff and the base; your own allow rules rest on the triage's judgement; a deny rule wins over everything." saving={saving === "autopilot"} onSave={() => save("autopilot", {
+                ciAutopilot,
+                testCommand: nul(testCommand),
+                ciAutopilotRules: apRules.disabled.length || apRules.custom.length ? { disabled: apRules.disabled, custom: apRules.custom.filter((r) => r.title.trim()).map((r) => ({ ...r, title: r.title.trim(), detail: r.detail.trim() })) } : null,
+            })}>
+                <label className="inline"><input type="checkbox" checked={ciAutopilot} onChange={(e) => setCiAutopilot(e.target.checked)} /> On for new tasks (each task can switch it off on its PR tab)</label>
+                <div className="review-pass">
+                    <b>Built-in kinds</b>
+                    {AUTOPILOT_KINDS.map((k) => (
+                        <label className="inline review-cat" key={k.key}>
+                            <input type="checkbox" checked={!apRules.disabled.includes(k.key)} onChange={() => setApRules((r) => ({ ...r, disabled: r.disabled.includes(k.key) ? r.disabled.filter((x) => x !== k.key) : [...r.disabled, k.key] }))} /> {k.title}
+                            <span className="review-cat-detail">{k.detail}</span>
+                        </label>
+                    ))}
+                </div>
+                <div className="components">
+                    <b>Rules of this environment</b>
+                    <span className="field-hint">Deny: a failure the autopilot must leave red here. Allow: another kind of failure it may fix. The detail tells the triage how to recognise it.</span>
+                    {apRules.custom.map((r, i) => (
+                        <div className="component-row" key={r.key || i}>
+                            <input value={r.title} placeholder="title — e.g. FE types generated from an unmerged backend" onChange={(e) => setApRule(i, { title: e.target.value })} />
+                            <select value={r.verdict} onChange={(e) => setApRule(i, { verdict: e.target.value as "allow" | "deny" })}>
+                                <option value="deny">Deny — leave it red</option>
+                                <option value="allow">Allow — may fix</option>
+                            </select>
+                            <span />
+                            <button className="tiny danger" onClick={() => setApRules((x) => ({ ...x, custom: x.custom.filter((_, j) => j !== i) }))}>remove</button>
+                            <textarea value={r.detail} placeholder="how to recognise it, and what to do instead" onChange={(e) => setApRule(i, { detail: e.target.value })} />
+                        </div>
+                    ))}
+                    <button className="tiny" onClick={() => setApRules((r) => ({ ...r, custom: [...r.custom, { key: `r${Date.now().toString(36)}`, title: "", verdict: "deny", detail: "" }] }))}>+ rule</button>
+                </div>
+                <label>Test command (runs named tests on a checkout of the base, to prove an untouched failing test passes there when CI has no green run on the base; {"{{tests}}"} = the test ids; runs from the base checkout of the repository) <textarea value={testCommand} onChange={(e) => setTestCommand(e.target.value)} placeholder="optional — e.g. cd backend && poetry run pytest {{tests}}" /></label>
             </Section>
 
             <Section title="Code review" hint="What the Code Review stage checks after Implementation: gstack's pre-landing checklist, tuned for this environment. Switch off categories that do not apply here, add the points your team reviews for (each becomes a finding category the reviewer reports under), and list what the reviewer must not flag. Every point still follows the same method: a quoted motivating line, confidence 1–10, mechanical fixes committed, judgment calls left open." saving={saving === "review"} onSave={() => save("review", {

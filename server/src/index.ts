@@ -796,6 +796,10 @@ app.patch("/api/envs/:id", async (c) => {
             memoryWings: z.array(z.string().trim().min(1)).nullable().optional(),
             ciAutopilot: z.boolean().optional(),
             testCommand: z.string().nullable().optional(),
+            ciAutopilotRules: z
+                .object({ disabled: z.array(z.string()).default([]), custom: z.array(z.object({ key: z.string().optional(), title: z.string().trim().min(1), verdict: z.enum(["allow", "deny"]), detail: z.string().default("") })).default([]) })
+                .nullable()
+                .optional(),
             checkCommand: z.string().nullable().optional(),
             components: ComponentList.optional(),
             keepServices: z.boolean().optional(),
@@ -873,6 +877,13 @@ app.patch("/api/envs/:id", async (c) => {
     if (body.migrateCommand !== undefined) db.prepare(`UPDATE envs SET migrate_command = ? WHERE id = ?`).run(body.migrateCommand, env.id);
     if (body.memoryWings !== undefined) db.prepare(`UPDATE envs SET memory_wings = ? WHERE id = ?`).run(body.memoryWings && body.memoryWings.length ? JSON.stringify(body.memoryWings) : null, env.id);
     if (body.ciAutopilot !== undefined) db.prepare(`UPDATE envs SET ci_autopilot = ? WHERE id = ?`).run(body.ciAutopilot ? 1 : 0, env.id);
+    if (body.ciAutopilotRules !== undefined) {
+        const r = body.ciAutopilotRules;
+        const disabled = r?.disabled ?? [];
+        const custom = r?.custom ?? [];
+        const json = disabled.length || custom.length ? JSON.stringify({ disabled, custom: custom.map((x, i) => ({ key: x.key?.trim() || `r${Date.now().toString(36)}${i}`, title: x.title, verdict: x.verdict, detail: (x.detail ?? "").trim() })) }) : null;
+        db.prepare(`UPDATE envs SET ci_autopilot_rules = ? WHERE id = ?`).run(json, env.id);
+    }
     if (body.testCommand !== undefined) db.prepare(`UPDATE envs SET test_command = ? WHERE id = ?`).run(body.testCommand?.trim() || null, env.id);
     if (body.migrateDownCommand !== undefined) db.prepare(`UPDATE envs SET migrate_down_command = ? WHERE id = ?`).run(body.migrateDownCommand, env.id);
     if (body.qaAutoFix !== undefined) db.prepare(`UPDATE envs SET qa_auto_fix = ? WHERE id = ?`).run(body.qaAutoFix, env.id);

@@ -1,5 +1,5 @@
 import { BaseCheckout } from "./migrations.js";
-import { activeRound, addedFiles, AutopilotReview, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
+import { activeRound, addedFiles, AutopilotReview, autopilotRulesOf, describeRules, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
 import { EventEmitter } from "node:events";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -2695,7 +2695,7 @@ export class Engine extends EventEmitter {
             return;
         }
         const prompt = renderPrompt("ci-triage.md", {
-            ticketId: task.ticket_id, prNumber: String(prNumber), cwd, branch: task.branch, baseBranch: this.baseBranchOf(task, env, repo), headSha, failedChecks: failed.map((f) => `\`${f}\``).join(", "), outputFile: out,
+            ticketId: task.ticket_id, prNumber: String(prNumber), cwd, branch: task.branch, baseBranch: this.baseBranchOf(task, env, repo), headSha, failedChecks: failed.map((f) => `\`${f}\``).join(", "), outputFile: out, rules: describeRules(autopilotRulesOf(env.ci_autopilot_rules)),
         });
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path ?? cwd, this.cfg.dataDir);
         const model = this.modelForOperation(task, "pr_fix_ci");
@@ -2751,7 +2751,7 @@ export class Engine extends EventEmitter {
         await this.recordFixComments(current, []);
         this.setStage(taskId, "pr_fix");
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
-        this.startPrRound(taskId, { [repo]: `${repoScopeNote(repo)}${fixBrief(prNumber, verified)}` }, { attempt: rounds.n + 1, operation: "pr_fix_ci" });
+        this.startPrRound(taskId, { [repo]: `${repoScopeNote(repo)}${fixBrief(prNumber, verified, autopilotRulesOf(env.ci_autopilot_rules))}` }, { attempt: rounds.n + 1, operation: "pr_fix_ci" });
     }
 
     // Every "allow" of the triage, checked against the branch diff and the base (ci-autopilot.ts verifyFailure).
@@ -2791,7 +2791,8 @@ export class Engine extends EventEmitter {
             localBase: (tests) => this.autopilotBaseRun(task, env, repo, cwd, base, tests),
         };
         const out: VerifiedFailure[] = [];
-        for (const f of triage.failures) out.push(await verifyFailure(f, ctx));
+        const rules = autopilotRulesOf(env.ci_autopilot_rules);
+        for (const f of triage.failures) out.push(await verifyFailure(f, ctx, rules));
         return out;
     }
 
@@ -2855,7 +2856,7 @@ export class Engine extends EventEmitter {
         const { acc, cd } = this.autopilotAccount(task, env);
         const out = join(dir, `ci-autopilot-review-${roundId.slice(0, 8)}.json`);
         const prompt = renderPrompt("ci-autopilot-review.md", {
-            ticketId: task.ticket_id, worktree: task.worktree_path ?? env.path, branch: task.branch ?? "", fixDiffs: diffs.join("\n"), brief: fixBrief(round.prNumber, round.verified ?? []), outputFile: out,
+            ticketId: task.ticket_id, worktree: task.worktree_path ?? env.path, branch: task.branch ?? "", fixDiffs: diffs.join("\n"), brief: fixBrief(round.prNumber, round.verified ?? [], autopilotRulesOf(env.ci_autopilot_rules)), outputFile: out,
         });
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path ?? env.path, this.cfg.dataDir);
         const model = this.modelForOperation(task, "pr_fix_ci");
@@ -2881,7 +2882,7 @@ export class Engine extends EventEmitter {
             serious.map((f) => `- **${f.severity}** (${f.confidence}/10) \`${f.file}${f.line ? `:${f.line}` : ""}\` — ${f.title}\n  ${f.detail}`).join("\n") +
             `\n\nFix each at its root cause within the scope of the original brief, keep the tests green, commit, and rewrite the output file.`;
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
-        this.startPrRound(taskId, { [round.repo]: `${repoScopeNote(round.repo)}${fixBrief(round.prNumber, round.verified ?? [])}` }, { attempt: rounds.n + 1, operation: "pr_fix_ci", notes });
+        this.startPrRound(taskId, { [round.repo]: `${repoScopeNote(round.repo)}${fixBrief(round.prNumber, round.verified ?? [], autopilotRulesOf(env.ci_autopilot_rules))}` }, { attempt: rounds.n + 1, operation: "pr_fix_ci", notes });
     }
 
     private async autopilotPush(taskId: string, roundId: string): Promise<void> {
