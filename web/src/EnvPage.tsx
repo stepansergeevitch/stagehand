@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, type AutopilotRules, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
+import { accountOrderOf, accountUsableWith, api, autopilotRulesOf, AUTOPILOT_KINDS, envScriptsOf, type EnvScript, componentsOf, reviewChecklistOf, type AutopilotRules, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -137,6 +137,9 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     // ---- optional components (a worker, a scheduler): saved with the Services section
     const [comps, setComps] = useState<EnvComponent[]>(() => componentsOf(env));
     const [keepServices, setKeepServices] = useState(env.keep_services === 1);
+    // ---- scripts
+    const [scripts, setScripts] = useState<EnvScript[]>(() => envScriptsOf(env));
+    const setScript = (i: number, patch: Partial<EnvScript>) => setScripts((xs) => xs.map((x, j) => (j === i ? { ...x, ...patch } : x)));
     // ---- CI autopilot
     const [ciAutopilot, setCiAutopilot] = useState((env.ci_autopilot ?? 1) !== 0);
     const [testCommand, setTestCommand] = useState(env.test_command ?? "");
@@ -330,6 +333,21 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                     <button className="tiny" onClick={() => setComps((cs) => [...cs, { key: "", label: "", command: "", autoStart: false }])}>+ component</button>
                 </div>
                 <label>Seeding hints for QA (how agents create test data here: local DB connection and key tables, API auth, seed scripts; given to the Design and QA prompts verbatim) <textarea value={s.qaSeedHints} onChange={ss("qaSeedHints")} className="tall" placeholder={"Local Postgres: PGPASSWORD=… psql -h localhost -p 5433 -U … -d …\nDeals live in deal, pro formas in pro_forma; sources in pro_forma_source (source_type_id …)\nPrefer SQL for numeric inputs; the pro forma table UI is slow to edit."} /></label>
+            </Section>
+
+            <Section title="Scripts" hint="This environment's own scripts — a QA teardown, a session helper, the datastores it needs up. They are part of the environment's config: Stagehand writes them to one folder and exports it as $STAGEHAND_SCRIPTS to every command, seed hint and agent run of this environment. Refer to one as $STAGEHAND_SCRIPTS/<name>." saving={saving === "scripts"} onSave={() => save("scripts", { scripts: scripts.filter((x) => x.name.trim()).map((x) => ({ name: x.name.trim(), content: x.content })) })}>
+                {scripts.map((x, i) => (
+                    <details key={i} className="po-comment-card" open={!x.content}>
+                        <summary className="po-comment-top">
+                            <code>$STAGEHAND_SCRIPTS/{x.name || "…"}</code> <span className="field-hint">{x.content.split("\n").length} line(s)</span>
+                            <span className="spacer" />
+                            <button className="tiny danger" onClick={(e) => { e.preventDefault(); setScripts((xs) => xs.filter((_, j) => j !== i)); }}>remove</button>
+                        </summary>
+                        <label>Name <input value={x.name} placeholder="qa-teardown.py" onChange={(e) => setScript(i, { name: e.target.value })} /></label>
+                        <textarea className="tall" spellCheck={false} style={{ fontFamily: "var(--mono, monospace)", minHeight: 240 }} value={x.content} onChange={(e) => setScript(i, { content: e.target.value })} />
+                    </details>
+                ))}
+                <button className="tiny" onClick={() => setScripts((xs) => [...xs, { name: "", content: "" }])}>+ script</button>
             </Section>
 
             <Section title="CI autopilot" hint="When a PR's checks finish red, the task fixes by itself the failures it caused, has the fix reviewed, and pushes. Stagehand verifies each built-in kind against the branch diff and the base; your own allow rules rest on the triage's judgement; a deny rule wins over everything." saving={saving === "autopilot"} onSave={() => save("autopilot", {

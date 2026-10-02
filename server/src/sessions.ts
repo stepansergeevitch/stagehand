@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { envVarsOf } from "./env-scripts.js";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -86,7 +87,7 @@ export class Sessions {
         if (branch) {
             const taken = this.db.prepare(`SELECT id FROM sessions WHERE env_id = ? AND branch = ?`).get(env.id, branch) as { id: string } | undefined;
             if (taken) throw new Error(`a session already uses branch ${branch} in this env`);
-            const r = await createWorktree(env, branch, parseEnvVars(env.env_vars));
+            const r = await createWorktree(env, branch, envVarsOf(env));
             worktree = r.path;
             cwd = r.path;
         }
@@ -119,7 +120,7 @@ export class Sessions {
                 s.tmux,
                 s.cwd,
                 `${setup}${claude}; echo; echo '[stagehand] claude exited — Open on the Sessions page starts it again (resuming this conversation); press Enter to close this pane'; read -r`,
-                { ...parseEnvVars(env.env_vars), ...authEnv(acc), CLAUDE_CONFIG_DIR: cd.path },
+                { ...envVarsOf(env), ...authEnv(acc), CLAUDE_CONFIG_DIR: cd.path },
             );
             this.db.prepare(`UPDATE sessions SET opened_at = ? WHERE id = ?`).run(now(), id);
         }
@@ -144,7 +145,7 @@ export class Sessions {
         await killSession(s.tmux);
         if (removeWorktree && s.worktree_path && s.branch && existsSync(s.worktree_path)) {
             const env = this.env(s.env_id);
-            const vars = parseEnvVars(env.env_vars);
+            const vars = envVarsOf(env);
             if (!force) {
                 const { commits, uncommitted } = await branchCommits(env, s.worktree_path, vars);
                 const unpushed: string[] = [];
@@ -166,7 +167,7 @@ export class Sessions {
     async diff(id: string, filter: { shas: string[] } | { uncommitted: true } | null, only: string | null = null): Promise<SessionDiff> {
         const s = this.row(id);
         const env = this.env(s.env_id);
-        const vars = parseEnvVars(env.env_vars);
+        const vars = envVarsOf(env);
         const shape = (g: DiffGroup): DiffGroup => ({ ...g, files: collapseLargeFiles(only ? g.files.filter((f) => f.path === only) : g.files, only) });
         if (!s.worktree_path) {
             const g = shape(await uncommittedGroup(env, env.path, vars));
@@ -184,9 +185,9 @@ export class Sessions {
         const s = this.row(id);
         const env = this.env(s.env_id);
         if (!s.worktree_path) {
-            const g = await uncommittedGroup(env, env.path, parseEnvVars(env.env_vars));
+            const g = await uncommittedGroup(env, env.path, envVarsOf(env));
             return { commits: [], uncommitted: g.files.length > 0 };
         }
-        return branchCommits(env, s.worktree_path, parseEnvVars(env.env_vars));
+        return branchCommits(env, s.worktree_path, envVarsOf(env));
     }
 }

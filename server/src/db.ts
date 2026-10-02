@@ -164,6 +164,8 @@ export interface EnvRow {
     test_command?: string | null;
     // JSON AutopilotRules: built-in kinds switched off, and the env's own allow / deny rules.
     ci_autopilot_rules?: string | null;
+    // The env's own scripts, JSON [{ name, content }] — written to $STAGEHAND_SCRIPTS (env-scripts.ts).
+    scripts?: string | null;
     // Runs from the worktree after every implementation / PR-fix run; non-zero = the run goes back to the agent with the
     // output (e.g. Django `check --database default` + `makemigrations --check`, which tests and a dev server never run).
     check_command: string | null;
@@ -1000,6 +1002,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.ci_autopilot", `ALTER TABLE envs ADD COLUMN ci_autopilot INTEGER NOT NULL DEFAULT 1`],
     ["envs.test_command", `ALTER TABLE envs ADD COLUMN test_command TEXT`],
     ["envs.ci_autopilot_rules", `ALTER TABLE envs ADD COLUMN ci_autopilot_rules TEXT`],
+    ["envs.scripts", `ALTER TABLE envs ADD COLUMN scripts TEXT`],
     ["tasks.ci_autopilot", `ALTER TABLE tasks ADD COLUMN ci_autopilot INTEGER`],
     ["product_owners.issues_refreshed_at", `ALTER TABLE product_owners ADD COLUMN issues_refreshed_at TEXT`],
     ["product_owners.issues_error", `ALTER TABLE product_owners ADD COLUMN issues_error TEXT`],

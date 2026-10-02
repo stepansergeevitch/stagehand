@@ -1,4 +1,5 @@
 import { runMigration } from "./migrations.js";
+import { envVarsOf } from "./env-scripts.js";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -345,7 +346,7 @@ export class Services {
         // Migrations are their own step (migrations.ts): the database is brought up to the worktree's code before the
         // BE starts, so the BE command carries no migrate of its own.
         if (kind === "be" && env.migrate_command) {
-            await runMigration(env.migrate_command, { worktree: vars.worktree!, envPath: env.path, vars: parseEnvVars(env.env_vars), logPath: join(logDir, "migrate.log"), label: "migrate" });
+            await runMigration(env.migrate_command, { worktree: vars.worktree!, envPath: env.path, vars: envVarsOf(env), logPath: join(logDir, "migrate.log"), label: "migrate" });
         }
         const logPath = join(logDir, `${kind}.log`);
         const tmux = serviceSessionName(task.ticket_id, kind);
@@ -355,7 +356,7 @@ export class Services {
         // is `PIPESTATUS[0]`), so both spellings are tried before falling back to tee's own status.
         const wrapped = `cd ${JSON.stringify(cwd)}; echo "[stagehand] ${kind.toUpperCase()} on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command} ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind.toUpperCase()} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
         await ensureSession(tmux, cwd, wrapped, {
-            ...parseEnvVars(env.env_vars),
+            ...envVarsOf(env),
             PORT: String(port),
             STAGEHAND_PORT: String(port),
             STAGEHAND_BE_URL: be?.url ?? "",
@@ -585,7 +586,7 @@ export class Services {
         // Same start/exit markers as a task's services (kind DEPENDENCY), so dependencyState reads the log the same way.
         const kind = DEPENDENCY_KIND.toUpperCase();
         const wrapped = `cd ${JSON.stringify(dep.path)}; echo "[stagehand] ${kind} on ${url} · ${dep.name}, for ${env.name} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command} ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
-        await ensureSession(tmux, dep.path, wrapped, { ...parseEnvVars(dep.env_vars), PORT: String(port), STAGEHAND_PORT: String(port) });
+        await ensureSession(tmux, dep.path, wrapped, { ...envVarsOf(dep), PORT: String(port), STAGEHAND_PORT: String(port) });
         this.db.prepare(`DELETE FROM env_services WHERE env_id = ?`).run(dep.id);
         this.db
             .prepare(`INSERT INTO env_services (env_id, port, url, tmux, command, log_path, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
