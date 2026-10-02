@@ -197,7 +197,7 @@ export const impactOf = (reply: string): string | null => {
 const EVENT_RULES = [
     "Then, by CLAUDE.md:",
     "- **Questions** — keep your outstanding questions current: add the new ones this raises, suggest a resolution for one it answers, drop one that no longer matters.",
-    "- **Corrections** — if this changes what an existing ticket or the design of an existing task must say, suggest a correction. Never for a ticket not created yet: change tickets.json.",
+    "- **Corrections** — two kinds, each checked on its own. **Ticket**: an issue in the task manager whose text is now wrong. **Task**: read the design.md of every task with a design (listed under \"Your open corrections\") whose work this touches; when the design is now wrong, suggest a task correction — the agent changes its design only from these, a ticket correction never reaches it. A changed ticket that has a task with a design needs both. Never for a ticket not created yet: change tickets.json.",
     "- **Impact** — end your answer with a paragraph that starts with `Impact:` — 50 words or fewer: how this changes the context and the design, or `Impact: none.`",
 ].join("\n");
 
@@ -922,7 +922,12 @@ export class ProductOwners {
             })(),
             ((): string => {
                 const open = this.journal.corrections(po.id).filter((c) => c.status === "open");
-                return `## Your open corrections (${open.length}) — withdraw one that is no longer right (CLAUDE.md, Corrections)\n\n${open.map((c) => `- ${c.id} — ${c.kind} ${c.kind === "task" ? this.taskLabel(c.target) : c.target}: ${c.title}`).join("\n") || "(none)"}`;
+                const designed = this.projectTasks(po).filter((t) => t.files.includes("design.md"));
+                return [
+                    `## Your open corrections (${open.length}) — withdraw one that is no longer right (CLAUDE.md, Corrections)`,
+                    open.map((c) => `- ${c.id} — ${c.kind} ${c.kind === "task" ? this.taskLabel(c.target) : c.target}: ${c.title}`).join("\n") || "(none)",
+                    `Tasks with a design — task corrections apply to these (${designed.length}): ${designed.map((t) => `${t.ticket} (${t.stage.replace(/_/g, " ")} · ${t.status.replace(/_/g, " ")}, ${t.dir}/design.md)`).join("; ") || "none"}.`,
+                ].join("\n\n");
             })(),
             `Local API: ${this.apiUrl} (STAGEHAND_API). Now: ${new Date().toLocaleString()}.`,
         ].join("\n\n");

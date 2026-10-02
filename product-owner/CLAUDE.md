@@ -78,6 +78,7 @@ curl -s -X POST "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/corrections/
 - **One change each.** A title of 12 words or fewer. The body says what to change and why, and names the source by what it is (a decision, a ticket comment, the spec). Never name people.
 - **Read first.** Read the task's `design.md` and the issue's current description before you suggest. No correction for what they already say.
 - **Not for plans.** A ticket that is not created yet changes in `tickets.json`, not here.
+- **Ticket and task are separate.** A ticket correction changes the issue text in the task manager; it never reaches the task's agent. The agent changes its design only from a task correction. When a decision changes what a task with a design must do, read its `design.md` and suggest a task correction — and a ticket correction too when the issue text is also wrong.
 
 ## Tasks
 
