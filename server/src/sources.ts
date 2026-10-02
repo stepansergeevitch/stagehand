@@ -339,6 +339,55 @@ const clickupScopeIssues = async (cfg: Config, epicId: string): Promise<TrackedI
     return out;
 };
 
+// ---------- the project itself, tracked ----------
+
+// A PO's project (or epic) as a refresh sees it: what a human can change on it besides its issues.
+export interface TrackedProject {
+    name: string;
+    state: string | null;
+    summary: string;
+    content: string;
+    documents: Array<{ id: string; title: string; content: string }>;
+}
+
+export const fetchProjectState = async (cfg: Config, source: "linear" | "clickup", scopeId: string): Promise<TrackedProject> => {
+    if (source === "linear") {
+        const q = `query($id: String!) { project(id: $id) { name state description content documents(first: 50) { nodes { id title content } } } }`;
+        const d = await linear<{ project: { name: string; state?: string | null; description?: string | null; content?: string | null; documents: { nodes: Array<{ id: string; title: string; content?: string | null }> } } | null }>(cfg, q, { id: scopeId });
+        if (!d.project) throw new Error("Linear: project not found");
+        const p = d.project;
+        return {
+            name: p.name,
+            state: p.state ?? null,
+            summary: (p.description ?? "").trim(),
+            content: (p.content ?? "").trim(),
+            documents: p.documents.nodes.map((x) => ({ id: x.id, title: x.title, content: (x.content ?? "").trim() })).sort((a, b) => a.id.localeCompare(b.id)),
+        };
+    }
+    const t = await clickupTask(cfg, scopeId);
+    return { name: t.name, state: t.status?.status ?? null, summary: "", content: (t.markdown_description ?? t.description ?? "").trim(), documents: [] };
+};
+
+// Files hosted by Linear (uploads.linear.app) that a markdown text links or embeds: images, documents, PDFs.
+export const linearUploads = (markdown: string): Array<{ label: string; url: string }> => {
+    const out = new Map<string, string>();
+    for (const m of markdown.matchAll(/!?\[([^\]]*)\]\((https:\/\/uploads\.linear\.app\/[^)\s]+)\)/g)) out.set(m[2]!, m[1]!.trim());
+    for (const m of markdown.matchAll(/(?<![(\w])(https:\/\/uploads\.linear\.app\/[^\s)"'<>]+)/g)) if (!out.has(m[1]!)) out.set(m[1]!, "");
+    return [...out].map(([url, label]) => ({ url, label }));
+};
+
+// Downloads a Linear upload with the API key (they are private); the name comes from the link label or the headers.
+export const downloadLinearUpload = async (cfg: Config, url: string, label: string): Promise<{ name: string; mime: string | null; bytes: Buffer }> => {
+    if (!cfg.linearApiKey) throw new Error("no Linear API key configured");
+    const res = await fetch(url, { headers: { Authorization: cfg.linearApiKey }, redirect: "follow" });
+    if (!res.ok) throw new Error(`Linear upload ${res.status}`);
+    const mime = res.headers.get("content-type")?.split(";")[0]?.trim() || null;
+    const disp = res.headers.get("content-disposition") ?? "";
+    const fromHeader = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disp)?.[1];
+    const name = (label && /\.[a-z0-9]{2,5}$/i.test(label) ? label : fromHeader ? decodeURIComponent(fromHeader) : label || url.split("/").pop() || "attachment").slice(0, 120);
+    return { name, mime, bytes: Buffer.from(await res.arrayBuffer()) };
+};
+
 // Every issue of a PO's scope, with its comments: the issues of a Linear project, or the subtasks of a ClickUp epic.
 export const fetchScopeIssues = (cfg: Config, source: "linear" | "clickup", scopeId: string): Promise<TrackedIssue[]> =>
     source === "linear" ? linearScopeIssues(cfg, scopeId) : clickupScopeIssues(cfg, scopeId);

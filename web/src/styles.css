@@ -796,3 +796,7 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .po-kind { display: grid; gap: 6px; }
 .fix-reply-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 0; border-top: 1px solid var(--line); }
 .fix-reply-row .fix-reply-body { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; max-width: 520px; white-space: nowrap; }
+.po-image { display: grid; grid-template-columns: minmax(0, 360px) 1fr; gap: 12px; align-items: start; margin: 8px 0; }
+.po-image img { max-width: 100%; border: 1px solid var(--line); border-radius: 4px; }
+@media (max-width: 760px) { .po-image { grid-template-columns: 1fr; } }
+.po-doc-text { white-space: pre-wrap; max-height: 480px; overflow: auto; font-size: 12px; }

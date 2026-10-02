@@ -259,15 +259,25 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
 const ArtifactRow = ({ poId, a, onRemove }: { poId: string; a: PoArtifact; onRemove: () => void }) => {
     const [text, setText] = useState<string | null>(null);
     const textual = a.mime?.startsWith("text/") || /\.(md|txt|csv|json)$/i.test(a.file);
+    const image = (a.mime ?? "").startsWith("image/") || /\.(png|jpe?g|gif|webp)$/i.test(a.file);
+    const readable = textual ? a.file : a.text_file ?? null;
     return (
-        <details className="po-artifact" onToggle={(e) => { if ((e.target as HTMLDetailsElement).open && text === null && textual) void api.poFileText(poId, a.file).then(setText).catch(() => setText("(could not read)")); }}>
+        <details className="po-artifact" onToggle={(e) => { if ((e.target as HTMLDetailsElement).open && text === null && readable) void api.poFileText(poId, readable).then(setText).catch(() => setText("(could not read)")); }}>
             <summary>
                 <span className="chip">{a.kind}</span> <b>{a.title}</b>
                 {a.source_url && <> <a href={a.source_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>source ↗</a></>}
+                {image && <span className="chip">{a.description ? "image · described" : "image · describing…"}</span>}
+                {a.text_file && <span className="chip">text extracted</span>}
                 {!textual && <> <a href={api.poFileUrl(poId, a.file)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>open ↗</a></>}
                 <button className="tiny danger" onClick={(e) => { e.preventDefault(); if (confirm(`Remove ${a.title}?`)) onRemove(); }}>Remove</button>
             </summary>
-            {textual && (text === null ? <div className="quiet">loading…</div> : <Markdown source={text} />)}
+            {image && (
+                <div className="po-image">
+                    <img src={api.poFileUrl(poId, a.file)} alt={a.title} />
+                    {a.description ? <Markdown source={a.description} /> : <div className="quiet">The description is on its way.</div>}
+                </div>
+            )}
+            {readable && (text === null ? <div className="quiet">loading…</div> : textual ? <Markdown source={text} /> : <pre className="po-doc-text">{text}</pre>)}
         </details>
     );
 };

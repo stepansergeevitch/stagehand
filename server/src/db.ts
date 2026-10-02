@@ -823,7 +823,7 @@ export interface ProductOwnerRow {
     issues_error?: string | null;
 }
 export interface PoMessageRow { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
-export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; indexed_hash?: string | null; chunks?: number | null }
+export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; indexed_hash?: string | null; chunks?: number | null; description?: string | null; text_file?: string | null }
 export interface PoIssueRow { po_id: string; identifier: string; remote_id: string; hash: string; data: string; fetched_at: string; changed_at: string; indexed_hash?: string | null }
 export interface PoTicketLinkRow { po_id: string; key: string; remote_id: string; identifier: string | null; url: string | null; created_at: string }
 
@@ -942,6 +942,9 @@ const MIGRATIONS: Array<[string, string]> = [
     ["po_artifacts.chunks", `ALTER TABLE po_artifacts ADD COLUMN chunks INTEGER`],
     ["po_issues.indexed_hash", `ALTER TABLE po_issues ADD COLUMN indexed_hash TEXT`],
     // The environment a Product Owner belongs to: only that env's tasks get it, and one project may have a PO per env.
+    // A non-text source turned into text (media.ts): an image's description, or a document's extracted text file.
+    ["po_artifacts.description", `ALTER TABLE po_artifacts ADD COLUMN description TEXT`],
+    ["po_artifacts.text_file", `ALTER TABLE po_artifacts ADD COLUMN text_file TEXT`],
     ["product_owners.env_id", `ALTER TABLE product_owners ADD COLUMN env_id TEXT REFERENCES envs(id)`],
     // A BE/FE that never came up (start timeout, command exited, tmux session gone) — the row stays visible as failed
     // until it is stopped or restarted, so the human sees why and can hand it to the agent.
