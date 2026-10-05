@@ -817,6 +817,7 @@ export const api = {
     setAccount: (id: string, accountId: string) => post<Task>(`/api/tasks/${id}/account`, { accountId }),
     terminal: (id: string) => post<{ terminal: string }>(`/api/tasks/${id}/terminal`),
     services: (id: string) => fetch(`/api/tasks/${id}/services`).then((r) => j<Service[]>(r)),
+    serviceFailures: (id: string) => fetch(`/api/tasks/${id}/services/failures`).then((r) => j<Array<{ kind: string; at: string; error: string }>>(r)),
     startService: (id: string, kind: string) => post<Service>(`/api/tasks/${id}/services/${kind}/start`),
     stopService: (id: string, kind: string) => post<Service[]>(`/api/tasks/${id}/services/${kind}/stop`),
     serviceLog: (id: string, kind: string, lines = 120) => fetch(`/api/tasks/${id}/services/${kind}/log?lines=${lines}`).then((r) => r.text()),

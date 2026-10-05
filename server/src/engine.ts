@@ -5234,7 +5234,10 @@ export class Engine extends EventEmitter {
     // this task's work. The agent is brought in only for a checkout where that conflicts — the user's rule (2026-09-18):
     // "agentic rebase takes a lot of time. Let's do agentic only if simple git rebase is not clean".
     // `repos`: only these repository directories (default: every repository of the task).
-    async startRebase(taskId: string, opts: { auto?: string; repos?: string[] } = {}): Promise<void> {
+    // Returns what happened when it finished without an agent (`agent: false`), so the caller can show it; a step that
+    // failed (❌: a push, an unfinished rebase) comes back as `failed` — the button that started it must say so, not
+    // only the chat (INV-154, 2026-10-05: a refused push was visible nowhere but a truncated chat line).
+    async startRebase(taskId: string, opts: { auto?: string; repos?: string[] } = {}): Promise<{ agent: boolean; summary: string; failed: boolean }> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — wait for it to finish");
@@ -5253,15 +5256,17 @@ export class Engine extends EventEmitter {
             const warnings = plain.filter((l) => l.startsWith("⚠️"));
             if (fastForwarded.length === 0) throw new Error(`already up to date with origin/${base}${warnings.length ? ` — ${warnings.join("; ")}` : ""}`);
             const resync = await this.resyncAfterHistoryChange(task, env, headsBefore);
-            this.addMessage(taskId, "agent", `${header}\n\n${plain.join("\n")}${resync ? `\n${resync}` : ""}\n\nNothing to replay — no agent run needed.`);
+            const summary = `${plain.join("\n")}${resync ? `\n${resync}` : ""}`;
+            this.addMessage(taskId, "agent", `${header}\n\n${summary}\n\nNothing to replay — no agent run needed.`);
             this.emitTask(taskId);
-            return;
+            return { agent: false, summary, failed: /❌/.test(summary) };
         }
         if (conflicted.length === 0) {
             const lines = await this.finishRebase(task, env, repos, headsBefore);
-            this.addMessage(taskId, "agent", `${header}\n\n${plain.join("\n")}\n${lines.join("\n")}`);
+            const summary = `${plain.join("\n")}\n${lines.join("\n")}`;
+            this.addMessage(taskId, "agent", `${header}\n\n${summary}`);
             this.emitTask(taskId);
-            return;
+            return { agent: false, summary, failed: /❌/.test(summary) };
         }
         const prevStatus = task.status;
         const prevLine = task.status_line;
@@ -5300,6 +5305,7 @@ export class Engine extends EventEmitter {
             this.addMessage(taskId, "agent", `${header}\n\n${plain.join("\n")}\n\n${reply}\n\n${lines.join("\n")}`);
             this.emitTask(taskId);
         });
+        return { agent: true, summary: `the plain rebase conflicted in ${conflicted.map(repoLabel).join(", ")} — the agent is resolving it; the result lands in Chat`, failed: false };
     }
 
     // Preflight + mechanical pass shared by "Rebase onto latest base" and the batched PR jobs: sets uncommitted changes
@@ -5560,7 +5566,7 @@ export class Engine extends EventEmitter {
                 pushed = true;
                 lines.push(`✅ ${repoLabel(repo)}: force-pushed (with lease); PR checks restart`);
             } catch (e) {
-                lines.push(`❌ ${repoLabel(repo)}: rebased, but the push failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                lines.push(`❌ ${repoLabel(repo)}: rebased, but the push failed: ${gitErrorTail(e)}`);
             }
         }
         // The env's rebase command: what a rebase makes stale in the worktree — per-task test databases built for

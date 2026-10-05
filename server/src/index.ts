@@ -1617,8 +1617,10 @@ app.post("/api/tasks/:id/rebase", async (c) => {
     // `repos`: only these repository directories; omitted/empty = every repository of the task.
     const body = json(z.object({ repos: z.array(z.string()).optional() }), await c.req.json().catch(() => ({})));
     try {
-        await engine.startRebase(c.req.param("id"), body.repos?.length ? { repos: body.repos } : {});
-        return c.json({ started: true });
+        const r = await engine.startRebase(c.req.param("id"), body.repos?.length ? { repos: body.repos } : {});
+        // A failed step (a refused push, an unfinished rebase) is an error for the button, with the whole summary.
+        if (r.failed) return c.json({ error: `Rebase finished with a problem:\n${r.summary}` }, 400);
+        return c.json({ started: true, ...r });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }
@@ -1821,6 +1823,7 @@ const taskServices = async (task: TaskRow) => {
     return [...(dep ? [dep] : []), ...(await services.status(task.id))];
 };
 
+app.get("/api/tasks/:id/services/failures", (c) => c.json(services.lastFailures(c.req.param("id"))));
 app.get("/api/tasks/:id/services", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);

@@ -295,7 +295,29 @@ export class Services {
         throw new Error(`no free port in ${lo}-${hi} for ${kind}`);
     }
 
+    // The last start that failed, per task and service, until the next one succeeds — shown in the task's App widget
+    // and posted to its chat, so a start that dies (a migrate refusing a conflicting migration graph, INV-149
+    // 2026-10-05) is never silent once its button stops spinning.
+    private readonly failures = new Map<string, { kind: string; at: string; error: string }>();
+
+    lastFailures(taskId: string): Array<{ kind: string; at: string; error: string }> {
+        return [...this.failures.entries()].filter(([k]) => k.startsWith(`${taskId}:`)).map(([, v]) => v);
+    }
+
     async start(task: TaskRow, env: EnvRow, kind: ServiceKind): Promise<ServiceRow> {
+        try {
+            const row = await this.startInner(task, env, kind);
+            this.failures.delete(`${task.id}:${kind}`);
+            return row;
+        } catch (e) {
+            const error = String((e as Error).message ?? e).replace(/\{"event":[^}]*\}\s*/g, "").trim().slice(0, 1500);
+            this.failures.set(`${task.id}:${kind}`, { kind, at: now(), error });
+            this.onNotice?.(task.id, `❌ The ${kind.toUpperCase()} did not start: ${error.slice(0, 600)}`);
+            throw e;
+        }
+    }
+
+    private async startInner(task: TaskRow, env: EnvRow, kind: ServiceKind): Promise<ServiceRow> {
         const template = commandTemplate(env, kind);
         if (!template) throw new Error(isCore(kind) ? `env "${env.name}" has no ${kind.toUpperCase()} command configured` : `env "${env.name}" has no optional component "${kind}" — its keys: ${componentsOf(env).map((c) => c.key).join(", ") || "none"}`);
         const existing = this.get(task.id, kind);

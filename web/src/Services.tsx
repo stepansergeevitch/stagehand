@@ -8,7 +8,9 @@ export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, on
     const [log, setLog] = useState<{ kind: string; text: string } | null>(null);
     const [fixing, setFixing] = useState<Set<string>>(new Set());
 
-    const refresh = useCallback(() => api.services(taskId).then(setRows).catch(() => undefined), [taskId]);
+    // The last start of each service that failed (until one succeeds): kept here so it never vanishes with the button's spinner.
+    const [failures, setFailures] = useState<Array<{ kind: string; at: string; error: string }>>([]);
+    const refresh = useCallback(() => Promise.all([api.services(taskId).then(setRows), api.serviceFailures(taskId).then(setFailures)]).catch(() => undefined), [taskId]);
     useEffect(() => {
         void refresh();
         const t = setInterval(() => void refresh(), 5000);
@@ -153,6 +155,11 @@ export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, on
 
     return (
         <>
+            {failures.map((f) => (
+                <div key={f.kind} className="blocked-box" style={{ whiteSpace: "pre-wrap" }}>
+                    <b>The {f.kind.toUpperCase()} did not start</b> ({new Date(f.at).toLocaleTimeString()}): {f.error}
+                </div>
+            ))}
             {dep && depRow(dep)}
             {configured.be && row("be", be)}
             {configured.fe && row("fe", fe)}
