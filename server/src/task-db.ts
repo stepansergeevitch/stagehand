@@ -30,6 +30,12 @@ export const TaskDbConfig = z.object({
     list: z.string().default(""),
     // Databases a worktree may use besides its own (a separate migrations database, …).
     sharedNames: z.array(z.string().trim().min(1)).default([]),
+    // More templates, each copied into named copies for every owner — e.g. a test-database template copied into the
+    // test runner's per-worker databases ({{db}}_test, {{db}}_test_gw0 …), so tests never build their database from
+    // scratch. {{db}} is the owner's main database. `refresh`: migrated with the main template at every task start.
+    extraTemplates: z
+        .array(z.object({ template: z.string().trim().min(1), copies: z.array(z.string().trim().min(1)).default([]), refresh: z.boolean().default(true) }))
+        .default([]),
 });
 export type TaskDbConfig = z.infer<typeof TaskDbConfig>;
 
@@ -76,13 +82,23 @@ export const taskDbOf = (env: Pick<EnvRow, "task_db">): TaskDbConfig | null => {
 // Complete enough to run: switched on, with a template and the three commands a task needs.
 export const taskDbActive = (c: TaskDbConfig | null): c is TaskDbConfig => !!c && c.enabled && !!c.template && !!c.create.trim() && !!c.drop.trim() && !!c.connect.trim();
 
-// A database name from the pattern: lower case, [a-z0-9_] only, at most 63 characters (a 6-character hash keeps a cut
-// name unique).
-export const taskDbName = (c: Pick<TaskDbConfig, "template" | "namePattern">, slug: string): string => {
-    const raw = (c.namePattern || "{{template}}_{{slug}}").replace(/\{\{template\}\}/g, c.template).replace(/\{\{slug\}\}/g, slug);
+const safeDbName = (raw: string): string => {
     const n = raw.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
     if (n.length <= 63) return n;
     return `${n.slice(0, 56).replace(/_+$/, "")}_${createHash("sha1").update(raw).digest("hex").slice(0, 6)}`;
+};
+
+// Every template of the env: the main one first, then the extra ones.
+export const templatesOf = (c: Pick<TaskDbConfig, "template" | "extraTemplates">): string[] => [c.template, ...c.extraTemplates.map((t) => t.template)].filter(Boolean);
+
+// The copies an owner gets of the extra templates: [copy name, template].
+export const copyNames = (c: Pick<TaskDbConfig, "extraTemplates">, db: string): Array<[string, string]> =>
+    c.extraTemplates.flatMap((t) => t.copies.map((p) => [safeDbName(p.replace(/\{\{db\}\}/g, db)), t.template] as [string, string]));
+
+// A database name from the pattern: lower case, [a-z0-9_] only, at most 63 characters (a 6-character hash keeps a cut
+// name unique).
+export const taskDbName = (c: Pick<TaskDbConfig, "template" | "namePattern">, slug: string): string => {
+    return safeDbName((c.namePattern || "{{template}}_{{slug}}").replace(/\{\{template\}\}/g, c.template).replace(/\{\{slug\}\}/g, slug));
 };
 
 // `list` output: one database per line, `<name>` or `<name> <size in MB>` (whitespace, tab or `|` between).
@@ -181,12 +197,25 @@ export class TaskDbs {
         }
         const subs = envRepos(env);
         for (const dir of subs.length ? subs : [""]) await pointBranchAt(dir ? join(wt, dir) : wt, TEMPLATE_BRANCH, env.base_branch, vars);
-        await this.run(env, wt, c.connect, vars);
-        await assertDbHosts(env, wt, [c.template, ...c.sharedNames]);
-        if (env.migrate_command) {
-            note(`migrating the template ${c.template} to ${env.base_branch}`);
-            await runMigration(withPrepare(env, env.migrate_command), { worktree: wt, envPath: env.path, vars, logPath: this.logPath(env), label: `template ${c.template} migrate to ${env.base_branch}` });
+        // Each template in turn: the worktree is pointed at it and migrated. One that fails does not stop the others.
+        const errors: string[] = [];
+        const extras = c.extraTemplates.filter((t) => t.refresh).map((t) => t.template);
+        for (const name of [c.template, ...extras]) {
+            const v = { ...vars, STAGEHAND_TASK_DB: name, STAGEHAND_TASK_DB_TEMPLATE: name };
+            try {
+                await this.run(env, wt, c.connect, v);
+                await assertDbHosts(env, wt, [name, ...c.sharedNames]);
+                if (env.migrate_command) {
+                    note(`migrating the template ${name} to ${env.base_branch}`);
+                    await runMigration(withPrepare(env, env.migrate_command), { worktree: wt, envPath: env.path, vars: v, logPath: this.logPath(env), label: `template ${name} migrate to ${env.base_branch}` });
+                }
+            } catch (e) {
+                errors.push(`${name}: ${String((e as Error).message ?? e).split("\n").filter(Boolean).slice(-2).join(" ").slice(0, 300)}`);
+            }
         }
+        // The worktree stays pointed at the main template.
+        if (extras.length) await this.run(env, wt, c.connect, vars).catch(() => undefined);
+        if (errors.length) throw new Error(`template migrate to ${env.base_branch} failed — ${errors.join(" · ")}`);
     }
 
     // The env page's "Refresh template": the same refresh a task start does, under the env's lock.
@@ -221,21 +250,8 @@ export class TaskDbs {
                     this.lastRefreshError.set(env.id, why);
                     note(`the template could not be refreshed (${why}) — copying it as it is`);
                 }
-                const vars = { STAGEHAND_TASK_DB: name, STAGEHAND_TASK_DB_TEMPLATE: c.template };
-                await this.run(env, env.path, c.drop, vars);
-                note(`copying ${c.template} into ${name}`);
-                for (let attempt = 1; ; attempt++) {
-                    try {
-                        await this.run(env, env.path, c.create, vars);
-                        break;
-                    } catch (e) {
-                        const msg = String((e as Error).message ?? e);
-                        // Postgres: "source database … is being accessed by other users". Someone else holds the template.
-                        if (attempt >= BUSY_RETRIES || !/being accessed by other users|is being accessed/i.test(msg)) throw e;
-                        note(`the template is in use — retrying in ${BUSY_WAIT_MS / 1000} s (${attempt}/${BUSY_RETRIES - 1})`);
-                        await new Promise((r) => setTimeout(r, BUSY_WAIT_MS));
-                    }
-                }
+                await this.copy(env, c, name, c.template, note);
+                for (const [copy, template] of copyNames(c, name)) await this.copy(env, c, copy, template, note);
             });
             this.db.prepare(`UPDATE task_dbs SET status = 'ready', error = NULL, created_at = ?, updated_at = ? WHERE task_id = ?`).run(now(), now(), task.id);
             this.listed.delete(env.id);
@@ -245,6 +261,25 @@ export class TaskDbs {
             throw new Error(msg);
         }
         return taskDbRow(this.db, task.id)!;
+    }
+
+    // Replaces `name` with a copy of `template`; a template someone else holds open is retried.
+    private async copy(env: EnvRow, c: TaskDbConfig, name: string, template: string, note: (line: string) => void): Promise<void> {
+        const vars = { STAGEHAND_TASK_DB: name, STAGEHAND_TASK_DB_TEMPLATE: template };
+        await this.run(env, env.path, c.drop, vars);
+        note(`copying ${template} into ${name}`);
+        for (let attempt = 1; ; attempt++) {
+            try {
+                await this.run(env, env.path, c.create, vars);
+                return;
+            } catch (e) {
+                const msg = String((e as Error).message ?? e);
+                // Postgres: "source database … is being accessed by other users". Someone else holds the template.
+                if (attempt >= BUSY_RETRIES || !/being accessed by other users|is being accessed/i.test(msg)) throw e;
+                note(`${template} is in use — retrying in ${BUSY_WAIT_MS / 1000} s (${attempt}/${BUSY_RETRIES - 1})`);
+                await new Promise((r) => setTimeout(r, BUSY_WAIT_MS));
+            }
+        }
     }
 
     // Points the owner's worktree config at its database.
@@ -264,7 +299,8 @@ export class TaskDbs {
         if (c?.drop.trim()) {
             const listed = c.list.trim() ? (await this.list(env, true)).dbs.map((d) => d.name) : [];
             const others = this.rows(env.id).filter((r) => r.task_id !== task.id).map((r) => r.name);
-            names = ownedDbNames(row.name, listed, others).filter((n) => n !== c.template && n !== row.template);
+            const templates = templatesOf(c);
+            names = [...new Set([...ownedDbNames(row.name, listed, others), ...copyNames(c, row.name).map(([n]) => n)])].filter((n) => !templates.includes(n) && n !== row.template);
             await this.withLock(env.id, async () => {
                 for (const n of names) await this.run(env, env.path, c.drop, { STAGEHAND_TASK_DB: n, STAGEHAND_TASK_DB_TEMPLATE: row.template });
             });
@@ -278,7 +314,7 @@ export class TaskDbs {
     async dropOrphan(env: EnvRow, name: string): Promise<void> {
         const c = taskDbOf(env);
         if (!c?.drop.trim()) throw new Error("this environment has no drop command");
-        if (name === c.template) throw new Error("that is the template");
+        if (templatesOf(c).includes(name)) throw new Error("that is a template");
         if (this.rows(env.id).some((r) => r.name === name || name.startsWith(`${r.name}_`))) throw new Error("a task owns that database");
         const listed = (await this.list(env, true)).dbs;
         if (!listed.some((d) => d.name === name)) throw new Error(`${name} is not among the env's listed databases`);

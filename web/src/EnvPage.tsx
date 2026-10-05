@@ -55,7 +55,8 @@ const TaskDbSection = ({ env, onChanged, onError }: { env: Env; onChanged: () =>
         try {
             const sharedNames = shared.split(",").map((x) => x.trim()).filter(Boolean);
             const empty = !c.enabled && !c.template.trim() && !c.create.trim() && !c.drop.trim() && !c.connect.trim() && !c.list.trim();
-            await api.patchEnv(env.id, { taskDb: empty ? null : { ...c, template: c.template.trim(), namePattern: c.namePattern.trim(), sharedNames } });
+            const extraTemplates = c.extraTemplates.map((t) => ({ template: t.template.trim(), copies: t.copies.map((x) => x.trim()).filter(Boolean), refresh: t.refresh })).filter((t) => t.template);
+            await api.patchEnv(env.id, { taskDb: empty ? null : { ...c, template: c.template.trim(), namePattern: c.namePattern.trim(), sharedNames, extraTemplates } });
             await onChanged();
             load(true);
         } catch (e) {
@@ -81,6 +82,19 @@ const TaskDbSection = ({ env, onChanged, onError }: { env: Env; onChanged: () =>
             <label>Connect (runs in a worktree: points the app's config at $STAGEHAND_TASK_DB — e.g. the database name in its .env) <textarea spellCheck={false} value={c.connect} onChange={set("connect")} /></label>
             <label>List (prints the template and the task databases, one per line: name, then size in MB) <textarea spellCheck={false} value={c.list} onChange={set("list")} placeholder="optional — sizes on the Resources page, orphans here" /></label>
             <label>Shared databases (a worktree may still use these besides its own; comma-separated) <input value={shared} onChange={(e) => setShared(e.target.value)} placeholder="optional" /></label>
+            <div className="components">
+                <b>More templates</b>
+                <p className="field-hint">Each one is copied for every task and session into the copies listed (one per line; {"{{db}}"} = the owner&apos;s main database) — e.g. a test-database template copied into the test runner&apos;s per-worker databases, so tests never build their database from scratch. Copies named {"{{db}}"}_… are dropped with the owner&apos;s database.</p>
+                {c.extraTemplates.map((t, i) => (
+                    <div key={i} className="component-row">
+                        <input value={t.template} placeholder="template database" onChange={(e) => setC((x) => ({ ...x, extraTemplates: x.extraTemplates.map((y, j) => (j === i ? { ...y, template: e.target.value } : y)) }))} />
+                        <textarea spellCheck={false} value={t.copies.join("\n")} placeholder={"{{db}}_test\n{{db}}_test_gw0"} onChange={(e) => setC((x) => ({ ...x, extraTemplates: x.extraTemplates.map((y, j) => (j === i ? { ...y, copies: e.target.value.split("\n") } : y)) }))} />
+                        <label className="inline"><input type="checkbox" checked={t.refresh} onChange={(e) => setC((x) => ({ ...x, extraTemplates: x.extraTemplates.map((y, j) => (j === i ? { ...y, refresh: e.target.checked } : y)) }))} /> migrate at every refresh</label>
+                        <button className="tiny danger" onClick={() => setC((x) => ({ ...x, extraTemplates: x.extraTemplates.filter((_, j) => j !== i) }))}>remove</button>
+                    </div>
+                ))}
+                <button className="tiny" onClick={() => setC((x) => ({ ...x, extraTemplates: [...x.extraTemplates, { template: "", copies: [], refresh: true }] }))}>+ template</button>
+            </div>
             {view && (
                 <div className="taskdb-overview">
                     <div className="row">
@@ -89,6 +103,9 @@ const TaskDbSection = ({ env, onChanged, onError }: { env: Env; onChanged: () =>
                         {view.active && <button className="tiny" disabled={busy !== null} onClick={() => void act("refresh", () => api.refreshTemplate(env.id))}>{busy === "refresh" ? "Refreshing…" : `Refresh (migrate to ${env.base_branch})`}</button>}
                         <button className="tiny" disabled={busy !== null} onClick={() => load(true)}>Reload sizes</button>
                     </div>
+                    {view.extraTemplates.map((t) => (
+                        <div key={t.name} className="row sub"><b>Template</b> <code>{t.name}</code> · {mb(t.sizeMb)} · {t.copies.length} cop{t.copies.length === 1 ? "y" : "ies"} per owner{t.refresh ? "" : " · not migrated at refresh"}</div>
+                    ))}
                     {view.template?.refreshError && <div className="field-hint bad">The last refresh before a copy failed, so the template was copied as it was: {view.template.refreshError}</div>}
                     {view.listError && <div className="field-hint bad">List command failed: {view.listError}</div>}
                     <div className="row"><b>Task databases</b> {view.taskDbs.length === 0 && "none yet"}</div>

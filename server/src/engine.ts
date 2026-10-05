@@ -1,7 +1,7 @@
 import { BaseCheckout } from "./migrations.js";
 import { callbackPortsOf, withPrepare } from "./env-config.js";
 import { assertDbHosts } from "./db-hosts.js";
-import { namesTemplate, ownedDbNames, TaskDbs, taskDbActive, taskDbEnv, taskDbExpect, taskDbOf, taskDbRow, type TaskDbRow } from "./task-db.js";
+import { copyNames, namesTemplate, ownedDbNames, TaskDbs, templatesOf, taskDbActive, taskDbEnv, taskDbExpect, taskDbOf, taskDbRow, type TaskDbRow } from "./task-db.js";
 import { activeRound, addedFiles, AutopilotReview, autopilotRulesOf, describeRules, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
 import { EventEmitter } from "node:events";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -1816,13 +1816,14 @@ export class Engine extends EventEmitter {
         return {
             active: taskDbActive(c),
             template: c?.template ? { name: c.template, sizeMb: size(c.template), worktree: existsSync(wt) ? wt : null, refreshError: this.taskDbs.lastRefreshError.get(envId) ?? null } : null,
+            extraTemplates: (c?.extraTemplates ?? []).map((t) => ({ name: t.template, sizeMb: size(t.template), copies: t.copies, refresh: t.refresh })),
             taskDbs: rows.map((r) => {
-                const derived = ownedDbNames(r.name, listed.dbs.map((d) => d.name), rows.filter((o) => o.task_id !== r.task_id).map((o) => o.name)).filter((n) => n !== r.name);
+                const derived = [...new Set([...ownedDbNames(r.name, listed.dbs.map((d) => d.name), rows.filter((o) => o.task_id !== r.task_id).map((o) => o.name)), ...(c ? copyNames(c, r.name).map(([n]) => n) : [])])].filter((n) => n !== r.name && listed.dbs.some((d) => d.name === n));
                 return { ...r, ticketId: this.dbOwnerName(r), sizeMb: size(r.name), derived: derived.map((n) => ({ name: n, sizeMb: size(n) })) };
             }),
             // Tasks with a worktree still on the shared database: Adopt moves them.
             shared: tasks.filter((t) => t.worktree_path && existsSync(t.worktree_path) && !rows.some((r) => r.task_id === t.id && r.status === "ready")).map((t) => ({ taskId: t.id, ticketId: t.ticket_id, stage: t.stage, status: t.status })),
-            orphans: listed.dbs.filter((d) => d.name !== c?.template && !rows.some((r) => r.name === d.name || d.name.startsWith(`${r.name}_`))),
+            orphans: listed.dbs.filter((d) => !(c ? templatesOf(c) : []).includes(d.name) && !rows.some((r) => r.name === d.name || d.name.startsWith(`${r.name}_`) || (c ? copyNames(c, r.name).some(([n]) => n === d.name) : false))),
             listedAt: new Date(listed.at).toISOString(),
             listError: listed.error,
         };
@@ -1843,12 +1844,13 @@ export class Engine extends EventEmitter {
             if (!c?.template && !rows.length) continue;
             const listed = this.taskDbs.cachedList(env);
             const size = (n: string): number | null => listed?.dbs.find((d) => d.name === n)?.sizeMb ?? null;
-            if (c?.template) out.push({ envId: env.id, envName: env.name, name: c.template, role: "template", taskId: null, ownerKind: "task", ownerName: null, sizeMb: size(c.template), createdAt: null });
+            for (const t of c ? templatesOf(c) : []) out.push({ envId: env.id, envName: env.name, name: t, role: "template", taskId: null, ownerKind: "task", ownerName: null, sizeMb: size(t), createdAt: null });
             const names = (listed?.dbs ?? []).map((d) => d.name);
             for (const r of rows) {
-                for (const n of ownedDbNames(r.name, names, rows.filter((o) => o.task_id !== r.task_id).map((o) => o.name))) out.push({ envId: env.id, envName: env.name, name: n, role: "task", taskId: r.task_id, ownerKind: r.owner_kind ?? "task", ownerName: this.dbOwnerName(r), sizeMb: size(n), createdAt: r.created_at });
+                const owned = [...new Set([...ownedDbNames(r.name, names, rows.filter((o) => o.task_id !== r.task_id).map((o) => o.name)), ...(c ? copyNames(c, r.name).map(([n]) => n).filter((n) => names.includes(n)) : [])])];
+                for (const n of owned) out.push({ envId: env.id, envName: env.name, name: n, role: "task", taskId: r.task_id, ownerKind: r.owner_kind ?? "task", ownerName: this.dbOwnerName(r), sizeMb: size(n), createdAt: r.created_at });
             }
-            for (const d of listed?.dbs ?? []) if (d.name !== c?.template && !rows.some((r) => r.name === d.name || d.name.startsWith(`${r.name}_`))) out.push({ envId: env.id, envName: env.name, name: d.name, role: "orphan", taskId: null, ownerKind: "task", ownerName: null, sizeMb: d.sizeMb, createdAt: null });
+            for (const d of listed?.dbs ?? []) if (!(c ? templatesOf(c) : []).includes(d.name) && !rows.some((r) => r.name === d.name || d.name.startsWith(`${r.name}_`) || (c ? copyNames(c, r.name).some(([n]) => n === d.name) : false))) out.push({ envId: env.id, envName: env.name, name: d.name, role: "orphan", taskId: null, ownerKind: "task", ownerName: null, sizeMb: d.sizeMb, createdAt: null });
         }
         return out;
     }

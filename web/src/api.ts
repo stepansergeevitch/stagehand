@@ -356,6 +356,7 @@ export interface TaskDbConfig {
     connect: string;
     list: string;
     sharedNames: string[];
+    extraTemplates: Array<{ template: string; copies: string[]; refresh: boolean }>;
 }
 export interface TaskDbRow {
     task_id: string;
@@ -376,6 +377,7 @@ export interface TaskDbInfo {
 export interface EnvDbOverview {
     active: boolean;
     template: { name: string; sizeMb: number | null; worktree: string | null; refreshError: string | null } | null;
+    extraTemplates: Array<{ name: string; sizeMb: number | null; copies: string[]; refresh: boolean }>;
     taskDbs: Array<TaskDbRow & { ticketId: string | null; sizeMb: number | null; derived: Array<{ name: string; sizeMb: number | null }> }>;
     shared: Array<{ taskId: string; ticketId: string; stage: Stage; status: string }>;
     orphans: Array<{ name: string; sizeMb: number | null }>;
@@ -383,7 +385,7 @@ export interface EnvDbOverview {
     listError: string | null;
 }
 export const taskDbConfigOf = (env: { task_db?: string | null }): TaskDbConfig => {
-    const empty: TaskDbConfig = { enabled: false, template: "", namePattern: "", create: "", drop: "", connect: "", list: "", sharedNames: [] };
+    const empty: TaskDbConfig = { enabled: false, template: "", namePattern: "", create: "", drop: "", connect: "", list: "", sharedNames: [], extraTemplates: [] };
     try {
         return env.task_db ? { ...empty, ...(JSON.parse(env.task_db) as Partial<TaskDbConfig>) } : empty;
     } catch {

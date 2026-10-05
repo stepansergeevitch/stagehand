@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { assertDbHosts, parseDbTargets } from "./db-hosts.js";
 import type { EnvRow } from "./db.js";
-import { namesTemplate, ownedDbNames, parseDbList, taskDbActive, taskDbName, taskDbOf } from "./task-db.js";
+import { copyNames, namesTemplate, ownedDbNames, parseDbList, templatesOf, taskDbActive, taskDbName, taskDbOf } from "./task-db.js";
 
 const cfg = (over: Record<string, unknown> = {}) => ({ enabled: true, template: "app", create: "c", drop: "d", connect: "x", list: "", ...over });
 
@@ -27,6 +27,17 @@ describe("task databases", () => {
         expect(ownedDbNames("app_inv_1", listed, ["app_inv_12", "app_inv_1_2"])).toEqual(["app_inv_1", "app_inv_1_gw0", "app_inv_1_gw1"]);
         expect(ownedDbNames("app_inv_1_2", listed, ["app_inv_1"])).toEqual(["app_inv_1_2", "app_inv_1_2_gw0"]);
         expect(ownedDbNames("app_inv_9", listed, [])).toEqual(["app_inv_9"]);
+    });
+    it("lists every template and renders each owner's copies of the extra ones", () => {
+        const c = taskDbOf({ task_db: JSON.stringify(cfg({ extraTemplates: [{ template: "app_test_template", copies: ["{{db}}_test", "{{db}}_test_gw0", "{{db}}_test_gw1"] }] })) })!;
+        expect(c.extraTemplates[0]!.refresh).toBe(true);
+        expect(templatesOf(c)).toEqual(["app", "app_test_template"]);
+        expect(copyNames(c, "app_inv_1")).toEqual([
+            ["app_inv_1_test", "app_test_template"],
+            ["app_inv_1_test_gw0", "app_test_template"],
+            ["app_inv_1_test_gw1", "app_test_template"],
+        ]);
+        expect(copyNames(taskDbOf({ task_db: JSON.stringify(cfg()) })!, "x")).toEqual([]);
     });
     it("parses the list command's output with or without sizes", () => {
         expect(parseDbList("app 25000\napp_inv_1|12\n\napp_inv_2\n")).toEqual([
