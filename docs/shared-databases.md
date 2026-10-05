@@ -16,7 +16,7 @@ per task (`dualentry_test_<slug>`, made by the setup command).
 - **Concurrent rollbacks.** A rollback for one task's baseline changes the schema under the other tasks' running
   servers for the length of the pass, when the two branches touch the same tables.
 
-## The fix, when it is time
+## The fix, when it is time (designed in `db-isolation.md`)
 
 One database per task, created from a template at worktree setup (as DualEntry already does for its test databases):
 `CREATE DATABASE <env>_<task-slug> TEMPLATE <env>_template`, the worktree's config pointed at it, dropped by the
