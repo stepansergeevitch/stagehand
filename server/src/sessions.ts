@@ -1,3 +1,4 @@
+import { taskDbActive, taskDbEnv, taskDbOf, taskDbRow, type TaskDbRow } from "./task-db.js";
 import { existsSync } from "node:fs";
 import { withPrepare } from "./env-config.js";
 import { randomUUID } from "node:crypto";
@@ -17,6 +18,10 @@ export interface SessionStatus extends SessionRow {
     account_name: string | null;
     // The tmux session exists (claude may or may not still be running inside it).
     alive: boolean;
+    // Its own database (task-db.ts), or null when it runs on the env's; dbAvailable: the env has task databases and
+    // the session has its own branch, so Adopt / Recreate applies.
+    db: { name: string; status: string; error: string | null } | null;
+    dbAvailable: boolean;
 }
 
 export interface SessionDiff {
@@ -58,7 +63,9 @@ export class Sessions {
         const out: SessionStatus[] = [];
         for (const r of rows) {
             const env = this.db.prepare(`SELECT name FROM envs WHERE id = ?`).get(r.env_id) as { name: string } | undefined;
-            out.push({ ...r, env_name: env?.name ?? "(deleted env)", account_name: this.account(r.account_id)?.name ?? null, alive: await sessionExists(r.tmux) });
+            const tdb = taskDbRow(this.db, r.id);
+            const envRow = this.db.prepare(`SELECT * FROM envs WHERE id = ?`).get(r.env_id) as EnvRow | undefined;
+            out.push({ ...r, env_name: env?.name ?? "(deleted env)", account_name: this.account(r.account_id)?.name ?? null, alive: await sessionExists(r.tmux), db: tdb ? { name: tdb.name, status: tdb.status, error: tdb.error } : null, dbAvailable: !!r.branch && !!r.worktree_path && !!envRow && taskDbActive(taskDbOf(envRow)) });
         }
         return out;
     }
@@ -99,6 +106,11 @@ export class Sessions {
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
             )
             .run(id, name, env.id, acc.id, body.model?.trim() || null, cwd, worktree, branch, randomUUID(), `sh-session-${id.slice(0, 8)}`, now());
+        // A session on its own branch gets its own database, like a task (task-db.ts): its migrations never reach
+        // the tasks'. A failed copy does not stop the session — it runs on the env's database, and Recreate retries.
+        if (branch && taskDbActive(taskDbOf(env))) {
+            await this.engine.taskDbs.create({ id, slug: branch, kind: "session" }, env).catch((e: unknown) => console.warn(`[sessions] ${name}: database not created — ${String((e as Error).message ?? e).slice(0, 200)}`));
+        }
         return this.open(id);
     }
 
@@ -116,17 +128,40 @@ export class Sessions {
             const first = !s.opened_at;
             const setup = first && s.worktree_path && env.setup_command ? `echo '[stagehand] running the env setup command in the new worktree…'; ( ${withPrepare(env, env.setup_command.replace(/\{\{envPath\}\}/g, env.path).replace(/\{\{worktree\}\}/g, s.worktree_path))}
  ) || echo '[stagehand] setup command failed — see above; claude starts anyway'; ` : "";
+            // After setup (which writes the worktree's config), point the config at the session's own database.
+            const tdb = taskDbRow(this.db, s.id);
+            const c = taskDbOf(env);
+            const connect = first && s.worktree_path && tdb?.status === "ready" && c?.connect.trim() ? `echo "[stagehand] pointing the worktree at its database $STAGEHAND_TASK_DB…"; ( ${withPrepare(env, c.connect.replace(/\{\{envPath\}\}/g, env.path).replace(/\{\{worktree\}\}/g, s.worktree_path))}
+ ) || echo '[stagehand] connect failed — the worktree may still point at the env database; Recreate the database on the Sessions page'; ` : "";
             const claude = first ? `claude --session-id ${s.claude_session_id}${model}` : `claude --resume ${s.claude_session_id}${model}`;
             await ensureSession(
                 s.tmux,
                 s.cwd,
-                `${setup}${claude}; echo; echo '[stagehand] claude exited — Open on the Sessions page starts it again (resuming this conversation); press Enter to close this pane'; read -r`,
-                { ...parseEnvVars(env.env_vars), ...authEnv(acc), CLAUDE_CONFIG_DIR: cd.path },
+                `${setup}${connect}${claude}; echo; echo '[stagehand] claude exited — Open on the Sessions page starts it again (resuming this conversation); press Enter to close this pane'; read -r`,
+                { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, s.id), ...authEnv(acc), CLAUDE_CONFIG_DIR: cd.path },
             );
             this.db.prepare(`UPDATE sessions SET opened_at = ? WHERE id = ?`).run(now(), id);
         }
         const list = await this.list();
         return list.find((x) => x.id === id)!;
+    }
+
+    // Recreate (own database) or Adopt (still on the env's): close the pane, copy the template, point the worktree at
+    // the copy. The next Open starts claude with $STAGEHAND_TASK_DB.
+    async recreateDb(id: string): Promise<TaskDbRow> {
+        const s = this.row(id);
+        const env = this.env(s.env_id);
+        if (!taskDbActive(taskDbOf(env))) throw new Error("this environment has no task databases configured (env page → Task databases)");
+        if (!s.worktree_path || !s.branch || !existsSync(s.worktree_path)) throw new Error("only a session on its own branch (with a worktree) gets its own database");
+        await killSession(s.tmux);
+        const row = await this.engine.taskDbs.create({ id, slug: s.branch, kind: "session" }, env);
+        await this.engine.taskDbs.connect({ id, worktree_path: s.worktree_path }, env);
+        return row;
+    }
+
+    dbInfo(id: string): { row: TaskDbRow | null; active: boolean } {
+        const s = this.row(id);
+        return { row: taskDbRow(this.db, id) ?? null, active: !!s.branch && taskDbActive(taskDbOf(this.env(s.env_id))) };
     }
 
     async close(id: string): Promise<void> {
@@ -161,6 +196,8 @@ export class Sessions {
             }
             await removeWorktreeAndBranch(env, s.worktree_path, s.branch, vars);
         }
+        // Its database (and the copies derived from it) goes with the worktree.
+        if (removeWorktree && taskDbRow(this.db, id)) await this.engine.taskDbs.drop({ id }, this.env(s.env_id)).catch((e: unknown) => console.warn(`[sessions] ${s.name}: database not dropped — ${String((e as Error).message ?? e).slice(0, 200)}`));
         this.db.prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
     }
 

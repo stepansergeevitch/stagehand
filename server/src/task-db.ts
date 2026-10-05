@@ -34,7 +34,9 @@ export const TaskDbConfig = z.object({
 export type TaskDbConfig = z.infer<typeof TaskDbConfig>;
 
 export interface TaskDbRow {
+    // The owner's id: a task's, or a session's (owner_kind) — a session on its own branch gets a database too.
     task_id: string;
+    owner_kind: "task" | "session";
     env_id: string;
     name: string;
     template: string;
@@ -50,6 +52,12 @@ export interface ListedDb {
 }
 
 // The branch the template worktree keeps; never pushed, never a task's.
+export interface DbOwner {
+    id: string;
+    slug: string;
+    kind: "task" | "session";
+}
+
 export const TEMPLATE_BRANCH = "stagehand-template";
 const LIST_FRESH_MS = 10 * 60_000;
 const BUSY_RETRIES = 3;
@@ -189,16 +197,18 @@ export class TaskDbs {
         });
     }
 
-    // Refreshes the template, then copies it into the task's database (replacing one left by an earlier attempt).
-    async create(task: TaskRow, env: EnvRow, note: (line: string) => void = () => undefined): Promise<TaskDbRow> {
+    // Refreshes the template, then copies it into the owner's database (replacing one left by an earlier attempt).
+    // `slug` names it: a task's ticket id, a session's branch.
+    async create(owner: DbOwner, env: EnvRow, note: (line: string) => void = () => undefined): Promise<TaskDbRow> {
+        const task = { id: owner.id };
         const c = taskDbOf(env);
         if (!taskDbActive(c)) throw new Error("this environment has no task databases configured");
-        const name = taskDbName(c, task.ticket_id);
+        const name = taskDbName(c, owner.slug);
         if (name === c.template) throw new Error(`the name pattern gives the template's own name (${name})`);
         const at = now();
         this.db
-            .prepare(`INSERT INTO task_dbs (task_id, env_id, name, template, status, error, created_at, updated_at) VALUES (?, ?, ?, ?, 'creating', NULL, ?, ?) ON CONFLICT(task_id) DO UPDATE SET name = excluded.name, template = excluded.template, status = 'creating', error = NULL, updated_at = excluded.updated_at`)
-            .run(task.id, env.id, name, c.template, at, at);
+            .prepare(`INSERT INTO task_dbs (task_id, owner_kind, env_id, name, template, status, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'creating', NULL, ?, ?) ON CONFLICT(task_id) DO UPDATE SET name = excluded.name, template = excluded.template, status = 'creating', error = NULL, updated_at = excluded.updated_at`)
+            .run(task.id, owner.kind, env.id, name, c.template, at, at);
         try {
             await this.withLock(env.id, async () => {
                 // A base branch that cannot migrate right now (two migrations with the same number merged upstream,
@@ -237,8 +247,8 @@ export class TaskDbs {
         return taskDbRow(this.db, task.id)!;
     }
 
-    // Points the task's worktree config at its database.
-    async connect(task: TaskRow, env: EnvRow): Promise<void> {
+    // Points the owner's worktree config at its database.
+    async connect(task: { id: string; worktree_path: string | null }, env: EnvRow): Promise<void> {
         const c = taskDbOf(env);
         const row = taskDbRow(this.db, task.id);
         if (!c || !row || row.status !== "ready" || !task.worktree_path) return;

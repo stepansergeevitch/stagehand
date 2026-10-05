@@ -1029,6 +1029,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.db_hosts_command", `ALTER TABLE envs ADD COLUMN db_hosts_command TEXT`],
     ["envs.allowed_db_hosts", `ALTER TABLE envs ADD COLUMN allowed_db_hosts TEXT`],
     ["envs.task_db", `ALTER TABLE envs ADD COLUMN task_db TEXT`],
+    ["task_dbs.owner_kind", `ALTER TABLE task_dbs ADD COLUMN owner_kind TEXT NOT NULL DEFAULT 'task'`],
     ["tasks.ci_autopilot", `ALTER TABLE tasks ADD COLUMN ci_autopilot INTEGER`],
     ["product_owners.issues_refreshed_at", `ALTER TABLE product_owners ADD COLUMN issues_refreshed_at TEXT`],
     ["product_owners.issues_error", `ALTER TABLE product_owners ADD COLUMN issues_error TEXT`],

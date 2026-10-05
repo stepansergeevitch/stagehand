@@ -170,3 +170,11 @@ databases (`dualentry_test_<slug>`) are unchanged.
 - UI: the env page's "Task databases" section (config, template with Refresh, task databases, Adopt, orphans with Drop),
   the task page's Database widget (Recreate / Adopt), the Resources page's Databases group (template and task databases
   with sizes).
+
+## Sessions
+
+A session on its own branch (its own worktree) gets a database like a task: copied when the session is created
+(named from the branch), the pane runs setup, then `connect`, then claude with `$STAGEHAND_TASK_DB`; deleting the
+session with its worktree drops it and its derived copies. The Sessions page shows it, with Recreate / Own database
+(Adopt). A session without a branch works in the env's checkout on the env's database. `task_dbs.owner_kind` tells the
+two owners apart.

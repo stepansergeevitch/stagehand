@@ -1987,6 +1987,14 @@ app.delete("/api/sessions/:id", async (c) => {
 
 // Same shape as the task diff: ?commits=… / ?scope=uncommitted narrow it; a session in the env's main checkout (no
 // worktree of its own) only ever shows what is uncommitted there.
+// A session on its own branch: Recreate (own database) / Adopt (still on the env's) — task-db.ts.
+app.post("/api/sessions/:id/db/recreate", async (c) => {
+    try {
+        return c.json(await sessions.recreateDb(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e).slice(0, 600) }, 400);
+    }
+});
 app.get("/api/sessions/:id/diff", async (c) => {
     const shas = (c.req.query("commits") ?? "").split(",").map((s) => s.trim()).filter((s) => /^[0-9a-f]{7,40}$/i.test(s));
     try {

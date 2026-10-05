@@ -277,6 +277,8 @@ export const anchorOf = (m: Pick<Message, "anchor">): MessageAnchor | null => {
 export interface Session {
     id: string; name: string; env_id: string; env_name: string; account_id: string | null; account_name: string | null; model: string | null;
     cwd: string; worktree_path: string | null; branch: string | null; claude_session_id: string; tmux: string; created_at: string; opened_at: string | null; alive: boolean;
+    // Its own database (server task-db.ts) or null; dbAvailable: Adopt / Recreate applies.
+    db?: { name: string; status: string; error: string | null } | null; dbAvailable?: boolean;
 }
 export interface AgentQuestion { id: string; text: string; context: string; options: string[] }
 export interface QuestionRound { id: string; run_id: string | null; stage: Stage; questions: AgentQuestion[]; answers: Record<string, string> | null; created_at: string; answered_at: string | null }
@@ -821,6 +823,7 @@ export const api = {
     sessions: () => fetch("/api/sessions").then((r) => j<Session[]>(r)),
     createSession: (body: { envId: string; accountId?: string | null; model?: string | null; name?: string; branch?: string | null }) => post<Session>("/api/sessions", body),
     openSession: (id: string) => post<Session>(`/api/sessions/${id}/open`),
+    recreateSessionDb: (id: string) => post<TaskDbRow>(`/api/sessions/${id}/db/recreate`),
     closeSession: (id: string) => post<Session[]>(`/api/sessions/${id}/close`),
     renameSession: (id: string, name: string) =>
         fetch(`/api/sessions/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) }).then((r) => j<Session>(r)),

@@ -111,7 +111,7 @@ export interface ResourceHooks {
     releaseClone(key: string): Promise<void>;
     notice(taskId: string, text: string): void;
     // Task databases and their templates (task-db.ts), with the sizes the env's list command last printed.
-    databases(): Array<{ envId: string; envName: string; name: string; role: "template" | "task" | "orphan"; taskId: string | null; sizeMb: number | null; createdAt: string | null }>;
+    databases(): Array<{ envId: string; envName: string; name: string; role: "template" | "task" | "orphan"; taskId: string | null; ownerKind: "task" | "session"; ownerName: string | null; sizeMb: number | null; createdAt: string | null }>;
 }
 
 const BROWSER_STAGES = new Set(["qa_baseline", "manual_qa"]);
@@ -399,7 +399,7 @@ export class Resources {
                     id: `database:${d.envId}:${d.name}`,
                     kind: "database",
                     label: d.role === "template" ? `template DB ${d.name}` : d.role === "orphan" ? `DB ${d.name} (no task)` : `DB ${d.name}`,
-                    owner: d.role === "task" ? ownerOfTask(task, d.taskId!) : { type: "env", id: d.envId, name: d.envName, status: d.role },
+                    owner: d.role === "task" ? (d.ownerKind === "session" ? { type: "session", id: d.taskId, name: d.ownerName, status: d.envName } : ownerOfTask(task, d.taskId!)) : { type: "env", id: d.envId, name: d.envName, status: d.role },
                     tmux: null,
                     pid: null,
                     port: null,
@@ -534,7 +534,7 @@ export class Resources {
             case "worktree":
                 return keep("removed by Clean up / Delete");
             case "database":
-                return keep(r.owner.type === "task" ? "dropped by Clean up / Delete" : r.owner.status === "orphan" ? "no task owns it — drop it on the env page" : "the template task databases are copied from");
+                return keep(r.owner.type === "task" ? "dropped by Clean up / Delete" : r.owner.type === "session" ? "dropped when the session is deleted with its worktree" : r.owner.status === "orphan" ? "no task owns it — drop it on the env page" : "the template task databases are copied from");
             case "orphan":
                 return stopAfter("nothing in Stagehand owns it", Date.now() - r.ageMs, p.orphanMinutes * MIN);
         }

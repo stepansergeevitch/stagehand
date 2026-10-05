@@ -77,6 +77,7 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, session, vi
                     onChanges={() => { onNavigate(s.id, "changes"); setRefreshKey((k) => k + 1); }}
                     onClose={() => act(`close:${s.id}`, async () => { await api.closeSession(s.id); if (active === s.id && view === "terminal") onNavigate(null); })}
                     onRename={(name) => act(`rename:${s.id}`, () => api.renameSession(s.id, name))}
+                    onRecreateDb={() => act(`db:${s.id}`, () => api.recreateSessionDb(s.id))}
                     onDelete={(removeWorktree) =>
                         act(`delete:${s.id}`, async () => {
                             try {
@@ -118,9 +119,9 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, session, vi
     );
 };
 
-const SessionCard = ({ s, env, settings, selected, busy, onOpen, onChanges, onClose, onRename, onDelete }: {
+const SessionCard = ({ s, env, settings, selected, busy, onOpen, onChanges, onClose, onRename, onDelete, onRecreateDb }: {
     s: Session; env: Env | undefined; settings: Settings | null; selected: boolean; busy: string | null;
-    onOpen: () => Promise<void>; onChanges: () => void; onClose: () => Promise<void>; onRename: (name: string) => Promise<void>; onDelete: (removeWorktree: boolean) => Promise<void>;
+    onOpen: () => Promise<void>; onChanges: () => void; onClose: () => Promise<void>; onRename: (name: string) => Promise<void>; onDelete: (removeWorktree: boolean) => Promise<void>; onRecreateDb: () => Promise<void>;
 }) => {
     const [renaming, setRenaming] = useState(false);
     const [name, setName] = useState(s.name);
@@ -143,11 +144,13 @@ const SessionCard = ({ s, env, settings, selected, busy, onOpen, onChanges, onCl
             <div className="kv">
                 <b>Directory</b><code>{s.cwd}</code>
                 {s.branch && <><b>Branch</b><span><code>{s.branch}</code> <small className="field-hint" style={{ display: "inline" }}>own worktree{env ? ` from ${env.base_branch}` : ""}</small></span></>}
+                {(s.db || s.dbAvailable) && <><b>Database</b><span>{s.db?.status === "ready" ? <code>{s.db.name}</code> : s.db ? <span className="chip bad" title={s.db.error ?? ""}>{s.db.status}{s.db.error ? `: ${s.db.error.slice(0, 120)}` : ""}</span> : <span className="field-hint" style={{ display: "inline" }}>the env&apos;s shared database</span>}</span></>}
                 <b>Created</b><span>{new Date(s.created_at).toLocaleString()}{s.opened_at ? "" : " · never opened"}</span>
             </div>
             <div className="actions">
                 <button className="primary" disabled={busy !== null} onClick={() => void onOpen()}>{mine("open") ? "Opening…" : s.alive ? "Show terminal" : s.opened_at ? "Open (resume)" : "Open"}</button>
                 <button disabled={busy !== null} onClick={onChanges}>Changes</button>
+                {s.dbAvailable && <button disabled={busy !== null} title={s.db?.status === "ready" ? "Close the pane, copy the template again (this session's data is lost), point the worktree at the copy" : "Close the pane, copy the template for this session, point the worktree at the copy"} onClick={() => void onRecreateDb()}>{mine("db") ? "Copying the database…" : s.db?.status === "ready" ? "Recreate database" : "Own database"}</button>}
                 {s.alive && <button disabled={busy !== null} title="Kills the tmux pane; the conversation can be resumed with Open" onClick={() => void onClose()}>{mine("close") ? "Closing…" : "Close pane"}</button>}
                 <button
                     className="danger"

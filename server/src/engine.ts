@@ -1784,7 +1784,7 @@ export class Engine extends EventEmitter {
         if (this.baseCheckout.isOn(taskId)) throw new Error("the worktree is on the base for the QA baseline — Retry the task so it returns to its branch first");
         const adopt = taskDbRow(this.db, taskId)?.status !== "ready";
         await this.services.stopAll(taskId);
-        const row = await this.taskDbs.create(task, env);
+        const row = await this.taskDbs.create({ id: task.id, slug: task.ticket_id, kind: "task" }, env);
         await this.taskDbs.connect(this.getTask(taskId)!, env);
         const stale = this.taskDbs.lastRefreshError.get(env.id);
         this.addAgentNote(taskId, `🗄️ ${adopt ? "Moved to its own database" : "Database recreated"}: ${row.name}, copied from ${row.template}${stale ? ` as it was — migrating it to ${env.base_branch} failed (${stale})` : ` after migrating it to ${env.base_branch}`}. The next BE start migrates it to this branch.`);
@@ -1818,7 +1818,7 @@ export class Engine extends EventEmitter {
             template: c?.template ? { name: c.template, sizeMb: size(c.template), worktree: existsSync(wt) ? wt : null, refreshError: this.taskDbs.lastRefreshError.get(envId) ?? null } : null,
             taskDbs: rows.map((r) => {
                 const derived = ownedDbNames(r.name, listed.dbs.map((d) => d.name), rows.filter((o) => o.task_id !== r.task_id).map((o) => o.name)).filter((n) => n !== r.name);
-                return { ...r, ticketId: tasks.find((t) => t.id === r.task_id)?.ticket_id ?? null, sizeMb: size(r.name), derived: derived.map((n) => ({ name: n, sizeMb: size(n) })) };
+                return { ...r, ticketId: this.dbOwnerName(r), sizeMb: size(r.name), derived: derived.map((n) => ({ name: n, sizeMb: size(n) })) };
             }),
             // Tasks with a worktree still on the shared database: Adopt moves them.
             shared: tasks.filter((t) => t.worktree_path && existsSync(t.worktree_path) && !rows.some((r) => r.task_id === t.id && r.status === "ready")).map((t) => ({ taskId: t.id, ticketId: t.ticket_id, stage: t.stage, status: t.status })),
@@ -1829,7 +1829,13 @@ export class Engine extends EventEmitter {
     }
 
     // For the Resources page: the template and the task databases of every env that has them (sizes from the last list).
-    databaseResources(): Array<{ envId: string; envName: string; name: string; role: "template" | "task" | "orphan"; taskId: string | null; sizeMb: number | null; createdAt: string | null }> {
+    // A database owner's label: the task's ticket id or the session's name.
+    private dbOwnerName(r: TaskDbRow): string | null {
+        if (r.owner_kind === "session") return ((this.db.prepare(`SELECT name FROM sessions WHERE id = ?`).get(r.task_id) as { name: string } | undefined)?.name ?? null);
+        return this.getTask(r.task_id)?.ticket_id ?? null;
+    }
+
+    databaseResources(): Array<{ envId: string; envName: string; name: string; role: "template" | "task" | "orphan"; taskId: string | null; ownerKind: "task" | "session"; ownerName: string | null; sizeMb: number | null; createdAt: string | null }> {
         const out: ReturnType<Engine["databaseResources"]> = [];
         for (const env of this.db.prepare(`SELECT * FROM envs`).all() as EnvRow[]) {
             const c = taskDbOf(env);
@@ -1837,12 +1843,12 @@ export class Engine extends EventEmitter {
             if (!c?.template && !rows.length) continue;
             const listed = this.taskDbs.cachedList(env);
             const size = (n: string): number | null => listed?.dbs.find((d) => d.name === n)?.sizeMb ?? null;
-            if (c?.template) out.push({ envId: env.id, envName: env.name, name: c.template, role: "template", taskId: null, sizeMb: size(c.template), createdAt: null });
+            if (c?.template) out.push({ envId: env.id, envName: env.name, name: c.template, role: "template", taskId: null, ownerKind: "task", ownerName: null, sizeMb: size(c.template), createdAt: null });
             const names = (listed?.dbs ?? []).map((d) => d.name);
             for (const r of rows) {
-                for (const n of ownedDbNames(r.name, names, rows.filter((o) => o.task_id !== r.task_id).map((o) => o.name))) out.push({ envId: env.id, envName: env.name, name: n, role: "task", taskId: r.task_id, sizeMb: size(n), createdAt: r.created_at });
+                for (const n of ownedDbNames(r.name, names, rows.filter((o) => o.task_id !== r.task_id).map((o) => o.name))) out.push({ envId: env.id, envName: env.name, name: n, role: "task", taskId: r.task_id, ownerKind: r.owner_kind ?? "task", ownerName: this.dbOwnerName(r), sizeMb: size(n), createdAt: r.created_at });
             }
-            for (const d of listed?.dbs ?? []) if (d.name !== c?.template && !rows.some((r) => r.name === d.name || d.name.startsWith(`${r.name}_`))) out.push({ envId: env.id, envName: env.name, name: d.name, role: "orphan", taskId: null, sizeMb: d.sizeMb, createdAt: null });
+            for (const d of listed?.dbs ?? []) if (d.name !== c?.template && !rows.some((r) => r.name === d.name || d.name.startsWith(`${r.name}_`))) out.push({ envId: env.id, envName: env.name, name: d.name, role: "orphan", taskId: null, ownerKind: "task", ownerName: null, sizeMb: d.sizeMb, createdAt: null });
         }
         return out;
     }
@@ -6691,7 +6697,7 @@ export class Engine extends EventEmitter {
                     if (taskDbActive(taskDbOf(env))) {
                         const cur = this.getTask(taskId)!;
                         try {
-                            await this.taskDbs.create(cur, env, (line) => this.setTaskStatus(taskId, "running", `task database · ${line}`));
+                            await this.taskDbs.create({ id: cur.id, slug: cur.ticket_id, kind: "task" }, env, (line) => this.setTaskStatus(taskId, "running", `task database · ${line}`));
                         } catch (e) {
                             this.setTaskStatus(taskId, "blocked", `Task database · could not be created: ${String((e as Error).message ?? e).slice(0, 300)} — fix it, then Recreate the database on the task page`, { notify: true });
                             return;
