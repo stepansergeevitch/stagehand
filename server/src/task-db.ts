@@ -126,6 +126,8 @@ export class TaskDbs {
     private readonly locks = new Map<string, Promise<unknown>>();
     private readonly listed = new Map<string, { at: number; dbs: ListedDb[]; error: string | null }>();
     private readonly listing = new Set<string>();
+    // Why the last template refresh before a copy failed (the copy went ahead with the template as it was).
+    readonly lastRefreshError = new Map<string, string>();
 
     constructor(
         private readonly db: DB,
@@ -181,7 +183,10 @@ export class TaskDbs {
 
     // The env page's "Refresh template": the same refresh a task start does, under the env's lock.
     refresh(env: EnvRow): Promise<void> {
-        return this.withLock(env.id, () => this.refreshTemplate(env));
+        return this.withLock(env.id, async () => {
+            await this.refreshTemplate(env);
+            this.lastRefreshError.delete(env.id);
+        });
     }
 
     // Refreshes the template, then copies it into the task's database (replacing one left by an earlier attempt).
@@ -196,7 +201,16 @@ export class TaskDbs {
             .run(task.id, env.id, name, c.template, at, at);
         try {
             await this.withLock(env.id, async () => {
-                await this.refreshTemplate(env, note);
+                // A base branch that cannot migrate right now (two migrations with the same number merged upstream,
+                // DualEntry dev 2026-10-05) must not stop task starts: the template is copied as it is (its last good
+                // state) and the task's own Migrate brings its copy up to the branch.
+                try {
+                    await this.refreshTemplate(env, note);
+                } catch (e) {
+                    const why = String((e as Error).message ?? e).split("\n").filter(Boolean).slice(-2).join(" ").slice(0, 300);
+                    this.lastRefreshError.set(env.id, why);
+                    note(`the template could not be refreshed (${why}) — copying it as it is`);
+                }
                 const vars = { STAGEHAND_TASK_DB: name, STAGEHAND_TASK_DB_TEMPLATE: c.template };
                 await this.run(env, env.path, c.drop, vars);
                 note(`copying ${c.template} into ${name}`);

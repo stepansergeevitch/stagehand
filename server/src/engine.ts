@@ -1786,7 +1786,8 @@ export class Engine extends EventEmitter {
         await this.services.stopAll(taskId);
         const row = await this.taskDbs.create(task, env);
         await this.taskDbs.connect(this.getTask(taskId)!, env);
-        this.addAgentNote(taskId, `🗄️ ${adopt ? "Moved to its own database" : "Database recreated"}: ${row.name}, copied from ${row.template} after migrating it to ${env.base_branch}. The next BE start migrates it to this branch.`);
+        const stale = this.taskDbs.lastRefreshError.get(env.id);
+        this.addAgentNote(taskId, `🗄️ ${adopt ? "Moved to its own database" : "Database recreated"}: ${row.name}, copied from ${row.template}${stale ? ` as it was — migrating it to ${env.base_branch} failed (${stale})` : ` after migrating it to ${env.base_branch}`}. The next BE start migrates it to this branch.`);
         const cur = this.getTask(taskId)!;
         // A task blocked at the start because its database could not be created continues where it stopped.
         if (cur.stage === "research" && cur.status === "blocked" && cur.status_line?.startsWith("Task database")) this.advance(taskId, "design_proposal");
@@ -1814,7 +1815,7 @@ export class Engine extends EventEmitter {
         const wt = this.taskDbs.templateWorktree(env);
         return {
             active: taskDbActive(c),
-            template: c?.template ? { name: c.template, sizeMb: size(c.template), worktree: existsSync(wt) ? wt : null } : null,
+            template: c?.template ? { name: c.template, sizeMb: size(c.template), worktree: existsSync(wt) ? wt : null, refreshError: this.taskDbs.lastRefreshError.get(envId) ?? null } : null,
             taskDbs: rows.map((r) => {
                 const derived = ownedDbNames(r.name, listed.dbs.map((d) => d.name), rows.filter((o) => o.task_id !== r.task_id).map((o) => o.name)).filter((n) => n !== r.name);
                 return { ...r, ticketId: tasks.find((t) => t.id === r.task_id)?.ticket_id ?? null, sizeMb: size(r.name), derived: derived.map((n) => ({ name: n, sizeMb: size(n) })) };

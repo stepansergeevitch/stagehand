@@ -89,6 +89,7 @@ const TaskDbSection = ({ env, onChanged, onError }: { env: Env; onChanged: () =>
                         {view.active && <button className="tiny" disabled={busy !== null} onClick={() => void act("refresh", () => api.refreshTemplate(env.id))}>{busy === "refresh" ? "Refreshing…" : `Refresh (migrate to ${env.base_branch})`}</button>}
                         <button className="tiny" disabled={busy !== null} onClick={() => load(true)}>Reload sizes</button>
                     </div>
+                    {view.template?.refreshError && <div className="field-hint bad">The last refresh before a copy failed, so the template was copied as it was: {view.template.refreshError}</div>}
                     {view.listError && <div className="field-hint bad">List command failed: {view.listError}</div>}
                     <div className="row"><b>Task databases</b> {view.taskDbs.length === 0 && "none yet"}</div>
                     {view.taskDbs.map((d) => (

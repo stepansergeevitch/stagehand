@@ -373,7 +373,7 @@ export interface TaskDbInfo {
 }
 export interface EnvDbOverview {
     active: boolean;
-    template: { name: string; sizeMb: number | null; worktree: string | null } | null;
+    template: { name: string; sizeMb: number | null; worktree: string | null; refreshError: string | null } | null;
     taskDbs: Array<TaskDbRow & { ticketId: string | null; sizeMb: number | null; derived: Array<{ name: string; sizeMb: number | null }> }>;
     shared: Array<{ taskId: string; ticketId: string; stage: Stage; status: string }>;
     orphans: Array<{ name: string; sizeMb: number | null }>;
