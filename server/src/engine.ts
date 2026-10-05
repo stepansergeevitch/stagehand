@@ -6444,15 +6444,17 @@ export class Engine extends EventEmitter {
                         this.cfg,
                         {
                             scenario: { id: s.id, title: spec?.title ?? "", kind: spec?.kind ?? "browser", steps: (spec?.steps ?? []).map((st, i) => ({ n: i + 1, action: st.action, expected: st.assert })) },
-                            runner: { outcome: s.outcome, observation: s.observation, log: (s.log ?? "").slice(-1500), blockers: qa.blockers },
+                            // The pass's blockers are shared by every scenario (and are sometimes plain notes): Jev weighs one only when it
+                            // touches this scenario's steps (INV-149 and INV-155, 2026-10: one note failed every scenario of the pass).
+                            runner: { outcome: s.outcome, observation: s.observation, log: (s.log ?? "").slice(-1500), passBlockers: qa.blockers },
                         },
                         {
                             passed: {
                                 type: "noul",
                                 instructions: "Every expected result of this scenario held in the observed run",
                                 criteria: {
-                                    true: "The observation confirms each expected result with concrete evidence (values, states, messages); no step skipped, no contradiction, no workaround, no blocker",
-                                    false: "An expected result is contradicted, unverified or skipped, holds only through a workaround, or the runner reports a blocker or an error",
+                                    true: "The observation confirms each expected result with concrete evidence (values, states, messages); no step skipped, no contradiction, no workaround, no blocker in this scenario's steps",
+                                    false: "An expected result is contradicted, unverified or skipped, holds only through a workaround, or an error or a pass blocker stopped or altered one of THIS scenario's steps (pass blockers that concern other scenarios or are mere notes do not count)",
                                 },
                             },
                             // Jev answers with probabilities, never prose: the reason is a second, categorical question, so a
@@ -6466,7 +6468,7 @@ export class Engine extends EventEmitter {
                                     unverified: "an expected result is asserted without concrete evidence (no value, state or message quoted)",
                                     skipped: "a step or an expected result is not covered by the observation at all",
                                     workaround: "the runner changed data, route or input to get past something (a substitution, a manual seed, a different record)",
-                                    blocker: "the runner reports a blocker or an error along the way",
+                                    blocker: "an error or a pass blocker stopped or altered this scenario's steps",
                                 },
                             },
                         },
