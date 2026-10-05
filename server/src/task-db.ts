@@ -89,6 +89,15 @@ export const parseDbList = (out: string): ListedDb[] =>
             return { name: name!, sizeMb: Number.isFinite(mb) ? Math.round(mb) : null };
         });
 
+// The databases a task owns among the listed ones: its own, and every one derived from it by a suffix
+// (`<name>_<anything>` — test runners' per-worker copies like `<name>_gw0`). A name that is (or derives from) another
+// task's database is never this task's, so `app_inv_1` never takes `app_inv_1_2`'s databases.
+export const ownedDbNames = (name: string, listed: string[], others: string[]): string[] => {
+    const derives = (n: string, base: string): boolean => n.startsWith(`${base}_`);
+    const longerOthers = others.filter((o) => o !== name && derives(o, name));
+    return [...new Set([name, ...listed.filter((n) => derives(n, name) && !longerOthers.some((o) => n === o || derives(n, o)))])];
+};
+
 export const taskDbRow = (db: DB, taskId: string): TaskDbRow | undefined => db.prepare(`SELECT * FROM task_dbs WHERE task_id = ?`).get(taskId) as TaskDbRow | undefined;
 
 // The variables every command of a task gets once its database exists.
@@ -222,14 +231,23 @@ export class TaskDbs {
         await this.run(env, task.worktree_path, c.connect, { STAGEHAND_TASK_DB: row.name, STAGEHAND_TASK_DB_TEMPLATE: row.template });
     }
 
-    async drop(task: Pick<TaskRow, "id">, env: EnvRow): Promise<string | null> {
+    // Drops the task's database and every database derived from it (see ownedDbNames); returns the names dropped.
+    async drop(task: Pick<TaskRow, "id">, env: EnvRow): Promise<string[]> {
         const c = taskDbOf(env);
         const row = taskDbRow(this.db, task.id);
-        if (!row) return null;
-        if (c?.drop.trim()) await this.withLock(env.id, () => this.run(env, env.path, c.drop, { STAGEHAND_TASK_DB: row.name, STAGEHAND_TASK_DB_TEMPLATE: row.template }));
+        if (!row) return [];
+        let names = [row.name];
+        if (c?.drop.trim()) {
+            const listed = c.list.trim() ? (await this.list(env, true)).dbs.map((d) => d.name) : [];
+            const others = this.rows(env.id).filter((r) => r.task_id !== task.id).map((r) => r.name);
+            names = ownedDbNames(row.name, listed, others).filter((n) => n !== c.template && n !== row.template);
+            await this.withLock(env.id, async () => {
+                for (const n of names) await this.run(env, env.path, c.drop, { STAGEHAND_TASK_DB: n, STAGEHAND_TASK_DB_TEMPLATE: row.template });
+            });
+        }
         this.db.prepare(`DELETE FROM task_dbs WHERE task_id = ?`).run(task.id);
         this.listed.delete(env.id);
-        return row.name;
+        return names;
     }
 
     // An orphan from the env page: a listed database no task owns. Never the template, never a task's.
@@ -237,7 +255,7 @@ export class TaskDbs {
         const c = taskDbOf(env);
         if (!c?.drop.trim()) throw new Error("this environment has no drop command");
         if (name === c.template) throw new Error("that is the template");
-        if (this.db.prepare(`SELECT 1 FROM task_dbs WHERE name = ? AND env_id = ?`).get(name, env.id)) throw new Error("a task owns that database");
+        if (this.rows(env.id).some((r) => r.name === name || name.startsWith(`${r.name}_`))) throw new Error("a task owns that database");
         const listed = (await this.list(env, true)).dbs;
         if (!listed.some((d) => d.name === name)) throw new Error(`${name} is not among the env's listed databases`);
         await this.withLock(env.id, () => this.run(env, env.path, c.drop, { STAGEHAND_TASK_DB: name, STAGEHAND_TASK_DB_TEMPLATE: c.template }));

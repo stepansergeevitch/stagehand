@@ -77,7 +77,7 @@ const TaskDbSection = ({ env, onChanged, onError }: { env: Env; onChanged: () =>
                 <label>Name pattern ({"{{template}}"}, {"{{slug}}"} = the ticket id) <input value={c.namePattern} onChange={set("namePattern")} placeholder="{{template}}_{{slug}}" /></label>
             </div>
             <label>Create (copies $STAGEHAND_TASK_DB_TEMPLATE into $STAGEHAND_TASK_DB — e.g. CREATE DATABASE … TEMPLATE …) <textarea className="tall" spellCheck={false} value={c.create} onChange={set("create")} /></label>
-            <label>Drop (drops $STAGEHAND_TASK_DB; must succeed when it does not exist) <textarea spellCheck={false} value={c.drop} onChange={set("drop")} /></label>
+            <label>Drop (drops $STAGEHAND_TASK_DB; must succeed when it does not exist. On Clean up / Delete it runs once for the task&apos;s database and once for every listed database derived from it — &lt;name&gt;_gw0, &lt;name&gt;_anything) <textarea spellCheck={false} value={c.drop} onChange={set("drop")} /></label>
             <label>Connect (runs in a worktree: points the app's config at $STAGEHAND_TASK_DB — e.g. the database name in its .env) <textarea spellCheck={false} value={c.connect} onChange={set("connect")} /></label>
             <label>List (prints the template and the task databases, one per line: name, then size in MB) <textarea spellCheck={false} value={c.list} onChange={set("list")} placeholder="optional — sizes on the Resources page, orphans here" /></label>
             <label>Shared databases (a worktree may still use these besides its own; comma-separated) <input value={shared} onChange={(e) => setShared(e.target.value)} placeholder="optional" /></label>
@@ -94,6 +94,7 @@ const TaskDbSection = ({ env, onChanged, onError }: { env: Env; onChanged: () =>
                     {view.taskDbs.map((d) => (
                         <div key={d.task_id} className="row sub">
                             <code>{d.name}</code> · {d.ticketId ?? "deleted task"} · {d.status === "ready" ? mb(d.sizeMb) : <span className="chip bad">{d.status}{d.error ? `: ${d.error}` : ""}</span>}
+                            {d.derived.length > 0 && <span className="field-hint"> · plus {d.derived.length} derived ({d.derived.map((x) => x.name.slice(d.name.length)).join(", ")}; {mb(d.derived.reduce((n, x) => n + (x.sizeMb ?? 0), 0))}) — dropped with it</span>}
                         </div>
                     ))}
                     {view.active && view.shared.length > 0 && (

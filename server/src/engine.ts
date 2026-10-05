@@ -1,7 +1,7 @@
 import { BaseCheckout } from "./migrations.js";
 import { callbackPortsOf, withPrepare } from "./env-config.js";
 import { assertDbHosts } from "./db-hosts.js";
-import { namesTemplate, TaskDbs, taskDbActive, taskDbEnv, taskDbExpect, taskDbOf, taskDbRow, type TaskDbRow } from "./task-db.js";
+import { namesTemplate, ownedDbNames, TaskDbs, taskDbActive, taskDbEnv, taskDbExpect, taskDbOf, taskDbRow, type TaskDbRow } from "./task-db.js";
 import { activeRound, addedFiles, AutopilotReview, autopilotRulesOf, describeRules, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
 import { EventEmitter } from "node:events";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -1735,7 +1735,7 @@ export class Engine extends EventEmitter {
                 skipped.push(`task database not dropped: ${String((e as Error).message ?? e).slice(0, 160)}`);
                 return null;
             });
-            if (dropped) done.push(`task database ${dropped} dropped`);
+            if (dropped?.length) done.push(`task database${dropped.length > 1 ? "s" : ""} ${dropped.join(", ")} dropped`);
         }
         if (opts.removeWorktree && task.worktree_path && existsSync(task.worktree_path)) {
             if (env.cleanup_command) {
@@ -1815,10 +1815,13 @@ export class Engine extends EventEmitter {
         return {
             active: taskDbActive(c),
             template: c?.template ? { name: c.template, sizeMb: size(c.template), worktree: existsSync(wt) ? wt : null } : null,
-            taskDbs: rows.map((r) => ({ ...r, ticketId: tasks.find((t) => t.id === r.task_id)?.ticket_id ?? null, sizeMb: size(r.name) })),
+            taskDbs: rows.map((r) => {
+                const derived = ownedDbNames(r.name, listed.dbs.map((d) => d.name), rows.filter((o) => o.task_id !== r.task_id).map((o) => o.name)).filter((n) => n !== r.name);
+                return { ...r, ticketId: tasks.find((t) => t.id === r.task_id)?.ticket_id ?? null, sizeMb: size(r.name), derived: derived.map((n) => ({ name: n, sizeMb: size(n) })) };
+            }),
             // Tasks with a worktree still on the shared database: Adopt moves them.
             shared: tasks.filter((t) => t.worktree_path && existsSync(t.worktree_path) && !rows.some((r) => r.task_id === t.id && r.status === "ready")).map((t) => ({ taskId: t.id, ticketId: t.ticket_id, stage: t.stage, status: t.status })),
-            orphans: listed.dbs.filter((d) => d.name !== c?.template && !rows.some((r) => r.name === d.name)),
+            orphans: listed.dbs.filter((d) => d.name !== c?.template && !rows.some((r) => r.name === d.name || d.name.startsWith(`${r.name}_`))),
             listedAt: new Date(listed.at).toISOString(),
             listError: listed.error,
         };
@@ -1834,8 +1837,11 @@ export class Engine extends EventEmitter {
             const listed = this.taskDbs.cachedList(env);
             const size = (n: string): number | null => listed?.dbs.find((d) => d.name === n)?.sizeMb ?? null;
             if (c?.template) out.push({ envId: env.id, envName: env.name, name: c.template, role: "template", taskId: null, sizeMb: size(c.template), createdAt: null });
-            for (const r of rows) out.push({ envId: env.id, envName: env.name, name: r.name, role: "task", taskId: r.task_id, sizeMb: size(r.name), createdAt: r.created_at });
-            for (const d of listed?.dbs ?? []) if (d.name !== c?.template && !rows.some((r) => r.name === d.name)) out.push({ envId: env.id, envName: env.name, name: d.name, role: "orphan", taskId: null, sizeMb: d.sizeMb, createdAt: null });
+            const names = (listed?.dbs ?? []).map((d) => d.name);
+            for (const r of rows) {
+                for (const n of ownedDbNames(r.name, names, rows.filter((o) => o.task_id !== r.task_id).map((o) => o.name))) out.push({ envId: env.id, envName: env.name, name: n, role: "task", taskId: r.task_id, sizeMb: size(n), createdAt: r.created_at });
+            }
+            for (const d of listed?.dbs ?? []) if (d.name !== c?.template && !rows.some((r) => r.name === d.name || d.name.startsWith(`${r.name}_`))) out.push({ envId: env.id, envName: env.name, name: d.name, role: "orphan", taskId: null, sizeMb: d.sizeMb, createdAt: null });
         }
         return out;
     }

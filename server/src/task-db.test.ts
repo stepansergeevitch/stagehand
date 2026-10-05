@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { assertDbHosts, parseDbTargets } from "./db-hosts.js";
 import type { EnvRow } from "./db.js";
-import { namesTemplate, parseDbList, taskDbActive, taskDbName, taskDbOf } from "./task-db.js";
+import { namesTemplate, ownedDbNames, parseDbList, taskDbActive, taskDbName, taskDbOf } from "./task-db.js";
 
 const cfg = (over: Record<string, unknown> = {}) => ({ enabled: true, template: "app", create: "c", drop: "d", connect: "x", list: "", ...over });
 
@@ -21,6 +21,12 @@ describe("task databases", () => {
         const long = taskDbName({ template: "a".repeat(40), namePattern: "" }, "B".repeat(40));
         expect(long.length).toBeLessThanOrEqual(63);
         expect(long).not.toBe(taskDbName({ template: "a".repeat(40), namePattern: "" }, `${"B".repeat(39)}C`));
+    });
+    it("owns its database and the copies derived from it, never another task's", () => {
+        const listed = ["app", "app_inv_1", "app_inv_1_gw0", "app_inv_1_gw1", "app_inv_12", "app_inv_1_2", "app_inv_1_2_gw0"];
+        expect(ownedDbNames("app_inv_1", listed, ["app_inv_12", "app_inv_1_2"])).toEqual(["app_inv_1", "app_inv_1_gw0", "app_inv_1_gw1"]);
+        expect(ownedDbNames("app_inv_1_2", listed, ["app_inv_1"])).toEqual(["app_inv_1_2", "app_inv_1_2_gw0"]);
+        expect(ownedDbNames("app_inv_9", listed, [])).toEqual(["app_inv_9"]);
     });
     it("parses the list command's output with or without sizes", () => {
         expect(parseDbList("app 25000\napp_inv_1|12\n\napp_inv_2\n")).toEqual([
