@@ -12,7 +12,7 @@ import { dirSizeMb, hostMemory, killPid, listeners, processTable, subtree, tmuxS
 import { PORT_RANGE } from "./services.js";
 import { killSession } from "./tmux.js";
 
-export type ResourceKind = "service" | "dependency" | "run" | "terminal" | "session" | "login" | "browser" | "clone" | "worktree" | "orphan";
+export type ResourceKind = "service" | "dependency" | "run" | "terminal" | "session" | "login" | "browser" | "clone" | "worktree" | "database" | "orphan";
 
 export interface ResourceOwner {
     type: "task" | "env" | "session" | "account" | "none";
@@ -110,6 +110,8 @@ export interface ResourceHooks {
     stopBrowser(stateFile: string): Promise<void>;
     releaseClone(key: string): Promise<void>;
     notice(taskId: string, text: string): void;
+    // Task databases and their templates (task-db.ts), with the sizes the env's list command last printed.
+    databases(): Array<{ envId: string; envName: string; name: string; role: "template" | "task" | "orphan"; taskId: string | null; sizeMb: number | null; createdAt: string | null }>;
 }
 
 const BROWSER_STAGES = new Set(["qa_baseline", "manual_qa"]);
@@ -388,6 +390,31 @@ export class Resources {
             const size = this.worktreeSizes.get(task.worktree_path);
             push({ id: `worktree:${task.id}`, kind: "worktree", label: "worktree", owner: ownerOfTask(task, task.id), tmux: null, pid: null, port: null, path: task.worktree_path, rssMb: 0, cpuPct: 0, procs: 0, top: null, startedAt: task.created_at, idleMs: Math.max(0, t0 - Date.parse(task.updated_at)), diskMb: size?.mb ?? null }, []);
         }
+        // Task databases and the templates they are copied from: never stopped from here (Clean up / Delete drops a
+        // task's, the env page drops an orphan), tracked for their size.
+        for (const d of this.hooks.databases()) {
+            const task = d.taskId ? tasks.get(d.taskId) : undefined;
+            push(
+                {
+                    id: `database:${d.envId}:${d.name}`,
+                    kind: "database",
+                    label: d.role === "template" ? `template DB ${d.name}` : d.role === "orphan" ? `DB ${d.name} (no task)` : `DB ${d.name}`,
+                    owner: d.role === "task" ? ownerOfTask(task, d.taskId!) : { type: "env", id: d.envId, name: d.envName, status: d.role },
+                    tmux: null,
+                    pid: null,
+                    port: null,
+                    path: null,
+                    rssMb: 0,
+                    cpuPct: 0,
+                    procs: 0,
+                    top: null,
+                    startedAt: d.createdAt,
+                    idleMs: task ? Math.max(0, t0 - Date.parse(task.updated_at)) : null,
+                    diskMb: d.sizeMb,
+                },
+                [],
+            );
+        }
         void this.sampleWorktreeSizes([...tasks.values()].map((t) => t.worktree_path).filter((p): p is string => !!p && existsSync(p)));
 
         // 9. Orphans: Stagehand-named tmux sessions and listeners in Stagehand's port ranges that no row explains.
@@ -506,6 +533,8 @@ export class Resources {
                 return task && BUSY.has(task.status) ? keep("its QA run is in progress") : stopAfter("its task is not running", Date.now(), 0);
             case "worktree":
                 return keep("removed by Clean up / Delete");
+            case "database":
+                return keep(r.owner.type === "task" ? "dropped by Clean up / Delete" : r.owner.status === "orphan" ? "no task owns it — drop it on the env page" : "the template task databases are copied from");
             case "orphan":
                 return stopAfter("nothing in Stagehand owns it", Date.now() - r.ageMs, p.orphanMinutes * MIN);
         }
@@ -576,6 +605,7 @@ export class Resources {
                 break;
             case "run":
             case "worktree":
+            case "database":
                 throw new Error(`a ${r.kind} is not stopped from here`);
         }
         this.record(r, by === "human" ? "stopped by you" : "stopped", reason);
@@ -585,7 +615,7 @@ export class Resources {
     // Every orphan and every due resource, now (the page's "Clean up" button).
     async sweep(): Promise<number> {
         const s = await this.observe();
-        const targets = s.resources.filter((r) => r.kind === "orphan" || (r.policy.verdict === "stop" && r.kind !== "run" && r.kind !== "worktree"));
+        const targets = s.resources.filter((r) => r.kind === "orphan" || (r.policy.verdict === "stop" && r.kind !== "run" && r.kind !== "worktree" && r.kind !== "database"));
         let n = 0;
         for (const r of targets) {
             await this.stop(r, r.kind === "orphan" ? "clean up: orphan" : `clean up: ${r.policy.reason}`, "human").then(() => n++).catch(() => undefined);

@@ -1,3 +1,4 @@
+import { TaskDbConfig } from "./task-db.js";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
@@ -57,6 +58,7 @@ const resources = new Resources(db, cfg, {
     stopBrowser: (f) => engine.stopGstackBrowser(f),
     releaseClone: (key) => engine.releaseClone(key),
     notice: (taskId, text) => engine.serviceNotice(taskId, text),
+    databases: () => engine.databaseResources(),
 });
 if (!PREVIEW) resources.start();
 // The in-app assistant; its events ride the same websocket as everything else (kind "prompter").
@@ -805,6 +807,8 @@ app.patch("/api/envs/:id", async (c) => {
             // The DB host check: a command printing the hosts the worktree's app uses, and the hosts allowed.
             dbHostsCommand: z.string().nullable().optional(),
             allowedDbHosts: z.array(z.string().trim().min(1)).nullable().optional(),
+            // Task databases (task-db.ts): the template, the name pattern and the inline create / drop / connect / list commands.
+            taskDb: TaskDbConfig.nullable().optional(),
             ciAutopilotRules: z
                 .object({ disabled: z.array(z.string()).default([]), custom: z.array(z.object({ key: z.string().optional(), title: z.string().trim().min(1), verdict: z.enum(["allow", "deny"]), detail: z.string().default("") })).default([]) })
                 .nullable()
@@ -893,6 +897,7 @@ app.patch("/api/envs/:id", async (c) => {
         const json = disabled.length || custom.length ? JSON.stringify({ disabled, custom: custom.map((x, i) => ({ key: x.key?.trim() || `r${Date.now().toString(36)}${i}`, title: x.title, verdict: x.verdict, detail: (x.detail ?? "").trim() })) }) : null;
         db.prepare(`UPDATE envs SET ci_autopilot_rules = ? WHERE id = ?`).run(json, env.id);
     }
+    if (body.taskDb !== undefined) db.prepare(`UPDATE envs SET task_db = ? WHERE id = ?`).run(body.taskDb ? JSON.stringify(body.taskDb) : null, env.id);
     if (body.dbHostsCommand !== undefined) db.prepare(`UPDATE envs SET db_hosts_command = ? WHERE id = ?`).run(body.dbHostsCommand?.trim() || null, env.id);
     if (body.allowedDbHosts !== undefined) db.prepare(`UPDATE envs SET allowed_db_hosts = ? WHERE id = ?`).run(body.allowedDbHosts && body.allowedDbHosts.length ? JSON.stringify(body.allowedDbHosts) : null, env.id);
     if (body.qaSessionCommand !== undefined) db.prepare(`UPDATE envs SET qa_session_command = ? WHERE id = ?`).run(body.qaSessionCommand?.trim() || null, env.id);
@@ -2324,6 +2329,48 @@ const poReviewOf = (taskId: string) => {
     return { running, status: lost ? "failed" : (st.status ?? null), error: lost ? "interrupted by a Stagehand restart — run it again" : (st.error ?? null), at: st.at ?? null, asking: running ? (st.asking ?? null) : null, review: readReview(dir) };
 };
 // The CI autopilot of a task: on or off, its rounds (triage, verification, fix review, push).
+// ---------- task databases (task-db.ts) ----------
+app.get("/api/tasks/:id/db", (c) => {
+    try {
+        return c.json(engine.taskDbInfo(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 404);
+    }
+});
+// Recreate (own database) or Adopt (still on the shared one): stop services, refresh the template, copy, re-point.
+app.post("/api/tasks/:id/db/recreate", async (c) => {
+    try {
+        return c.json(await engine.recreateTaskDb(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+app.get("/api/envs/:id/dbs", async (c) => {
+    const env = db.prepare(`SELECT id FROM envs WHERE id = ?`).get(c.req.param("id"));
+    if (!env) return c.json({ error: "not found" }, 404);
+    return c.json(await engine.envDbOverview(c.req.param("id"), c.req.query("refresh") === "1"));
+});
+app.post("/api/envs/:id/dbs/refresh-template", async (c) => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
+    if (!env) return c.json({ error: "not found" }, 404);
+    try {
+        await engine.taskDbs.refresh(env);
+        return c.json(await engine.envDbOverview(env.id, true));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e).slice(0, 600) }, 400);
+    }
+});
+app.post("/api/envs/:id/dbs/drop", async (c) => {
+    const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
+    if (!env) return c.json({ error: "not found" }, 404);
+    const { name } = z.object({ name: z.string().trim().min(1) }).parse(await c.req.json());
+    try {
+        await engine.taskDbs.dropOrphan(env, name);
+        return c.json(await engine.envDbOverview(env.id, true));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e).slice(0, 600) }, 400);
+    }
+});
 app.get("/api/tasks/:id/ci-autopilot", (c) => (engine.getTask(c.req.param("id")) ? c.json(engine.autopilotState(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
 app.get("/api/tasks/:id/po-review", (c) => (engine.getTask(c.req.param("id")) ? c.json(poReviewOf(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
 // The PO's brief on the ticket (written before research): read it, or have the PO write it again.

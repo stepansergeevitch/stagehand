@@ -18,9 +18,10 @@ const KIND_LABEL: Record<ResourceKind, string> = {
     browser: "QA browser",
     clone: "Chrome copy",
     worktree: "worktree",
+    database: "database",
     orphan: "orphan",
 };
-const KIND_ORDER: ResourceKind[] = ["orphan", "service", "dependency", "run", "browser", "clone", "terminal", "session", "login", "worktree"];
+const KIND_ORDER: ResourceKind[] = ["orphan", "service", "dependency", "run", "browser", "clone", "terminal", "session", "login", "worktree", "database"];
 
 const Tile = ({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "ok" | "warn" | "bad" }) => (
     <div className={`tile${tone ? ` tile-${tone}` : ""}`}>
@@ -88,7 +89,7 @@ const ResourceRow = ({ r, busy, act, worktree = false, nested = false }: { r: Re
         <td className="mono">{ago(r.idleMs)}</td>
         <td><Verdict r={r} /></td>
         <td className="res-actions">
-            {r.kind !== "run" && r.kind !== "worktree" && (
+            {r.kind !== "run" && r.kind !== "worktree" && r.kind !== "database" && (
                 <>
                     <button className="tiny" disabled={!!busy} title={r.pinned ? "Let the policy apply again" : "Never stopped by the policy"} onClick={() => void act(r.id, () => api.pinResource(r.id, !r.pinned))}>{r.pinned ? "unpin" : "pin"}</button>
                     <button className="tiny danger" disabled={!!busy} onClick={() => void act(r.id, () => api.stopResource(r.id))}>stop</button>
@@ -221,6 +222,44 @@ const Worktrees = ({ rows, busy, act }: { rows: Resource[]; busy: string | null;
     );
 };
 
+// Task databases and their templates (server task-db.ts): sizes from the env's list command, refreshed every ten
+// minutes. Dropped by Clean up / Delete (a task's) or on the env page (no task owns it) — never from here.
+const Databases = ({ rows }: { rows: Resource[] }) => {
+    const [expanded, setExpanded] = useState(true);
+    const total = rows.reduce((n, r) => n + (r.diskMb ?? 0), 0);
+    const order = (r: Resource): number => (r.owner.status === "template" ? 0 : r.owner.type === "task" ? 1 : 2);
+    const sorted = [...rows].sort((a, b) => a.owner.name === b.owner.name ? order(a) - order(b) || (b.diskMb ?? 0) - (a.diskMb ?? 0) : String(a.owner.name).localeCompare(String(b.owner.name)));
+    return (
+        <section className="card usage-table res-group">
+            <h2 className="res-toggle" onClick={() => setExpanded((x) => !x)}>{expanded ? "▾" : "▸"} Databases <span className="chip">{rows.length}</span> <span className="chip">{gb(total)}</span></h2>
+            {expanded && <table>
+                <thead>
+                    <tr>
+                        <th>Owner</th>
+                        <th>Owner status</th>
+                        <th>Database</th>
+                        <th>Size</th>
+                        <th>Idle</th>
+                        <th>Policy</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {sorted.map((r) => (
+                        <tr key={r.id}>
+                            <td><Owner r={r} /></td>
+                            <td><OwnerStatus r={r} /></td>
+                            <td className="usage-label"><b>{r.label}</b></td>
+                            <td className="mono">{r.diskMb == null ? <span className="quiet">unknown</span> : gb(r.diskMb)}</td>
+                            <td className="mono">{ago(r.idleMs)}</td>
+                            <td><Verdict r={r} /></td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>}
+        </section>
+    );
+};
+
 const Policies = ({ value, onSaved, onError }: { value: ResourcePolicies; onSaved: () => void; onError: (m: string) => void }) => {
     const [p, setP] = useState(value);
     const [saving, setSaving] = useState(false);
@@ -290,7 +329,8 @@ export const ResourcesPage = ({ onError }: { onError: (m: string) => void }) => 
     const due = snap.resources.filter((r) => r.policy.verdict === "stop" && r.kind !== "orphan");
     const services = snap.resources.filter((r) => r.kind === "service");
     const worktrees = snap.resources.filter((r) => r.kind === "worktree");
-    const groups = KIND_ORDER.filter((k) => k !== "service" && k !== "worktree").map((k) => ({ kind: k, rows: snap.resources.filter((r) => r.kind === k) })).filter((g) => g.rows.length);
+    const databases = snap.resources.filter((r) => r.kind === "database");
+    const groups = KIND_ORDER.filter((k) => k !== "service" && k !== "worktree" && k !== "database").map((k) => ({ kind: k, rows: snap.resources.filter((r) => r.kind === k) })).filter((g) => g.rows.length);
     const worktreeDisk = worktrees.reduce((s, r) => s + (r.diskMb ?? 0), 0);
     const d = snap.disk ?? null;
     const diskTone = d ? (d.freeMb < d.totalMb * 0.05 ? "bad" : d.freeMb < d.totalMb * 0.15 ? "warn" : "ok") : undefined;
@@ -328,6 +368,7 @@ export const ResourcesPage = ({ onError }: { onError: (m: string) => void }) => 
                     {services.length > 0 && <DevServers rows={services} tasks={snap.stagehand.devServerTasks} max={snap.policies.maxDevServerTasks} busy={busy} act={act} />}
                     {groups.filter((g) => g.kind !== "orphan").map((g) => <Group key={g.kind} kind={g.kind} rows={g.rows} busy={busy} act={act} />)}
                     {worktrees.length > 0 && <Worktrees rows={worktrees} busy={busy} act={act} />}
+                    {databases.length > 0 && <Databases rows={databases} />}
                     {snap.resources.length === 0 && <div className="quiet">Nothing running that Stagehand started.</div>}
                 </>
             )}

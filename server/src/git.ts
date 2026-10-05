@@ -86,6 +86,14 @@ const createOne = async (repoPath: string, baseBranch: string, branch: string, t
     return { path: target, reused: false, existingCommits: 0 };
 };
 
+// Moves a long-lived checkout's local branch to the tip of a base (`origin/<base>`, fetched first), discarding local
+// changes: the task-database template worktree (task-db.ts) follows the env's base branch this way.
+export const pointBranchAt = async (checkout: string, branch: string, baseBranch: string, vars: Vars = {}): Promise<string> => {
+    const ref = await baseRefOf(checkout, baseBranch, vars);
+    await git(checkout, ["checkout", "--force", "-B", branch, ref], vars);
+    return git(checkout, ["rev-parse", "--short", "HEAD"], vars);
+};
+
 // Single repo: the worktree is the checkout. Multi-repo: the worktree is a directory holding one checkout per sub-repo
 // on the same branch (<root>/backend, <root>/frontend), mirroring the env's layout so commands like `cd backend && …` work unchanged.
 export const createWorktree = async (env: RepoLayout, branch: string, vars: Vars = {}): Promise<WorktreeResult> => {

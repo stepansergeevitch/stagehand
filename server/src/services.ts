@@ -1,5 +1,6 @@
 import { runMigration } from "./migrations.js";
 import { withPrepare } from "./env-config.js";
+import { taskDbEnv, taskDbExpect } from "./task-db.js";
 import { assertDbHosts } from "./db-hosts.js";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -347,9 +348,9 @@ export class Services {
         // Migrations are their own step (migrations.ts): the database is brought up to the worktree's code before the
         // BE starts, so the BE command carries no migrate of its own.
         // Never start an app, or migrate, against a database the env does not allow (db-hosts.ts).
-        await assertDbHosts(env, vars.worktree!);
+        await assertDbHosts(env, vars.worktree!, taskDbExpect(this.db, task, env));
         if (kind === "be" && env.migrate_command) {
-            await runMigration(withPrepare(env, env.migrate_command), { worktree: vars.worktree!, envPath: env.path, vars: parseEnvVars(env.env_vars), logPath: join(logDir, "migrate.log"), label: "migrate" });
+            await runMigration(withPrepare(env, env.migrate_command), { worktree: vars.worktree!, envPath: env.path, vars: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id) }, logPath: join(logDir, "migrate.log"), label: "migrate" });
         }
         const logPath = join(logDir, `${kind}.log`);
         const tmux = serviceSessionName(task.ticket_id, kind);
@@ -361,6 +362,7 @@ export class Services {
  ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind.toUpperCase()} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
         await ensureSession(tmux, cwd, wrapped, {
             ...parseEnvVars(env.env_vars),
+            ...taskDbEnv(this.db, task.id),
             PORT: String(port),
             STAGEHAND_PORT: String(port),
             STAGEHAND_BE_URL: be?.url ?? "",

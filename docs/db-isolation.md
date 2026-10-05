@@ -35,7 +35,7 @@ New column `envs.task_db` (JSON, null = off). Every command runs through the env
 | `create` | Creates `$STAGEHAND_TASK_DB` from `$STAGEHAND_TASK_DB_TEMPLATE` |
 | `drop` | Drops `$STAGEHAND_TASK_DB` |
 | `connect` | Runs in the worktree: points the app's config at `$STAGEHAND_TASK_DB` |
-| `list` | Prints the names of the task databases that exist, one per line (for orphans and existence checks) |
+| `list` | Prints the template and the task databases, one per line: the name, then the size in MB (sizes on Resources, orphans on the env page) |
 | `sharedNames` | Databases a worktree may still use besides its own (e.g. DualEntry's `migrations`) |
 
 Every command and the env's other commands (setup, BE, FE, migrate, migrate down, cleanup, QA seeds, QA session)
@@ -66,9 +66,9 @@ PGPASSWORD=password psql -h localhost -p 5432 -U dualentry -d postgres -Atc "SEL
    - The template worktree is the only place allowed to connect to the template (see Guard).
 2. **Create the task DB** from the refreshed template: `create`.
 3. **Bring it to the task's base** when the task's base differs from the env's (`tasks.base_branch`, e.g. another
-   task's branch or a release branch). The task worktree starts at that base, so `connect` plus Migrate in the task
-   worktree applies the base's migrations before any branch commit exists. For an adopted task that already has
-   commits, the same step runs in the template worktree checked out at the task's base, pointed at the task DB.
+   task's branch or a release branch). The branch contains its base, so the task's own Migrate (step 4) applies
+   the base's migrations and then the branch's, in one forward run, from the template's state. Phase 2's baseline
+   database is the one place where only the base's migrations run (base code checked out).
 4. **Branch migrations:** the env's setup, then the first BE start's Migrate apply the branch's own migrations, as
    today.
 5. **Cleanup and delete:** stop the task's services, then `drop`.
@@ -154,3 +154,19 @@ envs without task DBs.
 
 Redis, S3/RustFS and queues stay shared (separate issue in `shared-databases.md`). DualEntry's per-task test
 databases (`dualentry_test_<slug>`) are unchanged.
+
+## Implementation (phase 1)
+
+- `server/src/task-db.ts`: the config, names, the per-env lock, the template worktree (`<env>/.claude/worktrees/stagehand-template`,
+  branch `stagehand-template`, moved to `origin/<env base>` with `pointBranchAt`), create / connect / drop / list.
+- `task_dbs` table: one row per task (`creating`, `ready`, `failed`).
+- Engine: create after the worktree, setup, then connect; drop on Clean up / Delete; `recreateTaskDb` (Recreate and Adopt);
+  `$STAGEHAND_TASK_DB` / `$STAGEHAND_TASK_DB_TEMPLATE` in setup, cleanup, migrate, BE / FE / components, agent runs, QA
+  runs, seeds and the QA session command; a QA pass stops before seeding when design.json names the template database.
+- Guard: `db_hosts_command` prints `alias=host[:port]/name`; for a task on its own database every name must be its own or
+  shared.
+- API: `GET /api/tasks/:id/db`, `POST /api/tasks/:id/db/recreate`, `GET /api/envs/:id/dbs`,
+  `POST /api/envs/:id/dbs/refresh-template`, `POST /api/envs/:id/dbs/drop`.
+- UI: the env page's "Task databases" section (config, template with Refresh, task databases, Adopt, orphans with Drop),
+  the task page's Database widget (Recreate / Adopt), the Resources page's Databases group (template and task databases
+  with sizes).

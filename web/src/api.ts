@@ -59,7 +59,7 @@ export interface Env {
     chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
-    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; ci_autopilot?: number; test_command?: string | null; ci_autopilot_rules?: string | null; callback_ports?: string | null; prepare_command?: string | null; qa_session_command?: string | null; db_hosts_command?: string | null; allowed_db_hosts?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
+    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; ci_autopilot?: number; test_command?: string | null; ci_autopilot_rules?: string | null; callback_ports?: string | null; prepare_command?: string | null; qa_session_command?: string | null; db_hosts_command?: string | null; allowed_db_hosts?: string | null; task_db?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
     // JSON ReviewChecklist: gstack categories switched off, points added, extra do-not-flag rules for Code Review; null = the full checklist.
     review_checklist?: string | null;
     // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
@@ -148,7 +148,7 @@ export interface PrompterSettings { accountId: string | null; model: string; idl
 export type ModelStage = "research" | "design_proposal" | "qa_baseline" | "implementation" | "code_review" | "manual_qa" | "pr_creation_review" | "pr_fix";
 export type ModelOperation = "pr_fix_ci" | "pr_fix_comments" | "chat" | "instruct" | "rebase" | "fix_service" | "git_edit";
 // The resource registry (server/src/resources.ts): one row per thing Stagehand runs on the host, with its policy verdict.
-export type ResourceKind = "service" | "dependency" | "run" | "terminal" | "session" | "login" | "browser" | "clone" | "worktree" | "orphan";
+export type ResourceKind = "service" | "dependency" | "run" | "terminal" | "session" | "login" | "browser" | "clone" | "worktree" | "database" | "orphan";
 export interface Resource {
     id: string; kind: ResourceKind; label: string;
     owner: { type: "task" | "env" | "session" | "account" | "none"; id: string | null; name: string | null; stage?: string; status?: string };
@@ -344,6 +344,51 @@ export interface PrFixReplies {
     replies: Array<{ repo: string; commentId: number; sha: string; posted?: string | null; error?: string | null }>;
     commits: Record<string, Array<{ sha: string; subject: string }>>;
 }
+// Task databases (server task-db.ts): the env's config and what exists.
+export interface TaskDbConfig {
+    enabled: boolean;
+    template: string;
+    namePattern: string;
+    create: string;
+    drop: string;
+    connect: string;
+    list: string;
+    sharedNames: string[];
+}
+export interface TaskDbRow {
+    task_id: string;
+    env_id: string;
+    name: string;
+    template: string;
+    status: "creating" | "ready" | "failed";
+    error: string | null;
+    created_at: string;
+    updated_at: string;
+}
+export interface TaskDbInfo {
+    row: TaskDbRow | null;
+    active: boolean;
+    template: string | null;
+    sizeMb: number | null;
+}
+export interface EnvDbOverview {
+    active: boolean;
+    template: { name: string; sizeMb: number | null; worktree: string | null } | null;
+    taskDbs: Array<TaskDbRow & { ticketId: string | null; sizeMb: number | null }>;
+    shared: Array<{ taskId: string; ticketId: string; stage: Stage; status: string }>;
+    orphans: Array<{ name: string; sizeMb: number | null }>;
+    listedAt: string;
+    listError: string | null;
+}
+export const taskDbConfigOf = (env: { task_db?: string | null }): TaskDbConfig => {
+    const empty: TaskDbConfig = { enabled: false, template: "", namePattern: "", create: "", drop: "", connect: "", list: "", sharedNames: [] };
+    try {
+        return env.task_db ? { ...empty, ...(JSON.parse(env.task_db) as Partial<TaskDbConfig>) } : empty;
+    } catch {
+        return empty;
+    }
+};
+
 // The CI autopilot of a task (server ci-autopilot.ts): its rounds, from the triage to the push.
 export interface AutopilotFailure {
     check: string; kind: "own_migration" | "own_test" | "affected_test" | "own_lint" | "custom" | "other"; rule?: string | null; what: string; tests: string[]; locations: string[]; evidence: string;
@@ -656,7 +701,7 @@ export const api = {
             setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
             qaBrowser?: "chrome" | "gstack"; qaAutoFix?: QaAutoFixScope;
             reviewChecklist?: ReviewChecklist | null;
-            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; ciAutopilotRules?: AutopilotRules | null; prepareCommand?: string | null; qaSessionCommand?: string | null; dbHostsCommand?: string | null; allowedDbHosts?: string[] | null; callbackPorts?: Array<{ port: number; relay: boolean }> | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
+            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; ciAutopilotRules?: AutopilotRules | null; prepareCommand?: string | null; qaSessionCommand?: string | null; dbHostsCommand?: string | null; allowedDbHosts?: string[] | null; taskDb?: TaskDbConfig | null; callbackPorts?: Array<{ port: number; relay: boolean }> | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
@@ -684,6 +729,11 @@ export const api = {
     branches: (envId: string, repo = "") => fetch(`/api/envs/${envId}/branches?repo=${encodeURIComponent(repo)}`).then((r) => j<{ branches: string[] }>(r)),
     labelSuggestions: () => fetch("/api/labels").then((r) => j<Array<TaskLabel & { count: number }>>(r)),
     ciAutopilot: (id: string) => fetch(`/api/tasks/${id}/ci-autopilot`).then((r) => j<CiAutopilot>(r)),
+    taskDb: (id: string) => fetch(`/api/tasks/${id}/db`).then((r) => j<TaskDbInfo>(r)),
+    recreateTaskDb: (id: string) => post<TaskDbRow>(`/api/tasks/${id}/db/recreate`),
+    envDbs: (envId: string, refresh = false) => fetch(`/api/envs/${envId}/dbs${refresh ? "?refresh=1" : ""}`).then((r) => j<EnvDbOverview>(r)),
+    refreshTemplate: (envId: string) => post<EnvDbOverview>(`/api/envs/${envId}/dbs/refresh-template`),
+    dropEnvDb: (envId: string, name: string) => post<EnvDbOverview>(`/api/envs/${envId}/dbs/drop`, { name }),
     patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[]; baseBranch?: string | Record<string, string> | null; files?: SharedFile[]; ciAutopilot?: boolean | null }) =>
         fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Task>(r)),
     returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[]; skipQa?: boolean; files?: SharedFile[] }) => post<Task>(`/api/tasks/${id}/return`, body),

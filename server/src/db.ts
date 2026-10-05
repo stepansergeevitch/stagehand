@@ -173,6 +173,8 @@ export interface EnvRow {
     // The DB host check (db-hosts.ts): a command printing the hosts the worktree's app uses, and the hosts allowed (JSON).
     db_hosts_command?: string | null;
     allowed_db_hosts?: string | null;
+    // Task databases (task-db.ts): one database per task, copied from the env's template — JSON TaskDbConfig, null = off.
+    task_db?: string | null;
     // Runs from the worktree after every implementation / PR-fix run; non-zero = the run goes back to the agent with the
     // output (e.g. Django `check --database default` + `makemigrations --check`, which tests and a dev server never run).
     check_command: string | null;
@@ -861,6 +863,18 @@ CREATE TABLE IF NOT EXISTS po_corrections (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- A task's own database (task-db.ts): copied from the env's template when the task starts, dropped with its worktree.
+-- status: creating | ready | failed.
+CREATE TABLE IF NOT EXISTS task_dbs (
+    task_id TEXT PRIMARY KEY,
+    env_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    template TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 `;
 
 // A Product Owner: one project of the product (a Linear project, a ClickUp epic) with its context, sources, design
@@ -1014,6 +1028,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.qa_session_command", `ALTER TABLE envs ADD COLUMN qa_session_command TEXT`],
     ["envs.db_hosts_command", `ALTER TABLE envs ADD COLUMN db_hosts_command TEXT`],
     ["envs.allowed_db_hosts", `ALTER TABLE envs ADD COLUMN allowed_db_hosts TEXT`],
+    ["envs.task_db", `ALTER TABLE envs ADD COLUMN task_db TEXT`],
     ["tasks.ci_autopilot", `ALTER TABLE tasks ADD COLUMN ci_autopilot INTEGER`],
     ["product_owners.issues_refreshed_at", `ALTER TABLE product_owners ADD COLUMN issues_refreshed_at TEXT`],
     ["product_owners.issues_error", `ALTER TABLE product_owners ADD COLUMN issues_error TEXT`],

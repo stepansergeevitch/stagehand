@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, autopilotRulesOf, AUTOPILOT_KINDS,  componentsOf, reviewChecklistOf, type AutopilotRules, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
+import { accountOrderOf, accountUsableWith, api, autopilotRulesOf, AUTOPILOT_KINDS,  componentsOf, reviewChecklistOf, taskDbConfigOf, type AutopilotRules, type EnvDbOverview, type TaskDbConfig, type Account, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDependencyStatus, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type ReviewPoint } from "./api";
 
 // Full-page environment configuration: general, Claude config dir + default AI account, services. Rules live on the config dir.
 
@@ -24,6 +24,105 @@ const Section = ({ title, hint, children, onSave, saving }: { title: string; hin
         </div>
     </section>
 );
+
+const mb = (n: number | null | undefined): string => (n === null || n === undefined ? "size unknown" : n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${n} MB`);
+
+// Task databases (server task-db.ts, docs/db-isolation.md): the config, then what exists — the template, each task's
+// database, the tasks still on the shared one (Adopt), and leftovers no task owns (Drop).
+const TaskDbSection = ({ env, onChanged, onError }: { env: Env; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
+    const [c, setC] = useState<TaskDbConfig>(() => taskDbConfigOf(env));
+    const [shared, setShared] = useState(() => taskDbConfigOf(env).sharedNames.join(", "));
+    const [saving, setSaving] = useState(false);
+    const [view, setView] = useState<EnvDbOverview | null>(null);
+    const [busy, setBusy] = useState<string | null>(null);
+    const load = (refresh = false) => void api.envDbs(env.id, refresh).then(setView).catch((e: Error) => onError(e.message));
+    useEffect(() => load(), [env.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    const set = (k: keyof TaskDbConfig) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setC((x) => ({ ...x, [k]: e.target.value }));
+    const act = async (key: string, fn: () => Promise<unknown>) => {
+        setBusy(key);
+        try {
+            const r = await fn();
+            if (r && typeof r === "object" && "taskDbs" in r) setView(r as EnvDbOverview);
+            else load(true);
+        } catch (e) {
+            onError(String((e as Error).message ?? e));
+        } finally {
+            setBusy(null);
+        }
+    };
+    const save = async () => {
+        setSaving(true);
+        try {
+            const sharedNames = shared.split(",").map((x) => x.trim()).filter(Boolean);
+            const empty = !c.enabled && !c.template.trim() && !c.create.trim() && !c.drop.trim() && !c.connect.trim() && !c.list.trim();
+            await api.patchEnv(env.id, { taskDb: empty ? null : { ...c, template: c.template.trim(), namePattern: c.namePattern.trim(), sharedNames } });
+            await onChanged();
+            load(true);
+        } catch (e) {
+            onError(String((e as Error).message ?? e));
+        } finally {
+            setSaving(false);
+        }
+    };
+    return (
+        <Section
+            title="Task databases"
+            hint="Every task gets its own database, copied from a template database when it starts — one task's migrations, seeds and baseline never reach another. At every task start the template is first migrated to the base branch (in a template worktree that follows origin/<base>), then copied. Commands get $STAGEHAND_TASK_DB and $STAGEHAND_TASK_DB_TEMPLATE; every command of a task, its QA runs and seeds get them too. The DB host check must then print host/name pairs."
+            saving={saving}
+            onSave={save}
+        >
+            <label className="inline"><input type="checkbox" checked={c.enabled} onChange={(e) => setC((x) => ({ ...x, enabled: e.target.checked }))} /> New tasks get their own database (existing ones keep the shared database until you Adopt them below)</label>
+            <div className="two">
+                <label>Template database (copied for every task; nothing may be connected to it while a copy runs) <input value={c.template} onChange={set("template")} placeholder="e.g. app or app_template" /></label>
+                <label>Name pattern ({"{{template}}"}, {"{{slug}}"} = the ticket id) <input value={c.namePattern} onChange={set("namePattern")} placeholder="{{template}}_{{slug}}" /></label>
+            </div>
+            <label>Create (copies $STAGEHAND_TASK_DB_TEMPLATE into $STAGEHAND_TASK_DB — e.g. CREATE DATABASE … TEMPLATE …) <textarea className="tall" spellCheck={false} value={c.create} onChange={set("create")} /></label>
+            <label>Drop (drops $STAGEHAND_TASK_DB; must succeed when it does not exist) <textarea spellCheck={false} value={c.drop} onChange={set("drop")} /></label>
+            <label>Connect (runs in a worktree: points the app's config at $STAGEHAND_TASK_DB — e.g. the database name in its .env) <textarea spellCheck={false} value={c.connect} onChange={set("connect")} /></label>
+            <label>List (prints the template and the task databases, one per line: name, then size in MB) <textarea spellCheck={false} value={c.list} onChange={set("list")} placeholder="optional — sizes on the Resources page, orphans here" /></label>
+            <label>Shared databases (a worktree may still use these besides its own; comma-separated) <input value={shared} onChange={(e) => setShared(e.target.value)} placeholder="optional" /></label>
+            {view && (
+                <div className="taskdb-overview">
+                    <div className="row">
+                        <b>Template</b>{" "}
+                        {view.template ? <><code>{view.template.name}</code> · {mb(view.template.sizeMb)}{view.template.worktree ? <> · worktree <code>{view.template.worktree}</code></> : " · no template worktree yet"}</> : "not set"}
+                        {view.active && <button className="tiny" disabled={busy !== null} onClick={() => void act("refresh", () => api.refreshTemplate(env.id))}>{busy === "refresh" ? "Refreshing…" : `Refresh (migrate to ${env.base_branch})`}</button>}
+                        <button className="tiny" disabled={busy !== null} onClick={() => load(true)}>Reload sizes</button>
+                    </div>
+                    {view.listError && <div className="field-hint bad">List command failed: {view.listError}</div>}
+                    <div className="row"><b>Task databases</b> {view.taskDbs.length === 0 && "none yet"}</div>
+                    {view.taskDbs.map((d) => (
+                        <div key={d.task_id} className="row sub">
+                            <code>{d.name}</code> · {d.ticketId ?? "deleted task"} · {d.status === "ready" ? mb(d.sizeMb) : <span className="chip bad">{d.status}{d.error ? `: ${d.error}` : ""}</span>}
+                        </div>
+                    ))}
+                    {view.active && view.shared.length > 0 && (
+                        <>
+                            <div className="row"><b>Still on the shared database</b></div>
+                            {view.shared.map((t) => (
+                                <div key={t.taskId} className="row sub">
+                                    {t.ticketId} · {t.stage.replace(/_/g, " ")} · {t.status}
+                                    <button className="tiny" disabled={busy !== null || t.status === "running"} title={t.status === "running" ? "the task is running" : "stop its services, refresh the template, copy it, point the worktree at the copy"} onClick={() => void act(t.taskId, () => api.recreateTaskDb(t.taskId))}>{busy === t.taskId ? "Adopting…" : "Adopt"}</button>
+                                </div>
+                            ))}
+                        </>
+                    )}
+                    {view.orphans.length > 0 && (
+                        <>
+                            <div className="row"><b>No task owns these</b></div>
+                            {view.orphans.map((o) => (
+                                <div key={o.name} className="row sub">
+                                    <code>{o.name}</code> · {mb(o.sizeMb)}
+                                    <button className="tiny danger" disabled={busy !== null} onClick={() => void act(o.name, () => api.dropEnvDb(env.id, o.name))}>{busy === o.name ? "Dropping…" : "Drop"}</button>
+                                </div>
+                            ))}
+                        </>
+                    )}
+                </div>
+            )}
+        </Section>
+    );
+};
 
 // The CLAUDE.md files this environment's runs read, each editable in place: the config dir's applies to every run at
 // once; a repository's is committed in git, so a task sees an edit once it is on the base branch.
@@ -343,6 +442,8 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 <label>QA session command (Stagehand runs it from the worktree before every QA pass; the last line it prints reaches the QA run and its seed steps as $STAGEHAND_QA_SESSION — e.g. a signed session cookie for API scenarios, so the agent never handles the app's secrets) <textarea className="tall" spellCheck={false} value={s.qaSessionCommand} onChange={ss("qaSessionCommand")} placeholder="optional" /></label>
                 <label>Seeding hints for QA (how agents create test data here: local DB connection and key tables, API auth, seed scripts; given to the Design and QA prompts verbatim) <textarea value={s.qaSeedHints} onChange={ss("qaSeedHints")} className="tall" placeholder={"Local Postgres: PGPASSWORD=… psql -h localhost -p 5433 -U … -d …\nDeals live in deal, pro formas in pro_forma; sources in pro_forma_source (source_type_id …)\nPrefer SQL for numeric inputs; the pro forma table UI is slow to edit."} /></label>
             </Section>
+
+            <TaskDbSection env={env} onChanged={onChanged} onError={onError} />
 
             <Section title="CI autopilot" hint="When a PR's checks finish red, the task fixes by itself the failures it caused, has the fix reviewed, and pushes. Stagehand verifies each built-in kind against the branch diff and the base; your own allow rules rest on the triage's judgement; a deny rule wins over everything." saving={saving === "autopilot"} onSave={() => save("autopilot", {
                 ciAutopilot,

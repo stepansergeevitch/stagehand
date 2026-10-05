@@ -1,6 +1,7 @@
 import { BaseCheckout } from "./migrations.js";
 import { callbackPortsOf, withPrepare } from "./env-config.js";
 import { assertDbHosts } from "./db-hosts.js";
+import { namesTemplate, TaskDbs, taskDbActive, taskDbEnv, taskDbExpect, taskDbOf, taskDbRow, type TaskDbRow } from "./task-db.js";
 import { activeRound, addedFiles, AutopilotReview, autopilotRulesOf, describeRules, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
 import { EventEmitter } from "node:events";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -584,6 +585,8 @@ export class Engine extends EventEmitter {
     private readonly active = new Map<string, ClaudeRun>();
     // The QA baseline runs on base code: the worktree switched to the base for the pass (migrations.ts).
     private readonly baseCheckout: BaseCheckout;
+    // Each task's own database, copied from the env's template (task-db.ts).
+    readonly taskDbs: TaskDbs;
     // Ad-hoc instruction runs (Chat → Do), keyed by task: no `runs` row, so Stop finds them here.
     private readonly instructing = new Map<string, ClaudeRun>();
     private timer: NodeJS.Timeout | null = null;
@@ -595,6 +598,7 @@ export class Engine extends EventEmitter {
     ) {
         super();
         this.baseCheckout = new BaseCheckout(cfg.dataDir);
+        this.taskDbs = new TaskDbs(db, cfg.dataDir);
     }
 
     // ---------- lifecycle ----------
@@ -1726,6 +1730,13 @@ export class Engine extends EventEmitter {
             if (closed) done.push(`${closed} Chrome tab(s) closed`);
         }
         await killSession(taskSessionName(task.ticket_id));
+        if (opts.removeWorktree && taskDbRow(this.db, task.id)) {
+            const dropped = await this.taskDbs.drop(task, env).catch((e: unknown) => {
+                skipped.push(`task database not dropped: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                return null;
+            });
+            if (dropped) done.push(`task database ${dropped} dropped`);
+        }
         if (opts.removeWorktree && task.worktree_path && existsSync(task.worktree_path)) {
             if (env.cleanup_command) {
                 this.setTaskStatus(task.id, task.status, "cleanup · running the environment's cleanup command");
@@ -1751,11 +1762,82 @@ export class Engine extends EventEmitter {
     private async runCleanupCommand(task: TaskRow, env: EnvRow, vars: Record<string, string>): Promise<string | null> {
         if (!env.cleanup_command || !task.worktree_path || !existsSync(task.worktree_path)) return null;
         try {
-            await runWorktreeSetup(task.worktree_path, env.path, withPrepare(env, env.cleanup_command), vars);
+            await runWorktreeSetup(task.worktree_path, env.path, withPrepare(env, env.cleanup_command), { ...vars, ...taskDbEnv(this.db, task.id) });
             return null;
         } catch (e) {
             return String((e as Error).message ?? e).slice(0, 160);
         }
+    }
+
+    // ---------- task databases (task-db.ts, docs/db-isolation.md) ----------
+
+    // Recreate (a task on its own database) and Adopt (a task still on the shared one) are the same step: stop the
+    // task's services, refresh the template, copy it into the task's database, point the worktree at it. The next BE
+    // start migrates it to the branch.
+    async recreateTaskDb(taskId: string): Promise<TaskDbRow> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        const env = this.env(task.env_id);
+        if (!taskDbActive(taskDbOf(env))) throw new Error("this environment has no task databases configured (env page → Task databases)");
+        if (!task.worktree_path || !existsSync(task.worktree_path)) throw new Error("the task has no worktree");
+        if (task.status === "running" || this.hasLiveRun(taskId)) throw new Error("the task is running — wait for it or stop it first");
+        if (this.baseCheckout.isOn(taskId)) throw new Error("the worktree is on the base for the QA baseline — Retry the task so it returns to its branch first");
+        const adopt = taskDbRow(this.db, taskId)?.status !== "ready";
+        await this.services.stopAll(taskId);
+        const row = await this.taskDbs.create(task, env);
+        await this.taskDbs.connect(this.getTask(taskId)!, env);
+        this.addAgentNote(taskId, `🗄️ ${adopt ? "Moved to its own database" : "Database recreated"}: ${row.name}, copied from ${row.template} after migrating it to ${env.base_branch}. The next BE start migrates it to this branch.`);
+        const cur = this.getTask(taskId)!;
+        // A task blocked at the start because its database could not be created continues where it stopped.
+        if (cur.stage === "research" && cur.status === "blocked" && cur.status_line?.startsWith("Task database")) this.advance(taskId, "design_proposal");
+        else this.emitTask(taskId);
+        return row;
+    }
+
+    taskDbInfo(taskId: string): { row: TaskDbRow | null; active: boolean; template: string | null; sizeMb: number | null } {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        const env = this.env(task.env_id);
+        const c = taskDbOf(env);
+        const row = taskDbRow(this.db, taskId) ?? null;
+        const listed = this.taskDbs.cachedList(env);
+        return { row, active: taskDbActive(c), template: c?.template || null, sizeMb: row ? (listed?.dbs.find((d) => d.name === row.name)?.sizeMb ?? null) : null };
+    }
+
+    async envDbOverview(envId: string, force = false) {
+        const env = this.env(envId);
+        const c = taskDbOf(env);
+        const listed = await this.taskDbs.list(env, force);
+        const rows = this.taskDbs.rows(envId);
+        const tasks = this.db.prepare(`SELECT * FROM tasks WHERE env_id = ?`).all(envId) as TaskRow[];
+        const size = (n: string): number | null => listed.dbs.find((d) => d.name === n)?.sizeMb ?? null;
+        const wt = this.taskDbs.templateWorktree(env);
+        return {
+            active: taskDbActive(c),
+            template: c?.template ? { name: c.template, sizeMb: size(c.template), worktree: existsSync(wt) ? wt : null } : null,
+            taskDbs: rows.map((r) => ({ ...r, ticketId: tasks.find((t) => t.id === r.task_id)?.ticket_id ?? null, sizeMb: size(r.name) })),
+            // Tasks with a worktree still on the shared database: Adopt moves them.
+            shared: tasks.filter((t) => t.worktree_path && existsSync(t.worktree_path) && !rows.some((r) => r.task_id === t.id && r.status === "ready")).map((t) => ({ taskId: t.id, ticketId: t.ticket_id, stage: t.stage, status: t.status })),
+            orphans: listed.dbs.filter((d) => d.name !== c?.template && !rows.some((r) => r.name === d.name)),
+            listedAt: new Date(listed.at).toISOString(),
+            listError: listed.error,
+        };
+    }
+
+    // For the Resources page: the template and the task databases of every env that has them (sizes from the last list).
+    databaseResources(): Array<{ envId: string; envName: string; name: string; role: "template" | "task" | "orphan"; taskId: string | null; sizeMb: number | null; createdAt: string | null }> {
+        const out: ReturnType<Engine["databaseResources"]> = [];
+        for (const env of this.db.prepare(`SELECT * FROM envs`).all() as EnvRow[]) {
+            const c = taskDbOf(env);
+            const rows = this.taskDbs.rows(env.id);
+            if (!taskDbActive(c) && !rows.length) continue;
+            const listed = this.taskDbs.cachedList(env);
+            const size = (n: string): number | null => listed?.dbs.find((d) => d.name === n)?.sizeMb ?? null;
+            if (c?.template) out.push({ envId: env.id, envName: env.name, name: c.template, role: "template", taskId: null, sizeMb: size(c.template), createdAt: null });
+            for (const r of rows) out.push({ envId: env.id, envName: env.name, name: r.name, role: "task", taskId: r.task_id, sizeMb: size(r.name), createdAt: r.created_at });
+            for (const d of listed?.dbs ?? []) if (d.name !== c?.template && !rows.some((r) => r.name === d.name)) out.push({ envId: env.id, envName: env.name, name: d.name, role: "orphan", taskId: null, sizeMb: d.sizeMb, createdAt: null });
+        }
+        return out;
     }
 
     review(taskId: string, input: ReviewInput): void {
@@ -2725,7 +2807,7 @@ export class Engine extends EventEmitter {
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path ?? cwd, this.cfg.dataDir);
         const model = this.modelForOperation(task, "pr_fix_ci");
         const run = startClaude({
-            prompt, cwd, configDir: cd.path, extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
+            prompt, cwd, configDir: cd.path, extraEnv: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, taskId), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
             sessionId: randomUUID(), maxTurns: 60, addDirs: [dir], eventLogPath: join(dir, `ci-triage-${round.id.slice(0, 8)}.ndjson`), ...(model ? { model } : {}),
         });
         const outcome = await run.done;
@@ -2886,7 +2968,7 @@ export class Engine extends EventEmitter {
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path ?? env.path, this.cfg.dataDir);
         const model = this.modelForOperation(task, "pr_fix_ci");
         const run = startClaude({
-            prompt, cwd: task.worktree_path ?? env.path, configDir: cd.path, extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
+            prompt, cwd: task.worktree_path ?? env.path, configDir: cd.path, extraEnv: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, taskId), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
             sessionId: randomUUID(), maxTurns: 50, addDirs: [dir], eventLogPath: join(dir, `ci-autopilot-review-${roundId.slice(0, 8)}.ndjson`), ...(model ? { model } : {}),
         });
         const outcome = await run.done;
@@ -3171,7 +3253,7 @@ export class Engine extends EventEmitter {
     // ---------- the QA baseline on base code ----------
 
     private migrationOpts(task: TaskRow, env: EnvRow) {
-        return { worktree: task.worktree_path!, envPath: env.path, vars: parseEnvVars(env.env_vars), logPath: join(this.taskDir(task.id), "logs", "migrate.log") };
+        return { worktree: task.worktree_path!, envPath: env.path, vars: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id) }, logPath: join(this.taskDir(task.id), "logs", "migrate.log") };
     }
 
     // Switches the worktree to the base when its branch has commits or changes: the servers stop, migrations go down
@@ -3188,7 +3270,7 @@ export class Engine extends EventEmitter {
         this.setTaskStatus(taskId, "running", `QA Baseline · switching ${where} to the base${env.migrate_down_command ? " (migrations down first)" : ""} — the baseline runs on code without this change`);
         try {
             await this.services.stopAll(taskId);
-            await assertDbHosts(env, task.worktree_path);
+            await assertDbHosts(env, task.worktree_path, taskDbExpect(this.db, task, env));
             await this.baseCheckout.enter(taskId, repos, { ...m, downCommand: env.migrate_down_command ? withPrepare(env, env.migrate_down_command) : null });
             this.emitTask(taskId);
             return true;
@@ -3208,7 +3290,7 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         try {
             await this.services.stopAll(taskId);
-            await assertDbHosts(env, task.worktree_path);
+            await assertDbHosts(env, task.worktree_path, taskDbExpect(this.db, task, env));
             await this.baseCheckout.exit(taskId, { ...this.migrationOpts(task, env), upCommand: env.migrate_command ? withPrepare(env, env.migrate_command) : null });
             this.emitTask(taskId);
             return true;
@@ -3443,7 +3525,7 @@ export class Engine extends EventEmitter {
             prompt: prompt + renderSharedFiles(files, this.taskDir(taskId)),
             cwd: task.worktree_path ?? env.path,
             configDir: cd.path,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, taskId), ...authEnv(acc) },
             ...this.sessionArgs(task),
             maxTurns: 15,
             // The task dir holds the files the human shares (and the artifacts a question may be about).
@@ -3502,7 +3584,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd,
             configDir: cd.path,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, taskId), ...authEnv(acc) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...this.sessionArgs(task),
@@ -3624,7 +3706,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd,
             configDir: cd.path,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, taskId), ...authEnv(acc) },
             ...this.sessionArgs(task),
             maxTurns: 60,
             ...((): { model?: string } => {
@@ -3942,7 +4024,7 @@ export class Engine extends EventEmitter {
         if (!opts.dbHostsChecked && task.worktree_path) {
             const env0 = this.env(task.env_id);
             if (env0.db_hosts_command?.trim()) {
-                void assertDbHosts(env0, task.worktree_path)
+                void assertDbHosts(env0, task.worktree_path, taskDbExpect(this.db, task, env0))
                     .then(() => this.dispatch(taskId, stage, { ...opts, dbHostsChecked: true }))
                     .catch((e: unknown) => this.setTaskStatus(taskId, "blocked", `${def.label} · ${String((e as Error).message ?? e).slice(0, 300)}`, { notify: true }));
                 return;
@@ -4011,6 +4093,15 @@ export class Engine extends EventEmitter {
             const qaPass = opts.extraVars?.["qaPass"] ?? newQaPassId(def.stage === "qa_baseline" ? "qa_baseline" : "manual_qa");
             const resumeOnly = opts.extraVars?.["resumeOnly"]?.split(",").filter(Boolean);
             const only = new Set(forPass.map((s) => s.id).filter((id) => !resumeOnly || resumeOnly.includes(id)));
+            // A task on its own database: a QA step that names the template would seed (or tear down) the template.
+            const tdb = taskDbRow(this.db, task.id);
+            if (tdb?.status === "ready") {
+                const hits = forPass.filter((s) => only.has(s.id)).flatMap((s) => [...(s.teardown ?? []).map((t, i) => [`${s.id} teardown ${i + 1}`, t]), ...(s.seed ?? []).map((t, i) => [`${s.id} seed ${i + 1}`, t]), ...(s.steps ?? []).map((t, i) => [`${s.id} step ${i + 1}`, t.action])].filter(([, text]) => namesTemplate(text!, tdb.template)).map(([where]) => where!));
+                if (hits.length) {
+                    this.setTaskStatus(taskId, "blocked", `${def.label} · design.json names the template database ${tdb.template} (${hits.slice(0, 6).join(", ")}${hits.length > 6 ? ", …" : ""}) — those steps would write to the template, not this task's database ${tdb.name}; use $STAGEHAND_TASK_DB in them, then Retry`, { notify: true });
+                    return;
+                }
+            }
             // Teardown, then seed steps written as commands are run here, without an agent; only `ui:` steps reach the QA runner.
             this.setTaskStatus(taskId, "running", `${def.label} · resetting and seeding data`);
             void this.refreshQaSession(task, env)
@@ -4213,7 +4304,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd: task.worktree_path ?? env.path,
             configDir: runDir,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...this.qaSessionEnv(task.id, def), ...runAuth, ...(gstackState ? { BROWSE_STATE_FILE: gstackState, B: this.gstackBin() ?? "", GSTACK_TELEMETRY_OFF: "1" } : {}) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id), ...this.qaSessionEnv(task.id, def), ...runAuth, ...(gstackState ? { BROWSE_STATE_FILE: gstackState, B: this.gstackBin() ?? "", GSTACK_TELEMETRY_OFF: "1" } : {}) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...(isPrShard(shard)
@@ -4773,7 +4864,7 @@ export class Engine extends EventEmitter {
         try {
             const { stdout } = await execFileAsync("bash", loginShellArgs(djangoBatchCommand(prefix)), {
                 cwd: task.worktree_path ?? env.path,
-                env: loginShellEnv({ ...parseEnvVars(env.env_vars), ...djangoBatchEnv(items, mode) }),
+                env: loginShellEnv({ ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id), ...djangoBatchEnv(items, mode) }),
                 timeout: 120_000 + 60_000 * items.length,
                 maxBuffer: 8 * 1024 * 1024,
             });
@@ -4798,7 +4889,7 @@ export class Engine extends EventEmitter {
         const cwd = task.worktree_path ?? env.path;
         const cmd = withPrepare(env, tpl.replace(/\{\{worktree\}\}/g, cwd).replace(/\{\{envPath\}\}/g, env.path));
         try {
-            const { stdout } = await execFileAsync("bash", loginShellArgs(cmd), { cwd, env: loginShellEnv(parseEnvVars(env.env_vars)), timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
+            const { stdout } = await execFileAsync("bash", loginShellArgs(cmd), { cwd, env: loginShellEnv({ ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id) }), timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
             const line = stdout.trim().split("\n").filter((l) => l.trim()).pop()?.trim();
             if (!line) throw new Error("it printed nothing");
             this.qaSessions.set(task.id, line);
@@ -4828,7 +4919,7 @@ export class Engine extends EventEmitter {
             try {
                 const { stdout } = await execFileAsync("bash", loginShellArgs(cmd), {
                     cwd: task.worktree_path ?? env.path,
-                    env: loginShellEnv({ ...parseEnvVars(env.env_vars), ...this.qaSessionEnv(task.id, def) }),
+                    env: loginShellEnv({ ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id), ...this.qaSessionEnv(task.id, def) }),
                     timeout: 120_000,
                     maxBuffer: 4 * 1024 * 1024,
                 });
@@ -5175,7 +5266,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd: task.worktree_path,
             configDir: cd.path,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, taskId), ...authEnv(acc) },
             settingsPath: rulesMat.settingsPath,
             appendSystemPrompt: rulesMat.systemPrompt,
             ...this.sessionArgs(task),
@@ -5589,7 +5680,7 @@ export class Engine extends EventEmitter {
         if (changed.length === 0) return null;
         try {
             const wt = task.worktree_path;
-            const out = await this.serialSetup(wt, () => runWorktreeSetup(wt, env.path, withPrepare(env, env.setup_command!), parseEnvVars(env.env_vars)));
+            const out = await this.serialSetup(wt, () => runWorktreeSetup(wt, env.path, withPrepare(env, env.setup_command!), { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id) }));
             console.error(`[setup] ${task.ticket_id} (after rebase) ${task.worktree_path}\n${out.slice(-1500)}`);
             // Build caches compiled against the old dependency tree must go too: Next's Turbopack dev cache (.next)
             // built before an `npm ci` crashed the dev server with "turbo-tasks: an internal panic occurred outside
@@ -5652,7 +5743,7 @@ export class Engine extends EventEmitter {
             prompt,
             cwd,
             configDir: cd.path,
-            extraEnv: { ...parseEnvVars(env.env_vars), ...authEnv(acc) },
+            extraEnv: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, taskId), ...authEnv(acc) },
             ...this.sessionArgs(task),
             maxTurns: 60,
             ...((): { model?: string } => {
@@ -6588,6 +6679,18 @@ export class Engine extends EventEmitter {
                         const dep = await this.services.ensureDependency(env);
                         if (dep) envVars.STAGEHAND_DEP_URL = dep.url;
                     }
+                    // The task's own database first (docs/db-isolation.md): setup then sees $STAGEHAND_TASK_DB, and
+                    // connect points the worktree's config at it once setup has written that config.
+                    if (taskDbActive(taskDbOf(env))) {
+                        const cur = this.getTask(taskId)!;
+                        try {
+                            await this.taskDbs.create(cur, env, (line) => this.setTaskStatus(taskId, "running", `task database · ${line}`));
+                        } catch (e) {
+                            this.setTaskStatus(taskId, "blocked", `Task database · could not be created: ${String((e as Error).message ?? e).slice(0, 300)} — fix it, then Recreate the database on the task page`, { notify: true });
+                            return;
+                        }
+                        Object.assign(envVars, taskDbEnv(this.db, taskId));
+                    }
                     if (env.setup_command) {
                         this.setTaskStatus(taskId, "running", "running worktree setup");
                         const out = await runWorktreeSetup(wt.path, env.path, withPrepare(env, env.setup_command), envVars);
@@ -6595,6 +6698,7 @@ export class Engine extends EventEmitter {
                         // only says so here (npm WARN EBADENGINE), and the FE fails minutes later with no trace of why.
                         if (out) console.error(`[setup] ${task.ticket_id} ${wt.path}\n${out.slice(-1500)}`);
                     }
+                    if (taskDbRow(this.db, taskId)?.status === "ready") await this.taskDbs.connect(this.getTask(taskId)!, env);
                     this.advance(taskId, "design_proposal");
                 })
                 .catch((e: unknown) => this.setTaskStatus(taskId, "failed", `worktree: ${String(e).slice(0, 160)}`));

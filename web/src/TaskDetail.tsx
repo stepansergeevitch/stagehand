@@ -11,7 +11,7 @@ import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
-import { anchorOf, type Env, type LineComment, type PoDesignReview, type PoReview, type PrFixReplies as PrFixRepliesData, type CiAutopilot, type PoReviewComment, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
+import { anchorOf, type Env, type LineComment, type PoDesignReview, type PoReview, type PrFixReplies as PrFixRepliesData, type CiAutopilot, type TaskDbInfo, type PoReviewComment, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
 
 const isResolved = (c: PrComment): boolean => c.kind === "line" && c.resolved;
 
@@ -1089,6 +1089,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 ) : (
                     <section className="card widget"><h2>App</h2><div className="empty">no worktree yet</div></section>
                 )}
+                {task.worktree_path && <TaskDbWidget task={task} onAction={onAction} />}
                 <PrWidget detail={detail} onAction={onAction} onOpenInTab={openPrTab} />
             </div>
 
@@ -1794,6 +1795,46 @@ const AUTOPILOT_PHASE: Record<string, [string, string]> = {
     triage: ["triaging", "wait"], fixing: ["fixing", "wait"], reviewing: ["reviewing the fix", "wait"], addressing: ["addressing the review", "wait"], pushing: ["pushing", "wait"],
     pushed: ["pushed", "ok"], denied: ["left for you", "warn"], failed: ["failed", "bad"], stopped: ["stopped", ""],
 };
+// The task's own database (server task-db.ts): which, how big, and Recreate — or Adopt for a task still on the
+// env's shared database. Shown only when the env has task databases or the task has one.
+const TaskDbWidget = ({ task, onAction }: { task: TaskDetail["task"]; onAction: (fn: () => Promise<unknown>) => Promise<void> }) => {
+    const [d, setD] = useState<TaskDbInfo | null>(null);
+    const [busy, setBusy] = useState(false);
+    useEffect(() => { void api.taskDb(task.id).then(setD).catch(() => undefined); }, [task.id, task.updated_at]);
+    if (!d || (!d.active && !d.row)) return null;
+    const row = d.row;
+    const own = row?.status === "ready";
+    const run = async (): Promise<void> => {
+        setBusy(true);
+        try {
+            await onAction(() => api.recreateTaskDb(task.id));
+            setD(await api.taskDb(task.id));
+        } finally {
+            setBusy(false);
+        }
+    };
+    const size = d.sizeMb == null ? null : d.sizeMb >= 1024 ? `${(d.sizeMb / 1024).toFixed(1)} GB` : `${d.sizeMb} MB`;
+    return (
+        <section className="card widget">
+            <h2>Database</h2>
+            {own ? (
+                <div><code>{row!.name}</code>{size && <span className="field-hint"> · {size}</span>}<div className="field-hint">copied from {row!.template} · {new Date(row!.created_at).toLocaleString()}</div></div>
+            ) : row ? (
+                <div className="field-hint bad">{row.status === "creating" ? "being created…" : `could not be created: ${row.error ?? "unknown error"}`}</div>
+            ) : (
+                <div className="field-hint">on the environment's shared database{d.template ? ` (${d.template})` : ""}</div>
+            )}
+            {d.active && (
+                <div className="actions">
+                    <button className="tiny" disabled={busy || task.status === "running" || row?.status === "creating"} title={own ? "Stop the app, migrate the template to the base branch, copy it again (this task's data is lost), point the worktree at the copy" : "Stop the app, migrate the template to the base branch, copy it for this task, point the worktree at the copy"} onClick={() => void run()}>
+                        {busy ? "Working…" : own ? "Recreate" : row ? "Retry" : "Adopt"}
+                    </button>
+                </div>
+            )}
+        </section>
+    );
+};
+
 const CiAutopilotCard = ({ task, onAction }: { task: TaskDetail["task"]; onAction: (fn: () => Promise<unknown>) => Promise<void> }) => {
     const [d, setD] = useState<CiAutopilot | null>(null);
     useEffect(() => { void api.ciAutopilot(task.id).then(setD).catch(() => undefined); }, [task.id, task.updated_at, task.status_line]);

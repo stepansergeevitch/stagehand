@@ -4,7 +4,7 @@ import type { DB, EnvRow, TaskRow } from "./db.js";
 import { DEFAULT_POLICIES, Resources, type Resource, type ResourceHooks } from "./resources.js";
 
 // judge() reads nothing from the db or the hooks; a bare instance is enough.
-const hooks: ResourceHooks = { clones: () => [], stopService: async () => undefined, stopDependency: async () => undefined, stopBrowser: async () => undefined, releaseClone: async () => undefined, notice: () => undefined };
+const hooks: ResourceHooks = { clones: () => [], stopService: async () => undefined, stopDependency: async () => undefined, stopBrowser: async () => undefined, releaseClone: async () => undefined, notice: () => undefined, databases: () => [] };
 const res = new Resources({} as DB, { resources: DEFAULT_POLICIES } as unknown as Config, hooks);
 
 const task = (over: Partial<TaskRow>): TaskRow => ({ id: "t1", ticket_id: "INV-1", stage: "user_review", status: "waiting_user", env_id: "e1", updated_at: new Date(Date.now() - 45 * 60_000).toISOString(), created_at: "2026-09-24T00:00:00Z", worktree_path: null, ...over }) as TaskRow;

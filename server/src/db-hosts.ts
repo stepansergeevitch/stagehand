@@ -25,24 +25,40 @@ export const allowedDbHostsOf = (env: Pick<EnvRow, "allowed_db_hosts">): string[
     }
 };
 
-// Host names in the check's output: whitespace- or comma-separated, each optionally `alias=` and `:port`.
-export const parseDbHosts = (out: string): string[] => {
-    const hosts = new Set<string>();
+// The check's output: whitespace- or comma-separated entries, each optionally `alias=`, a host with an optional
+// `:port`, and an optional `/name` (the database) — `default=localhost:5432/app_inv_1`.
+export interface DbTarget {
+    host: string;
+    name: string | null;
+}
+export const parseDbTargets = (out: string): DbTarget[] => {
+    const seen = new Map<string, DbTarget>();
     for (const raw of out.split(/[\s,]+/)) {
         let t = raw.trim().replace(/^[\w.-]+=/, "");
         if (!t) continue;
+        let name: string | null = null;
+        const slash = t.indexOf("/");
+        if (slash >= 0) {
+            name = t.slice(slash + 1).trim() || null;
+            t = t.slice(0, slash);
+        }
         const v6 = /^\[([^\]]+)\](?::\d+)?$/.exec(t);
         t = v6 ? v6[1]! : t.includes("::") ? t : t.replace(/:\d+$/, "");
-        if (t && t !== "None" && t !== "null") hosts.add(t.toLowerCase());
+        if (!t || t === "None" || t === "null") continue;
+        if (name === "None" || name === "null") name = null;
+        const target = { host: t.toLowerCase(), name };
+        seen.set(`${target.host}/${name ?? ""}`, target);
     }
-    return [...hosts];
+    return [...seen.values()];
 };
+export const parseDbHosts = (out: string): string[] => [...new Set(parseDbTargets(out).map((t) => t.host))];
 
-// Throws when the worktree's app would use a database host the env does not allow. No check configured: no-op.
-export const assertDbHosts = async (env: EnvRow, worktree: string): Promise<void> => {
+// Throws when the worktree's app would use a database host the env does not allow — and, for a task on its own
+// database (task-db.ts), any database other than `names` (its own plus the env's shared ones). No check configured: no-op.
+export const assertDbHosts = async (env: EnvRow, worktree: string, names?: string[]): Promise<void> => {
     const tpl = env.db_hosts_command?.trim();
     if (!tpl) return;
-    const key = `${env.id}:${worktree}`;
+    const key = `${env.id}:${worktree}:${names?.join(",") ?? ""}`;
     if (Date.now() - (verified.get(key) ?? 0) < FRESH_MS) return;
     const cmd = withPrepare(env, tpl.replace(/\{\{worktree\}\}/g, worktree).replace(/\{\{envPath\}\}/g, env.path));
     let out: string;
@@ -52,13 +68,25 @@ export const assertDbHosts = async (env: EnvRow, worktree: string): Promise<void
         const err = e as { stderr?: string; message?: string };
         throw new Error(`the environment's DB host check failed — nothing that touches the database runs until it passes: ${String(err.stderr?.trim() || err.message || e).split("\n").slice(-2).join(" ").slice(0, 200)}`);
     }
-    const hosts = parseDbHosts(out.trim().split("\n").filter((l) => l.trim()).pop() ?? "");
+    const targets = parseDbTargets(out.trim().split("\n").filter((l) => l.trim()).pop() ?? "");
+    const hosts = [...new Set(targets.map((t) => t.host))];
     if (!hosts.length) throw new Error("the environment's DB host check printed no host — nothing that touches the database runs until it does");
     const allowed = allowedDbHostsOf(env);
     const bad = hosts.filter((h) => !allowed.includes(h));
     if (bad.length) {
         verified.delete(key);
         throw new Error(`this worktree's app would use database host ${bad.join(", ")}, which the environment does not allow (allowed: ${allowed.join(", ")}) — fix the worktree's config (e.g. its .env), then Retry`);
+    }
+    if (names) {
+        if (targets.some((t) => !t.name)) {
+            verified.delete(key);
+            throw new Error("the environment's DB host check prints no database names (host/name) — the env uses task databases, so each entry must name its database");
+        }
+        const foreign = [...new Set(targets.map((t) => t.name!).filter((n) => !names.includes(n)))];
+        if (foreign.length) {
+            verified.delete(key);
+            throw new Error(`this worktree's app would use database ${foreign.join(", ")}, not its own (${names[0]}) — the worktree's config points elsewhere; Recreate the task's database (it re-points the config), then Retry`);
+        }
     }
     verified.set(key, Date.now());
 };
