@@ -1830,7 +1830,7 @@ export class Engine extends EventEmitter {
         for (const env of this.db.prepare(`SELECT * FROM envs`).all() as EnvRow[]) {
             const c = taskDbOf(env);
             const rows = this.taskDbs.rows(env.id);
-            if (!taskDbActive(c) && !rows.length) continue;
+            if (!c?.template && !rows.length) continue;
             const listed = this.taskDbs.cachedList(env);
             const size = (n: string): number | null => listed?.dbs.find((d) => d.name === n)?.sizeMb ?? null;
             if (c?.template) out.push({ envId: env.id, envName: env.name, name: c.template, role: "template", taskId: null, sizeMb: size(c.template), createdAt: null });
