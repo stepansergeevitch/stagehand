@@ -57,17 +57,30 @@ PGPASSWORD=password psql -h localhost -p 5432 -U dualentry -d postgres -Atc "SEL
 
 ## Lifecycle
 
-1. **Worktree setup:** `create`, then the env's setup, then `connect`. Then the first BE start's Migrate brings
-   the task DB from the template's schema up to the branch.
-2. **Cleanup and delete:** stop the task's services, then `drop`.
-3. **Recreate** (task page button and API): stop services, `drop`, `create`, `connect`, migrate. This is the reset
-   for a DB that QA seeds polluted, or a template refresh for one task.
-4. **Adopt** (existing tasks): the same as Recreate, for a task still on the shared DB. Before that, Stagehand
+1. **Task start: refresh the template to the env's base branch** (`envs.base_branch`: dev, main, master, …).
+   - Stagehand keeps one **template worktree** per environment, next to the task worktrees. It is set up once with
+     the env's setup command and never used for work.
+   - At every task start: `git fetch` and a detached checkout of `origin/<env base branch>` in every repository,
+     then `connect` (pointed at the template), then the env's Migrate. The template now has exactly the
+     base branch's migrations. When nothing is new, Migrate is only its check.
+   - The template worktree is the only place allowed to connect to the template (see Guard).
+2. **Create the task DB** from the refreshed template: `create`.
+3. **Bring it to the task's base** when the task's base differs from the env's (`tasks.base_branch`, e.g. another
+   task's branch or a release branch). The task worktree starts at that base, so `connect` plus Migrate in the task
+   worktree applies the base's migrations before any branch commit exists. For an adopted task that already has
+   commits, the same step runs in the template worktree checked out at the task's base, pointed at the task DB.
+4. **Branch migrations:** the env's setup, then the first BE start's Migrate apply the branch's own migrations, as
+   today.
+5. **Cleanup and delete:** stop the task's services, then `drop`.
+6. **Recreate** (task page button and API): stop services, then steps 1–4 again (refresh, `drop`, `create`, base,
+   migrate). This resets a DB that QA seeds polluted, or catches a task up after its base moved.
+7. **Adopt** (existing tasks): the same as Recreate, for a task still on the shared DB. Before that, Stagehand
    lists every task still on the shared DB on the env page.
-5. **Orphans:** `list`, minus the tasks' DBs, shows on the env page with Drop.
+8. **Orphans:** `list`, minus the tasks' DBs, shows on the env page with Drop.
 
-Stagehand serializes `create`, `drop` and Recreate per environment. A busy template is retried 3 times over one
-minute, then the task blocks.
+Steps 1–2 run under one lock per environment, so the template is migrated and copied by one task at a time, and
+nothing is connected to it during `create`. A template that something else holds open (your own BE on the original DB) is retried 3 times over one minute,
+then the task blocks and names the connections.
 
 `task_dbs` table: task id, env id, name, template, created at, last migrate at, and the size at last look. The
 task page gets a DB card: name, size, created from, age, Recreate.
@@ -76,8 +89,9 @@ task page gets a DB card: name, size, created from, age, Recreate.
 
 The DB host check (`db_hosts_command`) prints `host/name` pairs instead of hosts. When the env has task DBs on, a
 worktree passes only when every pair has an allowed host **and** its name is the task's own DB or in
-`sharedNames`. A worktree pointing at the template or another task's DB blocks before migrate, BE start and agent
-runs, exactly where the host check blocks today. The template can never be migrated by a task.
+`sharedNames`. A task worktree pointing at the template or another task's DB blocks before migrate, BE start and
+agent runs, exactly where the host check blocks today. Only the template worktree may point at the template, and
+only with the env's base branch checked out, so the template only ever gets base-branch migrations.
 
 ## Template rules
 
@@ -89,7 +103,11 @@ runs, exactly where the host check blocks today. The template can never be migra
 - **The template should match the env's default branch.** A task DB inherits whatever the template has. The
   shared `dualentry` has INV-149's and INV-155's `0840`s applied today. Before the first adopt, roll those back
   on it (you run that), or the first task DBs start with foreign migrations.
-- A template behind the default branch is fine: Migrate catches up per task.
+- Step 1 keeps it current with the base branch at every task start, so a task DB starts at the base, not behind.
+- Step 1 only migrates **forward**. Migrations the base branch doesn't have, already on the template, stay; the
+  phase 3 check reports them.
+- With the original DB as template, step 1 also migrates your own working DB to the base branch. A dedicated
+  `dualentry_template` keeps your DB out of it.
 
 ## Sizes (decide before enabling DualEntry)
 
@@ -115,8 +133,8 @@ Deal works at once (26 MB).
 Today the baseline migrates the task's DB down to the base, runs, and migrates up again. That step blocked
 INV-149 twice. With task DBs, the baseline gets its own throwaway DB instead:
 
-1. `create` a `<task db>_base` from the template (with `STAGEHAND_TASK_DB=<task db>_base`);
-2. check out the base code, `connect` to it, and migrate. Base code from the template state is always forward;
+1. refresh the template (lifecycle step 1), then `create` a `<task db>_base` from it (with `STAGEHAND_TASK_DB=<task db>_base`);
+2. check out the base code, `connect` to it, and migrate: only the task base's migrations beyond the env's, always forward;
 3. run the pass, check out the branch, `connect` back, `drop` the base DB.
 
 No migrate-down, nothing to restore, and the task DB is never touched. Migrate down stays as the fallback for
@@ -124,8 +142,9 @@ envs without task DBs.
 
 ## Phases
 
-1. **Mechanism:** `envs.task_db`, the variables, create/connect at setup, drop at cleanup, Recreate, Adopt, orphans,
-   the name guard, the env page section and task DB card, and tests. Enable Deal first, then DualEntry once the
+1. **Mechanism:** `envs.task_db`, the variables, the template worktree and its refresh at task start, create, the
+   step to the task's base, connect, drop at cleanup, Recreate, Adopt, orphans, the name guard, the env page section
+   and task DB card, and tests. Enable Deal first, then DualEntry once the
    size decision is made.
 2. **Baseline on a throwaway DB** instead of migrate-down.
 3. **Template tools:** a check that the template has no migrations unknown to the default branch; template age;
