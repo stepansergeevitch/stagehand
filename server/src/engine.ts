@@ -2959,7 +2959,9 @@ export class Engine extends EventEmitter {
         try {
             await this.git(cwd, ["worktree", "add", "--detach", tmp, base], env);
             if (!repo && env.setup_command) await runWorktreeSetup(tmp, env.path, withPrepare(env, env.setup_command), vars).catch(() => "");
-            const command = env.test_command.replace(/\{\{tests\}\}/g, tests.map((t) => `'${t.replace(/'/g, "'\\''")}'`).join(" "));
+            // {{envPath}}: the env's main checkout — the base checkout is a bare worktree, so a command reaches its
+            // ignored files (an env file, a virtualenv) there.
+            const command = env.test_command.replace(/\{\{envPath\}\}/g, env.path).replace(/\{\{tests\}\}/g, tests.map((t) => `'${t.replace(/'/g, "'\\''")}'`).join(" "));
             const ok = await execFileAsync("bash", loginShellArgs(withPrepare(env, command)), { cwd: tmp, env: loginShellEnv(vars), timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024 }).then(() => true, () => false);
             return ok ? "pass" : "fail";
         } catch (e) {
