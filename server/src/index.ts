@@ -804,6 +804,8 @@ app.patch("/api/envs/:id", async (c) => {
             prepareCommand: z.string().nullable().optional(),
             // Run by Stagehand before a QA pass; its last output line is the pass's $STAGEHAND_QA_SESSION.
             qaSessionCommand: z.string().nullable().optional(),
+            // Extra cookies for the headless QA browser, one name=value per line (set after its session).
+            qaBrowserCookies: z.string().nullable().optional(),
             // The DB host check: a command printing the hosts the worktree's app uses, and the hosts allowed.
             dbHostsCommand: z.string().nullable().optional(),
             allowedDbHosts: z.array(z.string().trim().min(1)).nullable().optional(),
@@ -900,6 +902,7 @@ app.patch("/api/envs/:id", async (c) => {
     if (body.taskDb !== undefined) db.prepare(`UPDATE envs SET task_db = ? WHERE id = ?`).run(body.taskDb ? JSON.stringify(body.taskDb) : null, env.id);
     if (body.dbHostsCommand !== undefined) db.prepare(`UPDATE envs SET db_hosts_command = ? WHERE id = ?`).run(body.dbHostsCommand?.trim() || null, env.id);
     if (body.allowedDbHosts !== undefined) db.prepare(`UPDATE envs SET allowed_db_hosts = ? WHERE id = ?`).run(body.allowedDbHosts && body.allowedDbHosts.length ? JSON.stringify(body.allowedDbHosts) : null, env.id);
+    if (body.qaBrowserCookies !== undefined) db.prepare(`UPDATE envs SET qa_browser_cookies = ? WHERE id = ?`).run(body.qaBrowserCookies?.trim() || null, env.id);
     if (body.qaSessionCommand !== undefined) db.prepare(`UPDATE envs SET qa_session_command = ? WHERE id = ?`).run(body.qaSessionCommand?.trim() || null, env.id);
     if (body.prepareCommand !== undefined) db.prepare(`UPDATE envs SET prepare_command = ? WHERE id = ?`).run(body.prepareCommand?.trim() || null, env.id);
     if (body.callbackPorts !== undefined) db.prepare(`UPDATE envs SET callback_ports = ? WHERE id = ?`).run(body.callbackPorts && body.callbackPorts.length ? JSON.stringify(body.callbackPorts) : null, env.id);

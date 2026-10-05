@@ -20,3 +20,13 @@ export const withPrepare = (env: Pick<EnvRow, "prepare_command">, command: strin
     const prep = env.prepare_command?.trim();
     return prep ? `{ bash -s <<'STAGEHAND_PREPARE'\n${prep}\nSTAGEHAND_PREPARE\n} && ${command}` : command;
 };
+
+// Cookies as text: a Cookie header value (`a=1; b=2`, what a QA session command prints) or one `name=value` per line
+// (envs.qa_browser_cookies). Values keep any `=` after the first; blank and `#` lines are ignored.
+export const parseCookies = (text: string | null | undefined): Array<{ name: string; value: string }> =>
+    (text ?? "")
+        .split(/\n|;\s*/)
+        .map((p) => p.trim())
+        .filter((p) => p && !p.startsWith("#") && p.includes("="))
+        .map((p) => ({ name: p.slice(0, p.indexOf("=")).trim(), value: p.slice(p.indexOf("=") + 1).trim() }))
+        .filter((c) => !!c.name);

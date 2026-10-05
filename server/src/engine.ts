@@ -1,5 +1,5 @@
 import { BaseCheckout } from "./migrations.js";
-import { callbackPortsOf, withPrepare } from "./env-config.js";
+import { callbackPortsOf, parseCookies, withPrepare } from "./env-config.js";
 import { assertDbHosts } from "./db-hosts.js";
 import { copyNames, namesTemplate, ownedDbNames, TaskDbs, templatesOf, taskDbActive, taskDbEnv, taskDbExpect, taskDbOf, taskDbRow, type TaskDbRow } from "./task-db.js";
 import { activeRound, addedFiles, AutopilotReview, autopilotRulesOf, describeRules, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
@@ -956,25 +956,57 @@ export class Engine extends EventEmitter {
         await execFileAsync(bin, ["status"], { env: this.gstackEnv(stateFile), cwd: join(stateFile, ".."), timeout: 90_000 });
         const state = JSON.parse(readFileSync(stateFile, "utf8")) as { port: number; token: string };
         await execFileAsync(bin, ["viewport", "1440x900"], { env: this.gstackEnv(stateFile), cwd: join(stateFile, ".."), timeout: 30_000 }).catch(() => undefined);
-        const picked = this.qaBrowser(task, env);
-        if ("error" in picked) return `Headless QA browser started without a session: ${picked.error}. The runner will meet the login page.`;
-        const names: Record<string, string> = { Google: "chrome", Chromium: "chromium", Arc: "arc", Brave: "brave", "Microsoft Edge": "edge", Comet: "comet" };
-        const browserName = names[picked.browser.browser ?? "Google"] ?? "chrome";
         let host: string;
+        let origin: string;
         try {
-            host = new URL(this.appUrlFor(task, env)).hostname;
+            const u = new URL(this.appUrlFor(task, env));
+            host = u.hostname;
+            origin = u.origin;
         } catch {
             host = "localhost";
+            origin = "http://localhost";
         }
-        const res = await fetch(`http://127.0.0.1:${state.port}/cookie-picker/import`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ browser: browserName, profile: picked.browser.profileDir, domains: [host] }),
-            signal: AbortSignal.timeout(120_000),
-        });
-        const body = (await res.json().catch(() => ({}))) as { imported?: number; failed?: number; message?: string };
-        if (!res.ok || !body.imported) return `Headless QA browser started, but no ${host} cookies came over from Chrome profile "${chromeBrowserLabel(picked.browser)}" (${body.message ?? `HTTP ${res.status}`}). The runner will meet the login page — log in there once and retry.`;
-        console.log(`[stagehand] ${task.ticket_id}: gstack browser on port ${state.port}, ${body.imported} ${host} cookie(s) from "${chromeBrowserLabel(picked.browser)}"`);
+        const run = (args: string[], timeout = 30_000) => execFileAsync(bin, args, { env: this.gstackEnv(stateFile), cwd: join(stateFile, ".."), timeout });
+        // The browser's own session first: the env's QA session command signs a QA user in on its own, so nothing the
+        // headless browser does (a token refresh that rotates the refresh token, a logout an app sends from a tab it
+        // sees as orphaned) reaches the human's browser session (INV-155, 2026-10-05: every pass logged the human out).
+        // Only without one are the QA Chrome profile's cookies copied.
+        const session = env.qa_session_command?.trim() ? parseCookies(this.qaSessions.get(task.id)) : [];
+        const extra = parseCookies(env.qa_browser_cookies);
+        let source: string;
+        if (session.length) {
+            source = `${session.length} cookie(s) from the QA session command`;
+        } else {
+            const picked = this.qaBrowser(task, env);
+            if ("error" in picked) return `Headless QA browser started without a session: ${picked.error}. The runner will meet the login page.`;
+            const names: Record<string, string> = { Google: "chrome", Chromium: "chromium", Arc: "arc", Brave: "brave", "Microsoft Edge": "edge", Comet: "comet" };
+            const browserName = names[picked.browser.browser ?? "Google"] ?? "chrome";
+            const res = await fetch(`http://127.0.0.1:${state.port}/cookie-picker/import`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json" },
+                body: JSON.stringify({ browser: browserName, profile: picked.browser.profileDir, domains: [host] }),
+                signal: AbortSignal.timeout(120_000),
+            });
+            const body = (await res.json().catch(() => ({}))) as { imported?: number; failed?: number; message?: string };
+            if (!res.ok || !body.imported) return `Headless QA browser started, but no ${host} cookies came over from Chrome profile "${chromeBrowserLabel(picked.browser)}" (${body.message ?? `HTTP ${res.status}`}). The runner will meet the login page — log in there once and retry.`;
+            source = `${body.imported} ${host} cookie(s) from "${chromeBrowserLabel(picked.browser)}"`;
+        }
+        // The session's cookies and the env's extra ones (envs.qa_browser_cookies), set on the app's host. gstack sets
+        // cookies only for the page it is on, so it first opens a static URL there — no app code runs before they are in.
+        const toSet = [...session, ...extra];
+        if (toSet.length) {
+            const file = join(stateFile, "..", "qa-cookies.json");
+            try {
+                await run(["goto", `${origin}/favicon.ico`]).catch(() => undefined);
+                writeFileSync(file, JSON.stringify(toSet.map((c) => ({ name: c.name, value: c.value, domain: host, path: "/" }))), { mode: 0o600 });
+                await run(["cookie-import", file]);
+            } catch (e) {
+                return `Headless QA browser started, but its cookies could not be set: ${String((e as Error).message ?? e).split("\n").slice(-2).join(" ").slice(0, 200)}. The runner may meet the login page.`;
+            } finally {
+                rmSync(file, { force: true });
+            }
+        }
+        console.log(`[stagehand] ${task.ticket_id}: gstack browser on port ${state.port}, ${source}${extra.length ? ` + ${extra.length} extra cookie(s)` : ""}`);
         return null;
     }
 

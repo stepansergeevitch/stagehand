@@ -250,7 +250,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     const [s, setS] = useState({
         appUrl: env.app_url ?? "", beCommand: env.be_command ?? "", feCommand: env.fe_command ?? "", beUrlTemplate: env.be_url_template ?? "", feUrlTemplate: env.fe_url_template ?? "",
         bePort: env.be_port ? String(env.be_port) : "", fePort: env.fe_port ? String(env.fe_port) : "", setupCommand: env.setup_command ?? "", envVars: env.env_vars ?? "",
-        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "", prepareCommand: env.prepare_command ?? "", qaSessionCommand: env.qa_session_command ?? "", dbHostsCommand: env.db_hosts_command ?? "",
+        qaSeedHints: env.qa_seed_hints ?? "", cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "", memoryWings: ((): string => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } })(), checkCommand: env.check_command ?? "", prepareCommand: env.prepare_command ?? "", qaSessionCommand: env.qa_session_command ?? "", qaBrowserCookies: env.qa_browser_cookies ?? "", dbHostsCommand: env.db_hosts_command ?? "",
         allowedDbHosts: ((): string => { try { return (JSON.parse(env.allowed_db_hosts ?? "[]") as string[]).join(", "); } catch { return ""; } })(),
         callbackPorts: ((): string => { try { return (JSON.parse(env.callback_ports ?? "[]") as Array<{ port: number; relay?: boolean }>).map((p) => `${p.port}${p.relay ? "*" : ""}`).join(", "); } catch { return ""; } })(),
     });
@@ -400,6 +400,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                 qaSeedHints: nul(s.qaSeedHints), cleanupCommand: nul(s.cleanupCommand), rebaseCommand: nul(s.rebaseCommand), migrateCommand: nul(s.migrateCommand), migrateDownCommand: nul(s.migrateDownCommand), memoryWings: s.memoryWings.split(",").map((w) => w.trim()).filter(Boolean), checkCommand: nul(s.checkCommand),
                 prepareCommand: nul(s.prepareCommand),
                 qaSessionCommand: nul(s.qaSessionCommand),
+                qaBrowserCookies: nul(s.qaBrowserCookies),
                 dbHostsCommand: nul(s.dbHostsCommand),
                 allowedDbHosts: s.allowedDbHosts.split(",").map((h) => h.trim()).filter(Boolean),
                 callbackPorts: s.callbackPorts.split(",").map((x) => x.trim()).filter((x) => /^\d+\*?$/.test(x)).map((x) => ({ port: Number(x.replace("*", "")), relay: x.endsWith("*") })),
@@ -459,6 +460,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
                     <button className="tiny" onClick={() => setComps((cs) => [...cs, { key: "", label: "", command: "", autoStart: false }])}>+ component</button>
                 </div>
                 <label>QA session command (Stagehand runs it from the worktree before every QA pass; the last line it prints reaches the QA run and its seed steps as $STAGEHAND_QA_SESSION — e.g. a signed session cookie for API scenarios, so the agent never handles the app's secrets) <textarea className="tall" spellCheck={false} value={s.qaSessionCommand} onChange={ss("qaSessionCommand")} placeholder="optional" /></label>
+                <label>QA browser cookies (one name=value per line; the headless QA browser gets them on the app&apos;s host after its session — the QA session command&apos;s own sign-in when there is one, else the QA Chrome profile&apos;s cookies — e.g. a cookie that tells the app a tab is a fresh sign-in) <textarea spellCheck={false} value={s.qaBrowserCookies} onChange={ss("qaBrowserCookies")} placeholder="optional" /></label>
                 <label>Seeding hints for QA (how agents create test data here: local DB connection and key tables, API auth, seed scripts; given to the Design and QA prompts verbatim) <textarea value={s.qaSeedHints} onChange={ss("qaSeedHints")} className="tall" placeholder={"Local Postgres: PGPASSWORD=… psql -h localhost -p 5433 -U … -d …\nDeals live in deal, pro formas in pro_forma; sources in pro_forma_source (source_type_id …)\nPrefer SQL for numeric inputs; the pro forma table UI is slow to edit."} /></label>
             </Section>
 
