@@ -3413,9 +3413,15 @@ export class Engine extends EventEmitter {
         let target = stage;
         // The Code Review stage is optional (config.codeReview); off, Implementation goes straight on to QA.
         if (target === "code_review" && !this.cfg.codeReview) target = "manual_qa";
-        if (target === "qa_baseline" && this.designBaselineCurrent(taskId)) {
-            this.addAgentNote(taskId, "QA baseline from the design stage matches the approved scenarios — Implementation starts now");
-            target = "implementation";
+        // The QA baseline belongs to the design stage (the user, 2026-10-06: "QA baseline is a part of design proposal,
+        // and should not be run separately"): once the design loop ran one, approval goes straight on to Implementation;
+        // scenarios changed after its last round are named, not run again here.
+        if (target === "qa_baseline") {
+            const gaps = this.designBaselineGaps(taskId);
+            if (gaps !== null) {
+                this.addAgentNote(taskId, gaps.length ? `QA baseline from the design stage — ${gaps.join(", ")} changed after its last round or have no result there; Manual QA compares them without a baseline. Implementation starts now` : "QA baseline from the design stage matches the approved scenarios — Implementation starts now");
+                target = "implementation";
+            }
         }
         if (target === "qa_baseline" || target === "manual_qa") {
             const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
@@ -4838,7 +4844,7 @@ export class Engine extends EventEmitter {
             } else if (r.kind === "failed") failures.push(r.error);
             else if (r.kind === "rate_limited") rateLimit = r.resetsAt ?? rateLimit;
         }
-        const all = mergeScenarios(this.readPartial(taskId, pass), recorded);
+        const all = mergeScenarios(this.readCarry(taskId, pass), mergeScenarios(this.readPartial(taskId, pass), recorded));
         const remaining = g.allIds.filter((id) => !all.some((s) => s.id === id));
         if (remaining.length === 0 && asked.length === 0) {
             const qa: QaPassResult = flagSubstitutions({ pass, scenarios: all, blockers: [...new Set(blockers)] });
@@ -5117,6 +5123,18 @@ export class Engine extends EventEmitter {
         }
     }
 
+    // What the design loop carried into this pass unchanged (qa/<pass>.carry.json), blocked results included.
+    private readCarry(taskId: string, pass: "before" | "after"): QaPassResult["scenarios"] {
+        const p = join(this.taskDir(taskId), "qa", `${pass}.carry.json`);
+        if (!existsSync(p)) return [];
+        try {
+            const carry = QaPassResult.partial().safeParse(JSON.parse(readFileSync(p, "utf8")));
+            return carry.success ? (carry.data.scenarios ?? []) : [];
+        } catch {
+            return [];
+        }
+    }
+
     // Adds a finished shard's results to qa/<pass>.partial.json (by id, later wins), so a pass that dies half-way —
     // a restart, a Stop, a shard without output — resumes from what its other shards recorded.
     private mergeIntoPartial(taskId: string, pass: "before" | "after", scenarios: QaPassResult["scenarios"]): void {
@@ -5183,6 +5201,10 @@ export class Engine extends EventEmitter {
         );
         this.clearPassFiles(taskId, "before");
         if (existsSync(beforePath)) renameSync(beforePath, `${beforePath}.prev-${Date.now()}`);
+        // The reused results ride along unfiltered: the partial file drops blocked results (a resumed pass drives them
+        // again), but the loop keeps a blocked one the agent saw and kept (PRODUCT-10578, 2026-10-05: all three reused
+        // results were blocked, were dropped, and approval then ran the whole baseline again).
+        if (cached.length) writeFileSync(join(this.taskDir(taskId), "qa", "before.carry.json"), JSON.stringify({ pass: "before", scenarios: cached }, null, 2));
         this.setStage(taskId, "qa_baseline");
         this.dispatch(taskId, "qa_baseline", cached.length ? { extraVars: this.resumeVars(taskId, "before", cached, toRun) } : {});
     }
@@ -5199,6 +5221,18 @@ export class Engine extends EventEmitter {
         this.setStage(task.id, "design_proposal");
         this.dispatch(task.id, "design_proposal", { notes: renderDesignBaselineNotes(qa, m.round, stopped) });
         return true;
+    }
+
+    // The design loop's baseline against the approved scenarios: null when the loop never ran one (a task from before
+    // the loop: the separate baseline stage runs), else the scenarios without a current result there.
+    private designBaselineGaps(taskId: string): string[] | null {
+        const m = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
+        if (!m) return null;
+        const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+        const cur = scenarioHashes(design);
+        const raw = rawScenarioHashes(design);
+        const recorded = new Set((this.readArtifactJson<QaPassResult>(taskId, "qa/before.json")?.scenarios ?? []).map((r) => r.id));
+        return Object.entries(cur).filter(([id, h]) => !((m.hashes?.[id] === h || m.hashes?.[id] === raw[id]) && recorded.has(id))).map(([id]) => id);
     }
 
     // The design stage's baseline pairs with the approved scenarios: the separate baseline stage has nothing to add.
@@ -6372,7 +6406,7 @@ export class Engine extends EventEmitter {
         // copy into its output are merged in here, so nothing recorded is lost or driven twice.
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
             const qa = parsed.data as QaPassResult;
-            const missing = this.readPartial(taskId, qa.pass).filter((s) => !qa.scenarios.some((o) => o.id === s.id));
+            const missing = mergeScenarios(this.readCarry(taskId, qa.pass), this.readPartial(taskId, qa.pass)).filter((s) => !qa.scenarios.some((o) => o.id === s.id));
             if (missing.length) {
                 qa.scenarios = mergeScenarios(qa.scenarios, missing);
                 writeFileSync(path, JSON.stringify(qa, null, 2));
