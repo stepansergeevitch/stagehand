@@ -239,7 +239,6 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
                     entity="product owner"
                     onCreate={() => setCreating(true)}
                     createDisabled={envs.length ? undefined : "add an environment first"}
-                    intro="One per project of an environment: a Linear project or a ClickUp epic."
                     columns={columns}
                     rows={pos}
                     rowKey={(po) => po.id}

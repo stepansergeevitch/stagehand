@@ -159,7 +159,6 @@ const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }
             title="Environments"
             entity="environment"
             onCreate={onAdd}
-            intro="Repositories Stagehand works in: their services, config dir and AI accounts."
             columns={columns}
             rows={envs}
             rowKey={(e) => e.id}
@@ -200,7 +199,6 @@ const ConfigDirTable = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id:
                 title="Claude config dirs"
                 entity="config dir"
                 onCreate={() => setAdding(true)}
-                intro="A Claude directory on this host (skills, hooks, subagents, commands, MCP servers, CLAUDE.md) plus the commit, branch and PR rules Stagehand enforces. Environments point at one."
                 columns={columns}
                 rows={dirs}
                 rowKey={(d) => d.id}
@@ -370,7 +368,6 @@ const AccountTable = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal,
                 title="AI accounts"
                 entity="account"
                 onCreate={onAdd}
-                intro="A provider login, stored as a long-lived token; it can run in any config dir. Accounts without a token are legacy browser logins tied to one directory."
                 columns={columns}
                 rows={accounts}
                 rowKey={(a) => a.id}
@@ -611,7 +608,6 @@ const IntegrationTable = ({ settings, onChanged, onError }: { settings: Settings
         <>
             <DataTable
                 title="Integrations"
-                intro="External services Stagehand talks to, each with its type: task managers (tickets), documents, notifications (pushes to you), decision model (Jev)."
                 columns={columns}
                 rows={rows}
                 rowKey={(r) => r.id}

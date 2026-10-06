@@ -90,7 +90,6 @@ export const DataTable = <T,>({
     empty = "Nothing here yet.",
     defaultSort,
     storageKey,
-    intro,
 }: {
     // The header row: the list's name on the left, "Create new <entity>" on the right (when onCreate is given).
     title?: ReactNode;
@@ -110,8 +109,6 @@ export const DataTable = <T,>({
     defaultSort?: Sort;
     // Remembers the picked columns per browser.
     storageKey?: string;
-    // A line under the header row (what this list is).
-    intro?: ReactNode;
 }) => {
     const [query, setQuery] = useState("");
     const [filters, setFilters] = useState<Filters>({});
@@ -227,7 +224,6 @@ export const DataTable = <T,>({
                     )}
                 </div>
             )}
-            {intro && <p className="field-hint dt-intro">{intro}</p>}
             <div className="dt-tools">
                 <button
                     className={`dt-icon${filtersOpen || activeFilters ? " on" : ""}`}

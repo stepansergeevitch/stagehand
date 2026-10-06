@@ -824,7 +824,6 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .data-table { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 14px; min-width: 0; }
 .dt-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px 0; flex-wrap: wrap; }
 .dt-title { font-size: 15px; margin: 0; }
-.dt-intro { margin: 6px 14px 0; }
 .dt-tools { display: flex; align-items: center; gap: 8px; padding: 10px 14px; flex-wrap: wrap; }
 .dt-icon { display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 5px 8px; color: var(--ink-2); position: relative; }
 .dt-icon.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
