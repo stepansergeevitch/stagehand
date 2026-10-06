@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { Config } from "./config.js";
-import { now, type AccountRow, type DB, type PoArtifactRow, type PoIssueRow, type PoMessageRow, type PoPhase, type PoTicketLinkRow, type ProductOwnerRow, type TaskRow } from "./db.js";
+import { accountModelsOf, now, type AccountRow, type DB, type PoArtifactRow, type PoIssueRow, type PoMessageRow, type PoPhase, type PoTicketLinkRow, type ProductOwnerRow, type TaskRow } from "./db.js";
 import { authEnv } from "./claude/accounts.js";
 import { startClaude, type ActivityEvent, type ClaudeRun } from "./claude/runner.js";
 import { recordUsage } from "./usage.js";
@@ -709,7 +709,7 @@ export class ProductOwners {
                 if (isImage(a.mime, a.file)) {
                     const acc = this.account(po);
                     if (!acc?.oauth_token) return;
-                    const description = await describeImage({ dataDir: this.cfg.dataDir, path, configDir: this.configDir, env: this.runEnv(po, acc), model: this.cfg.defaultModel ?? undefined });
+                    const description = await describeImage({ dataDir: this.cfg.dataDir, path, configDir: this.configDir, env: this.runEnv(po, acc), model: accountModelsOf(acc).default ?? undefined });
                     this.db.prepare(`UPDATE po_artifacts SET description = ? WHERE id = ?`).run(description, a.id);
                 } else if (isConvertibleDoc(a.mime, a.file)) {
                     const text = await extractDocText(path);
@@ -971,7 +971,7 @@ export class ProductOwners {
             configDir: this.configDir,
             extraEnv: this.runEnv(po, acc),
             ...(first ? { sessionId: po.session_id, name: po.slug } : { resume: po.session_id }),
-            ...(this.cfg.defaultModel ? { model: this.cfg.defaultModel } : {}),
+            ...(accountModelsOf(acc).default ? { model: accountModelsOf(acc).default! } : {}),
             maxTurns: 80,
             addDirs: this.projectTasks(po).map((t) => t.dir),
             appendSystemPrompt: this.systemPrompt(po),
@@ -1420,7 +1420,7 @@ export class ProductOwners {
             extraEnv: this.runEnv(po, acc),
             sessionId: randomUUID(),
             name: `${po.slug}-brief-${task.ticket_id}`,
-            ...(this.cfg.defaultModel ? { model: this.cfg.defaultModel } : {}),
+            ...(accountModelsOf(acc).default ? { model: accountModelsOf(acc).default! } : {}),
             maxTurns: 40,
             addDirs: [taskDir],
             appendSystemPrompt: this.systemPrompt(po),
@@ -1496,7 +1496,7 @@ export class ProductOwners {
             extraEnv: this.runEnv(po, acc),
             sessionId,
             name: `${po.slug}-review-${task.ticket_id}`,
-            ...(this.cfg.defaultModel ? { model: this.cfg.defaultModel } : {}),
+            ...(accountModelsOf(acc).default ? { model: accountModelsOf(acc).default! } : {}),
             maxTurns: 60,
             addDirs: [taskDir, ...(task.worktree_path ? [task.worktree_path] : [])],
             appendSystemPrompt: this.systemPrompt(po),
@@ -1551,7 +1551,7 @@ export class ProductOwners {
             configDir: this.configDir,
             extraEnv: this.runEnv(po, acc),
             ...(state.sessionId ? { resume: state.sessionId } : { sessionId: randomUUID() }),
-            ...(this.cfg.defaultModel ? { model: this.cfg.defaultModel } : {}),
+            ...(accountModelsOf(acc).default ? { model: accountModelsOf(acc).default! } : {}),
             maxTurns: 30,
             addDirs: [taskDir, ...(task.worktree_path ? [task.worktree_path] : [])],
             appendSystemPrompt: this.systemPrompt(po),
@@ -1656,7 +1656,7 @@ export class ProductOwners {
             configDir: this.configDir,
             extraEnv: this.runEnv(po, acc),
             ...(first ? { sessionId, name: `${po.slug}-${q.key}` } : { resume: sessionId }),
-            ...(this.cfg.defaultModel ? { model: this.cfg.defaultModel } : {}),
+            ...(accountModelsOf(acc).default ? { model: accountModelsOf(acc).default! } : {}),
             maxTurns: 30,
             addDirs: this.projectTasks(po).map((t) => t.dir),
             appendSystemPrompt: this.systemPrompt(po),

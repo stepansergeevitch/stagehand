@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { Modal } from "./Modal";
-import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type ModelOperation, type ModelStage, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager } from "./api";
+import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type AccountModels, type ModelOperation, type ModelStage, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager } from "./api";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
-export type ManageTab = "envs" | "dirs" | "accounts" | "integrations";
+export type ManageTab = "envs" | "dirs" | "accounts" | "integrations" | "prompter" | "pipeline";
 
 // Every card on the Integrations page carries one of these, so a new kind of integration announces what it is.
 type IntegrationType = "task manager" | "notifications" | "decision model" | "assistant" | "documents";
@@ -41,36 +41,37 @@ const MODEL_OPERATIONS: Array<{ key: ModelOperation; label: string; hint: string
     { key: "fix_service", label: "Fix a BE/FE start", hint: "the App widget's Fix with agent" },
     { key: "git_edit", label: "Remove a commit", hint: "history edits from Code changes" },
 ];
-const ModelsCard = ({ settings, accounts, act }: { settings: Settings; accounts: Account[]; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
-    const fallback = `Account default · ${accounts.filter((a) => a.logged_in).map((a) => `${a.name}: ${modelLabel(a.default_model, settings.models) ?? "?"}`).join(", ") || "no account"}`;
-    const options = (blank: string) => settings.models.map((m) => <option key={m.value} value={m.value}>{m.value === "" ? blank : m.label}</option>);
-    const first = settings.stageModels ?? {};
-    const rerun = settings.stageRerunModels ?? {};
-    const ops = settings.operationModels ?? {};
-    const globalLabel = settings.defaultModel ? modelLabel(settings.defaultModel, settings.models) ?? settings.defaultModel : "account default";
+// Which model runs what on one account: its default, per stage the first run on a task and every later run (a review
+// round sent back, Retry, a contract or unblock retry, a QA return to Implementation), and per side operation. A task
+// created with its own model uses that everywhere. Every select saves at once; a blank falls back along the arrows.
+const AccountModelsSection = ({ a, settings, act }: { a: Account; settings: Settings; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
+    const m = a.models ?? { default: null, stages: {}, reruns: {}, operations: {} };
+    const label = (v: string | null | undefined): string => (v ? modelLabel(v, settings.models) ?? v : "");
+    const cliDefault = `the CLI's default (${label(a.default_model) || "?"})`;
+    const defaultLabel = m.default ? label(m.default) : cliDefault;
+    const options = (blank: string) => settings.models.map((o) => <option key={o.value} value={o.value}>{o.value === "" ? blank : o.label}</option>);
+    const save = (models: Partial<AccountModels>) => void act(() => api.patchAccount(a.id, { models }));
     return (
         <section className="card item">
             <h2>Models</h2>
-            <p className="field-hint">A task created with its own model uses that everywhere. Otherwise a stage's first run on a task takes its "first run" model, every later run of that stage (a review round sent back, Retry, a contract or unblock retry, a QA return to Implementation) takes its "reruns" model, and the side operations take theirs. A blank falls back along the arrows.</p>
             <p className="field-hint">
                 {settings.modelsFetchedAt ? `Model list from the Models API, fetched ${new Date(settings.modelsFetchedAt).toLocaleString()}` : "Built-in model list (nothing fetched yet)"}
                 {settings.modelsError ? ` · last fetch failed: ${settings.modelsError}` : ""}
-                {" "}<button type="button" onClick={() => void act(() => api.refreshModels())}>Refresh</button>
+                {" "}<button type="button" className="tiny" onClick={() => void act(() => api.refreshModels())}>Refresh</button>
             </p>
             <div className="env-fields" style={{ maxWidth: 560 }}>
-                <label className="inline"><input type="checkbox" checked={settings.codeReview !== false} onChange={(e) => void act(() => api.patchSettings({ codeReview: e.target.checked }))} /> Code Review stage after Implementation — gstack's pre-landing checklist applied by a fresh session: mechanical findings fixed and committed, serious open ones sent back to Implementation once, everything shown at User Review</label>
-                <label>Global default (the fallback of every blank below)
-                    <select value={settings.defaultModel ?? ""} onChange={(e) => void act(() => api.patchSettings({ defaultModel: e.target.value || null }))}>{options(fallback)}</select>
+                <label>Default (the fallback of every blank below)
+                    <select value={m.default ?? ""} onChange={(e) => save({ default: e.target.value || null })}>{options(`→ ${cliDefault}`)}</select>
                 </label>
             </div>
             <table className="models-table">
                 <thead><tr><th>Stage</th><th>First run</th><th>Reruns</th></tr></thead>
                 <tbody>
-                    {MODEL_STAGES.map((s) => (
-                        <tr key={s.key}>
-                            <td>{s.label}</td>
-                            <td><select value={first[s.key] ?? ""} onChange={(e) => void act(() => api.patchSettings({ stageModels: { [s.key]: e.target.value || null } }))}>{options(`→ global default (${globalLabel})`)}</select></td>
-                            <td><select value={rerun[s.key] ?? ""} onChange={(e) => void act(() => api.patchSettings({ stageRerunModels: { [s.key]: e.target.value || null } }))}>{options(`→ first run (${first[s.key] ? modelLabel(first[s.key], settings.models) ?? first[s.key] : globalLabel})`)}</select></td>
+                    {MODEL_STAGES.map((st) => (
+                        <tr key={st.key}>
+                            <td>{st.label}</td>
+                            <td><select value={m.stages[st.key] ?? ""} onChange={(e) => save({ stages: { [st.key]: e.target.value || null } })}>{options(`→ default (${defaultLabel})`)}</select></td>
+                            <td><select value={m.reruns[st.key] ?? ""} onChange={(e) => save({ reruns: { [st.key]: e.target.value || null } })}>{options(`→ first run (${m.stages[st.key] ? label(m.stages[st.key]) : defaultLabel})`)}</select></td>
                         </tr>
                     ))}
                 </tbody>
@@ -81,7 +82,7 @@ const ModelsCard = ({ settings, accounts, act }: { settings: Settings; accounts:
                     {MODEL_OPERATIONS.map((o) => (
                         <tr key={o.key}>
                             <td>{o.label}</td>
-                            <td><select value={ops[o.key] ?? ""} onChange={(e) => void act(() => api.patchSettings({ operationModels: { [o.key]: e.target.value || null } }))}>{options(o.key.startsWith("pr_fix") ? `→ PR Fix stage (${first.pr_fix ? modelLabel(first.pr_fix, settings.models) ?? first.pr_fix : globalLabel})` : `→ global default (${globalLabel})`)}</select></td>
+                            <td><select value={m.operations[o.key] ?? ""} onChange={(e) => save({ operations: { [o.key]: e.target.value || null } })}>{options(o.key.startsWith("pr_fix") ? `→ PR Fix stage (${m.stages.pr_fix ? label(m.stages.pr_fix) : defaultLabel})` : `→ default (${defaultLabel})`)}</select></td>
                             <td className="quiet">{o.hint}</td>
                         </tr>
                     ))}
@@ -90,6 +91,14 @@ const ModelsCard = ({ settings, accounts, act }: { settings: Settings; accounts:
         </section>
     );
 };
+
+// Which stages a task goes through: settings of the pipeline itself, not of any one environment or account.
+const PipelineCard = ({ settings, act }: { settings: Settings; act: (fn: () => Promise<unknown>) => Promise<void> }) => (
+    <section className="card item">
+        <h2>Stages</h2>
+        <label className="inline"><input type="checkbox" checked={settings.codeReview !== false} onChange={(e) => void act(() => api.patchSettings({ codeReview: e.target.checked }))} /> Code Review stage after Implementation — gstack's pre-landing checklist applied by a fresh session: mechanical findings fixed and committed, serious open ones sent back to Implementation once, everything shown at User Review</label>
+    </section>
+);
 
 export const ManagePage = ({
     tab,
@@ -133,8 +142,8 @@ export const ManagePage = ({
             {tab === "envs" && <EnvTable envs={envs} configDirs={configDirs} accounts={accounts} tasks={tasks} onConfigure={onConfigureEnv} onAdd={onAddEnv} act={act} />}
             {tab === "dirs" && <ConfigDirTable dirs={configDirs} onOpen={onOpenDir} act={act} />}
             {tab === "accounts" && <AccountTable accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onError={onError} />}
-            {tab === "accounts" && settings && <ModelsCard settings={settings} accounts={accounts} act={act} />}
-            {tab === "accounts" && settings && <PrompterCard settings={settings} accounts={accounts} onChanged={onChanged} onError={onError} />}
+            {tab === "prompter" && settings && <PrompterCard settings={settings} accounts={accounts} onChanged={onChanged} onError={onError} />}
+            {tab === "pipeline" && settings && <PipelineCard settings={settings} act={act} />}
             {tab === "integrations" && <IntegrationTable settings={settings} onChanged={onChanged} onError={onError} />}
         </div>
     );
@@ -354,7 +363,7 @@ const AccountTable = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal,
         { key: "chrome", label: "Chrome", value: (a) => (accountBrowserReady(a) ? a.chrome_browser_name ?? "ready" : "none"), filter: "auto" },
         { key: "plan", label: "Plan", value: (a) => a.plan ?? "", filter: "auto" },
         { key: "email", label: "Email", value: (a) => a.email ?? "", filter: false },
-        { key: "model", label: "Default model", value: (a) => modelLabel(a.default_model, settings?.models) ?? "", filter: "auto", defaultHidden: true },
+        { key: "model", label: "Default model", value: (a) => modelLabel(a.models?.default ?? a.default_model, settings?.models) ?? "", filter: "auto", defaultHidden: true },
         { key: "five", label: "5 h", kind: "num", value: (a) => pctOf(a, "five_hour"), filter: false, render: (a) => { const v = pctOf(a, "five_hour"); return v === null ? "—" : `${v}%`; } },
         { key: "week", label: "7 d", kind: "num", value: (a) => pctOf(a, "seven_day"), filter: false, render: (a) => { const v = pctOf(a, "seven_day"); return v === null ? "—" : `${v}%`; } },
         { key: "today", label: "Today", kind: "num", value: (a) => a.usage?.today.cost ?? 0, filter: false, render: (a) => `$${(a.usage?.today.cost ?? 0).toFixed(2)}` },
@@ -388,6 +397,7 @@ const AccountTable = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal,
             {current && (
                 <Modal title={current.name} wide onClose={() => setOpen(null)}>
                     <AccountCard a={current} envs={envs} tasks={tasks} settings={settings} act={act} onTerminal={onTerminal} onError={onError} />
+                    {settings && <AccountModelsSection a={current} settings={settings} act={act} />}
                 </Modal>
             )}
         </>

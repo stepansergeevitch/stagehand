@@ -9,6 +9,8 @@ export type TaskStatus = "idle" | "queued" | "running" | "waiting_user" | "block
 export interface Account {
     id: string; name: string; provider: string; auth_dir: string; has_token: boolean; setting_up: boolean; email: string | null; org: string | null; plan: string | null;
     logged_in: number; failover_enabled: number; failover_threshold: number; default_model: string | null;
+    // Which model runs what on this account; absent from an older server.
+    models?: AccountModels;
     // Browser stages need this account's claude.ai browser login (in browser_dir) and a Chrome profile whose extension is signed into it.
     login_ok: number | null; login_dir: string | null; chrome_capable: number | null; chrome_device_id: string | null; chrome_browser_name: string | null;
     // 1: every browser QA run copies the Chrome profile into a private Chrome window of its own (parallel browser QA).
@@ -143,10 +145,11 @@ export const pct = (v: number | null | undefined): string => (v == null ? "—" 
 export interface Notifications { macos: boolean; ntfyServer: string; ntfyTopic: string | null; ntfyToken: string | null; baseUrl: string | null; localBaseUrl: string }
 // Prompter, the in-app assistant: which token account runs it, its default model, when an idle chat ends.
 export interface PrompterSettings { accountId: string | null; model: string; idleHours: number; purgeDays: number; farewell: boolean; maxTurns: number; seedFrom: string; seedWings: string[] }
-// Which model a run gets: stageModels for a stage's first run on a task, stageRerunModels for every later run of it,
-// operationModels for the side runs (PR fixes by cause, chat, Do, rebase, service fix, history edit). "" / null = fallback.
 export type ModelStage = "research" | "design_proposal" | "qa_baseline" | "implementation" | "code_review" | "manual_qa" | "pr_creation_review" | "pr_fix";
 export type ModelOperation = "pr_fix_ci" | "pr_fix_comments" | "chat" | "instruct" | "rebase" | "fix_service" | "git_edit";
+// An account's models (server db.ts AccountModels): its default, per stage a first-run and a rerun model, per side
+// operation a model. null = fall back (rerun → first run → default → the CLI's own default for the account).
+export interface AccountModels { default: string | null; stages: Partial<Record<string, string | null>>; reruns: Partial<Record<string, string | null>>; operations: Partial<Record<string, string | null>> }
 // The resource registry (server/src/resources.ts): one row per thing Stagehand runs on the host, with its policy verdict.
 export type ResourceKind = "service" | "dependency" | "run" | "terminal" | "session" | "login" | "browser" | "clone" | "worktree" | "database" | "orphan";
 export interface Resource {
@@ -174,16 +177,13 @@ export interface ResourceSnapshot {
 }
 export interface Settings {
     clickupToken: string | null; clickupTeamId: string | null; linearApiKey: string | null; typesafeApiKey: string | null;
-    defaultModel: string | null; models: Array<{ value: string; label: string }>;
+    models: Array<{ value: string; label: string }>;
     resources?: ResourcePolicies;
     // When the model list was last fetched from the Models API (null = the built-in fallback list), and why the last
     // fetch failed; absent from an older server.
     modelsFetchedAt?: string | null; modelsError?: string | null;
-    stageModels?: Partial<Record<ModelStage, string | null>>;
     // The Code Review stage after Implementation (gstack's checklist); absent from an older server.
     codeReview?: boolean;
-    stageRerunModels?: Partial<Record<ModelStage, string | null>>;
-    operationModels?: Partial<Record<ModelOperation, string | null>>;
     notifications: Notifications;
     desktopNotifier: string;
     // Absent from a server older than this UI.
@@ -691,7 +691,7 @@ export const api = {
     deleteConfigDir: (id: string) => fetch(`/api/config-dirs/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     configDirRules: (id: string) => fetch(`/api/config-dirs/${id}/rules`).then((r) => j<ConfigDirRules>(r)),
     testAccountClone: (id: string) => post<{ ok: boolean; detail: string }>(`/api/accounts/${id}/clone-test`),
-    patchAccount: (id: string, body: { name?: string; failover_enabled?: boolean; failover_threshold?: number; chromeDeviceId?: string | null; chromeCloneQa?: boolean }) =>
+    patchAccount: (id: string, body: { name?: string; failover_enabled?: boolean; failover_threshold?: number; chromeDeviceId?: string | null; chromeCloneQa?: boolean; models?: Partial<AccountModels> }) =>
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: {

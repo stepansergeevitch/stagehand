@@ -68,8 +68,31 @@ export interface AccountRow {
     failover_threshold: number;
     // What `claude` picks when no --model is passed for this account (observed from run init events / a probe).
     default_model: string | null;
+    // Which model runs what on this account (AccountModels as JSON): models are the provider's, so they belong to the
+    // account, not to a global setting.
+    models: string | null;
     created_at: string;
 }
+
+// The models of one account: its default for every run, a model per stage for the stage's first run on a task and one
+// for every later run, and one per side operation. Null anywhere falls back: rerun → first run → default → the CLI's
+// own default for the account (default_model).
+export interface AccountModels {
+    default: string | null;
+    stages: Record<string, string | null>;
+    reruns: Record<string, string | null>;
+    operations: Record<string, string | null>;
+}
+export const accountModelsOf = (a: Pick<AccountRow, "models"> | null | undefined): AccountModels => {
+    const empty: AccountModels = { default: null, stages: {}, reruns: {}, operations: {} };
+    if (!a?.models) return empty;
+    try {
+        const v = JSON.parse(a.models) as Partial<AccountModels>;
+        return { default: v.default ?? null, stages: v.stages ?? {}, reruns: v.reruns ?? {}, operations: v.operations ?? {} };
+    } catch {
+        return empty;
+    }
+};
 export const accountBrowserReady = (a: Pick<AccountRow, "login_ok" | "chrome_capable">): boolean => a.login_ok === 1 && a.chrome_capable === 1;
 
 export const hasToken = (a: Pick<AccountRow, "oauth_token">): boolean => !!a.oauth_token;
@@ -956,6 +979,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.env_vars", `ALTER TABLE envs ADD COLUMN env_vars TEXT`],
     ["reviews.comments", `ALTER TABLE reviews ADD COLUMN comments TEXT`],
     ["accounts.default_model", `ALTER TABLE accounts ADD COLUMN default_model TEXT`],
+    ["accounts.models", `ALTER TABLE accounts ADD COLUMN models TEXT`],
     ["envs.rules", `ALTER TABLE envs ADD COLUMN rules TEXT`],
     ["tasks.ticket_url", `ALTER TABLE tasks ADD COLUMN ticket_url TEXT`],
     ["tasks.model", `ALTER TABLE tasks ADD COLUMN model TEXT`],

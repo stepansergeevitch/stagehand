@@ -9,7 +9,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync,
 import { join, relative } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { PREVIEW, type Config } from "./config.js";
-import { accountBrowserReady, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, componentsOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvComponent, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type SharedFile, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
+import { accountBrowserReady, accountModelsOf, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, componentsOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvComponent, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type SharedFile, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
 import { permissionProblem, rateLimitHit, ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { renderHumanDirectives, type HumanDirective } from "./human-directives.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
@@ -1245,7 +1245,7 @@ export class Engine extends EventEmitter {
                 `INSERT INTO tasks (id, env_id, ticket_id, source, ticket_url, model, session_id, account_id, stage, status, status_line, pinned, notes, extra_tickets, base_branch, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'research', 'running', 'fetching ticket', 0, ?, ?, ?, ?, ?)`,
             )
-            .run(id, env.id, ref.id, ref.source, ref.url, model ?? this.cfg.defaultModel, sessionId, accountId ?? accountOrderOf(env)[0] ?? null, notes?.trim() || null, extras.length ? JSON.stringify(extras) : null, base, ts, ts);
+            .run(id, env.id, ref.id, ref.source, ref.url, model ?? null, sessionId, accountId ?? accountOrderOf(env)[0] ?? null, notes?.trim() || null, extras.length ? JSON.stringify(extras) : null, base, ts, ts);
         this.taskDir(id);
         const task = this.getTask(id)!;
         this.recordTaskEvent(id, "research", "running");
@@ -2916,7 +2916,7 @@ export class Engine extends EventEmitter {
             ticketId: task.ticket_id, prNumber: String(prNumber), cwd, branch: task.branch, baseBranch: this.baseBranchOf(task, env, repo), headSha, failedChecks: failed.map((f) => `\`${f}\``).join(", "), outputFile: out, rules: describeRules(autopilotRulesOf(env.ci_autopilot_rules)),
         });
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path ?? cwd, this.cfg.dataDir);
-        const model = this.modelForOperation(task, "pr_fix_ci");
+        const model = this.modelForOperation(task, "pr_fix_ci", acc);
         const run = startClaude({
             prompt, cwd, configDir: cd.path, extraEnv: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, taskId), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
             sessionId: randomUUID(), maxTurns: 60, addDirs: [dir], eventLogPath: join(dir, `ci-triage-${round.id.slice(0, 8)}.ndjson`), ...(model ? { model } : {}),
@@ -3079,7 +3079,7 @@ export class Engine extends EventEmitter {
             ticketId: task.ticket_id, worktree: task.worktree_path ?? env.path, branch: task.branch ?? "", fixDiffs: diffs.join("\n"), brief: fixBrief(round.prNumber, round.verified ?? [], autopilotRulesOf(env.ci_autopilot_rules)), outputFile: out,
         });
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path ?? env.path, this.cfg.dataDir);
-        const model = this.modelForOperation(task, "pr_fix_ci");
+        const model = this.modelForOperation(task, "pr_fix_ci", acc);
         const run = startClaude({
             prompt, cwd: task.worktree_path ?? env.path, configDir: cd.path, extraEnv: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, taskId), ...authEnv(acc) }, settingsPath: rulesMat.settingsPath, appendSystemPrompt: rulesMat.systemPrompt,
             sessionId: randomUUID(), maxTurns: 50, addDirs: [dir], eventLogPath: join(dir, `ci-autopilot-review-${roundId.slice(0, 8)}.ndjson`), ...(model ? { model } : {}),
@@ -3595,23 +3595,26 @@ export class Engine extends EventEmitter {
 
     // ---------- which model a run gets ----------
     //
-    // The task's own model (set at creation) wins everywhere. A stage run: the operation's model when the round was
-    // started as one (PR Fix for checks / for comments), else the stage's rerun model once the stage already ran on
-    // this task, else the stage's first-run model; then the global default; null = the account's default.
-    private modelForStage(task: TaskRow, stage: Stage, opts: DispatchOpts): string | null {
+    // The task's own model (set at creation) wins everywhere. Otherwise the models of the account that runs it
+    // (accounts.models — models are the provider's): a stage run takes the operation's model when the round was started
+    // as one (PR Fix for checks / for comments), else the stage's rerun model once the stage already ran on this task,
+    // else the stage's first-run model, then the account's default; null = the CLI's own default for the account.
+    private modelForStage(task: TaskRow, stage: Stage, opts: DispatchOpts, account: AccountRow): string | null {
         if (opts.model) return opts.model;
         if (task.model) return task.model;
-        const op = opts.operation ? this.cfg.operationModels[opts.operation] : null;
+        const m = accountModelsOf(account);
+        const op = opts.operation ? m.operations[opts.operation] : null;
         if (op) return op;
         const prior = (this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = ?`).get(task.id, stage) as { n: number }).n;
-        const rerun = prior > 0 || (opts.attempt ?? 1) > 1 ? (this.cfg.stageRerunModels as Record<string, string | null | undefined>)[stage] : null;
-        const first = (this.cfg.stageModels as Record<string, string | null | undefined>)[stage];
-        return rerun ?? first ?? this.cfg.defaultModel ?? null;
+        const rerun = prior > 0 || (opts.attempt ?? 1) > 1 ? m.reruns[stage] : null;
+        return rerun ?? m.stages[stage] ?? m.default ?? null;
     }
 
-    // The side runs (chat, Do, rebase, service fix, history edit): the task's model, else the operation's, else the default.
-    private modelForOperation(task: TaskRow, op: OperationKind): string | null {
-        return task.model ?? this.cfg.operationModels[op] ?? this.cfg.defaultModel ?? null;
+    // The side runs (chat, Do, rebase, service fix, history edit): the task's model, else the account's model for the
+    // operation, else the account's default.
+    private modelForOperation(task: TaskRow, op: OperationKind, account: AccountRow): string | null {
+        const m = accountModelsOf(account);
+        return task.model ?? m.operations[op] ?? m.default ?? null;
     }
 
     // ---------- chat: the human's own Q&A / notes channel with the task's agent ----------
@@ -3691,7 +3694,7 @@ export class Engine extends EventEmitter {
             // The task dir holds the files the human shares (and the artifacts a question may be about).
             addDirs: [this.taskDir(taskId)],
             ...((): { model?: string } => {
-                const m = this.modelForOperation(task, "chat");
+                const m = this.modelForOperation(task, "chat", acc);
                 return m ? { model: m } : {};
             })(),
         });
@@ -3752,7 +3755,7 @@ export class Engine extends EventEmitter {
             addDirs: [taskDir],
             eventLogPath: join(taskDir, "instructions", `${message.id}.ndjson`),
             ...((): { model?: string } => {
-                const m = this.modelForOperation(task, "instruct");
+                const m = this.modelForOperation(task, "instruct", acc);
                 return m ? { model: m } : {};
             })(),
         });
@@ -3870,7 +3873,7 @@ export class Engine extends EventEmitter {
             ...this.sessionArgs(task),
             maxTurns: 60,
             ...((): { model?: string } => {
-                const m = this.modelForOperation(task, "git_edit");
+                const m = this.modelForOperation(task, "git_edit", acc);
                 return m ? { model: m } : {};
             })(),
         });
@@ -4442,7 +4445,7 @@ export class Engine extends EventEmitter {
         const vars = this.promptVars(task, def, opts);
         const prompt = renderPrompt(def.prompt, vars);
         const eventLogPath = join(this.cfg.dataDir, "runs", `${runId}.ndjson`);
-        const explicitModel = this.modelForStage(task, def.stage, opts);
+        const explicitModel = this.modelForStage(task, def.stage, opts, account);
         // A resumed session answers on the model of the run that last spoke in it: a side run on another model (the
         // service fix on Haiku that rotated INV-136's session, 2026-09-24) would otherwise set the model of every stage
         // run after it — and Haiku refuses every edit (permissionProblem). A task-session run therefore always names
@@ -5470,7 +5473,7 @@ export class Engine extends EventEmitter {
             maxTurns: 80,
             addDirs: [this.taskDir(taskId)],
             ...((): { model?: string } => {
-                const m = this.modelForOperation(task, "rebase");
+                const m = this.modelForOperation(task, "rebase", acc);
                 return m ? { model: m } : {};
             })(),
         });
@@ -5945,7 +5948,7 @@ export class Engine extends EventEmitter {
             ...this.sessionArgs(task),
             maxTurns: 60,
             ...((): { model?: string } => {
-                const m = this.modelForOperation(task, "fix_service");
+                const m = this.modelForOperation(task, "fix_service", acc);
                 return m ? { model: m } : {};
             })(),
         });
@@ -6022,7 +6025,7 @@ export class Engine extends EventEmitter {
             finish("failed", refused);
             // Once more, on a model known to honour auto mode: a session stuck on Haiku heals itself (the retry resumes
             // it with --model, which the session keeps from then on). A second refusal is for the human.
-            const retryModel = opts.modelRetried ? null : (this.cfg.defaultModel ?? REFUSAL_RETRY_MODEL);
+            const retryModel = opts.modelRetried ? null : (accountModelsOf(account).default ?? REFUSAL_RETRY_MODEL);
             if (retryModel) {
                 this.addMessage(taskId, "agent", `⛔ ${def.label} stopped at its first refused edit — ${refused}\n\nRunning it again once on ${retryModel}.`);
                 this.dispatch(taskId, def.stage, { ...opts, model: retryModel, modelRetried: true });

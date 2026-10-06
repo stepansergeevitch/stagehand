@@ -17,7 +17,7 @@ import { loadConfig, PREVIEW, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
 import { mimeOf, renderSharedFiles, sharedFileName } from "./tickets.js";
-import type { ServiceKind, SharedFile } from "./db.js";
+import type { AccountModels, ServiceKind, SharedFile } from "./db.js";
 import { Resources } from "./resources.js";
 import { REVIEW_CATEGORIES, reviewChecklistJson } from "./review-checklist.js";
 import { GUARD_HOOK, prTemplates, Rules, rulesOf } from "./rules.js";
@@ -29,7 +29,7 @@ import { desktopNotifier, notify } from "./notify.js";
 import { jevProbe } from "./jev.js";
 
 import { ModelCatalog } from "./claude/models.js";
-import { accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, COMPONENT_KEY, componentsOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, prTemplateOverridesOf, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type EnvRow, type Stage, type TaskRow } from "./db.js";
+import { accountModelsOf, accountOrderOf, accountUsableWith, chromeBrowserLabel, chromeBrowsersOf, COMPONENT_KEY, componentsOf, migrateAccountsToConfigDirs, now, openDb, parseEnvVars, prTemplateOverridesOf, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type EnvRow, type Stage, type TaskRow } from "./db.js";
 import { matchChromeProfiles, openInProfile, restartChrome } from "./chrome-profiles.js";
 import { Engine } from "./engine.js";
 import { Services, DEPENDENCY_KIND } from "./services.js";
@@ -93,6 +93,17 @@ app.onError((err, c) => c.json({ error: err.message }, 400));
 // ---------- accounts ----------
 
 const accountsAll = (): AccountRow[] => db.prepare(`SELECT * FROM accounts ORDER BY created_at`).all() as AccountRow[];
+// Models moved from one global setting onto each account (2026-10-06): an account without its own models yet starts
+// with what the global settings said, once.
+{
+    const legacy: AccountModels = {
+        default: cfg.defaultModel,
+        stages: { ...(cfg.stageModels as Record<string, string | null>) },
+        reruns: { ...(cfg.stageRerunModels as Record<string, string | null>) },
+        operations: { ...(cfg.operationModels as Record<string, string | null>) },
+    };
+    for (const a of accountsAll()) if (!a.models) db.prepare(`UPDATE accounts SET models = ? WHERE id = ?`).run(JSON.stringify(legacy), a.id);
+}
 const accountById = (id: string): AccountRow | undefined => db.prepare(`SELECT * FROM accounts WHERE id = ?`).get(id) as AccountRow | undefined;
 const configDirsAll = (): ConfigDirRow[] => db.prepare(`SELECT * FROM config_dirs ORDER BY created_at`).all() as ConfigDirRow[];
 const configDirById = (id: string): ConfigDirRow | undefined => db.prepare(`SELECT * FROM config_dirs WHERE id = ?`).get(id) as ConfigDirRow | undefined;
@@ -103,7 +114,7 @@ const modelCatalog = new ModelCatalog(join(cfg.dataDir, "models.json"), () => ac
 
 const publicAccount = (a: AccountRow) => {
     const { oauth_token, ...rest } = a;
-    return { ...rest, has_token: !!oauth_token, browsers: chromeBrowsersOf(a), browser_dir: browserDirFor(cfg, a) };
+    return { ...rest, models: accountModelsOf(a), has_token: !!oauth_token, browsers: chromeBrowsersOf(a), browser_dir: browserDirFor(cfg, a) };
 };
 const emitAccount = (id: string): void => {
     const acc = accountById(id);
@@ -323,11 +334,27 @@ app.patch("/api/accounts/:id", async (c) => {
             failover_threshold: z.number().min(0).max(1).optional(),
             chromeDeviceId: z.string().nullable().optional(),
             chromeCloneQa: z.boolean().optional(),
+            // Partial: only the keys present change; "" or null clears one (back to its fallback).
+            models: z
+                .object({
+                    default: z.string().nullable().optional(),
+                    stages: z.record(z.string().nullable()).optional(),
+                    reruns: z.record(z.string().nullable()).optional(),
+                    operations: z.record(z.string().nullable()).optional(),
+                })
+                .optional(),
         }),
         await c.req.json(),
     );
     const acc = accountById(c.req.param("id"));
     if (!acc) return c.json({ error: "not found" }, 404);
+    if (body.models) {
+        const m = accountModelsOf(acc);
+        const clean = (v: string | null | undefined): string | null => v?.trim() || null;
+        if (body.models.default !== undefined) m.default = clean(body.models.default);
+        for (const part of ["stages", "reruns", "operations"] as const) for (const [k, v] of Object.entries(body.models[part] ?? {})) m[part][k] = clean(v);
+        db.prepare(`UPDATE accounts SET models = ? WHERE id = ?`).run(JSON.stringify(m), acc.id);
+    }
     const chosen = body.chromeDeviceId === undefined ? undefined : body.chromeDeviceId ? chromeBrowsersOf(acc).find((b) => b.deviceId === body.chromeDeviceId) ?? null : null;
     db.prepare(`UPDATE accounts SET name = ?, failover_enabled = ?, failover_threshold = ?, chrome_device_id = ?, chrome_browser_name = ?, chrome_clone_qa = ? WHERE id = ?`).run(
         body.name ?? acc.name,
@@ -1218,14 +1245,10 @@ const settingsJson = async () => {
         clickupTeamId: cfg.clickupTeamId,
         linearApiKey: mask(cfg.linearApiKey),
         typesafeApiKey: mask(cfg.typesafeApiKey),
-        defaultModel: cfg.defaultModel,
         models,
         modelsFetchedAt: status.fetchedAt,
         modelsError: status.error,
-        stageModels: cfg.stageModels,
         codeReview: cfg.codeReview,
-        stageRerunModels: cfg.stageRerunModels,
-        operationModels: cfg.operationModels,
         notifications: { ...cfg.notifications, ntfyToken: mask(cfg.notifications.ntfyToken) },
         desktopNotifier: desktopNotifier(),
         prompter: cfg.prompter,
@@ -1266,7 +1289,6 @@ app.patch("/api/settings", async (c) => {
             clickupTeamId: z.string().nullable().optional(),
             linearApiKey: z.string().nullable().optional(),
             typesafeApiKey: z.string().nullable().optional(),
-            defaultModel: z.string().nullable().optional(),
             codeReview: z.boolean().optional(),
             resources: z
                 .object({
@@ -1284,10 +1306,6 @@ app.patch("/api/settings", async (c) => {
                     maxSwapMb: z.number().min(0).optional(),
                 })
                 .optional(),
-            // Partial maps: only the keys present change; "" or null clears a key (back to the fallback).
-            stageModels: z.record(z.string().nullable()).optional(),
-            stageRerunModels: z.record(z.string().nullable()).optional(),
-            operationModels: z.record(z.string().nullable()).optional(),
             prompter: z
                 .object({
                     accountId: z.string().nullable().optional(),
@@ -1335,15 +1353,8 @@ app.patch("/api/settings", async (c) => {
         if (n.baseUrl !== undefined) cfg.notifications.baseUrl = n.baseUrl?.trim() || null;
         if (n.localBaseUrl !== undefined && n.localBaseUrl.trim()) cfg.notifications.localBaseUrl = n.localBaseUrl.trim();
     }
-    if (body.defaultModel !== undefined) cfg.defaultModel = body.defaultModel;
     if (body.codeReview !== undefined) cfg.codeReview = body.codeReview;
     if (body.resources) for (const [k, v] of Object.entries(body.resources)) if (v !== undefined) (cfg.resources as unknown as Record<string, unknown>)[k] = v;
-    const applyModels = (target: Record<string, string | null>, patch: Record<string, string | null> | undefined): void => {
-        for (const [k, v] of Object.entries(patch ?? {})) if (k in target) target[k] = v?.trim() || null;
-    };
-    applyModels(cfg.stageModels as Record<string, string | null>, body.stageModels);
-    applyModels(cfg.stageRerunModels as Record<string, string | null>, body.stageRerunModels);
-    applyModels(cfg.operationModels as Record<string, string | null>, body.operationModels);
     saveConfig(cfg);
     return c.json({ ok: true });
 });
