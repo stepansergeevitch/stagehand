@@ -846,11 +846,10 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .dt-scroll th { text-align: left; font-weight: 500; color: var(--ink-3); font-size: 12px; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; background: var(--panel); }
 .dt-scroll th.sortable { cursor: pointer; user-select: none; }
 .dt-scroll th.sortable:hover { color: var(--accent); }
-.dt-scroll td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.dt-scroll td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
 .dt-scroll tr:last-child td { border-bottom: 0; }
 .dt-scroll th.num, .dt-scroll td.num { text-align: right; }
 .dt-scroll td.dt-label { min-width: 160px; font-weight: 500; }
-.dt-scroll td.dt-label small { display: block; color: var(--ink-3); font-weight: 400; overflow-wrap: anywhere; }
 .dt-scroll .dt-check { width: 32px; padding-right: 0; }
 .dt-scroll .hint-mark { color: var(--ink-3); font-weight: normal; }
 .dt-scroll tr.clickable { cursor: pointer; }

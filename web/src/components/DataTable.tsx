@@ -8,6 +8,8 @@ import { storage } from "../storage";
 //   (filters)    one group per filterable column: its distinct values, multi-select
 //   table        [☐] <columns…>    — sortable headers, a row click opens the entity
 //
+// One value per cell: a cell shows its column's value on one line (a chip, a link, a code span), never a second line of
+// extra detail under it — information worth showing gets a column of its own (the user, 2026-10-06). Cells do not wrap.
 // A column says how to read a row (`value`, for sorting, searching and filtering) apart from how to show it (`render`).
 // Columns with few distinct values (status, type, …) get a filter; free-form text is only searched. Which columns are
 // shown is remembered per browser under `storageKey`.

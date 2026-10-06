@@ -145,13 +145,13 @@ const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }
     const dirName = (e: Env): string => configDirs.find((d) => d.id === e.config_dir_id)?.name ?? "server default";
     const accountList = (e: Env): string => accountOrderOf(e).map((id, i) => `${i + 1}. ${accounts.find((a) => a.id === id)?.name ?? "?"}`).join("  ") || "any that can run in the dir";
     const columns: DataColumn<Env>[] = [
-        { key: "name", label: "Name", kind: "label", value: (e) => e.name, filter: false, render: (e) => <>{e.name}<small>{e.path}</small></> },
+        { key: "name", label: "Name", kind: "label", value: (e) => e.name, filter: false },
         { key: "source", label: "Tickets", value: (e) => e.ticket_source, filter: "auto" },
         { key: "base", label: "Base branch", value: (e) => e.base_branch, filter: "auto", render: (e) => <span className="chip accent">{e.base_branch}</span> },
         { key: "repos", label: "Repos", value: (e) => repoList(e.repos), filter: false },
         { key: "dir", label: "Config dir", value: dirName, filter: "auto" },
         { key: "accounts", label: "AI accounts", value: accountList, filter: false, defaultHidden: true },
-        { key: "path", label: "Path", value: (e) => e.path, filter: false, defaultHidden: true, render: (e) => <code>{e.path}</code> },
+        { key: "path", label: "Path", value: (e) => e.path, filter: false, render: (e) => <code>{e.path}</code> },
         { key: "tasks", label: "Tasks", kind: "num", value: taskCount, filter: false },
     ];
     return (
@@ -182,7 +182,7 @@ const ConfigDirTable = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id:
     const [adding, setAdding] = useState(false);
     const [add, setAdd] = useState({ name: "", path: "" });
     const columns: DataColumn<ConfigDir>[] = [
-        { key: "name", label: "Name", kind: "label", value: (d) => d.name, filter: false, render: (d) => <>{d.name}<small>{d.path}</small></> },
+        { key: "name", label: "Name", kind: "label", value: (d) => d.name, filter: false },
         { key: "disk", label: "On disk", value: (d) => (d.contents.exists ? "present" : "missing"), filter: "auto", render: (d) => (d.contents.exists ? <span className="chip ok">present</span> : <span className="chip bad">missing</span>) },
         { key: "skills", label: "Skills", kind: "num", value: (d) => d.contents.skills.length, filter: false },
         { key: "agents", label: "Subagents", kind: "num", value: (d) => d.contents.agents.length, filter: false },
@@ -191,7 +191,7 @@ const ConfigDirTable = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id:
         { key: "claudemd", label: "CLAUDE.md", value: (d) => d.contents.hasClaudeMd, filter: "auto" },
         { key: "envs", label: "Used by", value: (d) => d.envs.join(", ") || "no environment", filter: false },
         { key: "runnable", label: "Runnable with", value: (d) => d.usable_accounts.join(", ") || "no account", filter: false, defaultHidden: true },
-        { key: "path", label: "Path", value: (d) => d.path, filter: false, defaultHidden: true, render: (d) => <code>{d.path}</code> },
+        { key: "path", label: "Path", value: (d) => d.path, filter: false, render: (d) => <code>{d.path}</code> },
     ];
     return (
         <>
@@ -348,12 +348,12 @@ const AccountTable = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal,
     const usedCount = (a: Account): number => envs.filter((e) => e.default_account_id === a.id).length + tasks.filter((t) => t.account_id === a.id).length;
     const usedBy = (a: Account): string => envs.filter((e) => accountOrderOf(e).includes(a.id)).map((e) => `${e.name} (#${accountOrderOf(e).indexOf(a.id) + 1})`).join(", ") || "no environment";
     const columns: DataColumn<Account>[] = [
-        { key: "name", label: "Name", kind: "label", value: (a) => a.name, filter: false, render: (a) => <>{a.name}{a.email && <small>{a.email}</small>}</> },
+        { key: "name", label: "Name", kind: "label", value: (a) => a.name, filter: false },
         { key: "provider", label: "Provider", value: (a) => a.provider, filter: "auto" },
         { key: "auth", label: "Auth", value: authLabel, filter: "auto", render: (a) => <span className={`chip ${a.setting_up ? "wait" : a.has_token ? "ok" : a.logged_in ? "warn" : "bad"}`}>{authLabel(a)}</span> },
         { key: "chrome", label: "Chrome", value: (a) => (accountBrowserReady(a) ? a.chrome_browser_name ?? "ready" : "none"), filter: "auto" },
         { key: "plan", label: "Plan", value: (a) => a.plan ?? "", filter: "auto" },
-        { key: "email", label: "Email", value: (a) => a.email ?? "", filter: false, defaultHidden: true },
+        { key: "email", label: "Email", value: (a) => a.email ?? "", filter: false },
         { key: "model", label: "Default model", value: (a) => modelLabel(a.default_model, settings?.models) ?? "", filter: "auto", defaultHidden: true },
         { key: "five", label: "5 h", kind: "num", value: (a) => pctOf(a, "five_hour"), filter: false, render: (a) => { const v = pctOf(a, "five_hour"); return v === null ? "—" : `${v}%`; } },
         { key: "week", label: "7 d", kind: "num", value: (a) => pctOf(a, "seven_day"), filter: false, render: (a) => { const v = pctOf(a, "seven_day"); return v === null ? "—" : `${v}%`; } },
