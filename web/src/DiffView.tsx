@@ -5,6 +5,12 @@ import { storage } from "./storage";
 import type { CodeScope } from "./routes";
 import { AgentInput, usePendingFiles } from "./AgentInput";
 
+// A test file by the common conventions of any stack: a tests / __tests__ / spec directory, test_*.py / *_test.py,
+// *.test.* / *.spec.*, *_test.go, *Test.java / *Tests.cs, conftest.py.
+const TEST_DIR = /(^|\/)(tests?|__tests__|spec|specs)\//i;
+const TEST_FILE = /(^|\/)(test_[^/]+|[^/]+_test\.[a-z0-9]+|[^/]+\.(test|spec)\.[a-z0-9]+|[^/]+(Test|Tests)\.(java|kt|cs|scala)|conftest\.py)$/;
+export const isTestFile = (path: string): boolean => TEST_DIR.test(path) || TEST_FILE.test(path);
+
 // A file belongs to a repository when its path is exactly that repo's directory or starts with "<repo>/".
 const inRepo = (path: string, repo: string): boolean => !repo || path === repo || path.startsWith(`${repo}/`);
 
@@ -602,6 +608,7 @@ export const DiffView = ({
     };
     const threadItems = useMemo(() => threadMessages(threads), [threads]);
     const review = useFileReview(taskId);
+    const [kind, setKind] = useState<"files" | "tests">("files");
     // A file's change as it stands vs the base: the fingerprint a Reviewed mark is held against, so the mark drops by
     // itself when the file's change moves (the agent edited it). Taken from the full diff in every view.
     const base = filter.kind === "all" ? diff : fullDiff;
@@ -624,8 +631,11 @@ export const DiffView = ({
     const commitPanel = <CommitList {...(taskId ? { taskId } : {})} repo={repo} commits={repoCommits} uncommitted={branch.uncommitted} filter={filter} onFilter={setFilter} busy={taskBusy} onError={onError} />;
     if (error) return <>{tabs}{commitPanel}<div className="blocked-box">diff: {error}</div></>;
     if (!diff) return <>{tabs}{commitPanel}<div className="diff"><div className="diff-summary mono">loading diff…</div></div></>;
-    const files = diff.files.filter((f) => inRepo(f.path, repo));
-    const groups = diff.groups.map((g) => ({ ...g, files: g.files.filter((f) => inRepo(f.path, repo)) })).filter((g) => g.files.length > 0);
+    const repoFiles = diff.files.filter((f) => inRepo(f.path, repo));
+    const testCount = repoFiles.filter((f) => isTestFile(f.path)).length;
+    const ofKind = (path: string): boolean => (kind === "tests") === isTestFile(path);
+    const files = repoFiles.filter((f) => ofKind(f.path));
+    const groups = diff.groups.map((g) => ({ ...g, files: g.files.filter((f) => inRepo(f.path, repo) && ofKind(f.path)) })).filter((g) => g.files.length > 0);
     const adds = files.reduce((n, f) => n + f.additions, 0);
     const dels = files.reduce((n, f) => n + f.deletions, 0);
     const reviewedCount = files.filter((f) => { const p = printOf(f.path); return !!p && review.state[f.path]?.reviewed === p; }).length;
@@ -650,6 +660,10 @@ export const DiffView = ({
                         Uncommitted in this checkout ({dirty.length}): <span className="mono">{dirty.slice(0, 12).join(", ")}{dirty.length > 12 ? ", …" : ""}</span>. A rebase sets them aside and puts them back.
                     </p>
                 )}
+                <div className="subtabs diff-kind">
+                    <button className={kind === "files" ? "active" : ""} onClick={() => setKind("files")}>Files <span className="chip">{repoFiles.length - testCount}</span></button>
+                    <button className={kind === "tests" ? "active" : ""} onClick={() => setKind("tests")}>Tests <span className="chip">{testCount}</span></button>
+                </div>
                 <div className="diff-summary mono">
                     {files.length > 0 && (
                         <span className="diff-fold">
@@ -661,10 +675,10 @@ export const DiffView = ({
                     {commentsOn && <span className="hint"> · tap a line to comment{canAsk ? " or ask" : ""}{filter.kind !== "all" ? " (comments are kept against the current file's lines)" : ""}</span>}
                     {!commentsOn && canAsk && <span className="hint"> · tap a line to ask the agent about it</span>}
                 </div>
-                {files.length === 0 && <div className="empty">{diff.filtered ? "Nothing in this selection." : `No changes against ${diff.base} yet.`}</div>}
+                {files.length === 0 && <div className="empty">{repoFiles.length ? (kind === "tests" ? "No test files changed here." : "Only test files changed here.") : diff.filtered ? "Nothing in this selection." : `No changes against ${diff.base} yet.`}</div>}
                 {!diff.filtered && (() => {
-                    const known = new Set(files.map((f) => f.path));
-                    const gone = prior.filter((p) => inRepo(p.path, repo) && !known.has(p.path));
+                    const known = new Set(repoFiles.map((f) => f.path));
+                    const gone = prior.filter((p) => inRepo(p.path, repo) && ofKind(p.path) && !known.has(p.path));
                     return gone.length > 0 ? (
                         <div className="outdated">
                             {gone.map((c, i) => (

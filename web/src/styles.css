@@ -901,3 +901,4 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .diff-file.reviewed > summary { opacity: 0.65; }
 .diff-file.reviewed > summary .file-reviewed { color: var(--ok); }
 .diff-fold { display: inline-flex; gap: 4px; margin-right: 8px; font-family: var(--sans); }
+.diff-kind { margin: 0 0 8px; }
