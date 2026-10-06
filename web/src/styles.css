@@ -373,6 +373,9 @@ details.scenario > ol, details.scenario > div { margin-top: 6px; }
 /* environment configuration page */
 .main.page { grid-template-columns: 1fr; }
 .env-page { max-width: 960px; }
+/* Lists fill the free width; the forms and cards around them keep a readable width. */
+.env-page.manage-page { max-width: none; }
+.manage-page > section.card, .manage-page > details.card { max-width: 960px; }
 .env-page h1 { margin-bottom: 2px; }
 .env-page .back-link { border: 0; background: transparent; color: var(--accent); padding: 0; margin-bottom: 8px; cursor: pointer; }
 .env-section h2 { margin-bottom: 6px; }
