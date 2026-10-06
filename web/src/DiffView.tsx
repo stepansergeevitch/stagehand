@@ -427,16 +427,23 @@ const useFileReview = (taskId: string | undefined) => {
         setState({});
         if (taskId) void api.reviewState(taskId).then((r) => setState(r.files)).catch(() => undefined);
     }, [taskId]);
-    const set = (path: string, patch: { open?: boolean | null; reviewed?: string | null }): void => {
+    type Patch = { open?: boolean | null; reviewed?: string | null };
+    // Several files in one request (Collapse all / Expand all).
+    const setMany = (patches: Record<string, Patch>): void => {
         setState((cur) => {
-            const next: FileReviewState = { ...(cur[path] ?? {}) };
-            if (patch.open !== undefined) { if (patch.open === null) delete next.open; else next.open = patch.open; }
-            if (patch.reviewed !== undefined) { if (patch.reviewed === null) delete next.reviewed; else next.reviewed = patch.reviewed; }
-            return { ...cur, [path]: next };
+            const out = { ...cur };
+            for (const [path, patch] of Object.entries(patches)) {
+                const next: FileReviewState = { ...(cur[path] ?? {}) };
+                if (patch.open !== undefined) { if (patch.open === null) delete next.open; else next.open = patch.open; }
+                if (patch.reviewed !== undefined) { if (patch.reviewed === null) delete next.reviewed; else next.reviewed = patch.reviewed; }
+                out[path] = next;
+            }
+            return out;
         });
-        if (taskId) void api.patchReviewState(taskId, { [path]: patch }).catch(() => undefined);
+        if (taskId && Object.keys(patches).length) void api.patchReviewState(taskId, patches).catch(() => undefined);
     };
-    return { state, set };
+    const set = (path: string, patch: Patch): void => setMany({ [path]: patch });
+    return { state, set, setMany };
 };
 
 export const useDraftComments = (taskId: string): [Record<string, LineComment>, (key: string, c: LineComment | null) => void, () => void] => {
@@ -644,6 +651,12 @@ export const DiffView = ({
                     </p>
                 )}
                 <div className="diff-summary mono">
+                    {files.length > 0 && (
+                        <span className="diff-fold">
+                            <button className="tiny" onClick={() => review.setMany(Object.fromEntries(files.map((f) => [f.path, { open: false }])))}>Collapse all</button>
+                            <button className="tiny" onClick={() => review.setMany(Object.fromEntries(files.map((f) => [f.path, { open: true }])))}>Expand all</button>
+                        </span>
+                    )}
                     {files.length} file{files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>{files.length > 0 && <> · {reviewedCount}/{files.length} reviewed</>}
                     {commentsOn && <span className="hint"> · tap a line to comment{canAsk ? " or ask" : ""}{filter.kind !== "all" ? " (comments are kept against the current file's lines)" : ""}</span>}
                     {!commentsOn && canAsk && <span className="hint"> · tap a line to ask the agent about it</span>}
