@@ -1272,9 +1272,9 @@ export class Engine extends EventEmitter {
     retry(taskId: string): void {
         const task = this.getTask(taskId);
         if (!task) return;
-        // A task parked in the separate QA baseline stage after its design loop finished one (approved before the loop
-        // kept the baseline in the design stage): Retry moves on to Implementation instead of running it again.
-        if (task.stage === "qa_baseline" && task.status !== "running" && this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json")?.status === "done") {
+        // A task parked in the separate QA baseline stage from before it was folded into the design stage (no loop pass
+        // running): Retry moves on to Implementation instead of running it.
+        if (task.stage === "qa_baseline" && task.status !== "running" && this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json")?.status !== "running") {
             this.killTaskRuns(taskId);
             if (this.baseCheckout.isOn(taskId)) {
                 void this.fromBase(taskId).then((ok) => ok && this.advance(taskId, "qa_baseline"));
@@ -1625,8 +1625,13 @@ export class Engine extends EventEmitter {
             const p = join(this.taskDir(taskId), def.outputFile);
             if (existsSync(p)) renameSync(p, `${p}.prev-${Date.now()}`);
         }
-        // A re-run from scratch: nothing of an earlier pass is resumed (partial results, shard outputs).
+        // The QA baseline is part of the Design Proposal: it runs again only there.
+        if (stage === "qa_baseline" && task.stage !== "design_proposal" && task.stage !== "qa_baseline") throw new Error("the QA baseline runs only in the Design Proposal stage");
+        // A re-run from scratch: nothing of an earlier pass is resumed (partial results, shard outputs) — except the
+        // results the design loop's pass reuses (qa/before.carry.json) when that pass is re-run (Retry on a blocked one).
+        const carry = stage === "qa_baseline" && task.stage === "qa_baseline" ? this.readArtifactJson<unknown>(taskId, "qa/before.carry.json") : null;
         if (stage === "qa_baseline" || stage === "manual_qa") this.clearPassFiles(taskId, stage === "qa_baseline" ? "before" : "after");
+        if (carry) writeFileSync(join(this.taskDir(taskId), "qa", "before.carry.json"), JSON.stringify(carry, null, 2));
         // A baseline re-run before the design is approved ends in the design agent's review, like the loop's own passes.
         if (stage === "qa_baseline" && task.stage === "design_proposal") {
             const prev = this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json");
@@ -3496,22 +3501,21 @@ export class Engine extends EventEmitter {
         let target = stage;
         // The Code Review stage is optional (config.codeReview); off, Implementation goes straight on to QA.
         if (target === "code_review" && !this.cfg.codeReview) target = "manual_qa";
-        // The QA baseline belongs to the design stage (the user, 2026-10-06: "QA baseline is a part of design proposal,
-        // and should not be run separately"): once the design loop ran one, approval goes straight on to Implementation;
-        // scenarios changed after its last round are named, not run again here.
-        if (target === "qa_baseline") {
-            const gaps = this.designBaselineGaps(taskId);
-            if (gaps !== null) {
-                this.addAgentNote(taskId, gaps.length ? `QA baseline from the design stage — ${gaps.join(", ")} changed after its last round or have no result there; Manual QA compares them without a baseline. Implementation starts now` : "QA baseline from the design stage matches the approved scenarios — Implementation starts now");
-                target = "implementation";
-            }
+        // The QA baseline belongs to the design stage, never after it (the user, 2026-10-06: "There should be no separate
+        // QA baseline step at all anymore, baseline is A PART of design proposal, never else"): approval goes straight on
+        // to Implementation; scenarios without a current result from the design loop are named, not run here.
+        if (target === "qa_baseline" || (target === "implementation" && (task.stage === "design_proposal" || task.stage === "qa_baseline"))) {
+            const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
+            const gaps = design?.qa.length && !task.skip_qa ? (this.designBaselineGaps(taskId) ?? Object.keys(scenarioHashes(design))) : [];
+            if (gaps.length) this.addAgentNote(taskId, `No QA baseline from the design stage for ${gaps.join(", ")} (changed after its last round, or none ran); Manual QA compares them without a baseline`);
+            target = "implementation";
         }
-        if (target === "qa_baseline" || target === "manual_qa") {
+        if (target === "manual_qa") {
             const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
             // No browser scenarios in the design, or the human asked to skip QA this pass: hop over the QA stage.
             if (!design || design.qa.length === 0 || task.skip_qa) {
                 if (task.skip_qa) this.addAgentNote(taskId, `${STAGE_DEFS[target].label} skipped this pass at your request`);
-                target = target === "qa_baseline" ? "implementation" : "user_review";
+                target = "user_review";
             }
         }
         if (target === "user_review" && task.skip_qa) this.setSkipQa(taskId, false);
@@ -6344,7 +6348,8 @@ export class Engine extends EventEmitter {
     }
 
     // Every applied correction is logged; a step, assert, seed or scenario change during Manual QA also makes that
-    // scenario's baseline stale: the before.json entry is marked superseded and a baseline re-run is queued for it.
+    // scenario's baseline stale: the before.json entry is marked superseded. No baseline runs again for it — the
+    // baseline belongs to the design stage only (the user, 2026-10-06), so Manual QA compares it without one.
     private onQaChanges(taskId: string, stage: Stage, changes: QaChange[]): void {
         const dir = join(this.taskDir(taskId), "qa");
         mkdirSync(dir, { recursive: true });
@@ -6355,10 +6360,6 @@ export class Engine extends EventEmitter {
         const stale = changes.filter((c) => c.kind !== "teardown");
         if (!stale.length) return;
         for (const c of stale) this.supersedeBaseline(taskId, c.scenario, c.id);
-        const marker = this.readArtifactJson<BaselineRerun>(taskId, "qa/baseline-rerun.json") ?? { ids: [], active: false, heads: {}, next: "user_review" as Stage };
-        if (marker.active) return;
-        marker.ids = [...new Set([...marker.ids, ...stale.map((c) => c.scenario)])];
-        writeFileSync(join(dir, "baseline-rerun.json"), JSON.stringify(marker, null, 2));
         this.emitTask(taskId);
     }
 
@@ -6389,54 +6390,6 @@ export class Engine extends EventEmitter {
         this.addMessage(taskId, "agent", `↩️ Reverted the ${change.kind} correction on ${change.scenario} (${change.by === "jev" ? "Jev-approved" : "your answer"}); design.json holds the original again.`);
         this.emitTask(taskId);
         return reverted;
-    }
-
-    // A scenario changed after its baseline: drive it once more against the base commit — every checkout of the task
-    // detached at its merge-base with the base branch, BE/FE restarted from there — and merge the result into
-    // qa/before.json in place of the superseded entry. The branch and the services come back afterwards.
-    private async startBaselineRerun(taskId: string, marker: BaselineRerun): Promise<void> {
-        const task = this.getTask(taskId);
-        if (!task || !task.worktree_path || !task.branch) return this.advance(taskId, marker.next);
-        const env = this.env(task.env_id);
-        const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
-        const ids = marker.ids.filter((id) => design?.qa.some((s) => s.id === id));
-        const taskDir = this.taskDir(taskId);
-        const clear = () => rmSync(join(taskDir, "qa", "baseline-rerun.json"), { force: true });
-        if (!ids.length) {
-            clear();
-            return this.advance(taskId, marker.next);
-        }
-        const checkouts = this.prRepos(env).map((repo) => ({ repo, cwd: this.checkoutOf(task, env, repo), base: this.baseBranchOf(task, env, repo) }));
-        for (const c of checkouts) {
-            const dirty = await this.git(c.cwd, ["status", "--porcelain"], env).catch(() => "dirty");
-            if (dirty.trim()) {
-                this.addMessage(taskId, "agent", `🔁 Baseline re-run for ${ids.join(", ")} skipped: ${repoLabel(c.repo)} has uncommitted changes. The baseline entry stays marked superseded.`);
-                clear();
-                return this.advance(taskId, marker.next);
-            }
-        }
-        const heads: Record<string, string> = {};
-        const bases: string[] = [];
-        for (const c of checkouts) {
-            await this.git(c.cwd, ["fetch", "origin", c.base, "--quiet"], env).catch(() => "");
-            heads[c.repo] = (await this.headSha(c.cwd, env)) ?? "";
-            const mergeBase = (await this.git(c.cwd, ["merge-base", `origin/${c.base}`, "HEAD"], env)).trim();
-            await this.git(c.cwd, ["checkout", "--detach", mergeBase], env);
-            bases.push(`${repoLabel(c.repo)} ${mergeBase.slice(0, 10)}`);
-        }
-        await this.services.stopAll(taskId).catch(() => undefined);
-        const before = this.readArtifactJson<QaPassResult>(taskId, "qa/before.json");
-        const keep = (before?.scenarios ?? []).filter((s) => !ids.includes(s.id));
-        mkdirSync(join(taskDir, "qa"), { recursive: true });
-        writeFileSync(join(taskDir, "qa", "before.partial.json"), JSON.stringify({ pass: "before", scenarios: keep, blockers: before?.blockers ?? [] }, null, 2));
-        const active: BaselineRerun = { ...marker, ids, active: true, heads, startedAt: now() };
-        writeFileSync(join(taskDir, "qa", "baseline-rerun.json"), JSON.stringify(active, null, 2));
-        this.setStage(taskId, "qa_baseline");
-        this.addMessage(taskId, "agent", `🔁 Baseline re-run for ${ids.join(", ")} on the base commit (${bases.join(", ")}): the scenario changed after the baseline pass. The worktree is detached at the merge-base until the pass ends; the branch comes back by itself.`);
-        this.dispatch(taskId, "qa_baseline", {
-            extraVars: { resumeOnly: ids.join(",") },
-            notes: `## Baseline re-run\n\nScenario(s) ${ids.join(", ")} changed after the baseline pass. This pass drives only them, against the base commit (the worktree is checked out at the merge-base with the base branch, before the change). Record what the app does there.`,
-        });
     }
 
     private async finishBaselineRerun(taskId: string, marker: BaselineRerun): Promise<void> {
@@ -7005,10 +6958,6 @@ export class Engine extends EventEmitter {
             const marker = this.readArtifactJson<BaselineRerun>(taskId, "qa/baseline-rerun.json");
             if (def.stage === "qa_baseline" && marker?.active) {
                 void this.finishBaselineRerun(taskId, marker).catch((e: unknown) => console.warn(`[stagehand] baseline re-run finish ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
-                return;
-            }
-            if (def.stage === "manual_qa" && marker && !marker.active && marker.ids.length) {
-                void this.startBaselineRerun(taskId, { ...marker, next: def.next ?? "user_review" }).catch((e: unknown) => console.warn(`[stagehand] baseline re-run start ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
                 return;
             }
         }

@@ -43,12 +43,14 @@ export const STAGE_DEFS: Record<Stage, StageDef> = {
         // The thirteen-section proposal (worked case, alternatives, evidence index, contract) plus reading a stacked
         // task's parent branch(es) did not fit in 60 (INV-132, 2026-09-17: cap hit before design.json was written).
         maxTurns: 90,
-        next: "qa_baseline",
+        // The QA baseline runs inside this stage (afterDesign's loop), never after approval.
+        next: "implementation",
     },
     qa_baseline: {
         stage: "qa_baseline",
         kind: "auto",
-        label: "QA baseline",
+        // Only the design loop's baseline pass runs as this stage: it is part of the Design Proposal.
+        label: "Design Proposal · QA baseline",
         prompt: "qa-run.md",
         contract: QaPassResult,
         outputFile: "qa/before.json",

@@ -854,11 +854,13 @@ export const api = {
 export const isApprovalGateCheck = (c: { name?: string; context?: string }): boolean => /_hold$|reset_.*_db$/i.test(c.name ?? c.context ?? "");
 
 export const STAGE_LABEL: Record<Stage, string> = {
-    research: "Research", design_proposal: "Design Proposal", qa_baseline: "QA baseline", implementation: "Implementation",
+    research: "Research", design_proposal: "Design Proposal", qa_baseline: "Design Proposal · QA baseline", implementation: "Implementation",
     code_review: "Code Review", manual_qa: "Manual QA", user_review: "User Review", pr_creation_review: "PR Creation Review", pr_waiting: "PR Waiting",
     pr_fix: "PR Fix", pr_green: "PR Green", pr_approved: "PR Approved", done: "Done",
 };
+// The QA baseline runs inside the Design Proposal (task.stage "qa_baseline" while its pass runs); it is no stage of its own.
+export const stageOf = (s: Stage): Stage => (s === "qa_baseline" ? "design_proposal" : s);
 export const STAGE_ORDER: Stage[] = [
-    "research", "design_proposal", "qa_baseline", "implementation", "code_review", "manual_qa", "user_review",
+    "research", "design_proposal", "implementation", "code_review", "manual_qa", "user_review",
     "pr_creation_review", "pr_waiting", "pr_fix", "pr_green", "pr_approved", "done",
 ];

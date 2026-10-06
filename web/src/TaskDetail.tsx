@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LabelEditor } from "./Labels";
 import { BranchPicker } from "./BranchPicker";
-import { api, baseLabel, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseBaseBranch, parseChecks, pendingQuestions, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaChange, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
+import { api, baseLabel, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseBaseBranch, parseChecks, pendingQuestions, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, stageOf, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaChange, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
 import type { TaskTab, TaskView } from "./routes";
@@ -361,7 +361,7 @@ const TicketView = ({ detail, onFetch }: { detail: TaskDetail; onFetch: () => Pr
 // Stages a task can be sent back to with notes (from any non-running state — e.g. after an accidental Approve).
 const RETURNABLE: Stage[] = ["design_proposal", "implementation", "user_review", "pr_creation_review"];
 const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"]; pending: LineComment[]; onSend: (stage: Stage, notes: string, withComments: boolean, skipQa: boolean, files: File[]) => Promise<void>; onClose: () => void }) => {
-    const idx = STAGE_ORDER.indexOf(task.stage);
+    const idx = STAGE_ORDER.indexOf(stageOf(task.stage));
     const options = RETURNABLE.filter((s) => STAGE_ORDER.indexOf(s) <= idx);
     const [stage, setStage] = useState<Stage>(options[options.length - 1] ?? "design_proposal");
     const [notes, setNotes] = useState("");
@@ -685,9 +685,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const canCommentPr = task.status !== "running" && ["pr_waiting", "pr_fix", "pr_green", "pr_approved"].includes(task.stage);
     const [localNotes, setLocalNotes] = useState("");
     const attach = usePendingFiles();
-    const currentIdx = STAGE_ORDER.indexOf(task.stage);
+    const currentIdx = STAGE_ORDER.indexOf(stageOf(task.stage));
     // QA stages that will not run: no browser scenarios in the design, or the human asked to skip QA this pass.
-    const skipped = new Set<Stage>(design && design.qa.length === 0 ? ["qa_baseline", "manual_qa"] : task.skip_qa ? ["manual_qa", ...(STAGE_ORDER.indexOf(task.stage) < STAGE_ORDER.indexOf("implementation") ? ["qa_baseline" as Stage] : [])] : []);
+    const skipped = new Set<Stage>(design && design.qa.length === 0 ? ["manual_qa"] : task.skip_qa ? ["manual_qa"] : []);
     // Waiting on answers to the agent's questions is not a review: the review box stays hidden until they are sent.
     const asking = pendingQuestions(detail);
     const waiting = task.status === "waiting_user" && !asking;
@@ -753,7 +753,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     // PR stages (draft review through merge) live on their own top-level tab now, not as a Work step.
     // The QA baseline is part of the design proposal (it runs inside that stage, and Manual QA shows it next to the
     // after-state), so it is no step of its own.
-    const stepKey = (s: Stage): Stage => (s === "qa_baseline" ? "design_proposal" : s);
+    const stepKey = stageOf;
     const steps = STAGE_ORDER.filter((s, i) => i <= currentIdx && s !== "qa_baseline" && !skipped.has(s) && s !== "pr_creation_review" && !PR_STAGES.has(s) && (stepHasContent(s) || s === stepKey(task.stage)));
     // The Work step shown: the routed one when it is a step of this task, else the current stage.
     const step: Stage = view.tab === "work" && view.step && steps.includes(view.step) ? view.step : stepKey(task.stage);
@@ -841,7 +841,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
         <Card title="QA evidence">
             {task.status !== "running" && (
                 <div className="actions" style={{ marginTop: 0 }}>
-                    <button onClick={() => onAction(() => api.rerun(task.id, "qa_baseline"))}>Re-run QA baseline</button>
+                    {stageOf(task.stage) === "design_proposal" && <button onClick={() => onAction(() => api.rerun(task.id, "qa_baseline"))}>Re-run QA baseline</button>}
                     {currentIdx >= STAGE_ORDER.indexOf("manual_qa") && <button onClick={() => onAction(() => api.rerun(task.id, "manual_qa"))}>Re-run Manual QA</button>}
                 </div>
             )}
@@ -2226,7 +2226,7 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                 <details className="scenario" key={s.id} open>
                     <summary>
                         <h3>
-                            <span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip">API</span>}<span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}{b?.superseded && <span className="chip warn" title={`The scenario changed after the baseline pass (change ${b.superseded}); this before result no longer pairs with the after pass until the baseline re-run replaces it`}>baseline superseded</span>}</span> <span>after {chip(a?.outcome)}</span>
+                            <span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip">API</span>}<span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}{b?.superseded && <span className="chip warn" title={`The scenario changed after the baseline pass (change ${b.superseded}); this before result no longer pairs with the after pass (the baseline runs only in the design stage)`}>baseline superseded</span>}</span> <span>after {chip(a?.outcome)}</span>
                             {a?.jev && <span className={`chip ${a.jev.verdict === "pass" ? "ok" : "warn"}`} title={`Jev's grade of the runner's observation against the asserts (pass needs 85); the runner said ${a.jev.runner}`}>Jev {a.jev.grade}/100</span>}
                             {(suspicious(b) || suspicious(a)) && <span className="chip warn" title="The runner marked this pass but its observation mentions an error — check the screenshots">⚠ observation mentions an error</span>}
                         </h3>
