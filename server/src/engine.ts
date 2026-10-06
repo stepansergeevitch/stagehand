@@ -1269,6 +1269,17 @@ export class Engine extends EventEmitter {
     retry(taskId: string): void {
         const task = this.getTask(taskId);
         if (!task) return;
+        // A task parked in the separate QA baseline stage after its design loop finished one (approved before the loop
+        // kept the baseline in the design stage): Retry moves on to Implementation instead of running it again.
+        if (task.stage === "qa_baseline" && task.status !== "running" && this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json")?.status === "done") {
+            this.killTaskRuns(taskId);
+            if (this.baseCheckout.isOn(taskId)) {
+                void this.fromBase(taskId).then((ok) => ok && this.advance(taskId, "qa_baseline"));
+                return;
+            }
+            this.advance(taskId, "qa_baseline");
+            return;
+        }
         // A blocked stage (auth, app down, bridge) has a valid-but-useless output file; it must run again, not be "completed from disk".
         if (task.status === "blocked") {
             this.rerun(taskId, task.stage);
