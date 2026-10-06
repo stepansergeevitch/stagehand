@@ -13,7 +13,7 @@ import { STAGE_ORDER, type Stage } from "./api";
 //   #/tasks/<taskId>/chat | ticket | cost
 //   #/sessions[/<sessionId>/<terminal|changes>]    #/analytics[?days=<n>]   #/timing[?days=<n>]
 //   #/envs[/<envId>]                               #/config-dirs[/<dirId>]
-//   #/accounts                                     #/integrations                #/resources
+//   #/accounts[/<accountId>]                       #/integrations[/<id>]         #/resources
 //   #/prompter
 // Older shapes (#/env/<id>, #/dir/<id>, #/dirs, #/managers) still parse and are rewritten to the current one.
 
@@ -46,8 +46,8 @@ export type Route =
     | { page: "timing"; days?: number }
     | { page: "envs"; env?: string }
     | { page: "config-dirs"; dir?: string }
-    | { page: "accounts" }
-    | { page: "integrations" }
+    | { page: "accounts"; account?: string }
+    | { page: "integrations"; integration?: string }
     | { page: "prompter" }
     | { page: "resources" }
     // The global product context and the Product Owners; `po` opens one, on its `tab`.
@@ -115,10 +115,10 @@ export const parseRoute = (hash: string): Route => {
         case "dir":
             return { page: "config-dirs", ...(a ? { dir: a } : {}) };
         case "accounts":
-            return { page: "accounts" };
+            return { page: "accounts", ...(a ? { account: a } : {}) };
         case "integrations":
         case "managers":
-            return { page: "integrations" };
+            return { page: "integrations", ...(a ? { integration: a } : {}) };
         case "prompter":
             return { page: "prompter" };
         case "resources":
@@ -162,6 +162,8 @@ export const formatRoute = (r: Route): string => {
         case "timing": return withQuery("#/timing", { days: r.days ? String(r.days) : null });
         case "envs": return r.env ? `#/envs/${enc(r.env)}` : "#/envs";
         case "config-dirs": return r.dir ? `#/config-dirs/${enc(r.dir)}` : "#/config-dirs";
+        case "accounts": return r.account ? `#/accounts/${enc(r.account)}` : "#/accounts";
+        case "integrations": return r.integration ? `#/integrations/${enc(r.integration)}` : "#/integrations";
         case "product": return r.po ? `#/product/${enc(r.po)}${r.tab ? `/${r.tab}` : ""}` : "#/product";
         default: return `#/${r.page}`;
     }

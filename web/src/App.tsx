@@ -7,6 +7,7 @@ import { formatRoute, navigate, taskRoute, useRoute, type Page, type TaskView } 
 import { Prompter } from "./Prompter";
 import { prompterBus, type PrompterEvent } from "./prompterBus";
 import { EnvPage } from "./EnvPage";
+import { AccountPage, IntegrationPage } from "./ConfigEntities";
 import { ConfigDirPage } from "./ConfigDirPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
 import { Dashboard, needsAttention } from "./Dashboard";
@@ -333,6 +334,8 @@ export const App = () => {
     // The environment / config dir whose own page is open (#/envs/<id>, #/config-dirs/<id>); the list otherwise.
     const envPage = route.page === "envs" && route.env ? envs.find((e) => e.id === route.env) : undefined;
     const dir = route.page === "config-dirs" && route.dir ? configDirs.find((d) => d.id === route.dir) : undefined;
+    const accountPage = route.page === "accounts" && route.account ? accounts.find((a) => a.id === route.account) : undefined;
+    const integrationId = route.page === "integrations" ? route.integration : undefined;
 
     // The selected task's detail view — the same on the Tasks page and when a task is opened from the Dashboard.
     const taskDetailView = detail && detail.task.id === selected && (
@@ -485,7 +488,23 @@ export const App = () => {
                         </main>
                     </div>
                 )}
-                {MANAGE_TAB[page] && !envPage && !dir && (
+                {page === "accounts" && accountPage && (
+                    <div className="main page">
+                        <main className="detail">
+                            {error && <div className="blocked-box">{error}</div>}
+                            <AccountPage key={accountPage.id} a={accountPage} envs={envs} tasks={tasks} settings={settings} onBack={() => navigate({ page: "accounts" })} onChanged={reload} onError={setError} onTerminal={setTerminal} />
+                        </main>
+                    </div>
+                )}
+                {page === "integrations" && integrationId && (
+                    <div className="main page">
+                        <main className="detail">
+                            {error && <div className="blocked-box">{error}</div>}
+                            <IntegrationPage key={integrationId} id={integrationId} settings={settings} onBack={() => navigate({ page: "integrations" })} onChanged={reload} onError={setError} />
+                        </main>
+                    </div>
+                )}
+                {MANAGE_TAB[page] && !envPage && !dir && !accountPage && !integrationId && (
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
@@ -500,9 +519,10 @@ export const App = () => {
                                 onOpenDir={(id) => navigate({ page: "config-dirs", dir: id })}
                                 onAddEnv={() => setModal("env")}
                                 onAddAccount={() => setModal("account")}
+                                onOpenAccount={(id) => navigate({ page: "accounts", account: id })}
+                                onOpenIntegration={(id) => navigate({ page: "integrations", integration: id })}
                                 onChanged={reload}
                                 onError={setError}
-                                onTerminal={setTerminal}
                             />
                         </main>
                     </div>
