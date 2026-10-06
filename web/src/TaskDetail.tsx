@@ -807,6 +807,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 >
                     {task.stage === "pr_fix" ? "Approve & push" : "Approve"}
                 </button>
+                {task.stage === "pr_fix" && (
+                    <button title="You undid or handled this fix yourself: nothing is pushed, and the task follows its PRs again" onClick={() => onAction(() => api.discardPrFix(task.id))}>
+                        Discard fix
+                    </button>
+                )}
                 <button
                     disabled={!notes.trim() && attach.files.length === 0 && !(canComment && pending.length > 0)}
                     onClick={() =>

@@ -1592,6 +1592,26 @@ export class Engine extends EventEmitter {
         this.advance(taskId, "user_review");
     }
 
+    // The human discards a pending PR Fix (they undid it, or handled it by hand): nothing is pushed, the proposal is
+    // archived, and the task's stage comes from its PRs again (INV-149, 2026-10-06: the human deleted the fix commit,
+    // but the task kept waiting on it).
+    discardPrFix(taskId: string): void {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.stage !== "pr_fix") throw new Error("the task is not at PR Fix");
+        if (task.status === "running" || this.hasLiveRun(taskId)) throw new Error("PR Fix is running — stop it first");
+        this.killTaskRuns(taskId);
+        this.dismissPendingQuestions(taskId);
+        for (const f of ["pr_fix.json", "pr_fix_round.json"]) {
+            const p = join(this.taskDir(taskId), f);
+            if (existsSync(p)) renameSync(p, `${p}.discarded-${Date.now()}`);
+        }
+        this.addAgentNote(taskId, "PR Fix discarded by you — nothing pushed; the task follows its PRs again");
+        this.setStage(taskId, "pr_waiting");
+        this.setTaskStatus(taskId, "idle", "PR Waiting · fix discarded — reading the PRs");
+        this.syncPrTaskState(taskId, { force: true });
+    }
+
     rerun(taskId: string, stage: Stage): void {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");

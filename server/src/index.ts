@@ -1706,6 +1706,15 @@ app.post("/api/tasks/:id/skip-manual-qa", (c) => {
     }
 });
 
+app.post("/api/tasks/:id/pr-fix/discard", (c) => {
+    try {
+        engine.discardPrFix(c.req.param("id"));
+        return c.json(engine.getTask(c.req.param("id")));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 app.post("/api/tasks/:id/rerun", async (c) => {
     const body = json(z.object({ stage: z.enum(STAGES as [Stage, ...Stage[]]) }), await c.req.json());
     engine.rerun(c.req.param("id"), body.stage);
