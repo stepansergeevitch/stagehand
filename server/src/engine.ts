@@ -1,5 +1,6 @@
 import { BaseCheckout } from "./migrations.js";
 import { callbackPortsOf, parseCookies, withPrepare } from "./env-config.js";
+import { readLocalStorage } from "./chrome-storage.js";
 import { assertDbHosts } from "./db-hosts.js";
 import { copyNames, namesTemplate, ownedDbNames, TaskDbs, templatesOf, taskDbActive, taskDbEnv, taskDbExpect, taskDbOf, taskDbRow, type TaskDbRow } from "./task-db.js";
 import { activeRound, addedFiles, AutopilotReview, autopilotRulesOf, describeRules, changedRanges, failureKey, fixBrief, MAX_AUTOPILOT_ROUNDS, readAutopilot, TriageResult, verifyFailure, writeAutopilot, type AutopilotRound, type AutopilotState, type VerifiedFailure, type VerifyCtx } from "./ci-autopilot.js";
@@ -977,6 +978,7 @@ export class Engine extends EventEmitter {
         const session = env.qa_session_command?.trim() ? parseCookies(this.qaSessions.get(task.id)) : [];
         const extra = parseCookies(env.qa_browser_cookies);
         let source: string;
+        let storage: Record<string, string> = {};
         if (session.length) {
             source = `${session.length} cookie(s) from the QA session command`;
         } else {
@@ -991,8 +993,16 @@ export class Engine extends EventEmitter {
                 signal: AbortSignal.timeout(120_000),
             });
             const body = (await res.json().catch(() => ({}))) as { imported?: number; failed?: number; message?: string };
-            if (!res.ok || !body.imported) return `Headless QA browser started, but no ${host} cookies came over from Chrome profile "${chromeBrowserLabel(picked.browser)}" (${body.message ?? `HTTP ${res.status}`}). The runner will meet the login page — log in there once and retry.`;
-            source = `${body.imported} ${host} cookie(s) from "${chromeBrowserLabel(picked.browser)}"`;
+            // The profile's localStorage for the app's origin too: an app that keeps its session there is not signed in
+            // by cookies alone.
+            const profileDir = picked.browser.profileDir;
+            storage = !profileDir ? {} : await readLocalStorage(picked.browser.browser ?? "Google", profileDir, origin).catch((e: unknown) => {
+                console.warn(`[stagehand] ${task.ticket_id}: localStorage of "${chromeBrowserLabel(picked.browser)}" not read: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                return {};
+            });
+            const stored = Object.keys(storage).length;
+            if ((!res.ok || !body.imported) && !stored) return `Headless QA browser started, but no ${host} cookies or localStorage came over from Chrome profile "${chromeBrowserLabel(picked.browser)}" (${body.message ?? `HTTP ${res.status}`}). The runner will meet the login page — log in there once and retry.`;
+            source = `${body.imported ?? 0} ${host} cookie(s)${stored ? ` and ${stored} localStorage entr${stored === 1 ? "y" : "ies"}` : ""} from "${chromeBrowserLabel(picked.browser)}"`;
         }
         // The session's cookies and the env's extra ones (envs.qa_browser_cookies), set on the app's host. gstack sets
         // cookies only for the page it is on, so it first opens a static URL there — no app code runs before they are in.
@@ -1007,6 +1017,14 @@ export class Engine extends EventEmitter {
                 return `Headless QA browser started, but its cookies could not be set: ${String((e as Error).message ?? e).split("\n").slice(-2).join(" ").slice(0, 200)}. The runner may meet the login page.`;
             } finally {
                 rmSync(file, { force: true });
+            }
+        }
+        if (Object.keys(storage).length) {
+            try {
+                await run(["goto", `${origin}/favicon.ico`]).catch(() => undefined);
+                await run(["js", `(() => { const e = ${JSON.stringify(storage)}; for (const [k, v] of Object.entries(e)) localStorage.setItem(k, v); return Object.keys(e).length; })()`]);
+            } catch (e) {
+                return `Headless QA browser started, but its localStorage could not be set: ${String((e as Error).message ?? e).split("\n").slice(-2).join(" ").slice(0, 200)}. The runner may meet the login page.`;
             }
         }
         console.log(`[stagehand] ${task.ticket_id}: gstack browser on port ${state.port}, ${source}${extra.length ? ` + ${extra.length} extra cookie(s)` : ""}`);
