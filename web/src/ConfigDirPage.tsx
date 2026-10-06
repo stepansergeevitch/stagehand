@@ -6,7 +6,6 @@ import { CheckField, EntityForm, EntityView, Field, ReadField, useDraft, useSave
 // the commit/branch/PR rules Stagehand enforces for environments using it.
 
 const splitLines = (s: string): string[] => s.split("\n").map((x) => x.trim()).filter(Boolean);
-const nul = (s: string) => (s.trim() === "" ? null : s);
 const items = (xs: string[], empty = "none") => (xs.length ? xs.join(", ") : <span className="quiet">{empty}</span>);
 
 type Save = (key: string, body: Parameters<typeof api.patchConfigDir>[1]) => Promise<void>;
@@ -70,12 +69,13 @@ const RulesTab = ({ dir, info, save, saving }: { dir: ConfigDir; info: ConfigDir
             <Field label="Commit message pattern" hint={`Regex on the first line. ${GUARD}`}><input value={r.commitPattern} onChange={(e) => d.patch({ commitPattern: e.target.value })} /></Field>
             <Field label="Forbidden in commit messages" hint="One regex per line."><textarea value={r.commitForbid.join("\n")} onChange={(e) => d.patch({ commitForbid: splitLines(e.target.value) })} /></Field>
             <Field label="Commit message guidance" hint="Shown to agents in the generated /git-commit skill."><input value={r.commitHint} onChange={(e) => d.patch({ commitHint: e.target.value })} /></Field>
+            <Field label="Branch prefix" hint="Prepended to every task branch Research proposes, e.g. yourname/. The branch name pattern below applies after it."><input value={r.branchPrefix} onChange={(e) => d.patch({ branchPrefix: e.target.value })} /></Field>
             <Field label="Branch name pattern" hint={`Regex, applied after the environment's prefix. ${GUARD}`}><input value={r.branchPattern} onChange={(e) => d.patch({ branchPattern: e.target.value })} /></Field>
             <Field label="Branch name guidance" hint="Shown to agents in the generated /git-branch skill."><input value={r.branchHint} onChange={(e) => d.patch({ branchHint: e.target.value })} /></Field>
             <CheckField label="Auto-pushing the task branch is allowed" hint="Also gates what Stagehand does after you approve a PR draft." checked={r.allowPush} onChange={(on) => d.patch({ allowPush: on })} />
             <CheckField label="Auto-creating the pull request is allowed" hint="After you approve the PR draft." checked={r.allowPrCreate} onChange={(on) => d.patch({ allowPrCreate: on })} />
+            <CheckField label="Open every PR as a draft" hint="You mark it ready for review yourself." checked={r.prDraft} onChange={(on) => d.patch({ prDraft: on })} />
             <Field label="PR description rules" hint="Given to the generated /pr-description skill."><textarea className="tall" value={r.prRules} onChange={(e) => d.patch({ prRules: e.target.value })} /></Field>
-            <Field label="PR template path override" hint="Relative to the repository. Empty: auto-detected per environment."><input value={r.prTemplatePath ?? ""} onChange={(e) => d.patch({ prTemplatePath: nul(e.target.value) })} placeholder=".github/pull_request_template.md" /></Field>
             <Field label="Automation handles" hint="One GitHub login per line; their PR comments go to the Automation comments tab. Anything ending in [bot] counts too."><textarea value={r.automationHandles.join("\n")} onChange={(e) => d.patch({ automationHandles: splitLines(e.target.value) })} /></Field>
             <ReadField label="Guard hook"><code>{info.guardHook}</code></ReadField>
         </EntityForm>

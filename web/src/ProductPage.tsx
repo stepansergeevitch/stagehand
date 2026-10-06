@@ -3,6 +3,7 @@ import { api, type Env, type PalaceHit, type PoArtifact, type PoDetail, type PoI
 import { Markdown } from "./Markdown";
 import { Modal } from "./Modal";
 import { DataTable, type DataColumn } from "./components/DataTable";
+import { EntityForm, Field, useDraft, useSaver } from "./components/EntityView";
 import { poBus } from "./poBus";
 import type { PoTab } from "./routes";
 import { CorrectionsTab, EventsTab, QuestionsTab } from "./PoJournal";
@@ -259,9 +260,26 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
                     <h2>Memory <span className="field-hint">— this environment's product and its Product Owners</span></h2>
                     <EnvPicker envs={envs} value={envId} onChange={setEnvId} />
                 </div>
+                {envs.find((e) => e.id === envId) && <MemoryWings key={envId} env={envs.find((e) => e.id === envId)!} onError={onError} />}
                 <PalaceSearch key={envId} env={envId} {...(envLabel ? { envLabel } : {})} onError={onError} />
             </section>}
         </div>
+    );
+};
+
+// Which palace wings belong to an environment's memory besides its product wing and its Product Owners' (envs.memory_wings).
+const MemoryWings = ({ env, onError }: { env: Env; onError: (m: string) => void }) => {
+    const [saved, setSaved] = useState(() => { try { return (JSON.parse(env.memory_wings ?? "[]") as string[]).join(", "); } catch { return ""; } });
+    const d = useDraft(() => ({ wings: saved }), [saved]);
+    const { saving, run } = useSaver(onError);
+    return (
+        <EntityForm dirty={d.dirty} saving={saving === "wings"} onDiscard={d.reset} onSave={() => run("wings", async () => {
+            const wings = d.value.wings.split(",").map((w) => w.trim()).filter(Boolean);
+            await api.patchEnv(env.id, { memoryWings: wings });
+            setSaved(wings.join(", "));
+        })}>
+            <Field label="Memory wings" hint="Palace wings that belong to this environment's memory besides its product wing and its Product Owners' — e.g. an imported palace's knowledge wings. Comma-separated."><input value={d.value.wings} onChange={(e) => d.patch({ wings: e.target.value })} /></Field>
+        </EntityForm>
     );
 };
 

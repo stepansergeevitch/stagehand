@@ -796,9 +796,7 @@ const EnvForm = ({
     const [acc, setAcc] = useState("");
     const [dirId, setDirId] = useState("");
     const [appUrl, setAppUrl] = useState("");
-    const [qaScript, setQaScript] = useState("");
     const [repos, setRepos] = useState("");
-    const [branchPrefix, setBranchPrefix] = useState("");
     const [ticketSource, setTicketSource] = useState<"clickup" | "linear">("clickup");
     const repoList = splitRepos(repos);
     return (
@@ -807,14 +805,12 @@ const EnvForm = ({
             <label>Path <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="/Users/you/code/repo — or a workspace folder holding several repos" /></label>
             <label>Sub-repositories (comma-separated; empty = the path itself is the git repo) <input value={repos} onChange={(e) => setRepos(e.target.value)} placeholder="backend, frontend" /></label>
             <label>Base branch <input value={base} onChange={(e) => setBase(e.target.value)} /></label>
-            <label>Branch prefix <input value={branchPrefix} onChange={(e) => setBranchPrefix(e.target.value)} placeholder="e.g. yourname/ — prepended to the branch research proposes" /></label>
             <label>Task system (how bare ids like ABC-123 are resolved)
                 <select value={ticketSource} onChange={(e) => setTicketSource(e.target.value as "clickup" | "linear")}>
                     <option value="clickup">ClickUp</option><option value="linear">Linear</option>
                 </select>
             </label>
             <label>App URL for QA <input value={appUrl} onChange={(e) => setAppUrl(e.target.value)} placeholder="https://localhost:3000" /></label>
-            <label>QA bring-up command <input value={qaScript} onChange={(e) => setQaScript(e.target.value)} placeholder="optional, run from the worktree before QA" /></label>
             <label>Claude config dir
                 <select value={dirId} onChange={(e) => setDirId(e.target.value)}>
                     <option value="">— auto: {"<path>"}/.claude if registered, else the first dir —</option>
@@ -839,9 +835,7 @@ const EnvForm = ({
                         ...(acc ? { defaultAccountId: acc } : {}),
                         ...(dirId ? { configDirId: dirId } : {}),
                         ...(appUrl ? { appUrl } : {}),
-                        ...(qaScript ? { qaScript } : {}),
                         ...(repoList.length ? { repos: repoList } : {}),
-                        ...(branchPrefix.trim() ? { branchPrefix: branchPrefix.trim() } : {}),
                     })
                 }
             >

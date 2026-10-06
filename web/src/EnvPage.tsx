@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, taskDbConfigOf, type Account, type AutopilotRules, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvDbOverview, type EnvDependencyStatus, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type TaskDbConfig } from "./api";
+import { accountOrderOf, accountUsableWith, api, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, taskDbConfigOf, type Account, type AutopilotRules, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type TaskDbConfig } from "./api";
 import { CheckField, EntityForm, EntityView, Field, Hint, ReadField, useDraft, useSaver } from "./components/EntityView";
 
 // An environment's entity view: one tab per area of its configuration (components/EntityView.tsx).
@@ -22,7 +22,6 @@ const list = (json: string | null | undefined): string => {
     }
 };
 const csv = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
-const mb = (n: number | null | undefined): string => (n === null || n === undefined ? "size unknown" : n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${n} MB`);
 
 type Patch = Parameters<typeof api.patchEnv>[1];
 type Common = { env: Env; save: (key: string, body: Patch) => Promise<void>; saving: string | null };
@@ -31,23 +30,14 @@ const PLACEHOLDERS = "Placeholders: {{port}}, {{url}}, {{bePort}}, {{beUrl}} (FE
 
 // ---------- General ----------
 const GeneralTab = ({ env, envs, save, saving }: Common & { envs: Env[] }) => {
-    const d = useDraft(() => ({ name: env.name, repos: joinRepos(env.repos), baseBranch: env.base_branch, branchPrefix: env.branch_prefix ?? "", ticketSource: env.ticket_source as "clickup" | "linear", dependsOn: env.depends_on_env_id ?? "" }), [env]);
-    const [dep, setDep] = useState<EnvDependencyStatus | null>(null);
-    useEffect(() => {
-        const load = () => void api.envDependency(env.id).then(setDep).catch(() => setDep(null));
-        load();
-        if (!env.depends_on_env_id) return;
-        const t = setInterval(load, 15_000);
-        return () => clearInterval(t);
-    }, [env.id, env.depends_on_env_id]);
+    const d = useDraft(() => ({ name: env.name, repos: joinRepos(env.repos), baseBranch: env.base_branch, ticketSource: env.ticket_source as "clickup" | "linear", dependsOn: env.depends_on_env_id ?? "" }), [env]);
     const v = d.value;
     return (
-        <EntityForm dirty={d.dirty} saving={saving === "general"} onDiscard={d.reset} onSave={() => save("general", { name: v.name, baseBranch: v.baseBranch, repos: splitRepos(v.repos).length ? splitRepos(v.repos) : null, branchPrefix: nul(v.branchPrefix), ticketSource: v.ticketSource, dependsOnEnvId: v.dependsOn || null })}>
+        <EntityForm dirty={d.dirty} saving={saving === "general"} onDiscard={d.reset} onSave={() => save("general", { name: v.name, baseBranch: v.baseBranch, repos: splitRepos(v.repos).length ? splitRepos(v.repos) : null, ticketSource: v.ticketSource, dependsOnEnvId: v.dependsOn || null })}>
             <ReadField label="Path">{<code>{env.path}</code>}</ReadField>
             <Field label="Name"><input value={v.name} onChange={(e) => d.patch({ name: e.target.value })} /></Field>
             <Field label="Sub-repositories" hint="Comma-separated directories of the path that are git repositories. Empty: the path itself is the git repository."><input value={v.repos} onChange={(e) => d.patch({ repos: e.target.value })} placeholder="backend, frontend" /></Field>
             <Field label="Base branch"><input value={v.baseBranch} onChange={(e) => d.patch({ baseBranch: e.target.value })} /></Field>
-            <Field label="Branch prefix" hint="Prepended to the branch Research proposes, e.g. yourname/."><input value={v.branchPrefix} onChange={(e) => d.patch({ branchPrefix: e.target.value })} /></Field>
             <Field label="Task system" hint="How bare ticket ids like ABC-123 are resolved.">
                 <select value={v.ticketSource} onChange={(e) => d.patch({ ticketSource: e.target.value as "clickup" | "linear" })}><option value="clickup">ClickUp</option><option value="linear">Linear</option></select>
             </Field>
@@ -57,20 +47,13 @@ const GeneralTab = ({ env, envs, save, saving }: Common & { envs: Env[] }) => {
                     {envs.filter((e) => e.id !== env.id).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
                 </select>
             </Field>
-            {env.depends_on_env_id && dep?.configured && (
-                <ReadField label={`${dep.dependencyEnvName} backend`} hint={dep.running ? undefined : "Starts by itself the next time a task here needs it."}>
-                    {dep.running ? <span className="chip ok">running</span> : <span className="chip">not started yet</span>}
-                    {dep.port && <code>:{dep.port}</code>}
-                    {dep.startedAt && <span>since {new Date(dep.startedAt).toLocaleString()}</span>}
-                </ReadField>
-            )}
         </EntityForm>
     );
 };
 
 // ---------- Agents: config dir, AI accounts, memory ----------
 const AgentsTab = ({ env, save, saving, accounts, configDirs, info, onOpenDir }: Common & { accounts: Account[]; configDirs: ConfigDir[]; info: EnvRules | null; onOpenDir: (id: string) => void }) => {
-    const d = useDraft(() => ({ dirId: env.config_dir_id ?? "", order: accountOrderOf(env), memoryWings: list(env.memory_wings) }), [env]);
+    const d = useDraft(() => ({ dirId: env.config_dir_id ?? "", order: accountOrderOf(env) }), [env]);
     const v = d.value;
     const move = (id: string, delta: number) => {
         const o = [...v.order];
@@ -82,9 +65,10 @@ const AgentsTab = ({ env, save, saving, accounts, configDirs, info, onOpenDir }:
     };
     const toggle = (id: string) => d.patch({ order: v.order.includes(id) ? v.order.filter((x) => x !== id) : [...v.order, id] });
     const dirPath = configDirs.find((x) => x.id === v.dirId)?.path ?? info?.configDir.path ?? "";
-    const browserAccounts = (info?.browserAccounts ?? []).map((id) => accounts.find((a) => a.id === id)).filter((a): a is Account => !!a);
+    const listed = v.order.map((id) => accounts.find((a) => a.id === id)).filter((a): a is Account => !!a);
+    const runnable = (listed.length ? listed : accounts).filter((a) => (dirPath ? accountUsableWith(a, dirPath) : a.logged_in === 1));
     return (
-        <EntityForm dirty={d.dirty} saving={saving === "agents"} onDiscard={d.reset} onSave={() => save("agents", { configDirId: nul(v.dirId), accountOrder: v.order, memoryWings: csv(v.memoryWings) })}>
+        <EntityForm dirty={d.dirty} saving={saving === "agents"} onDiscard={d.reset} onSave={() => save("agents", { configDirId: nul(v.dirId), accountOrder: v.order })}>
             <Field label="Config dir" hint="Every agent run of this environment (research, design, QA, implementation, helpers, the terminal) uses it: its skills, hooks, subagents, MCP servers, CLAUDE.md and the commit, branch and PR rules.">
                 <select value={v.dirId} onChange={(e) => d.patch({ dirId: e.target.value })}>
                     <option value="">— server default —</option>
@@ -113,10 +97,7 @@ const AgentsTab = ({ env, save, saving, accounts, configDirs, info, onOpenDir }:
                     })}
                 </div>
             </Field>
-            {info && <ReadField label="Accounts that can run here">{info.usableAccounts.length ? info.usableAccounts.map((id) => accounts.find((a) => a.id === id)?.name ?? id).join(", ") : "none — set up a token on the AI accounts page"}</ReadField>}
-            {info && <ReadField label="Browser stages run as" hint="Needs a listed account with a Chrome-paired browser login (AI accounts → Log in (browser) and Probe Chrome).">{browserAccounts.length ? browserAccounts.map((a) => `${a.name}${a.chrome_browser_name ? ` (${a.chrome_browser_name})` : ""}`).join(" → ") : "nobody"}</ReadField>}
-            {info && <ReadField label="Rules in effect" hint="Set on the config dir.">commits {info.rules.allowCommit ? "allowed" : "off"} · push {info.rules.allowPush ? "allowed" : "off"} · PR creation {info.rules.allowPrCreate ? "allowed" : "off"} · branch <code>{info.rules.branchPattern}</code></ReadField>}
-            <Field label="Memory wings" hint="Palace wings that belong to this environment's memory besides its product wing and its Product Owners' — e.g. an imported palace's knowledge wings. Comma-separated."><input value={v.memoryWings} onChange={(e) => d.patch({ memoryWings: e.target.value })} /></Field>
+            {info && runnable.length === 0 && <ReadField label="Warning"><span className="chip bad">no {listed.length ? "listed " : ""}account can run in this config dir — set up a token on the account</span></ReadField>}
         </EntityForm>
     );
 };
@@ -150,19 +131,21 @@ const ClaudeMdTab = ({ env, onError }: { env: Env; onError: (m: string) => void 
     );
 };
 
-// ---------- Services: the app and its optional components ----------
-const ServicesTab = ({ env, save, saving }: Common) => {
+// ---------- App: how the app is started and reached ----------
+const AppTab = ({ env, save, saving }: Common) => {
     const d = useDraft(() => ({
         appUrl: env.app_url ?? "", bePort: env.be_port ? String(env.be_port) : "", fePort: env.fe_port ? String(env.fe_port) : "", beUrlTemplate: env.be_url_template ?? "", feUrlTemplate: env.fe_url_template ?? "",
         beCommand: env.be_command ?? "", feCommand: env.fe_command ?? "", keepServices: env.keep_services === 1, comps: componentsOf(env),
+        callbackPorts: ((): string => { try { return (JSON.parse(env.callback_ports ?? "[]") as Array<{ port: number; relay?: boolean }>).map((p) => `${p.port}${p.relay ? "*" : ""}`).join(", "); } catch { return ""; } })(),
     }), [env]);
     const v = d.value;
     const setComp = (i: number, p: Partial<EnvComponent>) => d.patch({ comps: v.comps.map((c, j) => (j === i ? { ...c, ...p } : c)) });
     return (
-        <EntityForm dirty={d.dirty} saving={saving === "services"} onDiscard={d.reset} onSave={() => save("services", {
+        <EntityForm dirty={d.dirty} saving={saving === "app"} onDiscard={d.reset} onSave={() => save("app", {
             appUrl: nul(v.appUrl), beCommand: nul(v.beCommand), feCommand: nul(v.feCommand), beUrlTemplate: nul(v.beUrlTemplate), feUrlTemplate: nul(v.feUrlTemplate),
             bePort: v.bePort.trim() ? Number(v.bePort) : null, fePort: v.fePort.trim() ? Number(v.fePort) : null, keepServices: v.keepServices,
             components: v.comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
+            callbackPorts: v.callbackPorts.split(",").map((x) => x.trim()).filter((x) => /^\d+\*?$/.test(x)).map((x) => ({ port: Number(x.replace("*", "")), relay: x.endsWith("*") })),
         })}>
             <Field label="BE command" hint={PLACEHOLDERS}><textarea spellCheck={false} value={v.beCommand} onChange={(e) => d.patch({ beCommand: e.target.value })} /></Field>
             <Field label="FE command" hint={PLACEHOLDERS}><textarea spellCheck={false} value={v.feCommand} onChange={(e) => d.patch({ feCommand: e.target.value })} /></Field>
@@ -170,8 +153,9 @@ const ServicesTab = ({ env, save, saving }: Common) => {
             <Field label="FE fixed port" hint="Empty: a free port is picked per task."><input value={v.fePort} onChange={(e) => d.patch({ fePort: e.target.value })} /></Field>
             <Field label="BE URL template"><input value={v.beUrlTemplate} onChange={(e) => d.patch({ beUrlTemplate: e.target.value })} placeholder="http://localhost:{{port}}" /></Field>
             <Field label="FE URL template"><input value={v.feUrlTemplate} onChange={(e) => d.patch({ feUrlTemplate: e.target.value })} placeholder="http://localhost:{{port}}" /></Field>
-            <Field label="QA app URL" hint="The URL QA opens: {{feUrl}}, {{beUrl}} or a fixed URL."><input value={v.appUrl} onChange={(e) => d.patch({ appUrl: e.target.value })} /></Field>
-            <CheckField label="Keep a task's BE/FE running between stages" hint="Instead of stopping them after every QA pass (QA baseline → Implementation → Manual QA → User Review). Saves the cold start at the cost of RAM; they stop when the task is done or cleaned up." checked={v.keepServices} onChange={(on) => d.patch({ keepServices: on })} />
+            <Field label="App URL override" hint="The URL QA and the login helper open. Empty: the FE's URL, else the BE's. Otherwise {{feUrl}}, {{beUrl}} or a fixed URL."><input value={v.appUrl} onChange={(e) => d.patch({ appUrl: e.target.value })} /></Field>
+            <Field label="Login callback ports" hint="The identity provider accepts only these as its callback, e.g. 3000; after a login on a task's port, Stagehand moves the tab back to the task's app. Add * to have Stagehand hold the port and redirect for any browser, e.g. 7777*. Comma-separated."><input value={v.callbackPorts} onChange={(e) => d.patch({ callbackPorts: e.target.value })} /></Field>
+            <CheckField label="Keep a task's BE/FE running between stages" hint="Overrides the Resources page's policies for this environment: instead of stopping them after every QA pass, they keep running until the task is done or cleaned up. Saves the cold start at the cost of RAM." checked={v.keepServices} onChange={(on) => d.patch({ keepServices: on })} />
             <Field label="Optional components" hint="Extra services beside the BE/FE — a queue worker, a scheduler, a relay. Each runs in its own tmux session from the task's worktree, without a port. Started from the App widget, by agents on demand, by a QA scenario that declares it, or with the app when auto-start is on. Placeholders: {{worktree}}, {{beUrl}}, {{bePort}}, {{taskDir}}.">
                 <div className="field-rows">
                     {v.comps.map((c, i) => (
@@ -190,18 +174,18 @@ const ServicesTab = ({ env, save, saving }: Common) => {
     );
 };
 
-// ---------- Commands: what runs around a task's lifecycle ----------
-const CommandsTab = ({ env, save, saving }: Common) => {
+// ---------- Lifecycle: what runs around a task ----------
+const LifecycleTab = ({ env, save, saving }: Common) => {
     const d = useDraft(() => ({
         envVars: env.env_vars ?? "", prepareCommand: env.prepare_command ?? "", setupCommand: env.setup_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "",
-        cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", checkCommand: env.check_command ?? "",
+        cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", checkCommand: env.check_command ?? "", testCommand: env.test_command ?? "",
     }), [env]);
     const v = d.value;
     const area = (k: keyof typeof v, tall = false) => <textarea className={tall ? "tall" : undefined} spellCheck={false} value={v[k]} onChange={(e) => d.patch({ [k]: e.target.value } as Partial<typeof v>)} />;
     return (
-        <EntityForm dirty={d.dirty} saving={saving === "commands"} onDiscard={d.reset} onSave={() => save("commands", {
+        <EntityForm dirty={d.dirty} saving={saving === "lifecycle"} onDiscard={d.reset} onSave={() => save("lifecycle", {
             envVars: nul(v.envVars), prepareCommand: nul(v.prepareCommand), setupCommand: nul(v.setupCommand), migrateCommand: nul(v.migrateCommand), migrateDownCommand: nul(v.migrateDownCommand),
-            cleanupCommand: nul(v.cleanupCommand), rebaseCommand: nul(v.rebaseCommand), checkCommand: nul(v.checkCommand),
+            cleanupCommand: nul(v.cleanupCommand), rebaseCommand: nul(v.rebaseCommand), checkCommand: nul(v.checkCommand), testCommand: nul(v.testCommand),
         })}>
             <Field label="Environment variables" hint="KEY=VALUE per line; exported into git, setup, BE/FE, Claude runs and the terminal. Lines starting with # are comments.">{area("envVars")}</Field>
             <Field label="Prepare" hint="Bash that runs before every command of this environment — setup, BE, FE, components, migrate, cleanup, rebase, verification — e.g. bring up the datastores it needs. A non-zero exit stops the command.">{area("prepareCommand", true)}</Field>
@@ -211,6 +195,7 @@ const CommandsTab = ({ env, save, saving }: Common) => {
             <Field label="Cleanup" hint="Runs from the worktree when a task is cleaned up, after BE/FE stop and before the worktree is removed — drop a per-task database, free caches. {{worktree}} / {{envPath}}.">{area("cleanupCommand")}</Field>
             <Field label="Rebase" hint="Runs from the worktree after every successful rebase onto the base branch — rebuild what a rebase makes stale, e.g. per-task test databases. {{worktree}} / {{envPath}}.">{area("rebaseCommand")}</Field>
             <Field label="Verification" hint="Runs from the worktree after every Implementation and PR Fix run. A non-zero exit sends the output back to the agent, twice, then blocks for you. For what tests and a dev server never exercise, e.g. a framework's system checks.">{area("checkCommand")}</Field>
+            <Field label="Test command" hint="Runs named tests. {{tests}} = the test ids, {{envPath}}. The CI autopilot runs it on a checkout of the base to prove an untouched failing test passes there when CI has no green run on the base.">{area("testCommand")}</Field>
         </EntityForm>
     );
 };
@@ -237,13 +222,13 @@ const DatabaseTab = ({ env, save, saving }: Common) => {
         }}>
             <Field label="DB host check" hint="Prints the databases the worktree's app would connect to, as host/name pairs. Stagehand runs it before agent runs, BE/FE/component starts and migrations, and blocks the task when a host is not allowed, or — with task databases on — a name is not the task's own or shared."><textarea className="tall" spellCheck={false} value={v.dbHostsCommand} onChange={(e) => d.patch({ dbHostsCommand: e.target.value })} /></Field>
             <Field label="Allowed DB hosts" hint="Comma-separated. Empty: localhost, 127.0.0.1, ::1."><input value={v.allowedDbHosts} onChange={(e) => d.patch({ allowedDbHosts: e.target.value })} /></Field>
-            <CheckField label="New tasks get their own database" hint="Every task gets a database copied from the template when it starts, so one task's migrations, seeds and baseline never reach another. The template is first migrated to the base branch in a template worktree. Existing tasks keep the shared database until adopted (Task databases tab). Commands get $STAGEHAND_TASK_DB and $STAGEHAND_TASK_DB_TEMPLATE." checked={v.c.enabled} onChange={(on) => setC({ enabled: on })} />
+            <CheckField label="New tasks get their own database" hint="Every task gets a database copied from the template when it starts, so one task's migrations, seeds and baseline never reach another. The template is first migrated to the base branch in a template worktree. Existing tasks keep the shared database until adopted (the task's Database widget). Commands get $STAGEHAND_TASK_DB and $STAGEHAND_TASK_DB_TEMPLATE." checked={v.c.enabled} onChange={(on) => setC({ enabled: on })} />
             <Field label="Template database" hint="Copied for every task; nothing may be connected to it while a copy runs."><input value={v.c.template} onChange={(e) => setC({ template: e.target.value })} placeholder="e.g. app or app_template" /></Field>
             <Field label="Name pattern" hint="{{template}}, {{slug}} = the ticket id. Default {{template}}_{{slug}}."><input value={v.c.namePattern} onChange={(e) => setC({ namePattern: e.target.value })} placeholder="{{template}}_{{slug}}" /></Field>
             <Field label="Create" hint="Copies $STAGEHAND_TASK_DB_TEMPLATE into $STAGEHAND_TASK_DB — e.g. CREATE DATABASE … TEMPLATE ….">{area("create", true)}</Field>
             <Field label="Drop" hint="Drops $STAGEHAND_TASK_DB; must succeed when it does not exist. On Clean up / Delete it runs for the task's database and for every listed database derived from it (<name>_…).">{area("drop")}</Field>
             <Field label="Connect" hint="Runs in a worktree: points the app's config at $STAGEHAND_TASK_DB — e.g. the database name in its .env.">{area("connect")}</Field>
-            <Field label="List" hint="Prints the template and the task databases, one per line: name, then size in MB. Sizes show on Resources, orphans on the Task databases tab.">{area("list")}</Field>
+            <Field label="List" hint="Prints the template and the task databases, one per line: name, then size in MB. Sizes and databases no task owns show on Resources.">{area("list")}</Field>
             <Field label="Shared databases" hint="A worktree may still use these besides its own. Comma-separated."><input value={v.shared} onChange={(e) => d.patch({ shared: e.target.value })} /></Field>
             <Field label="More templates" hint="Each is copied for every task and session into the copies listed, one per line ({{db}} = the owner's main database) — e.g. a test-database template copied into the test runner's per-worker databases. Copies named {{db}}_… are dropped with the owner's database.">
                 <div className="field-rows">
@@ -263,87 +248,16 @@ const DatabaseTab = ({ env, save, saving }: Common) => {
     );
 };
 
-// ---------- Task databases: what exists (read-only, with Refresh / Adopt / Drop) ----------
-const TaskDbsTab = ({ env, onError }: { env: Env; onError: (m: string) => void }) => {
-    const [view, setView] = useState<EnvDbOverview | null>(null);
-    const [busy, setBusy] = useState<string | null>(null);
-    const load = (refresh = false) => void api.envDbs(env.id, refresh).then(setView).catch((e: Error) => onError(e.message));
-    useEffect(() => load(), [env.id]); // eslint-disable-line react-hooks/exhaustive-deps
-    const act = async (key: string, fn: () => Promise<unknown>) => {
-        setBusy(key);
-        try {
-            const r = await fn();
-            if (r && typeof r === "object" && "taskDbs" in r) setView(r as EnvDbOverview);
-            else load(true);
-        } catch (e) {
-            onError(String((e as Error).message ?? e));
-        } finally {
-            setBusy(null);
-        }
-    };
-    if (!view) return <div className="empty">loading…</div>;
-    return (
-        <div className="ev-fields">
-            <ReadField label="Template" hint={view.template?.refreshError ? `The last refresh before a copy failed, so the template was copied as it was: ${view.template.refreshError}` : undefined}>
-                {view.template ? <><code>{view.template.name}</code> {mb(view.template.sizeMb)} {view.template.refreshError && <span className="chip warn">last refresh failed</span>}</> : "not set"}
-                {view.active && <button className="tiny" disabled={busy !== null} onClick={() => void act("refresh", () => api.refreshTemplate(env.id))}>{busy === "refresh" ? "Refreshing…" : `Refresh (migrate to ${env.base_branch})`}</button>}
-                <button className="tiny" disabled={busy !== null} onClick={() => load(true)}>Reload sizes</button>
-            </ReadField>
-            {view.template?.worktree && <ReadField label="Template worktree"><code>{view.template.worktree}</code></ReadField>}
-            {view.extraTemplates.map((t) => <ReadField key={t.name} label="More template"><code>{t.name}</code> {mb(t.sizeMb)} · {t.copies.length} cop{t.copies.length === 1 ? "y" : "ies"} per owner</ReadField>)}
-            {view.listError && <ReadField label="List command"><span className="chip bad">failed</span> {view.listError}</ReadField>}
-            <ReadField label="Task databases">
-                {view.taskDbs.length === 0 ? "none yet" : (
-                    <div className="field-rows" style={{ width: "100%" }}>
-                        {view.taskDbs.map((x) => (
-                            <div key={x.task_id} className="account-row">
-                                <code>{x.name}</code> {x.ticketId ?? "deleted task"} {x.status === "ready" ? mb(x.sizeMb) : <span className="chip bad">{x.status}</span>}
-                                {x.derived.length > 0 && <Hint text={`plus ${x.derived.length} derived (${x.derived.map((y) => y.name.slice(x.name.length)).join(", ")}; ${mb(x.derived.reduce((n, y) => n + (y.sizeMb ?? 0), 0))}), dropped with it`} />}
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </ReadField>
-            {view.active && view.shared.length > 0 && (
-                <ReadField label="Still on the shared database" hint="Adopt: stop its services, refresh the template, copy it, point the worktree at the copy.">
-                    <div className="field-rows" style={{ width: "100%" }}>
-                        {view.shared.map((t) => (
-                            <div key={t.taskId} className="account-row">
-                                {t.ticketId} · {t.stage.replace(/_/g, " ")} · {t.status}
-                                <button className="tiny" disabled={busy !== null || t.status === "running"} onClick={() => void act(t.taskId, () => api.recreateTaskDb(t.taskId))}>{busy === t.taskId ? "Adopting…" : "Adopt"}</button>
-                            </div>
-                        ))}
-                    </div>
-                </ReadField>
-            )}
-            {view.orphans.length > 0 && (
-                <ReadField label="No task owns these">
-                    <div className="field-rows" style={{ width: "100%" }}>
-                        {view.orphans.map((o) => (
-                            <div key={o.name} className="account-row">
-                                <code>{o.name}</code> {mb(o.sizeMb)}
-                                <button className="tiny danger" disabled={busy !== null} onClick={() => void act(o.name, () => api.dropEnvDb(env.id, o.name))}>{busy === o.name ? "Dropping…" : "Drop"}</button>
-                            </div>
-                        ))}
-                    </div>
-                </ReadField>
-            )}
-        </div>
-    );
-};
-
 // ---------- QA ----------
 const QaTab = ({ env, save, saving }: Common) => {
     const d = useDraft(() => ({
         qaBrowser: (env.qa_browser ?? "chrome") as "chrome" | "gstack", qaAutoFix: ((env.qa_auto_fix as QaAutoFixScope | null | undefined) ?? "seeds+steps") as QaAutoFixScope,
         qaSeedHints: env.qa_seed_hints ?? "", qaSessionCommand: env.qa_session_command ?? "", qaBrowserCookies: env.qa_browser_cookies ?? "",
-        callbackPorts: ((): string => { try { return (JSON.parse(env.callback_ports ?? "[]") as Array<{ port: number; relay?: boolean }>).map((p) => `${p.port}${p.relay ? "*" : ""}`).join(", "); } catch { return ""; } })(),
     }), [env]);
     const v = d.value;
     return (
         <EntityForm dirty={d.dirty} saving={saving === "qa"} onDiscard={d.reset} onSave={() => save("qa", {
             qaBrowser: v.qaBrowser, qaAutoFix: v.qaAutoFix, qaSeedHints: nul(v.qaSeedHints), qaSessionCommand: nul(v.qaSessionCommand), qaBrowserCookies: nul(v.qaBrowserCookies),
-            callbackPorts: v.callbackPorts.split(",").map((x) => x.trim()).filter((x) => /^\d+\*?$/.test(x)).map((x) => ({ port: Number(x.replace("*", "")), relay: x.endsWith("*") })),
         })}>
             <Field label="QA browser" hint="Chrome profile: the QA account's Chrome via claude-in-chrome (windows, profile copies per run, browser login). gstack: a headless Chromium with no windows; its session comes from the QA session command, else from that Chrome profile's cookies and localStorage; runs on a token account.">
                 <select value={v.qaBrowser} onChange={(e) => d.patch({ qaBrowser: e.target.value as "chrome" | "gstack" })}>
@@ -362,21 +276,19 @@ const QaTab = ({ env, save, saving }: Common) => {
             <Field label="Seeding hints" hint="How agents create test data here: database connection and key tables, API auth, seed recipes. Given to the Design and QA prompts verbatim."><textarea className="tall" spellCheck={false} value={v.qaSeedHints} onChange={(e) => d.patch({ qaSeedHints: e.target.value })} /></Field>
             <Field label="QA session command" hint="Runs from the worktree before every QA pass; the last line it prints reaches the QA run and its seeds as $STAGEHAND_QA_SESSION — e.g. a signed session cookie for API scenarios, so the agent never handles the app's secrets."><textarea className="tall" spellCheck={false} value={v.qaSessionCommand} onChange={(e) => d.patch({ qaSessionCommand: e.target.value })} /></Field>
             <Field label="QA browser cookies" hint="One name=value per line; the headless QA browser gets them on the app's host after its session — e.g. a cookie that tells the app a tab is a fresh sign-in."><textarea spellCheck={false} value={v.qaBrowserCookies} onChange={(e) => d.patch({ qaBrowserCookies: e.target.value })} /></Field>
-            <Field label="Login callback ports" hint="The identity provider accepts only these as its callback, e.g. 3000; after a login on a task's port, Stagehand moves the tab back to the task's app. Add * to have Stagehand hold the port and redirect for any browser, e.g. 7777*. Comma-separated."><input value={v.callbackPorts} onChange={(e) => d.patch({ callbackPorts: e.target.value })} /></Field>
         </EntityForm>
     );
 };
 
 // ---------- Pull requests ----------
 const PrTab = ({ env, save, saving, info, reloadInfo }: Common & { info: EnvRules | null; reloadInfo: () => void }) => {
-    const d = useDraft(() => ({ prDraft: env.pr_draft === 1, tpl: Object.fromEntries((info?.prTemplates ?? []).map((t) => [t.dir, t.source === "env" ? t.path ?? "" : t.missing ?? ""])) as Record<string, string> }), [env, info]);
+    const d = useDraft(() => ({ tpl: Object.fromEntries((info?.prTemplates ?? []).map((t) => [t.dir, t.source === "env" ? t.path ?? "" : t.missing ?? ""])) as Record<string, string> }), [env, info]);
     const v = d.value;
     return (
         <EntityForm dirty={d.dirty} saving={saving === "pr"} onDiscard={d.reset} onSave={async () => {
-            await save("pr", { prDraft: v.prDraft, ...(info ? { prTemplates: Object.fromEntries(info.prTemplates.map((t) => [t.dir, (v.tpl[t.dir] ?? "").trim() || null])) } : {}) });
+            await save("pr", { ...(info ? { prTemplates: Object.fromEntries(info.prTemplates.map((t) => [t.dir, (v.tpl[t.dir] ?? "").trim() || null])) } : {}) });
             reloadInfo();
         }}>
-            <CheckField label="Open every PR as a draft" hint="You mark it ready for review yourself. Applies once a repository's PR is approved and Stagehand opens it." checked={v.prDraft} onChange={(on) => d.patch({ prDraft: on })} />
             {info?.prTemplates.map((t) => (
                 <Field
                     key={t.dir}
@@ -392,15 +304,15 @@ const PrTab = ({ env, save, saving, info, reloadInfo }: Common & { info: EnvRule
 
 // ---------- CI autopilot ----------
 const AutopilotTab = ({ env, save, saving }: Common) => {
-    const d = useDraft(() => ({ on: (env.ci_autopilot ?? 1) !== 0, testCommand: env.test_command ?? "", rules: autopilotRulesOf(env) as AutopilotRules }), [env]);
+    const d = useDraft(() => ({ on: (env.ci_autopilot ?? 1) !== 0, rules: autopilotRulesOf(env) as AutopilotRules }), [env]);
     const v = d.value;
     const setRule = (i: number, p: Partial<AutopilotRules["custom"][number]>) => d.patch({ rules: { ...v.rules, custom: v.rules.custom.map((x, j) => (j === i ? { ...x, ...p } : x)) } });
     return (
         <EntityForm dirty={d.dirty} saving={saving === "autopilot"} onDiscard={d.reset} onSave={() => save("autopilot", {
-            ciAutopilot: v.on, testCommand: nul(v.testCommand),
+            ciAutopilot: v.on,
             ciAutopilotRules: v.rules.disabled.length || v.rules.custom.length ? { disabled: v.rules.disabled, custom: v.rules.custom.filter((r) => r.title.trim()).map((r) => ({ ...r, title: r.title.trim(), detail: r.detail.trim() })) } : null,
         })}>
-            <CheckField label="On for new tasks" hint="When a PR's checks finish red, the task fixes by itself the failures it caused, has the fix reviewed, and pushes. Each task can switch it off on its PR tab." checked={v.on} onChange={(on) => d.patch({ on })} />
+            <CheckField label="On for new tasks" hint="When a PR's checks finish red, the task fixes by itself the failures it caused, has the fix reviewed, and pushes. Each task can switch it off on its PR tab. It proves an untouched failing test passes on the base with the Lifecycle tab's test command." checked={v.on} onChange={(on) => d.patch({ on })} />
             <Field label="Built-in kinds" hint="Stagehand verifies each built-in kind against the branch diff and the base.">
                 <div className="field-rows">
                     {AUTOPILOT_KINDS.map((k) => (
@@ -427,7 +339,6 @@ const AutopilotTab = ({ env, save, saving }: Common) => {
                     <button className="tiny" style={{ justifySelf: "start" }} onClick={() => d.patch({ rules: { ...v.rules, custom: [...v.rules.custom, { key: `r${Date.now().toString(36)}`, title: "", verdict: "deny", detail: "" }] } })}>+ rule</button>
                 </div>
             </Field>
-            <Field label="Test command" hint="Runs named tests on a checkout of the base, to prove an untouched failing test passes there when CI has no green run on the base. {{tests}} = the test ids; {{envPath}}."><textarea spellCheck={false} value={v.testCommand} onChange={(e) => d.patch({ testCommand: e.target.value })} /></Field>
         </EntityForm>
     );
 };
@@ -502,14 +413,13 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
             id={env.name}
             tabs={[
                 { key: "general", label: "General", content: <GeneralTab {...common} envs={envs} /> },
+                { key: "app", label: "App", content: <AppTab {...common} /> },
+                { key: "lifecycle", label: "Lifecycle", content: <LifecycleTab {...common} /> },
+                { key: "database", label: "Database", content: <DatabaseTab {...common} /> },
                 { key: "agents", label: "Agents", content: <AgentsTab {...common} accounts={accounts} configDirs={configDirs} info={info} onOpenDir={onOpenDir} /> },
                 { key: "claude-md", label: "CLAUDE.md", content: <ClaudeMdTab env={env} onError={onError} /> },
-                { key: "services", label: "Services", content: <ServicesTab {...common} /> },
-                { key: "commands", label: "Commands", content: <CommandsTab {...common} /> },
-                { key: "database", label: "Database", content: <DatabaseTab {...common} /> },
-                { key: "task-dbs", label: "Task databases", content: <TaskDbsTab env={env} onError={onError} /> },
                 { key: "qa", label: "QA", content: <QaTab {...common} /> },
-                { key: "pr", label: "Pull requests", content: <PrTab {...common} info={info} reloadInfo={reloadInfo} /> },
+                { key: "pr", label: "PR templates", content: <PrTab {...common} info={info} reloadInfo={reloadInfo} /> },
                 { key: "autopilot", label: "CI autopilot", content: <AutopilotTab {...common} /> },
                 { key: "review", label: "Code review", content: <ReviewTab {...common} onError={onError} /> },
             ]}

@@ -223,9 +223,27 @@ const Worktrees = ({ rows, busy, act }: { rows: Resource[]; busy: string | null;
 };
 
 // Task databases and their templates (server task-db.ts): sizes from the env's list command, refreshed every ten
-// minutes. Dropped by Clean up / Delete (a task's) or on the env page (no task owns it) — never from here.
-const Databases = ({ rows }: { rows: Resource[] }) => {
+// minutes. A task's is dropped by Clean up / Delete; here a template is refreshed (migrated to the env's base branch)
+// and a database no task owns is dropped.
+const Databases = ({ rows, onChanged, onError }: { rows: Resource[]; onChanged: () => void; onError: (m: string) => void }) => {
     const [expanded, setExpanded] = useState(true);
+    const [busy, setBusy] = useState<string | null>(null);
+    // database:<envId>:<name>
+    const target = (r: Resource): { envId: string; name: string } => {
+        const [, envId = "", ...rest] = r.id.split(":");
+        return { envId, name: rest.join(":") };
+    };
+    const act = async (r: Resource, fn: () => Promise<unknown>) => {
+        setBusy(r.id);
+        try {
+            await fn();
+            onChanged();
+        } catch (e) {
+            onError((e as Error).message);
+        } finally {
+            setBusy(null);
+        }
+    };
     const total = rows.reduce((n, r) => n + (r.diskMb ?? 0), 0);
     const order = (r: Resource): number => (r.owner.status === "template" ? 0 : r.owner.type === "task" ? 1 : 2);
     const sorted = [...rows].sort((a, b) => a.owner.name === b.owner.name ? order(a) - order(b) || (b.diskMb ?? 0) - (a.diskMb ?? 0) : String(a.owner.name).localeCompare(String(b.owner.name)));
@@ -241,6 +259,7 @@ const Databases = ({ rows }: { rows: Resource[] }) => {
                         <th>Size</th>
                         <th>Idle</th>
                         <th>Policy</th>
+                        <th></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -252,6 +271,10 @@ const Databases = ({ rows }: { rows: Resource[] }) => {
                             <td className="mono">{r.diskMb == null ? <span className="quiet">unknown</span> : gb(r.diskMb)}</td>
                             <td className="mono">{ago(r.idleMs)}</td>
                             <td><Verdict r={r} /></td>
+                            <td>
+                                {r.owner.status === "template" && <button className="tiny" disabled={busy !== null} onClick={() => void act(r, () => api.refreshTemplate(target(r).envId))}>{busy === r.id ? "Refreshing…" : "Refresh"}</button>}
+                                {r.owner.status === "orphan" && <button className="tiny danger" disabled={busy !== null} onClick={() => { if (confirm(`Drop database ${target(r).name}?`)) void act(r, () => api.dropEnvDb(target(r).envId, target(r).name)); }}>{busy === r.id ? "Dropping…" : "Drop"}</button>}
+                            </td>
                         </tr>
                     ))}
                 </tbody>
@@ -368,7 +391,7 @@ export const ResourcesPage = ({ onError }: { onError: (m: string) => void }) => 
                     {services.length > 0 && <DevServers rows={services} tasks={snap.stagehand.devServerTasks} max={snap.policies.maxDevServerTasks} busy={busy} act={act} />}
                     {groups.filter((g) => g.kind !== "orphan").map((g) => <Group key={g.kind} kind={g.kind} rows={g.rows} busy={busy} act={act} />)}
                     {worktrees.length > 0 && <Worktrees rows={worktrees} busy={busy} act={act} />}
-                    {databases.length > 0 && <Databases rows={databases} />}
+                    {databases.length > 0 && <Databases rows={databases} onChanged={() => void load(true)} onError={onError} />}
                     {snap.resources.length === 0 && <div className="quiet">Nothing running that Stagehand started.</div>}
                 </>
             )}

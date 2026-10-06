@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Config } from "./config.js";
-import { now, parseEnvVars, type AccountRow, type DB, type EnvRow, type SessionRow } from "./db.js";
+import { accountOrderOf, now, parseEnvVars, type AccountRow, type DB, type EnvRow, type SessionRow } from "./db.js";
 import type { Engine } from "./engine.js";
 import { authEnv } from "./claude/accounts.js";
 import { branchCommits, collapseLargeFiles, commitsDiff, createWorktree, removeWorktreeAndBranch, repoPaths, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
@@ -75,7 +75,7 @@ export class Sessions {
     private pickAccount(env: EnvRow, wanted: string | null): AccountRow {
         const cd = this.engine.configDirOf(env);
         const usable = this.engine.usableAccounts(cd.path);
-        const acc = usable.find((a) => a.id === wanted) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        const acc = usable.find((a) => a.id === wanted) ?? usable.find((a) => a.id === accountOrderOf(env)[0]) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
         if (wanted && acc.id !== wanted) {
             const asked = this.account(wanted);

@@ -23,7 +23,10 @@ export const Rules = z.object({
             "QA Instructions: leave the template's `1. ` line exactly as it is, empty.",
         ].join("\n"),
     ),
-    prTemplatePath: z.string().nullable().default(null),
+    // Prepended to every task branch Research proposes (e.g. "yourname/"); the branch pattern applies after it.
+    branchPrefix: z.string().default(""),
+    // Every PR Stagehand opens is a draft; the human marks it ready for review.
+    prDraft: z.boolean().default(false),
     // GitHub logins whose PR comments are shown under "Automation comments" instead of human comments.
     // "Copilot" (no [bot]) is the login GitHub uses for Copilot's line-level review comments.
     automationHandles: z.array(z.string()).default(["Copilot", "copilot-pull-request-reviewer[bot]", "copilot-swe-agent[bot]", "copilot[bot]", "github-actions[bot]", "claude[bot]", "coderabbitai[bot]", "sonarcloud[bot]", "dependabot[bot]", "codecov[bot]"]),
@@ -87,7 +90,6 @@ export const prTemplates = (env: EnvRow, rules: Rules): PrTemplateInfo[] => {
             if (existsSync(join(repo, own))) return { dir, path: own, detected, source: "env", missing: null, overridden: true };
             return { dir, path: detected, detected, source: detected ? "detected" : "none", missing: own, overridden: false };
         }
-        if (rules.prTemplatePath && existsSync(join(repo, rules.prTemplatePath))) return { dir, path: rules.prTemplatePath, detected, source: "dir", missing: null, overridden: true };
         return { dir, path: detected, detected, source: detected ? "detected" : "none", missing: null, overridden: false };
     });
 };
@@ -161,12 +163,12 @@ const guardSettings = (rulesPath: string): string =>
     );
 
 // Writes ~/.stagehand/envs/<env>/{rules.json,settings.json} and the three skills into <worktree>/.claude/skills (git-excluded).
-// `rules` come from the env's config dir; the branch prefix and PR templates are the env's own.
+// `rules` come from the env's config dir (branch prefix included); the PR templates are the env's own.
 export const materializeRules = (rules: Rules, env: EnvRow, worktree: string | null, dataDir: string): Materialized => {
     const dir = join(dataDir, "envs", env.id);
     mkdirSync(dir, { recursive: true });
     const rulesPath = join(dir, "rules.json");
-    writeFileSync(rulesPath, JSON.stringify({ ...rules, branchPrefix: env.branch_prefix ?? "" }, null, 2));
+    writeFileSync(rulesPath, JSON.stringify(rules, null, 2));
     const settingsPath = join(dir, "settings.json");
     writeFileSync(settingsPath, guardSettings(rulesPath));
 
@@ -175,7 +177,7 @@ export const materializeRules = (rules: Rules, env: EnvRow, worktree: string | n
         const skillsDir = join(worktree, ".claude", "skills");
         const files: Record<string, string> = {
             "git-commit": skillCommit(rules),
-            "git-branch": skillBranch(rules, env.branch_prefix),
+            "git-branch": skillBranch(rules, rules.branchPrefix || null),
             "pr-description": skillPr(rules, templates),
         };
         for (const [name, body] of Object.entries(files)) {
@@ -192,7 +194,7 @@ export const materializeRules = (rules: Rules, env: EnvRow, worktree: string | n
         `- commits: ${rules.allowCommit ? `allowed; message must match ${rules.commitPattern}; ${rules.commitHint}` : "NOT allowed — leave changes uncommitted and say so"}`,
         `- push: ${rules.allowPush ? "allowed when a stage asks for it" : "NOT allowed"}`,
         `- pull requests: ${rules.allowPrCreate ? "created by the orchestrator after human approval" : "never created by you; draft only"}`,
-        `- branch names: ${env.branch_prefix ? `prefix ${env.branch_prefix} + ` : ""}${rules.branchPattern}`,
+        `- branch names: ${rules.branchPrefix ? `prefix ${rules.branchPrefix} + ` : ""}${rules.branchPattern}`,
     ].join("\n");
     return { settingsPath, systemPrompt };
 };

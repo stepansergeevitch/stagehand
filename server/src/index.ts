@@ -104,6 +104,20 @@ const accountsAll = (): AccountRow[] => db.prepare(`SELECT * FROM accounts ORDER
     };
     for (const a of accountsAll()) if (!a.models) db.prepare(`UPDATE accounts SET models = ? WHERE id = ?`).run(JSON.stringify(legacy), a.id);
 }
+// The branch prefix and PR draft mode moved from the environment onto its config dir's rules (2026-10-06): a dir whose
+// rules do not name them yet takes them from the first environment using it that set them.
+for (const d of db.prepare(`SELECT id, rules FROM config_dirs`).all() as Array<{ id: string; rules: string | null }>) {
+    let raw: Record<string, unknown> = {};
+    try {
+        raw = d.rules ? (JSON.parse(d.rules) as Record<string, unknown>) : {};
+    } catch {
+        raw = {};
+    }
+    if ("branchPrefix" in raw && "prDraft" in raw) continue;
+    const envs = db.prepare(`SELECT branch_prefix, pr_draft FROM envs WHERE config_dir_id = ?`).all(d.id) as Array<{ branch_prefix: string | null; pr_draft: number }>;
+    const next = { ...raw, branchPrefix: raw.branchPrefix ?? envs.find((e) => e.branch_prefix)?.branch_prefix ?? "", prDraft: raw.prDraft ?? envs.some((e) => e.pr_draft === 1) };
+    db.prepare(`UPDATE config_dirs SET rules = ? WHERE id = ?`).run(JSON.stringify(next), d.id);
+}
 const accountById = (id: string): AccountRow | undefined => db.prepare(`SELECT * FROM accounts WHERE id = ?`).get(id) as AccountRow | undefined;
 const configDirsAll = (): ConfigDirRow[] => db.prepare(`SELECT * FROM config_dirs ORDER BY created_at`).all() as ConfigDirRow[];
 const configDirById = (id: string): ConfigDirRow | undefined => db.prepare(`SELECT * FROM config_dirs WHERE id = ?`).get(id) as ConfigDirRow | undefined;
@@ -375,7 +389,7 @@ app.patch("/api/accounts/:id", async (c) => {
 app.delete("/api/accounts/:id", (c) => {
     const acc = accountById(c.req.param("id"));
     if (!acc) return c.json({ error: "not found" }, 404);
-    const envs = db.prepare(`SELECT name FROM envs WHERE default_account_id = ?`).all(acc.id) as Array<{ name: string }>;
+    const envs = (db.prepare(`SELECT * FROM envs`).all() as EnvRow[]).filter((e) => accountOrderOf(e).includes(acc.id));
     const tasks = db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE account_id = ?`).get(acc.id) as { n: number };
     const sess = db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE account_id = ?`).get(acc.id) as { n: number };
     const running = db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE account_id = ? AND status = 'running'`).get(acc.id) as { n: number };
@@ -754,7 +768,6 @@ app.post("/api/envs", async (c) => {
             accountOrder: z.array(z.string()).optional(),
             configDirId: z.string().optional(),
             appUrl: z.string().optional(),
-            qaScript: z.string().optional(),
             beCommand: z.string().optional(),
             feCommand: z.string().optional(),
             beUrlTemplate: z.string().optional(),
@@ -763,14 +776,12 @@ app.post("/api/envs", async (c) => {
             fePort: z.number().int().positive().optional(),
             setupCommand: z.string().optional(),
             repos: z.array(z.string().min(1)).optional(),
-            branchPrefix: z.string().optional(),
             ticketSource: z.enum(["clickup", "linear"]).default("clickup"),
             envVars: z.string().optional(),
             cleanupCommand: z.string().optional(),
             checkCommand: z.string().optional(),
             components: ComponentList.optional(),
             keepServices: z.boolean().optional(),
-            prDraft: z.boolean().optional(),
         }),
         await c.req.json(),
     );
@@ -782,18 +793,16 @@ app.post("/api/envs", async (c) => {
     const configDirId = body.configDirId ?? (configDirsAll().find((d) => d.path === join(body.path, ".claude")) ?? configDirsAll()[0])?.id ?? null;
     const order = body.accountOrder ?? (body.defaultAccountId ? [body.defaultAccountId] : []);
     db.prepare(
-        `INSERT INTO envs (id, name, path, base_branch, default_account_id, account_order, config_dir_id, app_url, qa_script, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, branch_prefix, ticket_source, env_vars, cleanup_command, check_command, components, keep_services, pr_draft, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO envs (id, name, path, base_branch, account_order, config_dir_id, app_url, be_command, fe_command, be_url_template, fe_url_template, be_port, fe_port, setup_command, repos, ticket_source, env_vars, cleanup_command, check_command, components, keep_services, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
         id,
         body.name,
         body.path,
         body.baseBranch,
-        order[0] ?? null,
         JSON.stringify(order),
         configDirId,
         body.appUrl ?? null,
-        body.qaScript ?? null,
         body.beCommand ?? null,
         body.feCommand ?? null,
         body.beUrlTemplate ?? null,
@@ -802,14 +811,12 @@ app.post("/api/envs", async (c) => {
         body.fePort ?? null,
         body.setupCommand ?? null,
         repos,
-        body.branchPrefix ?? null,
         body.ticketSource ?? "clickup",
         body.envVars ?? null,
         body.cleanupCommand ?? null,
         body.checkCommand ?? null,
         componentsJson(body.components) ?? null,
         body.keepServices ? 1 : 0,
-        body.prDraft ? 1 : 0,
         now(),
     );
     return c.json(db.prepare(`SELECT * FROM envs WHERE id = ?`).get(id));
@@ -822,12 +829,9 @@ app.patch("/api/envs/:id", async (c) => {
             defaultAccountId: z.string().nullable().optional(),
             accountOrder: z.array(z.string()).optional(),
             configDirId: z.string().nullable().optional(),
-            chromeDeviceId: z.string().nullable().optional(),
-            chromeBrowserName: z.string().nullable().optional(),
             qaSeedHints: z.string().nullable().optional(),
             baseBranch: z.string().optional(),
             appUrl: z.string().nullable().optional(),
-            qaScript: z.string().nullable().optional(),
             beCommand: z.string().nullable().optional(),
             feCommand: z.string().nullable().optional(),
             beUrlTemplate: z.string().nullable().optional(),
@@ -836,7 +840,6 @@ app.patch("/api/envs/:id", async (c) => {
             fePort: z.number().int().positive().nullable().optional(),
             setupCommand: z.string().nullable().optional(),
             repos: z.array(z.string().min(1)).nullable().optional(),
-            branchPrefix: z.string().nullable().optional(),
             ticketSource: z.enum(["clickup", "linear"]).optional(),
             envVars: z.string().nullable().optional(),
             cleanupCommand: z.string().nullable().optional(),
@@ -873,7 +876,6 @@ app.patch("/api/envs/:id", async (c) => {
             reviewChecklist: ReviewChecklistBody.nullable().optional(),
             // Per-repository PR template overrides: {"backend": ".github/pull_request_template.md"}; null/"" removes one.
             prTemplates: z.record(z.string().nullable()).optional(),
-            prDraft: z.boolean().optional(),
             // Another env whose BE this one needs reachable to work (started once, shared across every task).
             dependsOnEnvId: z.string().nullable().optional(),
         }),
@@ -888,7 +890,7 @@ app.patch("/api/envs/:id", async (c) => {
         if (!envsAll().some((e) => e.id === body.dependsOnEnvId)) return c.json({ error: "unknown dependency env" }, 400);
     }
     const pick = <T,>(next: T | undefined, cur: T): T => (next === undefined ? cur : next);
-    // The ordered list is the source of truth; default_account_id mirrors its head for older readers.
+    // The ordered list is the only account setting: its head is the default.
     const order = body.accountOrder ?? (body.defaultAccountId !== undefined ? (body.defaultAccountId ? [body.defaultAccountId] : []) : accountOrderOf(env));
     const repos = body.repos === undefined ? env.repos : body.repos && body.repos.length ? JSON.stringify(body.repos) : null;
     if (repos !== env.repos) {
@@ -904,18 +906,14 @@ app.patch("/api/envs/:id", async (c) => {
         return Object.keys(merged).length ? JSON.stringify(merged) : null;
     })();
     db.prepare(
-        `UPDATE envs SET name = ?, default_account_id = ?, account_order = ?, config_dir_id = ?, chrome_device_id = ?, chrome_browser_name = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, qa_script = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, branch_prefix = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, check_command = ?, components = ?, keep_services = ?, pr_templates = ?, pr_draft = ?, depends_on_env_id = ?, rebase_command = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, account_order = ?, config_dir_id = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, check_command = ?, components = ?, keep_services = ?, pr_templates = ?, depends_on_env_id = ?, rebase_command = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
-        order[0] ?? null,
         JSON.stringify(order),
         pick(body.configDirId, env.config_dir_id),
-        pick(body.chromeDeviceId, env.chrome_device_id),
-        pick(body.chromeBrowserName, env.chrome_browser_name),
         pick(body.qaSeedHints, env.qa_seed_hints),
         body.baseBranch ?? env.base_branch,
         pick(body.appUrl, env.app_url),
-        pick(body.qaScript, env.qa_script),
         pick(body.beCommand, env.be_command),
         pick(body.feCommand, env.fe_command),
         pick(body.beUrlTemplate, env.be_url_template),
@@ -924,7 +922,6 @@ app.patch("/api/envs/:id", async (c) => {
         pick(body.fePort, env.fe_port),
         pick(body.setupCommand, env.setup_command),
         repos,
-        pick(body.branchPrefix, env.branch_prefix),
         body.ticketSource ?? env.ticket_source,
         pick(body.envVars, env.env_vars),
         pick(body.cleanupCommand, env.cleanup_command),
@@ -932,7 +929,6 @@ app.patch("/api/envs/:id", async (c) => {
         body.components === undefined ? env.components : componentsJson(body.components),
         body.keepServices === undefined ? env.keep_services : body.keepServices ? 1 : 0,
         prTemplates,
-        body.prDraft === undefined ? env.pr_draft : body.prDraft ? 1 : 0,
         pick(body.dependsOnEnvId, env.depends_on_env_id),
         pick(body.rebaseCommand, env.rebase_command),
         env.id,
@@ -1968,7 +1964,7 @@ app.post("/api/tasks/:id/terminal", async (c) => {
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(task.env_id) as EnvRow;
     const cd = engine.configDirOf(env);
     const usable = engine.usableAccounts(cd.path);
-    const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+    const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === accountOrderOf(env)[0]) ?? usable[0];
     if (!acc) return c.json({ error: `no AI account can run in config dir ${cd.name}` }, 400);
     const name = taskSessionName(task.ticket_id);
     await ensureSession(

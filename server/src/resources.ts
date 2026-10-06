@@ -391,7 +391,7 @@ export class Resources {
             push({ id: `worktree:${task.id}`, kind: "worktree", label: "worktree", owner: ownerOfTask(task, task.id), tmux: null, pid: null, port: null, path: task.worktree_path, rssMb: 0, cpuPct: 0, procs: 0, top: null, startedAt: task.created_at, idleMs: Math.max(0, t0 - Date.parse(task.updated_at)), diskMb: size?.mb ?? null }, []);
         }
         // Task databases and the templates they are copied from: never stopped from here (Clean up / Delete drops a
-        // task's, the env page drops an orphan), tracked for their size.
+        // task's; the Resources page drops an orphan), tracked for their size.
         for (const d of this.hooks.databases()) {
             const task = d.taskId ? tasks.get(d.taskId) : undefined;
             push(
@@ -534,7 +534,7 @@ export class Resources {
             case "worktree":
                 return keep("removed by Clean up / Delete");
             case "database":
-                return keep(r.owner.type === "task" ? "dropped by Clean up / Delete" : r.owner.type === "session" ? "dropped when the session is deleted with its worktree" : r.owner.status === "orphan" ? "no task owns it — drop it on the env page" : "the template task databases are copied from");
+                return keep(r.owner.type === "task" ? "dropped by Clean up / Delete" : r.owner.type === "session" ? "dropped when the session is deleted with its worktree" : r.owner.status === "orphan" ? "no task owns it — Drop drops it" : "the template task databases are copied from");
             case "orphan":
                 return stopAfter("nothing in Stagehand owns it", Date.now() - r.ageMs, p.orphanMinutes * MIN);
         }

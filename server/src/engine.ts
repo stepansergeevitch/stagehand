@@ -2346,7 +2346,7 @@ export class Engine extends EventEmitter {
             const prBase = entry.base?.trim() || this.baseBranchOf(task, env, repo);
             const parent = prBase !== env.base_branch ? await this.openPrForBranch(cwd, env, prBase) : null;
             const body = this.stackedBodyPrefix(parent, prBase, env.base_branch) + entry.body;
-            const url = await this.gh(cwd, ["pr", "create", "--base", prBase, "--head", task.branch, "--title", entry.title, "--body", body, ...(env.pr_draft ? ["--draft"] : [])], env);
+            const url = await this.gh(cwd, ["pr", "create", "--base", prBase, "--head", task.branch, "--title", entry.title, "--body", body, ...(rulesOf(this.configDirOf(env)).prDraft ? ["--draft"] : [])], env);
             const number = Number(url.split("/").pop());
             this.upsertPrRow(taskId, repo, { number: Number.isFinite(number) ? number : null, url, pushed_at: now(), pushed_sha: pushed, state: "OPEN" });
             return `PR #${Number.isFinite(number) ? number : "?"} created`;
@@ -2875,7 +2875,7 @@ export class Engine extends EventEmitter {
     private autopilotAccount(task: TaskRow, env: EnvRow): { acc: AccountRow; cd: ConfigDirRow } {
         const cd = this.configDirOf(env);
         const usable = this.usableAccounts(cd.path);
-        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === accountOrderOf(env)[0]) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
         return { acc, cd };
     }
@@ -3660,7 +3660,7 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         const cd = this.configDirOf(env);
         const usable = this.usableAccounts(cd.path);
-        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === accountOrderOf(env)[0]) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
         const quoted = `"${text.replace(/"/g, '\\"')}"`;
         const earlier = anchor ? this.listMessages(taskId).filter((m) => m.anchor && sameAnchor(JSON.parse(m.anchor) as MessageAnchor, anchor)).slice(0, -1) : [];
@@ -3720,7 +3720,7 @@ export class Engine extends EventEmitter {
         if (!existsSync(cwd)) throw new Error("no worktree yet — the task has not started");
         const cd = this.configDirOf(env);
         const usable = this.usableAccounts(cd.path);
-        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === accountOrderOf(env)[0]) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
         const message = this.addMessage(taskId, "user", instructions, null, "instruction", files);
         const prevStatus = task.status;
@@ -3852,7 +3852,7 @@ export class Engine extends EventEmitter {
         const subject = (await this.git(cwd, ["log", "-1", "--format=%s", sha], env).catch(() => "")).trim();
         const cd = this.configDirOf(env);
         const usable = this.usableAccounts(cd.path);
-        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === accountOrderOf(env)[0]) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
         const prevStatus = task.status;
         const prevLine = task.status_line;
@@ -4127,9 +4127,7 @@ export class Engine extends EventEmitter {
             const fill = (s: string): string => fillQaVars(s, qaVars);
             vars["qaPass"] = qaVars.qaPass;
             const logs = [be ? `BE log: ${be.log_path}` : null, fe ? `FE log: ${fe.log_path}` : null].filter(Boolean).join("; ");
-            vars["qaSetup"] = env.qa_script
-                ? `0. Bring the app up first by running this from the worktree with Bash: \`${env.qa_script}\`. If it exits non-zero, write every scenario as \`blocked\` with the script's last lines as the blocker and stop.`
-                : `0. The app was started by the orchestrator from this task's worktree and should be serving at ${appUrl}${logs ? ` (${logs} — read them with Bash \`tail\` when something looks wrong)` : ""}; if it is not reachable, write every scenario as \`blocked\` with blocker "app not running at <url>" and stop.`;
+            vars["qaSetup"] = `0. The app was started by the orchestrator from this task's worktree and should be serving at ${appUrl}${logs ? ` (${logs} — read them with Bash \`tail\` when something looks wrong)` : ""}; if it is not reachable, write every scenario as \`blocked\` with blocker "app not running at <url>" and stop.`;
             vars["scenarios"] = scenarios
                 .map(
                     (s) =>
@@ -5428,7 +5426,7 @@ export class Engine extends EventEmitter {
         const base = this.baseBranchLabel(task, env);
         const cd = this.configDirOf(env);
         const usable = this.usableAccounts(cd.path);
-        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === accountOrderOf(env)[0]) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
         const { repos, behind, fastForwarded, headsBefore, plain, conflicted } = await this.rebasePlainPass(task, env, opts.repos);
         const header = opts.auto ? `🔀 Auto-rebase onto origin/${base} (${opts.auto}):` : `🔀 Rebase onto origin/${base}:`;
@@ -5915,7 +5913,7 @@ export class Engine extends EventEmitter {
         if (probed.state !== "failed") throw new Error(`the ${kind.toUpperCase()} is ${probed.state}, nothing to fix`);
         const cd = this.configDirOf(env);
         const usable = this.usableAccounts(cd.path);
-        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === env.default_account_id) ?? usable[0];
+        const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === accountOrderOf(env)[0]) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
         const cwd = task.worktree_path ?? env.path;
         const be = kind === "fe" ? this.services.get(taskId, "be") : undefined;
@@ -6813,7 +6811,7 @@ export class Engine extends EventEmitter {
                 );
                 return;
             }
-            const prefix = env.branch_prefix ?? "";
+            const prefix = rulesOf(this.configDirOf(env)).branchPrefix;
             const branch = prefix && !r.branchName.startsWith(prefix) ? `${prefix}${r.branchName}` : r.branchName;
             this.db.prepare(`UPDATE tasks SET title = ?, branch = ?, updated_at = ? WHERE id = ?`).run(r.title, branch, now(), taskId);
             this.setTaskStatus(taskId, "running", "creating worktree");

@@ -79,7 +79,7 @@ export interface EnvDependencyStatus {
 }
 export interface Rules {
     commitPattern: string; commitForbid: string[]; commitHint: string; branchPattern: string; branchHint: string;
-    allowCommit: boolean; allowPush: boolean; allowPrCreate: boolean; prRules: string; prTemplatePath: string | null; automationHandles: string[];
+    allowCommit: boolean; allowPush: boolean; allowPrCreate: boolean; prRules: string; branchPrefix: string; prDraft: boolean; automationHandles: string[];
 }
 export type PrComment =
     | { kind: "review"; id: number; author: string; state: string; body: string; at: string; url: string }
@@ -693,19 +693,19 @@ export const api = {
         fetch(`/api/accounts/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Account>(r)),
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: {
-        name: string; path: string; baseBranch: string; defaultAccountId?: string; accountOrder?: string[]; configDirId?: string; appUrl?: string; qaScript?: string;
-        repos?: string[]; branchPrefix?: string; ticketSource: "clickup" | "linear"; envVars?: string; prDraft?: boolean;
+        name: string; path: string; baseBranch: string; defaultAccountId?: string; accountOrder?: string[]; configDirId?: string; appUrl?: string;
+        repos?: string[]; ticketSource: "clickup" | "linear"; envVars?: string;
     }) => post<Env>("/api/envs", body),
     patchEnv: (
         id: string,
         body: {
             name?: string; baseBranch?: string; defaultAccountId?: string | null; accountOrder?: string[]; configDirId?: string | null;
-            chromeDeviceId?: string | null; chromeBrowserName?: string | null; qaSeedHints?: string | null; appUrl?: string | null; qaScript?: string | null;
+            qaSeedHints?: string | null; appUrl?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
-            setupCommand?: string | null; repos?: string[] | null; branchPrefix?: string | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
+            setupCommand?: string | null; repos?: string[] | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
             qaBrowser?: "chrome" | "gstack"; qaAutoFix?: QaAutoFixScope;
             reviewChecklist?: ReviewChecklist | null;
-            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; ciAutopilotRules?: AutopilotRules | null; prepareCommand?: string | null; qaSessionCommand?: string | null; qaBrowserCookies?: string | null; codeReview?: boolean; dbHostsCommand?: string | null; allowedDbHosts?: string[] | null; taskDb?: TaskDbConfig | null; callbackPorts?: Array<{ port: number; relay: boolean }> | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; prDraft?: boolean; dependsOnEnvId?: string | null;
+            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; ciAutopilotRules?: AutopilotRules | null; prepareCommand?: string | null; qaSessionCommand?: string | null; qaBrowserCookies?: string | null; codeReview?: boolean; dbHostsCommand?: string | null; allowedDbHosts?: string[] | null; taskDb?: TaskDbConfig | null; callbackPorts?: Array<{ port: number; relay: boolean }> | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
