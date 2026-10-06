@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Env, type PalaceHit, type PoArtifact, type PoDetail, type PoIssue, type PoPhase, type PoTicket, type ProductOwner } from "./api";
 import { Markdown } from "./Markdown";
 import { Modal } from "./Modal";
-import { ListTable, type ListColumn } from "./ListTable";
+import { DataTable, type DataColumn } from "./components/DataTable";
 import { poBus } from "./poBus";
 import type { PoTab } from "./routes";
 import { CorrectionsTab, EventsTab, QuestionsTab } from "./PoJournal";
@@ -195,13 +195,16 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
         setCtx(null);
         void api.productContext(envId).then((r) => setCtx(r.text)).catch((e: Error) => onError(e.message));
     }, [envId, onError]);
-    const columns: ListColumn<ProductOwner>[] = [
-        { key: "name", label: "Name", kind: "label", render: (po) => <b>{po.title}</b>, sort: (po) => po.title },
-        { key: "env", label: "Environment", render: (po) => envName(po.env_id), sort: (po) => envName(po.env_id) },
-        { key: "type", label: "Type", render: (po) => (po.scope_kind === "env" ? "Whole environment" : po.source === "linear" ? "Linear project" : "ClickUp epic"), sort: (po) => `${po.scope_kind}${po.source}` },
+    const typeOf = (po: ProductOwner): string => (po.scope_kind === "env" ? "Whole environment" : po.source === "linear" ? "Linear project" : "ClickUp epic");
+    const columns: DataColumn<ProductOwner>[] = [
+        { key: "name", label: "Name", kind: "label", value: (po) => po.title, filter: false },
+        { key: "env", label: "Environment", value: (po) => envName(po.env_id), filter: "auto" },
+        { key: "type", label: "Type", value: typeOf, filter: "auto" },
         {
             key: "status",
             label: "Status",
+            value: (po) => PHASE_LABEL[po.phase],
+            filter: "auto",
             render: (po) => (
                 <>
                     <span className={`chip ${po.phase === "live" ? "ok" : "accent"}`}>{PHASE_LABEL[po.phase]}</span>
@@ -209,16 +212,16 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
                     {po.status === "failed" && <span className="chip bad" title={po.status_line ?? ""}> failed</span>}
                 </>
             ),
-            sort: (po) => Object.keys(PHASE_LABEL).indexOf(po.phase),
         },
-        { key: "tickets", label: "Tickets #", kind: "num", hint: "Issues of the project in the task manager", render: (po) => po.tickets ?? 0, sort: (po) => po.tickets ?? 0 },
-        { key: "tasks", label: "Tasks #", kind: "num", hint: "Stagehand tasks with this Product Owner", render: (po) => po.tasks ?? 0, sort: (po) => po.tasks ?? 0 },
+        { key: "tickets", label: "Tickets #", kind: "num", hint: "Issues of the project in the task manager", value: (po) => po.tickets ?? 0, filter: false },
+        { key: "tasks", label: "Tasks #", kind: "num", hint: "Stagehand tasks with this Product Owner", value: (po) => po.tasks ?? 0, filter: false },
         {
             key: "progress",
             label: "Progress %",
             hint: "Issues done ÷ all issues, by their status in the task manager; canceled ones count in neither",
+            value: (po) => po.progress ?? -1,
+            filter: false,
             render: (po) => (po.progress == null ? <span className="quiet">—</span> : <span className="share" title={`${po.ticketsDone ?? 0} of ${po.tickets ?? 0} done`}><i style={{ width: `${po.progress}%` }} /><span>{po.progress}%</span></span>),
-            sort: (po) => po.progress ?? -1,
         },
     ];
     const envLabel = envs.find((e) => e.id === envId)?.name;
@@ -230,13 +233,21 @@ const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onErro
                 <button className={tab === "memory" ? "active" : ""} onClick={() => setTab("memory")}>Memory</button>
             </div>
             {creating && <NewPoDialog envs={envs} onClose={() => setCreating(false)} onCreated={(id) => { setCreating(false); onOpen(id); }} onError={onError} />}
-            {tab === "owners" && <section className="card">
-                <div className="po-head">
-                    <h2>Product owners <span className="field-hint">— one per project of an environment: a Linear project or a ClickUp epic</span></h2>
-                    <button className="primary" disabled={!envs.length} onClick={() => setCreating(true)}>New product owner</button>
-                </div>
-                {pos === null ? <div className="empty">loading…</div> : <ListTable columns={columns} rows={pos} rowKey={(po) => po.id} onRowClick={(po) => onOpen(po.id)} empty={<>No Product Owner yet. Use <b>New product owner</b> to start one.</>} />}
-            </section>}
+            {tab === "owners" && (pos === null ? <div className="empty">loading…</div> : (
+                <DataTable
+                    title="Product owners"
+                    entity="product owner"
+                    onCreate={() => setCreating(true)}
+                    createDisabled={envs.length ? undefined : "add an environment first"}
+                    intro="One per project of an environment: a Linear project or a ClickUp epic."
+                    columns={columns}
+                    rows={pos}
+                    rowKey={(po) => po.id}
+                    onRowClick={(po) => onOpen(po.id)}
+                    storageKey="product-owners"
+                    empty={<>No Product Owner yet. Use <b>Create new product owner</b> to start one.</>}
+                />
+            ))}
             {tab === "context" && <section className="card">
                 <div className="po-head">
                     <h2>Product context <span className="field-hint">— this environment's product; its Product Owners read it</span></h2>

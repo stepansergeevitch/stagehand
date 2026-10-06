@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { DataTable, type DataColumn } from "./components/DataTable";
+import { Modal } from "./Modal";
 import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type ModelOperation, type ModelStage, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager } from "./api";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
@@ -17,7 +19,6 @@ const repoList = (json: string | null): string => {
     }
 };
 
-const TITLE: Record<ManageTab, string> = { envs: "Environments", dirs: "Claude config dirs", accounts: "AI accounts", integrations: "Integrations" };
 
 // Which model runs what: the global default, one model per stage for its first run on a task and one for every later
 // run (review rounds, retries, QA returns), and one per side operation. Every select saves at once.
@@ -129,208 +130,269 @@ export const ManagePage = ({
     };
     return (
         <div className="env-page manage-page">
-            <h1>{TITLE[tab]}</h1>
-            {tab === "envs" && <EnvList envs={envs} configDirs={configDirs} accounts={accounts} tasks={tasks} onConfigure={onConfigureEnv} onAdd={onAddEnv} onDelete={(id) => act(() => api.deleteEnv(id))} />}
-            {tab === "dirs" && <ConfigDirList dirs={configDirs} onOpen={onOpenDir} act={act} />}
-            {tab === "accounts" && <AccountList accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onError={onError} />}
+            {tab === "envs" && <EnvTable envs={envs} configDirs={configDirs} accounts={accounts} tasks={tasks} onConfigure={onConfigureEnv} onAdd={onAddEnv} act={act} />}
+            {tab === "dirs" && <ConfigDirTable dirs={configDirs} onOpen={onOpenDir} act={act} />}
+            {tab === "accounts" && <AccountTable accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onError={onError} />}
+            {tab === "accounts" && settings && <ModelsCard settings={settings} accounts={accounts} act={act} />}
             {tab === "accounts" && settings && <PrompterCard settings={settings} accounts={accounts} onChanged={onChanged} onError={onError} />}
-            {tab === "integrations" && <p className="field-hint">External services Stagehand talks to. Each card is tagged with its type: task manager (tickets), notifications (pushes to you), decision model (Jev).</p>}
-            {tab === "integrations" && <TaskManagerList onError={onError} />}
-            {tab === "integrations" && <NotionCard onError={onError} />}
-            {tab === "integrations" && settings && <NotificationsCard settings={settings} onChanged={onChanged} onError={onError} />}
-            {tab === "integrations" && settings && <JevCard settings={settings} onChanged={onChanged} onError={onError} />}
+            {tab === "integrations" && <IntegrationTable settings={settings} onChanged={onChanged} onError={onError} />}
         </div>
     );
 };
 
-const EnvList = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, onDelete }: { envs: Env[]; configDirs: ConfigDir[]; accounts: Account[]; tasks: Task[]; onConfigure: (id: string) => void; onAdd: () => void; onDelete: (id: string) => Promise<void> }) => (
-    <>
-        <div className="actions" style={{ marginTop: 0 }}><button className="primary" onClick={onAdd}>+ Environment</button></div>
-        {envs.map((e) => {
-            const n = tasks.filter((t) => t.env_id === e.id).length;
-            return (
-                <section className="card item" key={e.id}>
-                    <h2>{e.name} <span className="chip">{e.ticket_source}</span> <span className="chip accent">{e.base_branch}</span></h2>
-                    <div className="kv">
-                        <b>Path</b><code>{e.path}</code>
-                        <b>Repos</b><span>{repoList(e.repos)}</span>
-                        <b>Tasks</b><span>{n}</span>
-                        <b>Config dir</b><span>{configDirs.find((d) => d.id === e.config_dir_id)?.name ?? "server default"}</span>
-                        <b>AI accounts</b><span>{accountOrderOf(e).map((id, i) => `${i + 1}. ${accounts.find((a) => a.id === id)?.name ?? "?"}`).join("  ") || "any that can run in the dir"}</span>
-                    </div>
-                    <div className="actions">
-                        <button onClick={() => onConfigure(e.id)}>Configure</button>
-                        <button className="danger" disabled={n > 0} title={n > 0 ? "delete its tasks first" : "remove this environment from Stagehand (files untouched)"} onClick={() => { if (confirm(`Remove environment ${e.name} from Stagehand? Files on disk are not touched.`)) void onDelete(e.id); }}>Delete</button>
-                    </div>
-                </section>
-            );
-        })}
-    </>
-);
+const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }: { envs: Env[]; configDirs: ConfigDir[]; accounts: Account[]; tasks: Task[]; onConfigure: (id: string) => void; onAdd: () => void; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
+    const taskCount = (e: Env): number => tasks.filter((t) => t.env_id === e.id).length;
+    const dirName = (e: Env): string => configDirs.find((d) => d.id === e.config_dir_id)?.name ?? "server default";
+    const accountList = (e: Env): string => accountOrderOf(e).map((id, i) => `${i + 1}. ${accounts.find((a) => a.id === id)?.name ?? "?"}`).join("  ") || "any that can run in the dir";
+    const columns: DataColumn<Env>[] = [
+        { key: "name", label: "Name", kind: "label", value: (e) => e.name, filter: false, render: (e) => <>{e.name}<small>{e.path}</small></> },
+        { key: "source", label: "Tickets", value: (e) => e.ticket_source, filter: "auto" },
+        { key: "base", label: "Base branch", value: (e) => e.base_branch, filter: "auto", render: (e) => <span className="chip accent">{e.base_branch}</span> },
+        { key: "repos", label: "Repos", value: (e) => repoList(e.repos), filter: false },
+        { key: "dir", label: "Config dir", value: dirName, filter: "auto" },
+        { key: "accounts", label: "AI accounts", value: accountList, filter: false, defaultHidden: true },
+        { key: "path", label: "Path", value: (e) => e.path, filter: false, defaultHidden: true, render: (e) => <code>{e.path}</code> },
+        { key: "tasks", label: "Tasks", kind: "num", value: taskCount, filter: false },
+    ];
+    return (
+        <DataTable
+            title="Environments"
+            entity="environment"
+            onCreate={onAdd}
+            intro="Repositories Stagehand works in: their services, config dir and AI accounts."
+            columns={columns}
+            rows={envs}
+            rowKey={(e) => e.id}
+            onRowClick={(e) => onConfigure(e.id)}
+            storageKey="config-envs"
+            defaultSort={{ key: "name", desc: false }}
+            empty="No environment yet."
+            bulkActions={(sel, clear) => {
+                const busy = sel.filter((e) => taskCount(e) > 0);
+                return (
+                    <button className="danger tiny" disabled={busy.length > 0} title={busy.length ? `delete the tasks of ${busy.map((e) => e.name).join(", ")} first` : "remove from Stagehand (files untouched)"} onClick={() => { if (confirm(`Remove ${sel.length} environment(s) from Stagehand? Files on disk are not touched.`)) void act(async () => { for (const e of sel) await api.deleteEnv(e.id); clear(); }); }}>
+                        Delete
+                    </button>
+                );
+            }}
+        />
+    );
+};
 
-const ConfigDirList = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id: string) => void; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
+const ConfigDirTable = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id: string) => void; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
+    const [adding, setAdding] = useState(false);
     const [add, setAdd] = useState({ name: "", path: "" });
+    const columns: DataColumn<ConfigDir>[] = [
+        { key: "name", label: "Name", kind: "label", value: (d) => d.name, filter: false, render: (d) => <>{d.name}<small>{d.path}</small></> },
+        { key: "disk", label: "On disk", value: (d) => (d.contents.exists ? "present" : "missing"), filter: "auto", render: (d) => (d.contents.exists ? <span className="chip ok">present</span> : <span className="chip bad">missing</span>) },
+        { key: "skills", label: "Skills", kind: "num", value: (d) => d.contents.skills.length, filter: false },
+        { key: "agents", label: "Subagents", kind: "num", value: (d) => d.contents.agents.length, filter: false },
+        { key: "mcp", label: "MCP servers", kind: "num", value: (d) => d.contents.mcpServers.length, filter: false },
+        { key: "hooks", label: "Hooks", value: (d) => d.contents.hooks.join(", ") || "none", filter: false },
+        { key: "claudemd", label: "CLAUDE.md", value: (d) => d.contents.hasClaudeMd, filter: "auto" },
+        { key: "envs", label: "Used by", value: (d) => d.envs.join(", ") || "no environment", filter: false },
+        { key: "runnable", label: "Runnable with", value: (d) => d.usable_accounts.join(", ") || "no account", filter: false, defaultHidden: true },
+        { key: "path", label: "Path", value: (d) => d.path, filter: false, defaultHidden: true, render: (d) => <code>{d.path}</code> },
+    ];
     return (
         <>
-            <p className="field-hint">A config dir is a Claude directory on this host (skills, hooks, subagents, commands, MCP servers, CLAUDE.md) plus the commit/branch/PR rules Stagehand enforces. Environments point at one; any AI account with a token can run in any dir.</p>
-            <details className="card">
-                <summary>Register a config dir</summary>
-                <div className="card-body env-fields" style={{ maxWidth: 560 }}>
-                    <label>Name <input value={add.name} onChange={(e) => setAdd({ ...add, name: e.target.value })} placeholder="personal" /></label>
-                    <label>Directory <input value={add.path} onChange={(e) => setAdd({ ...add, path: e.target.value })} placeholder="/Users/you/code/project/.claude" /></label>
-                    <button className="primary" disabled={!add.name.trim() || !add.path.trim()} onClick={async () => { await act(() => api.addConfigDir(add.name.trim(), add.path.trim())); setAdd({ name: "", path: "" }); }}>Register</button>
-                </div>
-            </details>
-            {dirs.map((d) => {
-                const c = d.contents;
-                return (
-                    <section className="card item" key={d.id}>
-                        <h2>
-                            {d.name}
-                            {!c.exists && <span className="chip bad">missing on disk</span>}
-                        </h2>
-                        <div className="kv">
-                            <b>Path</b><code>{d.path}</code>
-                            <b>Contains</b>
-                            <span>
-                                {[
-                                    `${c.skills.length} skill${c.skills.length === 1 ? "" : "s"}`,
-                                    c.hooks.length ? `hooks on ${c.hooks.join(", ")}` : "no hooks",
-                                    `${c.agents.length} subagent${c.agents.length === 1 ? "" : "s"}`,
-                                    `${c.mcpServers.length} MCP server${c.mcpServers.length === 1 ? "" : "s"}`,
-                                    c.hasClaudeMd ? "CLAUDE.md" : "no CLAUDE.md",
-                                ].join(" · ")}
-                            </span>
-                            <b>Used by</b><span>{d.envs.join(", ") || "no environment yet"}</span>
-                            <b>Runnable with</b><span>{d.usable_accounts.join(", ") || "no account (needs a token)"}</span>
-                        </div>
-                        <div className="actions">
-                            <button onClick={() => onOpen(d.id)}>Rules and contents</button>
-                            <button className="danger" disabled={d.envs.length > 0} title={d.envs.length ? "an environment still uses it" : "forget this dir (nothing on disk changes)"} onClick={() => { if (confirm(`Forget config dir ${d.name}? Nothing on disk is touched.`)) void act(() => api.deleteConfigDir(d.id)); }}>Delete</button>
-                        </div>
-                    </section>
-                );
-            })}
+            <DataTable
+                title="Claude config dirs"
+                entity="config dir"
+                onCreate={() => setAdding(true)}
+                intro="A Claude directory on this host (skills, hooks, subagents, commands, MCP servers, CLAUDE.md) plus the commit, branch and PR rules Stagehand enforces. Environments point at one."
+                columns={columns}
+                rows={dirs}
+                rowKey={(d) => d.id}
+                onRowClick={(d) => onOpen(d.id)}
+                storageKey="config-dirs"
+                defaultSort={{ key: "name", desc: false }}
+                empty="No config dir registered yet."
+                bulkActions={(sel, clear) => {
+                    const used = sel.filter((d) => d.envs.length > 0);
+                    return (
+                        <button className="danger tiny" disabled={used.length > 0} title={used.length ? `still used: ${used.map((d) => d.name).join(", ")}` : "forget (nothing on disk changes)"} onClick={() => { if (confirm(`Forget ${sel.length} config dir(s)? Nothing on disk is touched.`)) void act(async () => { for (const d of sel) await api.deleteConfigDir(d.id); clear(); }); }}>
+                            Delete
+                        </button>
+                    );
+                }}
+            />
+            {adding && (
+                <Modal title="Register a config dir" onClose={() => setAdding(false)}>
+                    <div className="env-fields" style={{ maxWidth: 560 }}>
+                        <label>Name <input value={add.name} onChange={(e) => setAdd({ ...add, name: e.target.value })} placeholder="personal" /></label>
+                        <label>Directory <input value={add.path} onChange={(e) => setAdd({ ...add, path: e.target.value })} placeholder="/Users/you/code/project/.claude" /></label>
+                        <button className="primary" disabled={!add.name.trim() || !add.path.trim()} onClick={async () => { await act(() => api.addConfigDir(add.name.trim(), add.path.trim())); setAdd({ name: "", path: "" }); setAdding(false); }}>Register</button>
+                    </div>
+                </Modal>
+            )}
         </>
     );
 };
 
 const fmtTokens = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : String(n));
 
-const AccountList = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, onError }: { accounts: Account[]; envs: Env[]; tasks: Task[]; settings: Settings | null; onAdd: () => void; act: (fn: () => Promise<unknown>) => Promise<void>; onTerminal: (n: string) => void; onError: (m: string) => void }) => {
+const AccountCard = ({ a, envs, tasks, settings, act, onTerminal, onError }: { a: Account; envs: Env[]; tasks: Task[]; settings: Settings | null; act: (fn: () => Promise<unknown>) => Promise<void>; onTerminal: (n: string) => void; onError: (m: string) => void }) => {
     const onChangedSafe = () => act(async () => undefined);
     const [busy, setBusy] = useState<string | null>(null);
     const [rename, setRename] = useState<{ id: string; name: string } | null>(null);
     const [verify, setVerify] = useState<Record<string, { ok: boolean; text: string }>>({});
+    const five = a.limits.find((l) => l.window === "five_hour");
+    const week = a.limits.find((l) => l.window === "seven_day");
+    const used = envs.filter((e) => e.default_account_id === a.id).length + tasks.filter((t) => t.account_id === a.id).length;
+    return (
+        <section className="card item" key={a.id}>
+            <h2>
+                {rename?.id === a.id ? (
+                    <span className="inline-edit">
+                        <input value={rename.name} onChange={(e) => setRename({ id: a.id, name: e.target.value })} />
+                        <button onClick={async () => { await act(() => api.patchAccount(a.id, { name: rename.name.trim() })); setRename(null); }}>Save</button>
+                        <button onClick={() => setRename(null)}>×</button>
+                    </span>
+                ) : (
+                    <span onDoubleClick={() => setRename({ id: a.id, name: a.name })} title="double-click to rename">{a.name}</span>
+                )}
+                <span className="chip">{a.provider}</span>
+                {a.setting_up ? <span className="chip wait">token setup in progress</span> : a.has_token ? <span className="chip ok">token</span> : a.logged_in ? <span className="chip warn">legacy login</span> : <span className="chip bad">no auth</span>}
+                {accountBrowserReady(a) ? <span className="chip ok">chrome{a.chrome_browser_name ? ` · ${a.chrome_browser_name}` : ""}</span> : <span className="chip">no chrome</span>}
+                {a.email && <span className="chip">{a.email}</span>}
+                {a.plan && <span className="chip">{a.plan}</span>}
+            </h2>
+            <div className="kv">
+                <b>Runs in</b><span>{a.has_token ? "any config dir" : a.logged_in ? <>only <code>{a.auth_dir}</code> (set up a token to use it anywhere)</> : "nowhere yet — set up a token"}</span>
+                <b>Browser login</b>
+                <span>
+                    {a.login_ok === null ? <span className="chip">unknown — probe</span> : a.login_ok ? <span className="chip ok">in {a.login_dir ?? a.auth_dir}</span> : <span className="chip bad">none</span>}
+                    <span className="field-hint">Browser stages (QA, login helper) need a claude.ai browser login plus a Chrome profile whose Claude extension is signed into this account; tokens get no Chrome bridge. A login in the account's own config dir serves envs using that dir; "Log in (browser)" adds one in {a.browser_dir}, which serves every env (the env's config dir is mirrored in). "Probe Chrome" restarts Chrome automatically (closing all its windows/tabs) if the first connection attempt fails — a brand-new login location's first connection often needs that once.</span>
+                </span>
+                <b>Chrome profile</b>
+                <span>
+                    {a.chrome_capable === null ? <span className="chip">not probed</span> : a.chrome_capable ? (
+                        <select value={a.chrome_device_id ?? ""} onChange={(e) => void act(() => api.patchAccount(a.id, { chromeDeviceId: e.target.value || null }))}>
+                            <option value="">— pick a profile —</option>
+                            {(a.browsers ?? []).map((b) => <option key={b.deviceId} value={b.deviceId}>{chromeBrowserLabel(b)}{b.account ? ` · ${b.account}` : ""}{b.profile ? "" : ` (${b.deviceId.slice(0, 8)})`}</option>)}
+                        </select>
+                    ) : <span className="chip bad">no Chrome bridge under this login</span>}
+                </span>
+                <b>Chrome per QA run</b>
+                <span>
+                    <label className="inline"><input type="checkbox" checked={a.chrome_clone_qa === 1} disabled={!a.chrome_device_id} onChange={(e) => void act(() => api.patchAccount(a.id, { chromeCloneQa: e.target.checked }))} /> copy the profile for every browser QA run</label>
+                    <span className="field-hint">On: each QA baseline / Manual QA run copies the Chrome profile above (cookies and app logins included, about one second), starts its own Chrome window on the copy with the QA launch flags, drives that window, and deletes the copy afterwards — several browser runs of this account go in parallel (up to maxChromeClonesPerAccount, 3) and your own Chrome is never touched. Log in to the apps in the profile above; every copy inherits it. Off: runs share the profile above, one at a time.</span>
+                </span>
+                <b>Default model</b><span>{modelLabel(a.default_model, settings?.models) ?? "—"}</span>
+                <b>Windows 5h / 7d</b>
+                <span className="mono">
+                    {five ? (five.expired ? "? (reset since)" : `${Math.round(five.utilization * 100)}%`) : "—"} / {week ? (week.expired ? "?" : `${Math.round(week.utilization * 100)}%`) : "—"}
+                    {five?.updatedAt && <span className="field-hint">as of {new Date(five.updatedAt).toLocaleString()}{a.windows.length ? ` · one window ≈ ${a.windows.map((w) => `$${w.usdPerWindow.toFixed(0)} (${w.window === "five_hour" ? "5 h" : w.window === "seven_day" ? "7 d" : w.window})`).join(", ")} of estimated cost` : ""}</span>}
+                </span>
+                <b>Consumed today / week</b><span className="mono">{fmtTokens(a.usage?.today.tokens ?? 0)} · ${(a.usage?.today.cost ?? 0).toFixed(2)} / {fmtTokens(a.usage?.week.tokens ?? 0)} · ${(a.usage?.week.cost ?? 0).toFixed(2)}</span>
+                <b>Used by</b><span>{envs.filter((e) => accountOrderOf(e).includes(a.id)).map((e) => `${e.name} (#${accountOrderOf(e).indexOf(a.id) + 1})`).join(", ") || "no environment lists it"}</span>
+            </div>
+            <div className="actions">
+                <button onClick={async () => { try { const r = await api.setupToken(a.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>{a.has_token ? "Renew token" : "Set up token"}</button>
+                <button onClick={async () => { try { const r = await api.loginAccount(a.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Log in (browser)</button>
+                <button disabled={busy === `chrome-${a.id}`} onClick={async () => {
+                    setBusy(`chrome-${a.id}`);
+                    setVerify((v) => ({ ...v, [a.id]: { ok: true, text: "checking the browser login, then running a tiny --chrome agent…" } }));
+                    try {
+                        const r = await api.probeAccountChrome(a.id);
+                        setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } }));
+                        await onChangedSafe();
+                    } catch (e) {
+                        setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } }));
+                    } finally {
+                        setBusy(null);
+                    }
+                }}>{busy === `chrome-${a.id}` ? "Probing…" : "Probe Chrome"}</button>
+                <button disabled={busy === `clone-${a.id}` || !a.chrome_device_id} title="Copies the chosen Chrome profile, starts a Chrome window on the copy, waits for its extension to connect, then removes it" onClick={async () => {
+                    setBusy(`clone-${a.id}`);
+                    setVerify((v) => ({ ...v, [a.id]: { ok: true, text: "copying the profile, starting a Chrome on the copy, waiting for its extension…" } }));
+                    try {
+                        const r = await api.testAccountClone(a.id);
+                        setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } }));
+                    } catch (e) {
+                        setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } }));
+                    } finally {
+                        setBusy(null);
+                    }
+                }}>{busy === `clone-${a.id}` ? "Cloning…" : "Test profile cloning"}</button>
+                <button disabled={busy === a.id} onClick={async () => {
+                    setBusy(a.id);
+                    setVerify({ ...verify, [a.id]: { ok: true, text: "running a trivial agent turn…" } });
+                    try {
+                        const r = await api.refreshAccount(a.id);
+                        setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } }));
+                        await onChangedSafe();
+                    } catch (e) {
+                        setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } }));
+                    } finally {
+                        setBusy(null);
+                    }
+                }}>{busy === a.id ? "Checking…" : "Verify"}</button>
+                {a.plan !== "enterprise" && a.logged_in === 1 && (
+                    <button disabled={a.refreshing_limits} onClick={async () => { setVerify((v) => ({ ...v, [a.id]: { ok: true, text: "refreshing the rate-limit windows (one tiny Sonnet turn)…" } })); try { const r = await api.refreshLimits(a.id); setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } })); await onChangedSafe(); } catch (e) { setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } })); } }}>{a.refreshing_limits ? "Refreshing…" : "Refresh limits"}</button>
+                )}
+                <button className="danger" disabled={used > 0} title={used > 0 ? "an env or task still uses it" : "forget this account and its token"} onClick={() => { if (confirm(`Forget account ${a.name} and its stored token?`)) void act(() => api.deleteAccount(a.id)); }}>Delete</button>
+            </div>
+            {verify[a.id] && <div className={`test-result ${verify[a.id]!.ok ? "" : "bad"}`}>{verify[a.id]!.text}</div>}
+        </section>
+    );
+};
+
+const authLabel = (a: Account): string => (a.setting_up ? "token setup in progress" : a.has_token ? "token" : a.logged_in ? "legacy login" : "no auth");
+const pctOf = (a: Account, window: string): number | null => {
+    const l = a.limits.find((x) => x.window === window);
+    return l && !l.expired ? Math.round(l.utilization * 100) : null;
+};
+
+const AccountTable = ({ accounts, envs, tasks, settings, onAdd, act, onTerminal, onError }: { accounts: Account[]; envs: Env[]; tasks: Task[]; settings: Settings | null; onAdd: () => void; act: (fn: () => Promise<unknown>) => Promise<void>; onTerminal: (n: string) => void; onError: (m: string) => void }) => {
+    const [open, setOpen] = useState<string | null>(null);
+    const usedCount = (a: Account): number => envs.filter((e) => e.default_account_id === a.id).length + tasks.filter((t) => t.account_id === a.id).length;
+    const usedBy = (a: Account): string => envs.filter((e) => accountOrderOf(e).includes(a.id)).map((e) => `${e.name} (#${accountOrderOf(e).indexOf(a.id) + 1})`).join(", ") || "no environment";
+    const columns: DataColumn<Account>[] = [
+        { key: "name", label: "Name", kind: "label", value: (a) => a.name, filter: false, render: (a) => <>{a.name}{a.email && <small>{a.email}</small>}</> },
+        { key: "provider", label: "Provider", value: (a) => a.provider, filter: "auto" },
+        { key: "auth", label: "Auth", value: authLabel, filter: "auto", render: (a) => <span className={`chip ${a.setting_up ? "wait" : a.has_token ? "ok" : a.logged_in ? "warn" : "bad"}`}>{authLabel(a)}</span> },
+        { key: "chrome", label: "Chrome", value: (a) => (accountBrowserReady(a) ? a.chrome_browser_name ?? "ready" : "none"), filter: "auto" },
+        { key: "plan", label: "Plan", value: (a) => a.plan ?? "", filter: "auto" },
+        { key: "email", label: "Email", value: (a) => a.email ?? "", filter: false, defaultHidden: true },
+        { key: "model", label: "Default model", value: (a) => modelLabel(a.default_model, settings?.models) ?? "", filter: "auto", defaultHidden: true },
+        { key: "five", label: "5 h", kind: "num", value: (a) => pctOf(a, "five_hour"), filter: false, render: (a) => { const v = pctOf(a, "five_hour"); return v === null ? "—" : `${v}%`; } },
+        { key: "week", label: "7 d", kind: "num", value: (a) => pctOf(a, "seven_day"), filter: false, render: (a) => { const v = pctOf(a, "seven_day"); return v === null ? "—" : `${v}%`; } },
+        { key: "today", label: "Today", kind: "num", value: (a) => a.usage?.today.cost ?? 0, filter: false, render: (a) => `$${(a.usage?.today.cost ?? 0).toFixed(2)}` },
+        { key: "weekCost", label: "This week", kind: "num", value: (a) => a.usage?.week.cost ?? 0, filter: false, render: (a) => `$${(a.usage?.week.cost ?? 0).toFixed(2)}` },
+        { key: "used", label: "Used by", value: usedBy, filter: false, defaultHidden: true },
+    ];
+    const current = accounts.find((a) => a.id === open);
     return (
         <>
-            <p className="field-hint">An AI account is a provider login, stored as a long-lived token; it can run in any config dir. Accounts without a token are legacy browser logins tied to one directory.</p>
-            <div className="actions" style={{ marginTop: 0 }}>
-                <button className="primary" onClick={onAdd}>+ Account</button>
-            </div>
-            {settings && <ModelsCard settings={settings} accounts={accounts} act={act} />}
-            {accounts.map((a) => {
-                const five = a.limits.find((l) => l.window === "five_hour");
-                const week = a.limits.find((l) => l.window === "seven_day");
-                const used = envs.filter((e) => e.default_account_id === a.id).length + tasks.filter((t) => t.account_id === a.id).length;
-                return (
-                    <section className="card item" key={a.id}>
-                        <h2>
-                            {rename?.id === a.id ? (
-                                <span className="inline-edit">
-                                    <input value={rename.name} onChange={(e) => setRename({ id: a.id, name: e.target.value })} />
-                                    <button onClick={async () => { await act(() => api.patchAccount(a.id, { name: rename.name.trim() })); setRename(null); }}>Save</button>
-                                    <button onClick={() => setRename(null)}>×</button>
-                                </span>
-                            ) : (
-                                <span onDoubleClick={() => setRename({ id: a.id, name: a.name })} title="double-click to rename">{a.name}</span>
-                            )}
-                            <span className="chip">{a.provider}</span>
-                            {a.setting_up ? <span className="chip wait">token setup in progress</span> : a.has_token ? <span className="chip ok">token</span> : a.logged_in ? <span className="chip warn">legacy login</span> : <span className="chip bad">no auth</span>}
-                            {accountBrowserReady(a) ? <span className="chip ok">chrome{a.chrome_browser_name ? ` · ${a.chrome_browser_name}` : ""}</span> : <span className="chip">no chrome</span>}
-                            {a.email && <span className="chip">{a.email}</span>}
-                            {a.plan && <span className="chip">{a.plan}</span>}
-                        </h2>
-                        <div className="kv">
-                            <b>Runs in</b><span>{a.has_token ? "any config dir" : a.logged_in ? <>only <code>{a.auth_dir}</code> (set up a token to use it anywhere)</> : "nowhere yet — set up a token"}</span>
-                            <b>Browser login</b>
-                            <span>
-                                {a.login_ok === null ? <span className="chip">unknown — probe</span> : a.login_ok ? <span className="chip ok">in {a.login_dir ?? a.auth_dir}</span> : <span className="chip bad">none</span>}
-                                <span className="field-hint">Browser stages (QA, login helper) need a claude.ai browser login plus a Chrome profile whose Claude extension is signed into this account; tokens get no Chrome bridge. A login in the account's own config dir serves envs using that dir; "Log in (browser)" adds one in {a.browser_dir}, which serves every env (the env's config dir is mirrored in). "Probe Chrome" restarts Chrome automatically (closing all its windows/tabs) if the first connection attempt fails — a brand-new login location's first connection often needs that once.</span>
-                            </span>
-                            <b>Chrome profile</b>
-                            <span>
-                                {a.chrome_capable === null ? <span className="chip">not probed</span> : a.chrome_capable ? (
-                                    <select value={a.chrome_device_id ?? ""} onChange={(e) => void act(() => api.patchAccount(a.id, { chromeDeviceId: e.target.value || null }))}>
-                                        <option value="">— pick a profile —</option>
-                                        {(a.browsers ?? []).map((b) => <option key={b.deviceId} value={b.deviceId}>{chromeBrowserLabel(b)}{b.account ? ` · ${b.account}` : ""}{b.profile ? "" : ` (${b.deviceId.slice(0, 8)})`}</option>)}
-                                    </select>
-                                ) : <span className="chip bad">no Chrome bridge under this login</span>}
-                            </span>
-                            <b>Chrome per QA run</b>
-                            <span>
-                                <label className="inline"><input type="checkbox" checked={a.chrome_clone_qa === 1} disabled={!a.chrome_device_id} onChange={(e) => void act(() => api.patchAccount(a.id, { chromeCloneQa: e.target.checked }))} /> copy the profile for every browser QA run</label>
-                                <span className="field-hint">On: each QA baseline / Manual QA run copies the Chrome profile above (cookies and app logins included, about one second), starts its own Chrome window on the copy with the QA launch flags, drives that window, and deletes the copy afterwards — several browser runs of this account go in parallel (up to maxChromeClonesPerAccount, 3) and your own Chrome is never touched. Log in to the apps in the profile above; every copy inherits it. Off: runs share the profile above, one at a time.</span>
-                            </span>
-                            <b>Default model</b><span>{modelLabel(a.default_model, settings?.models) ?? "—"}</span>
-                            <b>Windows 5h / 7d</b>
-                            <span className="mono">
-                                {five ? (five.expired ? "? (reset since)" : `${Math.round(five.utilization * 100)}%`) : "—"} / {week ? (week.expired ? "?" : `${Math.round(week.utilization * 100)}%`) : "—"}
-                                {five?.updatedAt && <span className="field-hint">as of {new Date(five.updatedAt).toLocaleString()}{a.windows.length ? ` · one window ≈ ${a.windows.map((w) => `$${w.usdPerWindow.toFixed(0)} (${w.window === "five_hour" ? "5 h" : w.window === "seven_day" ? "7 d" : w.window})`).join(", ")} of estimated cost` : ""}</span>}
-                            </span>
-                            <b>Consumed today / week</b><span className="mono">{fmtTokens(a.usage?.today.tokens ?? 0)} · ${(a.usage?.today.cost ?? 0).toFixed(2)} / {fmtTokens(a.usage?.week.tokens ?? 0)} · ${(a.usage?.week.cost ?? 0).toFixed(2)}</span>
-                            <b>Used by</b><span>{envs.filter((e) => accountOrderOf(e).includes(a.id)).map((e) => `${e.name} (#${accountOrderOf(e).indexOf(a.id) + 1})`).join(", ") || "no environment lists it"}</span>
-                        </div>
-                        <div className="actions">
-                            <button onClick={async () => { try { const r = await api.setupToken(a.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>{a.has_token ? "Renew token" : "Set up token"}</button>
-                            <button onClick={async () => { try { const r = await api.loginAccount(a.id); onTerminal(r.terminal); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Log in (browser)</button>
-                            <button disabled={busy === `chrome-${a.id}`} onClick={async () => {
-                                setBusy(`chrome-${a.id}`);
-                                setVerify((v) => ({ ...v, [a.id]: { ok: true, text: "checking the browser login, then running a tiny --chrome agent…" } }));
-                                try {
-                                    const r = await api.probeAccountChrome(a.id);
-                                    setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } }));
-                                    await onChangedSafe();
-                                } catch (e) {
-                                    setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } }));
-                                } finally {
-                                    setBusy(null);
-                                }
-                            }}>{busy === `chrome-${a.id}` ? "Probing…" : "Probe Chrome"}</button>
-                            <button disabled={busy === `clone-${a.id}` || !a.chrome_device_id} title="Copies the chosen Chrome profile, starts a Chrome window on the copy, waits for its extension to connect, then removes it" onClick={async () => {
-                                setBusy(`clone-${a.id}`);
-                                setVerify((v) => ({ ...v, [a.id]: { ok: true, text: "copying the profile, starting a Chrome on the copy, waiting for its extension…" } }));
-                                try {
-                                    const r = await api.testAccountClone(a.id);
-                                    setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } }));
-                                } catch (e) {
-                                    setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } }));
-                                } finally {
-                                    setBusy(null);
-                                }
-                            }}>{busy === `clone-${a.id}` ? "Cloning…" : "Test profile cloning"}</button>
-                            <button disabled={busy === a.id} onClick={async () => {
-                                setBusy(a.id);
-                                setVerify({ ...verify, [a.id]: { ok: true, text: "running a trivial agent turn…" } });
-                                try {
-                                    const r = await api.refreshAccount(a.id);
-                                    setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } }));
-                                    await onChangedSafe();
-                                } catch (e) {
-                                    setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } }));
-                                } finally {
-                                    setBusy(null);
-                                }
-                            }}>{busy === a.id ? "Checking…" : "Verify"}</button>
-                            {a.plan !== "enterprise" && a.logged_in === 1 && (
-                                <button disabled={a.refreshing_limits} onClick={async () => { setVerify((v) => ({ ...v, [a.id]: { ok: true, text: "refreshing the rate-limit windows (one tiny Sonnet turn)…" } })); try { const r = await api.refreshLimits(a.id); setVerify((v) => ({ ...v, [a.id]: { ok: r.ok, text: r.detail } })); await onChangedSafe(); } catch (e) { setVerify((v) => ({ ...v, [a.id]: { ok: false, text: String((e as Error).message ?? e) } })); } }}>{a.refreshing_limits ? "Refreshing…" : "Refresh limits"}</button>
-                            )}
-                            <button className="danger" disabled={used > 0} title={used > 0 ? "an env or task still uses it" : "forget this account and its token"} onClick={() => { if (confirm(`Forget account ${a.name} and its stored token?`)) void act(() => api.deleteAccount(a.id)); }}>Delete</button>
-                        </div>
-                        {verify[a.id] && <div className={`test-result ${verify[a.id]!.ok ? "" : "bad"}`}>{verify[a.id]!.text}</div>}
-                    </section>
-                );
-            })}
+            <DataTable
+                title="AI accounts"
+                entity="account"
+                onCreate={onAdd}
+                intro="A provider login, stored as a long-lived token; it can run in any config dir. Accounts without a token are legacy browser logins tied to one directory."
+                columns={columns}
+                rows={accounts}
+                rowKey={(a) => a.id}
+                onRowClick={(a) => setOpen(a.id)}
+                activeKey={open}
+                storageKey="config-accounts"
+                defaultSort={{ key: "name", desc: false }}
+                empty="No AI account yet."
+                bulkActions={(sel, clear) => {
+                    const used = sel.filter((a) => usedCount(a) > 0);
+                    return (
+                        <button className="danger tiny" disabled={used.length > 0} title={used.length ? `still used: ${used.map((a) => a.name).join(", ")}` : "forget the accounts and their tokens"} onClick={() => { if (confirm(`Forget ${sel.length} account(s) and their stored tokens?`)) void act(async () => { for (const a of sel) await api.deleteAccount(a.id); clear(); }); }}>
+                            Delete
+                        </button>
+                    );
+                }}
+            />
+            {current && (
+                <Modal title={current.name} wide onClose={() => setOpen(null)}>
+                    <AccountCard a={current} envs={envs} tasks={tasks} settings={settings} act={act} onTerminal={onTerminal} onError={onError} />
+                </Modal>
+            )}
         </>
     );
 };
@@ -479,49 +541,93 @@ const NotionCard = ({ onError }: { onError: (m: string) => void }) => {
     );
 };
 
-const TaskManagerList = ({ onError }: { onError: (m: string) => void }) => {
-    const [items, setItems] = useState<TaskManager[] | null>(null);
+const TaskManagerCard = ({ m, onSaved, onError }: { m: TaskManager; onSaved: () => Promise<void>; onError: (m: string) => void }) => {
     const [edit, setEdit] = useState<Record<string, { token: string; teamId: string }>>({});
     const [test, setTest] = useState<Record<string, { ok: boolean; text: string; sample?: string[] }>>({});
-    const load = () => api.taskManagers().then(setItems).catch((e: Error) => onError(e.message));
+    const load = onSaved;
+    const e = edit[m.source] ?? { token: "", teamId: m.teamId ?? "" };
+    const t = test[m.source];
+    return (
+        <section className="card manager" key={m.source}>
+            <h2>{m.label} <TypeChip type="task manager" /> {m.configured ? <span className="chip ok">configured</span> : <span className="chip">no token</span>}</h2>
+            <div className="kv">
+                <b>Used by</b><span>{m.envs.join(", ") || "no environment yet"}</span>
+            </div>
+            <div className="env-fields manager-fields">
+                <label>{m.source === "clickup" ? "Personal API token" : "API key"}
+                    <input value={e.token} onChange={(ev) => setEdit({ ...edit, [m.source]: { ...e, token: ev.target.value } })} placeholder={m.token ?? (m.source === "clickup" ? "pk_…" : "lin_api_…")} />
+                </label>
+                {m.source === "clickup" && (
+                    <label>Team id
+                        <input value={e.teamId} onChange={(ev) => setEdit({ ...edit, [m.source]: { ...e, teamId: ev.target.value } })} placeholder="team id" />
+                    </label>
+                )}
+            </div>
+            <div className="actions">
+                <button className="primary" disabled={!e.token && e.teamId === (m.teamId ?? "")} onClick={async () => { try { await api.patchTaskManager(m.source, { ...(e.token ? { token: e.token } : {}), ...(m.source === "clickup" ? { teamId: e.teamId || null } : {}) }); setEdit({ ...edit, [m.source]: { token: "", teamId: e.teamId } }); await load(); } catch (err) { onError(String((err as Error).message ?? err)); } }}>Save</button>
+                <button disabled={!m.configured} onClick={async () => { setTest({ ...test, [m.source]: { ok: true, text: "testing…" } }); const r = await api.testTaskManager(m.source); setTest({ ...test, [m.source]: r.ok ? { ok: true, text: `OK — ${r.count} ticket(s) assigned to you`, sample: r.sample } : { ok: false, text: `failed: ${r.error}` } }); }}>Test</button>
+                <button className="danger" disabled={!m.configured} onClick={async () => { if (!confirm(`Remove the ${m.label} token?`)) return; await api.patchTaskManager(m.source, { token: null }); await load(); }}>Remove token</button>
+            </div>
+            {t && (
+                <div className={`test-result ${t.ok ? "" : "bad"}`}>
+                    <div>{t.text}</div>
+                    {t.sample && t.sample.length > 0 && <ul className="plain">{t.sample.map((s) => <li key={s}>{s}</li>)}</ul>}
+                </div>
+            )}
+        </section>
+    );
+};
+
+// One row per integration Stagehand talks to; a row opens that integration's card.
+type IntegrationRow = { id: string; name: string; type: IntegrationType; status: string; ok: boolean; usedBy: string };
+
+const IntegrationTable = ({ settings, onChanged, onError }: { settings: Settings | null; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
+    const [managers, setManagers] = useState<TaskManager[] | null>(null);
+    const [notion, setNotion] = useState<{ configured: boolean } | null>(null);
+    const [open, setOpen] = useState<string | null>(null);
+    const load = async (): Promise<void> => {
+        await Promise.all([api.taskManagers().then(setManagers), api.notion().then(setNotion)]).catch((e: Error) => onError(e.message));
+    };
     useEffect(() => { void load(); }, []);
-    if (!items) return <div className="empty">loading…</div>;
+    const rows: IntegrationRow[] = [
+        ...(managers ?? []).map((m) => ({ id: `tm:${m.source}`, name: m.label, type: "task manager" as const, status: m.configured ? "configured" : "no token", ok: m.configured, usedBy: m.envs.join(", ") })),
+        ...(notion ? [{ id: "notion", name: "Notion", type: "documents" as const, status: notion.configured ? "configured" : "no token", ok: notion.configured, usedBy: "" }] : []),
+        ...(settings
+            ? [
+                  { id: "notifications", name: "Notifications", type: "notifications" as const, status: settings.notifications.ntfyTopic ? "phone via ntfy" : "desktop only", ok: true, usedBy: "" },
+                  { id: "jev", name: "Jev (TypeSafe AI)", type: "decision model" as const, status: settings.typesafeApiKey ? "configured" : "no key", ok: Boolean(settings.typesafeApiKey), usedBy: "" },
+              ]
+            : []),
+    ];
+    const columns: DataColumn<IntegrationRow>[] = [
+        { key: "name", label: "Name", kind: "label", value: (r) => r.name, filter: false },
+        { key: "type", label: "Type", value: (r) => r.type, filter: "auto", render: (r) => <TypeChip type={r.type} /> },
+        { key: "status", label: "Status", value: (r) => r.status, filter: "auto", render: (r) => <span className={`chip ${r.ok ? "ok" : ""}`}>{r.status}</span> },
+        { key: "used", label: "Used by", value: (r) => r.usedBy, filter: false, render: (r) => r.usedBy || <span className="quiet">—</span> },
+    ];
+    const current = rows.find((r) => r.id === open);
+    const manager = current?.id.startsWith("tm:") ? managers?.find((m) => `tm:${m.source}` === current.id) : undefined;
     return (
         <>
-            <p className="field-hint">Credentials are stored in ~/.stagehand/config.json. With a token, tickets are fetched server-side (fast, no Claude run); without one, Research fetches them through the account's MCP.</p>
-            {items.map((m) => {
-                const e = edit[m.source] ?? { token: "", teamId: m.teamId ?? "" };
-                const t = test[m.source];
-                return (
-                    <section className="card manager" key={m.source}>
-                        <h2>{m.label} <TypeChip type="task manager" /> {m.configured ? <span className="chip ok">configured</span> : <span className="chip">no token</span>}</h2>
-                        <div className="kv">
-                            <b>Used by</b><span>{m.envs.join(", ") || "no environment yet"}</span>
-                        </div>
-                        <div className="env-fields manager-fields">
-                            <label>{m.source === "clickup" ? "Personal API token" : "API key"}
-                                <input value={e.token} onChange={(ev) => setEdit({ ...edit, [m.source]: { ...e, token: ev.target.value } })} placeholder={m.token ?? (m.source === "clickup" ? "pk_…" : "lin_api_…")} />
-                            </label>
-                            {m.source === "clickup" && (
-                                <label>Team id
-                                    <input value={e.teamId} onChange={(ev) => setEdit({ ...edit, [m.source]: { ...e, teamId: ev.target.value } })} placeholder="team id" />
-                                </label>
-                            )}
-                        </div>
-                        <div className="actions">
-                            <button className="primary" disabled={!e.token && e.teamId === (m.teamId ?? "")} onClick={async () => { try { await api.patchTaskManager(m.source, { ...(e.token ? { token: e.token } : {}), ...(m.source === "clickup" ? { teamId: e.teamId || null } : {}) }); setEdit({ ...edit, [m.source]: { token: "", teamId: e.teamId } }); await load(); } catch (err) { onError(String((err as Error).message ?? err)); } }}>Save</button>
-                            <button disabled={!m.configured} onClick={async () => { setTest({ ...test, [m.source]: { ok: true, text: "testing…" } }); const r = await api.testTaskManager(m.source); setTest({ ...test, [m.source]: r.ok ? { ok: true, text: `OK — ${r.count} ticket(s) assigned to you`, sample: r.sample } : { ok: false, text: `failed: ${r.error}` } }); }}>Test</button>
-                            <button className="danger" disabled={!m.configured} onClick={async () => { if (!confirm(`Remove the ${m.label} token?`)) return; await api.patchTaskManager(m.source, { token: null }); await load(); }}>Remove token</button>
-                        </div>
-                        {t && (
-                            <div className={`test-result ${t.ok ? "" : "bad"}`}>
-                                <div>{t.text}</div>
-                                {t.sample && t.sample.length > 0 && <ul className="plain">{t.sample.map((s) => <li key={s}>{s}</li>)}</ul>}
-                            </div>
-                        )}
-                    </section>
-                );
-            })}
+            <DataTable
+                title="Integrations"
+                intro="External services Stagehand talks to, each with its type: task managers (tickets), documents, notifications (pushes to you), decision model (Jev)."
+                columns={columns}
+                rows={rows}
+                rowKey={(r) => r.id}
+                onRowClick={(r) => setOpen(r.id)}
+                activeKey={open}
+                storageKey="config-integrations"
+                empty={managers === null ? "loading…" : "No integration."}
+            />
+            {current && (
+                <Modal title={current.name} wide onClose={() => setOpen(null)}>
+                    {manager && <TaskManagerCard m={manager} onSaved={load} onError={onError} />}
+                    {current.id === "notion" && <NotionCard onError={onError} />}
+                    {current.id === "notifications" && settings && <NotificationsCard settings={settings} onChanged={onChanged} onError={onError} />}
+                    {current.id === "jev" && settings && <JevCard settings={settings} onChanged={onChanged} onError={onError} />}
+                </Modal>
+            )}
         </>
     );
 };

@@ -782,9 +782,6 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .po-head h2 { margin: 0; }
 .po-pending { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
 .field-hint.bad { color: var(--bad); }
-.list-table tr.clickable { cursor: pointer; }
-.list-table tr.clickable:hover td { background: var(--bg); }
-.list-table th.num, .list-table td.num { text-align: right; }
 .env-picker { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
 .po-verdict { margin: 6px 0 10px; }
 .po-comment-card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
@@ -819,3 +816,45 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .po-memory { margin: 4px 0; padding-left: 18px; font-size: 12px; }
 .po-task-group { margin: 8px 0; }
 .po-comment-card.closed > summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* ---------- DataTable (components/DataTable.tsx): the standard list of entities ---------- */
+.data-table { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 14px; min-width: 0; }
+.dt-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px 0; flex-wrap: wrap; }
+.dt-title { font-size: 15px; margin: 0; }
+.dt-intro { margin: 6px 14px 0; }
+.dt-tools { display: flex; align-items: center; gap: 8px; padding: 10px 14px; flex-wrap: wrap; }
+.dt-icon { display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 5px 8px; color: var(--ink-2); position: relative; }
+.dt-icon.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.dt-badge { font-family: var(--mono); font-size: 10.5px; line-height: 1; background: var(--accent); color: #fff; border-radius: 999px; padding: 2px 5px; }
+.dt-search { flex: 0 1 280px; min-width: 120px; }
+.dt-spacer { flex: 1; }
+.dt-bulk { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); flex-wrap: wrap; }
+.dt-picker { position: relative; }
+.dt-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15); padding: 6px; min-width: 200px; max-height: 320px; overflow-y: auto; }
+.dt-menu-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.dt-menu-item:hover { background: var(--bg); }
+.dt-filters { display: flex; flex-direction: column; gap: 6px; padding: 0 14px 10px; }
+.dt-facet { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dt-facet-label { font-size: 12px; color: var(--ink-3); min-width: 90px; }
+.dt-chip { padding: 2px 9px; font-size: 12px; border-radius: 999px; color: var(--ink-2); }
+.dt-chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+.dt-filters > .tiny { align-self: flex-start; }
+.dt-scroll { overflow-x: auto; border-top: 1px solid var(--line); }
+.dt-scroll table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dt-scroll th { text-align: left; font-weight: 500; color: var(--ink-3); font-size: 12px; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; background: var(--panel); }
+.dt-scroll th.sortable { cursor: pointer; user-select: none; }
+.dt-scroll th.sortable:hover { color: var(--accent); }
+.dt-scroll td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.dt-scroll tr:last-child td { border-bottom: 0; }
+.dt-scroll th.num, .dt-scroll td.num { text-align: right; }
+.dt-scroll td.dt-label { min-width: 160px; font-weight: 500; }
+.dt-scroll td.dt-label small { display: block; color: var(--ink-3); font-weight: 400; overflow-wrap: anywhere; }
+.dt-scroll .dt-check { width: 32px; padding-right: 0; }
+.dt-scroll .hint-mark { color: var(--ink-3); font-weight: normal; }
+.dt-scroll tr.clickable { cursor: pointer; }
+.dt-scroll tr.clickable:hover td { background: var(--bg); }
+.dt-scroll tr.checked td { background: var(--accent-soft); }
+.dt-scroll tr.active td { box-shadow: inset 0 0 0 9999px var(--accent-soft); }
+.dt-scroll tr.active td:first-child { box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 9999px var(--accent-soft); }
+.dt-footer { padding: 6px 14px; font-size: 12px; color: var(--ink-3); border-top: 1px solid var(--line); }
+@media (max-width: 640px) { .dt-search { flex: 1 1 100%; order: 3; } .dt-facet-label { min-width: 0; width: 100%; } }
