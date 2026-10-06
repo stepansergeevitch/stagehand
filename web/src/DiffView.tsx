@@ -244,8 +244,18 @@ const threadMessages = (messages: Message[]): ThreadMessage[] =>
         return a ? [{ ...a, msg }] : [];
     });
 
-const LineThread = ({ items, asking, canAsk, onReply }: { items: ThreadMessage[]; asking: boolean; canAsk: boolean; onReply: () => void }) => (
+const LineThread = ({ items, asking, canAsk, onReply, open, onOpen }: { items: ThreadMessage[]; asking: boolean; canAsk: boolean; onReply: () => void; open: boolean; onOpen: (open: boolean) => void }) => {
+    const first = items.find((t) => t.msg.role === "user")?.msg.text ?? "";
+    if (!open && !asking) {
+        return (
+            <div className="line-thread folded" onClick={() => onOpen(true)} title="Show the discussion">
+                ▸ Q&amp;A · {items.length} message{items.length === 1 ? "" : "s"}{first ? ` — ${first.replace(/\s+/g, " ").slice(0, 90)}` : ""}
+            </div>
+        );
+    }
+    return (
     <div className="line-thread">
+        <button className="tiny thread-fold" onClick={() => onOpen(false)} title="Collapse this discussion">▾ Collapse</button>
         {items.map(({ msg }) => (
             <div key={msg.id} className={`thread-msg ${msg.role}`}>
                 <div className="chat-msg-head">
@@ -258,7 +268,8 @@ const LineThread = ({ items, asking, canAsk, onReply }: { items: ThreadMessage[]
         {asking && <div className="thread-msg agent pending">Agent is answering…</div>}
         {canAsk && !asking && <button className="tiny" onClick={onReply}>Reply</button>}
     </div>
-);
+    );
+};
 
 const FileDiff = ({
     file,
@@ -274,6 +285,8 @@ const FileDiff = ({
     print,
     onOpen,
     onReviewed,
+    threadOpen,
+    onThreadOpen,
 }: {
     file: DiffFile;
     comments: Record<string, LineComment>;
@@ -290,6 +303,9 @@ const FileDiff = ({
     print: string | null;
     onOpen: (open: boolean) => void;
     onReviewed: (print: string | null) => void;
+    // Whether the discussion on a line is shown (remembered like a file's open state; default open).
+    threadOpen: (key: string) => boolean;
+    onThreadOpen: (key: string, open: boolean) => void;
 }) => {
     const reviewed = !!print && state?.reviewed === print;
     const open = state?.open ?? (!reviewed && file.hunks.length > 0 && file.additions + file.deletions <= 400);
@@ -386,7 +402,7 @@ const FileDiff = ({
                                         <b>{roundLabel(p)}</b> {p.text}
                                     </div>
                                 ))}
-                                {(thread || asking.has(key)) && <LineThread items={thread ?? []} asking={asking.has(key)} canAsk={canAsk} onReply={() => setEditing(key)} />}
+                                {(thread || asking.has(key)) && <LineThread items={thread ?? []} asking={asking.has(key)} canAsk={canAsk} onReply={() => setEditing(key)} open={threadOpen(thread?.[0] ? commentKey(thread[0]) : key)} onOpen={(o) => onThreadOpen(thread?.[0] ? commentKey(thread[0]) : key, o)} />}
                                 {existing && editing !== key && (
                                     <div className="line-comment" onClick={() => canComment && setEditing(key)}>
                                         <b>💬</b> {existing.text}
@@ -638,6 +654,9 @@ export const DiffView = ({
     const groups = diff.groups.map((g) => ({ ...g, files: g.files.filter((f) => inRepo(f.path, repo) && ofKind(f.path)) })).filter((g) => g.files.length > 0);
     const adds = files.reduce((n, f) => n + f.additions, 0);
     const dels = files.reduce((n, f) => n + f.deletions, 0);
+    // The lines of this view's files that carry a discussion (their thread keys), for Collapse / Expand Q&A.
+    const threadKeys = [...new Set(threadItems.filter((t) => files.some((f) => f.path === t.path)).map((t) => commentKey(t)))];
+    const allThreadsOpen = threadKeys.every((k) => review.state[`thread:${k}`]?.open ?? true);
     const reviewedCount = files.filter((f) => { const p = printOf(f.path); return !!p && review.state[f.path]?.reviewed === p; }).length;
     const drifted = (diff.baseDrift ?? []).includes(repo);
     // Everything `git status` counts as uncommitted here — the diff below compares with the base, so a working-tree
@@ -669,6 +688,7 @@ export const DiffView = ({
                         <span className="diff-fold">
                             <button className="tiny" onClick={() => review.setMany(Object.fromEntries(files.map((f) => [f.path, { open: false }])))}>Collapse all</button>
                             <button className="tiny" onClick={() => review.setMany(Object.fromEntries(files.map((f) => [f.path, { open: true }])))}>Expand all</button>
+                            {threadKeys.length > 0 && <button className="tiny" onClick={() => review.setMany(Object.fromEntries(threadKeys.map((k) => [`thread:${k}`, { open: allThreadsOpen ? false : null }])))}>{allThreadsOpen ? "Collapse Q&A" : "Expand Q&A"}</button>}
                         </span>
                     )}
                     {files.length} file{files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>{files.length > 0 && <> · {reviewedCount}/{files.length} reviewed</>}
@@ -695,7 +715,7 @@ export const DiffView = ({
                         {diff.filtered && groups.length > 1 && <div className="diff-group-head mono">{g.label} · {g.files.length} file{g.files.length === 1 ? "" : "s"}</div>}
                         {g.files.map((f) => (
                             <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} threads={threadItems} canComment={commentsOn} canAsk={canAsk} onChange={handleChange} onAsk={onAsk} onExpand={expand}
-                                state={review.state[f.path]} print={printOf(f.path)} onOpen={(open) => review.set(f.path, { open })} onReviewed={(p) => review.set(f.path, p ? { reviewed: p, open: false } : { reviewed: null, open: true })} />
+                                state={review.state[f.path]} print={printOf(f.path)} onOpen={(open) => review.set(f.path, { open })} threadOpen={(k) => review.state[`thread:${k}`]?.open ?? true} onThreadOpen={(k, o) => review.set(`thread:${k}`, { open: o ? null : false })} onReviewed={(p) => review.set(f.path, p ? { reviewed: p, open: false } : { reviewed: null, open: true })} />
                         ))}
                     </div>
                 ))}

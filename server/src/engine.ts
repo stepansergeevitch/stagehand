@@ -10,7 +10,7 @@ import { join, relative } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { PREVIEW, type Config } from "./config.js";
 import { accountBrowserReady, accountModelsOf, accountOrderOf, accountUsableWith, baseBranchFor, chromeBrowserLabel, chromeBrowsersOf, componentsOf, extraTicketsOf, normalizeBaseBranch, now, parseEnvVars, STAGES, type AccountRow, type ChromeBrowser, type ConfigDirRow, type DB, type EnvComponent, type EnvRow, type MessageAnchor, type MessageKind, type MessageRow, type PrStateRow, type QuestionRow, type RunRow, type SharedFile, type Stage, type TaskLabel, type TaskRow, type TaskStatus } from "./db.js";
-import { permissionProblem, rateLimitHit, ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
+import { classifierDenials, permissionProblem, rateLimitHit, toolCalls, ResultEvent, startClaude, type ActivityEvent, type ClaudeRun, type RateLimitInfo, type RunOutcome } from "./claude/runner.js";
 import { renderHumanDirectives, type HumanDirective } from "./human-directives.js";
 import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/accounts.js";
 import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, openInProfile, QA_CHROME_FLAGS, setChromeTabUrl } from "./chrome-profiles.js";
@@ -4505,6 +4505,7 @@ export class Engine extends EventEmitter {
 
         let seenModel: string | null = null;
         let learned = false;
+        const calls = new Map<string, string>();
         run.on("activity", (ev: ActivityEvent) => {
             // A FRESH session without --model shows what this account's default really is (the first assistant message
             // names the model; init may leave it null). A resumed session only repeats the model it was created with —
@@ -4532,6 +4533,15 @@ export class Engine extends EventEmitter {
                 run.kill();
                 return;
             }
+            if (ev.raw && typeof ev.raw === "object") {
+                const raw = ev.raw as Record<string, unknown>;
+                for (const t of toolCalls(raw)) calls.set(t.id, t.what);
+                for (const d of classifierDenials(raw)) {
+                    const list = this.classifierDenied.get(runId) ?? [];
+                    list.push({ what: calls.get(d.toolUseId) ?? "a tool call", reason: d.reason });
+                    this.classifierDenied.set(runId, list);
+                }
+            }
             if (ev.kind === "tool_use" || ev.kind === "text") {
                 this.db.prepare(`UPDATE runs SET last_event = ? WHERE id = ?`).run(ev.summary, runId);
                 this.db.prepare(`UPDATE tasks SET status_line = ?, updated_at = ? WHERE id = ?`).run(`${label} · ${ev.summary}`, now(), taskId);
@@ -4545,6 +4555,9 @@ export class Engine extends EventEmitter {
         });
         let resultSeen = false;
         let stoppedBackground = 0;
+        // Each checkout's HEAD when the run started: a run whose tool calls were denied and that committed nothing is
+        // blocked for the human (onRunClosed).
+        if (!shard) this.startHeads.set(runId, this.checkoutHeads(task, env));
         run.on("rate_limit", (info: RateLimitInfo) => this.recordRateLimit(account.id, info));
 
         void run.done.then((outcome) => {
@@ -4561,6 +4574,38 @@ export class Engine extends EventEmitter {
 
     // Runs killed at their first refused permission (see permissionProblem): run id → the error the closer records.
     private readonly permissionFailures = new Map<string, string>();
+    // Tool calls Claude Code's auto-mode classifier denied, per run (see classifierDenials), and each checkout's HEAD
+    // when a (non-shard) run started.
+    private readonly classifierDenied = new Map<string, Array<{ what: string; reason: string }>>();
+    private readonly startHeads = new Map<string, Promise<Record<string, string>>>();
+    private async checkoutHeads(task: TaskRow, env: EnvRow): Promise<Record<string, string>> {
+        const out: Record<string, string> = {};
+        for (const repo of this.prRepos(env)) {
+            const cwd = this.checkoutOf(task, env, repo);
+            if (existsSync(cwd)) out[repo] = (await this.headSha(cwd, env).catch(() => null)) ?? "";
+        }
+        return out;
+    }
+    // Reports a run's denied tool calls in Chat; true when the run wrote code but committed nothing — then it is blocked
+    // for the human instead of passing for a finished round.
+    private async reportDenials(task: TaskRow, runId: string, def: StageDef): Promise<boolean> {
+        const denied = this.classifierDenied.get(runId);
+        this.classifierDenied.delete(runId);
+        const started = this.startHeads.get(runId);
+        this.startHeads.delete(runId);
+        if (!denied?.length) return false;
+        const list = denied.map((d) => `- \`${d.what}\` — ${d.reason}`).join("\n");
+        const writes = def.stage === "implementation" || def.stage === "pr_fix" || def.stage === "code_review";
+        const env = this.env(task.env_id);
+        const before = started ? await started.catch(() => ({}) as Record<string, string>) : null;
+        const after = before ? await this.checkoutHeads(task, env) : null;
+        const committed = !!before && !!after && Object.keys(after).some((r) => before[r] !== after[r]);
+        // A shard run (no start heads) only reports: its group decides how the round ends.
+        const blocks = writes && !!before && !committed;
+        this.addMessage(task.id, "agent", `⛔ ${def.label}: Claude Code's permission classifier denied ${denied.length} tool call${denied.length === 1 ? "" : "s"} in this run:\n\n${list}\n\n${blocks ? "Nothing was committed, so the task stops here: do the denied step yourself in the worktree (or change what was asked), then Retry." : "The run went on without them — check its result."}`);
+        if (blocks) this.setTaskStatus(task.id, "blocked", `${def.label} · the permission classifier denied ${denied.length} tool call${denied.length === 1 ? "" : "s"} (${denied[0]!.reason}) and nothing was committed — see Chat`);
+        return blocks;
+    }
     private readonly prGroups = new Map<string, PrGroup>();
     // Rounds parked on a rate limit: replayed by the next dispatch of pr_fix for the task (tick).
     private readonly queuedPrRounds = new Map<string, PrRoundSpec>();
@@ -4640,6 +4685,8 @@ export class Engine extends EventEmitter {
         const asked = this.questionsAskedDuringRun(taskId, runId, questionsFile);
         const written = this.outputWrittenDuringRun(taskId, outputFile, runId);
         const parsed = written ? PrFixResult.safeParse(this.readArtifactJson<unknown>(taskId, outputFile)) : null;
+        const shardTask = this.getTask(taskId);
+        if (shardTask) await this.reportDenials(shardTask, runId, def);
         const refused = this.permissionFailures.get(runId);
         if (refused) {
             this.permissionFailures.delete(runId);
@@ -4878,6 +4925,10 @@ export class Engine extends EventEmitter {
         const pass = def.stage === "qa_baseline" ? "before" : "after";
         const files = shardFiles(pass, shard);
         let result: ShardResult;
+        if (await this.reportDenials(task, runId, def)) {
+            finish("failed", "tool calls denied by the permission classifier; nothing committed");
+            return;
+        }
         // A run that ended with a successful result did its work, whatever the last window event said.
         const limited = rateLimitHit(outcome.lastRateLimit) && !(outcome.result && !outcome.result.is_error);
         const refused = this.permissionFailures.get(runId);

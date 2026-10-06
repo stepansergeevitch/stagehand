@@ -264,5 +264,34 @@ export const permissionProblem = (ev: Record<string, unknown>): string | null =>
     return null;
 };
 
+// Claude Code's auto-mode classifier refused a tool call: the run goes on (the agent may find another way), but what it
+// refused is the human's to know (INV-149, 2026-10-06: every git command of a PR Fix round denied, the round ended
+// "no change was made" as if it had done its job). The tool call's id and the classifier's reason; null otherwise.
+export const classifierDenials = (ev: Record<string, unknown>): Array<{ toolUseId: string; reason: string }> => {
+    if (ev["type"] !== "user") return [];
+    const content = (ev["message"] as { content?: unknown } | undefined)?.content;
+    if (!Array.isArray(content)) return [];
+    const out: Array<{ toolUseId: string; reason: string }> = [];
+    for (const block of content as Array<Record<string, unknown>>) {
+        if (block["type"] !== "tool_result") continue;
+        const m = /denied by the Claude Code auto mode classifier\. Reason: \[([^\]]+)\]/.exec(resultText(block["content"]));
+        if (m) out.push({ toolUseId: String(block["tool_use_id"] ?? ""), reason: m[1]! });
+    }
+    return out;
+};
+// The tool calls an assistant event makes: id and a one-line description (the Bash command, else the tool's name).
+export const toolCalls = (ev: Record<string, unknown>): Array<{ id: string; what: string }> => {
+    if (ev["type"] !== "assistant") return [];
+    const content = (ev["message"] as { content?: unknown } | undefined)?.content;
+    if (!Array.isArray(content)) return [];
+    return (content as Array<Record<string, unknown>>)
+        .filter((b) => b["type"] === "tool_use")
+        .map((b) => {
+            const input = (b["input"] ?? {}) as Record<string, unknown>;
+            const what = typeof input["command"] === "string" ? (input["command"] as string) : `${String(b["name"])}${typeof input["file_path"] === "string" ? ` ${input["file_path"] as string}` : ""}`;
+            return { id: String(b["id"] ?? ""), what: what.replace(/\s+/g, " ").slice(0, 240) };
+        });
+};
+
 const resultText = (content: unknown): string =>
     typeof content === "string" ? content : Array.isArray(content) ? content.map((c) => (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : "")).join("\n") : "";
