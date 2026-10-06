@@ -1826,8 +1826,15 @@ export class Engine extends EventEmitter {
         if (task.status === "running" || this.hasLiveRun(taskId)) throw new Error("the task is running — wait for it or stop it first");
         if (this.baseCheckout.isOn(taskId)) throw new Error("the worktree is on the base for the QA baseline — Retry the task so it returns to its branch first");
         const adopt = taskDbRow(this.db, taskId)?.status !== "ready";
+        // A task blocked at the start because its database could not be created never ran the env's setup either
+        // (INV-156, 2026-10-06: no .env to point at the database): it runs now, before connect.
+        const setupPending = task.stage === "research" && task.status === "blocked" && !!task.status_line?.startsWith("Task database");
         await this.services.stopAll(taskId);
         const row = await this.taskDbs.create({ id: task.id, slug: task.ticket_id, kind: "task" }, env);
+        if (setupPending && env.setup_command) {
+            const out = await runWorktreeSetup(task.worktree_path, env.path, withPrepare(env, env.setup_command), { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, taskId) });
+            if (out) console.error(`[setup] ${task.ticket_id} ${task.worktree_path} (after its database)\n${out.slice(-1500)}`);
+        }
         await this.taskDbs.connect(this.getTask(taskId)!, env);
         const stale = this.taskDbs.lastRefreshError.get(env.id);
         this.addAgentNote(taskId, `🗄️ ${adopt ? "Moved to its own database" : "Database recreated"}: ${row.name}, copied from ${row.template}${stale ? ` as it was — migrating it to ${env.base_branch} failed (${stale})` : ` after migrating it to ${env.base_branch}`}. The next BE start migrates it to this branch.`);
