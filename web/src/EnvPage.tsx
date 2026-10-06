@@ -269,6 +269,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     useEffect(() => {
         void api.reviewCategories().then(setCats).catch((e: Error) => onError(e.message));
     }, [onError]);
+    const [codeReview, setCodeReview] = useState(env.code_review !== 0);
     const [rc, setRc] = useState(() => reviewChecklistOf(env));
     const [doNotFlagText, setDoNotFlagText] = useState(() => reviewChecklistOf(env).doNotFlag.join("\n"));
     const toggleCat = (key: string) => setRc((r) => ({ ...r, disabled: r.disabled.includes(key) ? r.disabled.filter((k) => k !== key) : [...r.disabled, key] }));
@@ -502,8 +503,10 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
             </Section>
 
             <Section title="Code review" hint="What the Code Review stage checks after Implementation: gstack's pre-landing checklist, tuned for this environment. Switch off categories that do not apply here, add the points your team reviews for (each becomes a finding category the reviewer reports under), and list what the reviewer must not flag. Every point still follows the same method: a quoted motivating line, confidence 1–10, mechanical fixes committed, judgment calls left open." saving={saving === "review"} onSave={() => save("review", {
+                codeReview,
                 reviewChecklist: rcDefault ? null : { disabled: rc.disabled, custom: rc.custom.filter((p) => p.title.trim()).map((p) => ({ ...p, title: p.title.trim(), detail: p.detail.trim() })), doNotFlag: doNotFlagText.split("\n").map((l) => l.trim()).filter(Boolean) },
             })}>
+                <label className="inline"><input type="checkbox" checked={codeReview} onChange={(e) => setCodeReview(e.target.checked)} /> Run the Code Review stage after Implementation — a fresh session applies the checklist below: mechanical findings fixed and committed, serious open ones sent back to Implementation once, everything shown at User Review. Off: tasks go straight on to Manual QA.</label>
                 {(["critical", "informational"] as ReviewPass[]).map((pass) => (
                     <div className="review-pass" key={pass}>
                         <b>{pass === "critical" ? "Pass 1 — critical" : "Pass 2 — informational"}</b>

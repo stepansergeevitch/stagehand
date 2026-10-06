@@ -195,6 +195,8 @@ export interface EnvRow {
     qa_session_command?: string | null;
     // Extra cookies the headless QA browser gets after its session (envs.qa_browser_cookies): one name=value per line.
     qa_browser_cookies?: string | null;
+    // 1: tasks of this env go through the Code Review stage after Implementation; 0: straight on to Manual QA.
+    code_review?: number;
     // The DB host check (db-hosts.ts): a command printing the hosts the worktree's app uses, and the hosts allowed (JSON).
     db_hosts_command?: string | null;
     allowed_db_hosts?: string | null;
@@ -1053,6 +1055,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.prepare_command", `ALTER TABLE envs ADD COLUMN prepare_command TEXT`],
     ["envs.qa_session_command", `ALTER TABLE envs ADD COLUMN qa_session_command TEXT`],
     ["envs.qa_browser_cookies", `ALTER TABLE envs ADD COLUMN qa_browser_cookies TEXT`],
+    // Was the global config.codeReview (on everywhere) until 2026-10-06: a stage of the pipeline belongs to the env.
+    ["envs.code_review", `ALTER TABLE envs ADD COLUMN code_review INTEGER NOT NULL DEFAULT 1`],
     ["envs.db_hosts_command", `ALTER TABLE envs ADD COLUMN db_hosts_command TEXT`],
     ["envs.allowed_db_hosts", `ALTER TABLE envs ADD COLUMN allowed_db_hosts TEXT`],
     ["envs.task_db", `ALTER TABLE envs ADD COLUMN task_db TEXT`],

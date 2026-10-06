@@ -15,8 +15,6 @@ const ConfigSchema = z.object({
     preflightUtilizationLimit: z.number().default(0.9),
     // QA passes run their scenarios in parallel shards (qa-shards.ts): at most this many runs per pass; 0 = one run.
     qaShards: z.number().int().default(4),
-    // The Code Review stage after Implementation (gstack's review checklist and method); false = skipped.
-    codeReview: z.boolean().default(true),
     // A checkout of github.com/garrytan/gstack: its review/checklist.md is read by the Code Review prompt at run time.
     gstackDir: z.string().default(join(homedir(), ".stagehand", "gstack")),
     clickupToken: z.string().nullable().default(null),
@@ -162,7 +160,6 @@ const defaults = (): Config => ({
     maxChromeClonesPerAccount: 3,
     preflightUtilizationLimit: 0.9,
     qaShards: 4,
-    codeReview: true,
     gstackDir: join(homedir(), ".stagehand", "gstack"),
     clickupToken: null,
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,

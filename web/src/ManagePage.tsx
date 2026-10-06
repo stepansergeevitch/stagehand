@@ -4,7 +4,7 @@ import { Modal } from "./Modal";
 import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type ConfigDir, type Env, type AccountModels, type ModelOperation, type ModelStage, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager } from "./api";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
-export type ManageTab = "envs" | "dirs" | "accounts" | "integrations" | "prompter" | "pipeline";
+export type ManageTab = "envs" | "dirs" | "accounts" | "integrations" | "prompter";
 
 // Every card on the Integrations page carries one of these, so a new kind of integration announces what it is.
 type IntegrationType = "task manager" | "notifications" | "decision model" | "assistant" | "documents";
@@ -92,14 +92,6 @@ const AccountModelsSection = ({ a, settings, act }: { a: Account; settings: Sett
     );
 };
 
-// Which stages a task goes through: settings of the pipeline itself, not of any one environment or account.
-const PipelineCard = ({ settings, act }: { settings: Settings; act: (fn: () => Promise<unknown>) => Promise<void> }) => (
-    <section className="card item">
-        <h2>Stages</h2>
-        <label className="inline"><input type="checkbox" checked={settings.codeReview !== false} onChange={(e) => void act(() => api.patchSettings({ codeReview: e.target.checked }))} /> Code Review stage after Implementation — gstack's pre-landing checklist applied by a fresh session: mechanical findings fixed and committed, serious open ones sent back to Implementation once, everything shown at User Review</label>
-    </section>
-);
-
 export const ManagePage = ({
     tab,
     envs,
@@ -143,7 +135,6 @@ export const ManagePage = ({
             {tab === "dirs" && <ConfigDirTable dirs={configDirs} onOpen={onOpenDir} act={act} />}
             {tab === "accounts" && <AccountTable accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} act={act} onTerminal={onTerminal} onError={onError} />}
             {tab === "prompter" && settings && <PrompterCard settings={settings} accounts={accounts} onChanged={onChanged} onError={onError} />}
-            {tab === "pipeline" && settings && <PipelineCard settings={settings} act={act} />}
             {tab === "integrations" && <IntegrationTable settings={settings} onChanged={onChanged} onError={onError} />}
         </div>
     );

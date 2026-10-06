@@ -833,6 +833,7 @@ app.patch("/api/envs/:id", async (c) => {
             qaSessionCommand: z.string().nullable().optional(),
             // Extra cookies for the headless QA browser, one name=value per line (set after its session).
             qaBrowserCookies: z.string().nullable().optional(),
+            codeReview: z.boolean().optional(),
             // The DB host check: a command printing the hosts the worktree's app uses, and the hosts allowed.
             dbHostsCommand: z.string().nullable().optional(),
             allowedDbHosts: z.array(z.string().trim().min(1)).nullable().optional(),
@@ -930,6 +931,7 @@ app.patch("/api/envs/:id", async (c) => {
     if (body.dbHostsCommand !== undefined) db.prepare(`UPDATE envs SET db_hosts_command = ? WHERE id = ?`).run(body.dbHostsCommand?.trim() || null, env.id);
     if (body.allowedDbHosts !== undefined) db.prepare(`UPDATE envs SET allowed_db_hosts = ? WHERE id = ?`).run(body.allowedDbHosts && body.allowedDbHosts.length ? JSON.stringify(body.allowedDbHosts) : null, env.id);
     if (body.qaBrowserCookies !== undefined) db.prepare(`UPDATE envs SET qa_browser_cookies = ? WHERE id = ?`).run(body.qaBrowserCookies?.trim() || null, env.id);
+    if (body.codeReview !== undefined) db.prepare(`UPDATE envs SET code_review = ? WHERE id = ?`).run(body.codeReview ? 1 : 0, env.id);
     if (body.qaSessionCommand !== undefined) db.prepare(`UPDATE envs SET qa_session_command = ? WHERE id = ?`).run(body.qaSessionCommand?.trim() || null, env.id);
     if (body.prepareCommand !== undefined) db.prepare(`UPDATE envs SET prepare_command = ? WHERE id = ?`).run(body.prepareCommand?.trim() || null, env.id);
     if (body.callbackPorts !== undefined) db.prepare(`UPDATE envs SET callback_ports = ? WHERE id = ?`).run(body.callbackPorts && body.callbackPorts.length ? JSON.stringify(body.callbackPorts) : null, env.id);
@@ -1248,7 +1250,6 @@ const settingsJson = async () => {
         models,
         modelsFetchedAt: status.fetchedAt,
         modelsError: status.error,
-        codeReview: cfg.codeReview,
         notifications: { ...cfg.notifications, ntfyToken: mask(cfg.notifications.ntfyToken) },
         desktopNotifier: desktopNotifier(),
         prompter: cfg.prompter,
@@ -1289,7 +1290,6 @@ app.patch("/api/settings", async (c) => {
             clickupTeamId: z.string().nullable().optional(),
             linearApiKey: z.string().nullable().optional(),
             typesafeApiKey: z.string().nullable().optional(),
-            codeReview: z.boolean().optional(),
             resources: z
                 .object({
                     enabled: z.boolean().optional(),
@@ -1353,7 +1353,6 @@ app.patch("/api/settings", async (c) => {
         if (n.baseUrl !== undefined) cfg.notifications.baseUrl = n.baseUrl?.trim() || null;
         if (n.localBaseUrl !== undefined && n.localBaseUrl.trim()) cfg.notifications.localBaseUrl = n.localBaseUrl.trim();
     }
-    if (body.codeReview !== undefined) cfg.codeReview = body.codeReview;
     if (body.resources) for (const [k, v] of Object.entries(body.resources)) if (v !== undefined) (cfg.resources as unknown as Record<string, unknown>)[k] = v;
     saveConfig(cfg);
     return c.json({ ok: true });

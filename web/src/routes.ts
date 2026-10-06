@@ -14,7 +14,7 @@ import { STAGE_ORDER, type Stage } from "./api";
 //   #/sessions[/<sessionId>/<terminal|changes>]    #/analytics[?days=<n>]   #/timing[?days=<n>]
 //   #/envs[/<envId>]                               #/config-dirs[/<dirId>]
 //   #/accounts                                     #/integrations                #/resources
-//   #/prompter                                     #/pipeline
+//   #/prompter
 // Older shapes (#/env/<id>, #/dir/<id>, #/dirs, #/managers) still parse and are rewritten to the current one.
 
 export const TASK_TABS = ["work", "runs", "design", "code", "pr", "comments", "chat", "ticket", "cost"] as const;
@@ -49,7 +49,6 @@ export type Route =
     | { page: "accounts" }
     | { page: "integrations" }
     | { page: "prompter" }
-    | { page: "pipeline" }
     | { page: "resources" }
     // The global product context and the Product Owners; `po` opens one, on its `tab`.
     | { page: "product"; po?: string; tab?: PoTab };
@@ -122,8 +121,6 @@ export const parseRoute = (hash: string): Route => {
             return { page: "integrations" };
         case "prompter":
             return { page: "prompter" };
-        case "pipeline":
-            return { page: "pipeline" };
         case "resources":
             return { page: "resources" };
         case "product":

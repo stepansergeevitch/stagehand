@@ -3517,8 +3517,8 @@ export class Engine extends EventEmitter {
     private advance(taskId: string, stage: Stage): void {
         const task = this.getTask(taskId)!;
         let target = stage;
-        // The Code Review stage is optional (config.codeReview); off, Implementation goes straight on to QA.
-        if (target === "code_review" && !this.cfg.codeReview) target = "manual_qa";
+        // The Code Review stage is optional per environment (envs.code_review); off, Implementation goes straight on to QA.
+        if (target === "code_review" && this.env(task.env_id).code_review === 0) target = "manual_qa";
         // The QA baseline belongs to the design stage, never after it (the user, 2026-10-06: "There should be no separate
         // QA baseline step at all anymore, baseline is A PART of design proposal, never else"): approval goes straight on
         // to Implementation; scenarios without a current result from the design loop are named, not run here.

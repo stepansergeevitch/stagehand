@@ -51,7 +51,6 @@ const NAV: { group: string | null; items: { id: Page; label: string; hint: strin
             { id: "accounts", label: "AI accounts", hint: "Provider logins (tokens), usage, failover" },
             { id: "integrations", label: "Integrations", hint: "External services, each tagged with its type: task managers (ClickUp, Linear), notifications, decision model (Jev)" },
             { id: "prompter", label: "Prompter", hint: "The in-app assistant: which account runs it, its model, idle and purge times, its palace" },
-            { id: "pipeline", label: "Pipeline", hint: "Which stages a task goes through" },
         ],
     },
 ];
@@ -97,7 +96,7 @@ const SidebarTree = ({ page, renderItem }: { page: Page; renderItem: (n: NavItem
 };
 
 // The list pages ManagePage renders, by route page.
-const MANAGE_TAB: Partial<Record<Page, ManageTab>> = { envs: "envs", "config-dirs": "dirs", accounts: "accounts", integrations: "integrations", prompter: "prompter", pipeline: "pipeline" };
+const MANAGE_TAB: Partial<Record<Page, ManageTab>> = { envs: "envs", "config-dirs": "dirs", accounts: "accounts", integrations: "integrations", prompter: "prompter" };
 
 // Accounts that can drive runs in this env: any with a token, or a legacy login living in the env's config dir.
 const accountsFor = (env: Env | undefined, accounts: Account[], dirs: ConfigDir[]): Account[] => {
