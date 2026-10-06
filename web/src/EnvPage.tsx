@@ -121,7 +121,7 @@ const AgentsTab = ({ env, save, saving, accounts, configDirs, info, onOpenDir }:
     );
 };
 
-// ---------- CLAUDE.md files ----------
+// ---------- CLAUDE.md files of the repositories (the config dir's own is edited on the config dir) ----------
 const ClaudeMdTab = ({ env, onError }: { env: Env; onError: (m: string) => void }) => {
     const [files, setFiles] = useState<ClaudeMdFile[] | null>(null);
     const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -130,7 +130,7 @@ const ClaudeMdTab = ({ env, onError }: { env: Env; onError: (m: string) => void 
         setFiles(null);
         setDrafts({});
         void api.envClaudeMd(env.id).then((r) => setFiles(r.files)).catch((e: Error) => onError(e.message));
-    }, [env.id, env.config_dir_id, onError]);
+    }, [env.id, onError]);
     const changed = (files ?? []).filter((f) => drafts[f.id] !== undefined && drafts[f.id] !== f.content);
     if (!files) return <div className="empty">reading…</div>;
     return (
@@ -142,7 +142,7 @@ const ClaudeMdTab = ({ env, onError }: { env: Env; onError: (m: string) => void 
             setDrafts({});
         })}>
             {files.map((f) => (
-                <Field key={f.id} label={<>{f.label} <code>{f.path}</code>{!f.exists && <span className="chip warn">none yet — saving creates it</span>}</>} hint={f.scope === "config-dir" ? "The config dir's file: every agent run here reads it first, and an edit applies to the next run at once." : "A repository's file, committed in git: a task sees an edit once it is on the base branch, and saving here changes the main checkout's working tree."}>
+                <Field key={f.id} label={<>{f.label} <code>{f.path}</code>{!f.exists && <span className="chip warn">none yet — saving creates it</span>}</>} hint="Committed in git: a task sees an edit once it is on the base branch, and saving here changes the main checkout's working tree. The config dir's own CLAUDE.md is on the config dir.">
                     <textarea className="tall" spellCheck={false} value={drafts[f.id] ?? f.content} onChange={(e) => setDrafts((x) => ({ ...x, [f.id]: e.target.value }))} />
                 </Field>
             ))}

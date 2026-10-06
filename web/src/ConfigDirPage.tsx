@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type ConfigDir, type ConfigDirRules, type Rules } from "./api";
+import { api, type ClaudeMdFile, type ConfigDir, type ConfigDirRules, type Rules } from "./api";
 import { CheckField, EntityForm, EntityView, Field, ReadField, useDraft, useSaver } from "./components/EntityView";
 
 // One Claude config dir's entity view: what it contributes to every agent run (skills, hooks, agents, MCP servers) and
@@ -37,6 +37,26 @@ const ContentsTab = ({ dir }: { dir: ConfigDir }) => {
             <ReadField label="CLAUDE.md">{c.hasClaudeMd ? "present" : "none"}</ReadField>
             <ReadField label="settings.json">{c.hasSettings ? "present" : "none"}</ReadField>
         </div>
+    );
+};
+
+const ClaudeMdTab = ({ dir, onError }: { dir: ConfigDir; onError: (m: string) => void }) => {
+    const [file, setFile] = useState<ClaudeMdFile | null>(null);
+    const [draft, setDraft] = useState<string | null>(null);
+    const { saving, run } = useSaver(onError);
+    useEffect(() => {
+        setFile(null);
+        setDraft(null);
+        void api.configDirClaudeMd(dir.id).then((r) => setFile(r.file)).catch((e: Error) => onError(e.message));
+    }, [dir.id, onError]);
+    if (!file) return <div className="empty">reading…</div>;
+    const dirty = draft !== null && draft !== file.content;
+    return (
+        <EntityForm dirty={dirty} saving={saving === "md"} onDiscard={() => setDraft(null)} saveLabel={file.exists ? "Save" : "Create"} onSave={() => run("md", async () => { setFile((await api.saveConfigDirClaudeMd(dir.id, draft ?? "")).file); setDraft(null); })}>
+            <Field label={<>CLAUDE.md <code>{file.path}</code>{!file.exists && <span className="chip warn">none yet — saving creates it</span>}</>} hint="What every agent run of every environment using this dir reads first. An edit applies to the next run at once. The repositories' own CLAUDE.md files are on each environment.">
+                <textarea className="tall" spellCheck={false} value={draft ?? file.content} onChange={(e) => setDraft(e.target.value)} />
+            </Field>
+        </EntityForm>
     );
 };
 
@@ -80,6 +100,7 @@ export const ConfigDirPage = ({ dir, onBack, onChanged, onError }: { dir: Config
             tabs={[
                 { key: "general", label: "General", content: <GeneralTab dir={dir} save={save} saving={saving} /> },
                 { key: "contents", label: "Contents", content: <ContentsTab dir={dir} /> },
+                { key: "claude-md", label: "CLAUDE.md", content: <ClaudeMdTab dir={dir} onError={onError} /> },
                 { key: "rules", label: "Rules", content: info ? <RulesTab dir={dir} info={info} save={save} saving={saving} /> : <div className="empty">loading…</div> },
             ]}
         />

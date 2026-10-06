@@ -648,8 +648,9 @@ app.get("/api/envs/:id/rules", (c) => {
     });
 });
 
-// The CLAUDE.md files an environment's runs read: the config dir's (every run, at once) and the repository's — the
-// root and each sub-repository (committed in git: a task sees it once it is on the base branch). Read live from disk.
+// CLAUDE.md files, read live from disk. An environment's are its repositories' — the root and each sub-repository
+// (committed in git: a task sees an edit once it is on the base branch). A config dir has its own, which every run of
+// every environment using the dir reads at once; it is edited on the config dir.
 interface ClaudeMdFile {
     id: string;
     label: string;
@@ -658,26 +659,44 @@ interface ClaudeMdFile {
     exists: boolean;
     content: string;
 }
-const claudeMdFiles = (env: EnvRow): ClaudeMdFile[] => {
-    const cd = engine.configDirOf(env);
-    const entries: Array<Omit<ClaudeMdFile, "exists" | "content">> = [
-        { id: "config-dir", label: `Config dir · ${cd.name}`, path: join(cd.path, "CLAUDE.md"), scope: "config-dir" },
-        { id: "repo", label: "Repository root", path: join(env.path, "CLAUDE.md"), scope: "repo" },
-        ...envRepos(env).map((r) => ({ id: `repo:${r}`, label: `Repository · ${r}`, path: join(env.path, r, "CLAUDE.md"), scope: "repo" as const })),
-    ];
-    return entries.map((e) => {
-        const exists = existsSync(e.path);
-        let content = "";
-        if (exists) {
-            try {
-                content = readFileSync(e.path, "utf8");
-            } catch {
-                content = "";
-            }
+const readClaudeMd = (e: Omit<ClaudeMdFile, "exists" | "content">): ClaudeMdFile => {
+    const exists = existsSync(e.path);
+    let content = "";
+    if (exists) {
+        try {
+            content = readFileSync(e.path, "utf8");
+        } catch {
+            content = "";
         }
-        return { ...e, exists, content };
-    });
+    }
+    return { ...e, exists, content };
 };
+const claudeMdFiles = (env: EnvRow): ClaudeMdFile[] =>
+    [
+        { id: "repo", label: "Repository root", path: join(env.path, "CLAUDE.md"), scope: "repo" as const },
+        ...envRepos(env).map((r) => ({ id: `repo:${r}`, label: `Repository · ${r}`, path: join(env.path, r, "CLAUDE.md"), scope: "repo" as const })),
+    ].map(readClaudeMd);
+const configDirClaudeMd = (dir: { path: string; name: string }): ClaudeMdFile => readClaudeMd({ id: "config-dir", label: "CLAUDE.md", path: join(dir.path, "CLAUDE.md"), scope: "config-dir" });
+const writeClaudeMd = (file: ClaudeMdFile, content: string): ClaudeMdFile => {
+    if (!existsSync(dirname(file.path))) throw new Error(`${dirname(file.path)} does not exist`);
+    writeFileSync(file.path, content);
+    return { ...file, exists: true, content };
+};
+app.get("/api/config-dirs/:id/claude-md", (c) => {
+    const dir = configDirById(c.req.param("id"));
+    if (!dir) return c.json({ error: "not found" }, 404);
+    return c.json({ file: configDirClaudeMd(dir) });
+});
+app.put("/api/config-dirs/:id/claude-md", async (c) => {
+    const dir = configDirById(c.req.param("id"));
+    if (!dir) return c.json({ error: "not found" }, 404);
+    const body = json(z.object({ content: z.string().max(200_000) }), await c.req.json());
+    try {
+        return c.json({ file: writeClaudeMd(configDirClaudeMd(dir), body.content) });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
 app.get("/api/envs/:id/claude-md", (c) => {
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
     if (!env) return c.json({ error: "not found" }, 404);
@@ -690,9 +709,11 @@ app.put("/api/envs/:id/claude-md", async (c) => {
     const body = json(z.object({ id: z.string().min(1), content: z.string().max(200_000) }), await c.req.json());
     const file = claudeMdFiles(env).find((f) => f.id === body.id);
     if (!file) return c.json({ error: "no such CLAUDE.md for this environment" }, 400);
-    if (!existsSync(dirname(file.path))) return c.json({ error: `${dirname(file.path)} does not exist` }, 400);
-    writeFileSync(file.path, body.content);
-    return c.json({ file: { ...file, exists: true, content: body.content } });
+    try {
+        return c.json({ file: writeClaudeMd(file, body.content) });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
 });
 
 // Tickets assigned to the configured user in this env's task system, for the new-task dropdown.

@@ -712,6 +712,9 @@ export const api = {
     envRules: (id: string) => fetch(`/api/envs/${id}/rules`).then((r) => j<EnvRules>(r)),
     qaChanges: (taskId: string) => fetch(`/api/tasks/${taskId}/qa-changes`).then((r) => j<{ changes: QaChange[] }>(r)),
     revertQaChange: (taskId: string, changeId: string) => fetch(`/api/tasks/${taskId}/qa-changes/${changeId}/revert`, { method: "POST" }).then((r) => j<{ change: QaChange }>(r)),
+    configDirClaudeMd: (id: string) => fetch(`/api/config-dirs/${id}/claude-md`).then((r) => j<{ file: ClaudeMdFile }>(r)),
+    saveConfigDirClaudeMd: (id: string, content: string) =>
+        fetch(`/api/config-dirs/${id}/claude-md`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }) }).then((r) => j<{ file: ClaudeMdFile }>(r)),
     envClaudeMd: (id: string) => fetch(`/api/envs/${id}/claude-md`).then((r) => j<{ files: ClaudeMdFile[] }>(r)),
     saveClaudeMd: (id: string, fileId: string, content: string) =>
         fetch(`/api/envs/${id}/claude-md`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: fileId, content }) }).then((r) => j<{ file: ClaudeMdFile }>(r)),
