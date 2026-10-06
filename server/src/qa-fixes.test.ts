@@ -23,6 +23,12 @@ describe("parseStepFixAnswer", () => {
         expect(parseStepFixAnswer("S4 step 2 is wrong", "apply the corrected 2 command above")).toBeNull();
         expect(parseStepFixAnswer("S4 step 2 is wrong", "Apply corrected command (see context)")).toBeNull();
     });
+    it("ignores an unlabelled answer that is prose, not a command", () => {
+        expect(parseStepFixAnswer("S4 seed 1: AWS SSO token expired — then rerun?", "SSO login done, rerun seed 1 (aws s3 cp as written)")).toBeNull();
+        expect(parseStepFixAnswer("S4 seed 1", "rerun seed 1 as written")).toBeNull();
+        expect(parseStepFixAnswer("S4 seed 2", 'PGPASSWORD=p psql -c "UPDATE deals SET deleted_at=NULL"')?.command).toBe('PGPASSWORD=p psql -c "UPDATE deals SET deleted_at=NULL"');
+        expect(parseStepFixAnswer("S4 seed 2", "shell: ./reset.sh")?.command).toBe("shell: ./reset.sh");
+    });
     it("skips a 'keep as written' answer and questions without a step reference", () => {
         expect(parseStepFixAnswer("S2 seed 1 is wrong", "keep the seed as written")).toBeNull();
         // The runner's wording for a seed that does not exist yet: the "add seed N as:" part is not the command.

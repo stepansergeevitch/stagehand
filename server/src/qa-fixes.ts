@@ -108,6 +108,16 @@ export const parseStepFixAnswer = (text: string, answer: string | undefined): Pa
     // An option that only points at a command ("apply the corrected N command above") carries no command to apply:
     // writing that text into design.json turned INV-133's S4 steps into placeholders (2026-09-22). Nothing to apply.
     if (kind !== "assert" && /^(apply|use|run)\b/i.test(command) && !/[|/$"'`=]/.test(command)) return null;
+    // An answer with no "apply …:" label must itself read as a command, not as prose about the step ("SSO login done,
+    // rerun seed 1 (aws s3 cp as written)" became PRODUCT-10578's S4 seed 1 on 2026-10-06, bash syntax error): its first
+    // word is a prefix (shell:/sql:/ui:), a VAR=value, a path, or a lowercase program name, and it carries a shell
+    // character.
+    const labelled = PREFIX.test(raw) || ADD_PREFIX.test(raw.replace(PREFIX, "").trim());
+    if (kind !== "assert" && !labelled) {
+        const first = command.split(/\s+/)[0] ?? "";
+        const commandLike = /^(shell|sql|ui):/i.test(command) || /=/.test(first) || /^[./~]/.test(first) || (/^[a-z0-9][a-z0-9._+-]*$/.test(first) && /[|/$"'`=<>&;-]/.test(command));
+        if (!commandLike) return null;
+    }
     return { scenario: `S${m![1]}`, kind, index: Number(m![3]) - 1, command };
 };
 
