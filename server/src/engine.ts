@@ -260,7 +260,7 @@ interface PrShard {
 }
 const isPrShard = (s: QaShard | PrShard | undefined): s is PrShard => !!s && "kind" in s && s.kind === "pr";
 type PrShardResult =
-    | { kind: "ok"; summary: string }
+    | { kind: "ok"; summary: string; comments: PrFixResult["comments"] }
     | { kind: "asked"; questions: QuestionsFile }
     | { kind: "failed"; error: string }
     | { kind: "rate_limited"; resetsAt: number | null }
@@ -285,6 +285,9 @@ interface FixComments {
     at: string;
     repos: Record<string, { number: number; prUrl: string; headBefore: string; comments: Array<{ id: number; kind: PrComment["kind"]; author: string; url: string; body: string; path?: string; line?: number | null; root?: number }> }>;
     replies: Array<{ repo: string; commentId: number; sha: string; posted?: string | null; error?: string | null }>;
+    // What the fix run reported per comment (pr_fix.json `comments`), checked against the round's own commits: the
+    // addressed ones get their reply pre-filled with that commit; the others are shown with the reason, no reply.
+    outcomes?: Array<{ repo: string; commentId: number; addressed: boolean; sha: string | null; note: string }>;
 }
 
 interface PrRoundSpec {
@@ -3132,7 +3135,7 @@ export class Engine extends EventEmitter {
         const failureOutput =
             `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${number} picked by the human to address (this is not necessarily a CI failure). ` +
             `Where a comment carries replies or a Stagehand discussion below it, that discussion is the brief: the human's last word there wins over the comment's original wording.\n` +
-            picked.map((c) => describePrComment(c) + renderReplies(c, all) + renderAskThread(threads.get(c.id) ?? [])).join("\n");
+            picked.map((c) => describePrComment(c).replace(/^- /, `- [comment #${c.id}] `) + renderReplies(c, all) + renderAskThread(threads.get(c.id) ?? [])).join("\n");
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         await this.recordFixComments(task, [{ repo, comments: picked }]);
         this.setStage(taskId, "pr_fix");
@@ -3221,10 +3224,46 @@ export class Engine extends EventEmitter {
         return { ...fc, commits };
     }
 
+    // The fix run's report per comment → outcomes and pre-filled replies. A commit counts only when it is one of the
+    // round's own commits (headBefore..HEAD); a round with exactly one commit needs no sha from the agent.
+    private async fillFixReplies(taskId: string): Promise<void> {
+        const task = this.getTask(taskId);
+        const fc = this.readArtifactJson<FixComments>(taskId, "pr_fix_comments.json");
+        const out = PrFixResult.safeParse(this.readArtifactJson<unknown>(taskId, "pr_fix.json"));
+        if (!task || !fc || !out.success) return;
+        const env = this.env(task.env_id);
+        const reported = out.data.comments;
+        const outcomes: NonNullable<FixComments["outcomes"]> = [];
+        const replies: FixComments["replies"] = [];
+        for (const [repo, r] of Object.entries(fc.repos)) {
+            const cwd = this.checkoutOf(task, env, repo);
+            const log = await this.git(cwd, ["log", "--format=%H", r.headBefore ? `${r.headBefore}..HEAD` : "-1"], env).catch(() => "");
+            const shas = log.split("\n").filter(Boolean);
+            for (const c of r.comments) {
+                const o = reported.find((x) => x.id === c.id);
+                if (!o) {
+                    outcomes.push({ repo, commentId: c.id, addressed: false, sha: null, note: "the fix run did not report on this comment" });
+                    continue;
+                }
+                const want = o.commit.trim().toLowerCase();
+                const sha = !o.addressed ? null : (want ? shas.find((x) => x.startsWith(want)) : undefined) ?? (shas.length === 1 ? shas[0]! : null);
+                const note = o.note || (o.addressed && !sha ? (want ? `commit ${o.commit} is not one of this round's commits` : "no commit named") : "");
+                outcomes.push({ repo, commentId: c.id, addressed: o.addressed && !!sha, sha, note });
+                if (o.addressed && sha) replies.push({ repo, commentId: c.id, sha, posted: null, error: null });
+            }
+        }
+        writeFileSync(join(this.taskDir(taskId), "pr_fix_comments.json"), JSON.stringify({ ...fc, outcomes, replies } satisfies FixComments, null, 2));
+        this.emitTask(taskId);
+    }
+
     setFixReplies(taskId: string, replies: FixComments["replies"]): void {
         const fc = this.readArtifactJson<FixComments>(taskId, "pr_fix_comments.json");
         if (!fc) throw new Error("this fix round addressed no PR comments");
         for (const r of replies) if (!fc.repos[r.repo]?.comments.some((c) => c.id === r.commentId)) throw new Error(`comment ${r.commentId} is not one this round addressed`);
+        for (const r of replies) {
+            const o = fc.outcomes?.find((x) => x.repo === r.repo && x.commentId === r.commentId);
+            if (o && !o.addressed) throw new Error(`comment ${r.commentId} was not addressed by this round (${o.note || "no reason given"}) — it gets no "Addressed in" reply`);
+        }
         writeFileSync(join(this.taskDir(taskId), "pr_fix_comments.json"), JSON.stringify({ ...fc, replies: replies.map((r) => ({ ...r, posted: null, error: null })) }, null, 2));
         this.emitTask(taskId);
     }
@@ -3242,8 +3281,14 @@ export class Engine extends EventEmitter {
             const c = pr?.comments.find((x) => x.id === r.commentId);
             const m = pr ? /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(pr.prUrl) : null;
             if (!pr || !c || !m) continue;
-            const link = `${pr.prUrl}/commits/${r.sha}`;
             const cwd = this.checkoutOf(task, env, r.repo);
+            // The push may have rewritten the commit (a pull --rebase): link to the pushed commit with the same subject.
+            if (!(await this.git(cwd, ["merge-base", "--is-ancestor", r.sha, "HEAD"], env).then(() => true, () => false))) {
+                const subject = await this.git(cwd, ["log", "-1", "--format=%s", r.sha], env).catch(() => "");
+                const pushed = subject ? (await this.git(cwd, ["log", "--format=%H %s", pr.headBefore ? `${pr.headBefore}..HEAD` : "-20"], env).catch(() => "")).split("\n").find((l) => l.slice(41) === subject)?.slice(0, 40) : undefined;
+                if (pushed) r.sha = pushed;
+            }
+            const link = `${pr.prUrl}/commits/${r.sha}`;
             try {
                 const out =
                     c.kind === "line"
@@ -4572,7 +4617,7 @@ export class Engine extends EventEmitter {
             result = { kind: "asked", questions: asked };
         } else if (parsed?.success) {
             finish("done", outcome.result && !outcome.result.is_error && (outcome.exitCode ?? 1) === 0 ? undefined : `ended with ${outcome.result?.subtype ?? `exit ${outcome.exitCode}`} after writing the output`, JSON.stringify(parsed.data));
-            result = { kind: "ok", summary: parsed.data.summary };
+            result = { kind: "ok", summary: parsed.data.summary, comments: parsed.data.comments };
         } else if (outcome.result?.subtype === "error_max_turns" && (opts.continuations ?? 0) < MAX_CONTINUATIONS && g) {
             const n = (opts.continuations ?? 0) + 1;
             finish("failed", `turn cap reached (${outcome.result.num_turns ?? "?"} turns) — continuing the session (${n}/${MAX_CONTINUATIONS})`);
@@ -4611,12 +4656,16 @@ export class Engine extends EventEmitter {
         const def = STAGE_DEFS.pr_fix;
         const spec = this.readArtifactJson<PrRoundSpec>(taskId, "pr_fix_round.json");
         const summaries: string[] = [];
+        const comments: PrFixResult["comments"] = [];
         const asked: Array<{ shard: string; questions: AgentQuestion[] }> = [];
         const failed: Array<{ repo: string; error: string }> = [];
         let rateLimit: number | null = null;
         for (const [repo, r] of g.results) {
             if (r.kind === "stopped") return;
-            if (r.kind === "ok") summaries.push(`${repoLabel(repo)}: ${r.summary}`);
+            if (r.kind === "ok") {
+                summaries.push(`${repoLabel(repo)}: ${r.summary}`);
+                comments.push(...r.comments);
+            }
             else if (r.kind === "asked") asked.push({ shard: repoLabel(repo), questions: r.questions.questions });
             else if (r.kind === "failed") failed.push({ repo, error: r.error });
             else if (r.kind === "rate_limited") rateLimit = r.resetsAt ?? rateLimit;
@@ -4625,7 +4674,7 @@ export class Engine extends EventEmitter {
         const remaining: Record<string, string> = {};
         for (const repo of Object.keys(spec?.jobs ?? {})) if (g.results.get(repo)?.kind !== "ok") remaining[repo] = spec!.jobs[repo]!;
         if (asked.length === 0 && failed.length === 0 && rateLimit === null) {
-            writeFileSync(join(this.taskDir(taskId), def.outputFile!), JSON.stringify({ summary: summaries.join("\n") } satisfies PrFixResult, null, 2));
+            writeFileSync(join(this.taskDir(taskId), def.outputFile!), JSON.stringify({ summary: summaries.join("\n"), comments } satisfies PrFixResult, null, 2));
             const validation = await this.validateOutput(taskId, def);
             if (!validation.ok) {
                 this.setTaskStatus(taskId, "failed", `${def.label} · merged pr_fix.json does not validate: ${validation.error.slice(0, 160)}`);
@@ -6835,6 +6884,7 @@ export class Engine extends EventEmitter {
             this.afterDesign(taskId);
             return;
         }
+        if (def.stage === "pr_fix") void this.fillFixReplies(taskId).catch((e: unknown) => console.warn(`[stagehand] fix replies ${taskId}: ${String((e as Error).message ?? e).slice(0, 160)}`));
         if (def.stage === "pr_fix" && this.autopilotAfterFix(taskId)) return;
         if (def.kind === "wait") {
             this.setTaskStatus(taskId, "waiting_user", `${def.label} · needs you`);

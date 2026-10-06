@@ -1912,26 +1912,47 @@ const PrFixReplies = ({ taskId, updatedAt }: { taskId: string; updatedAt: string
     };
     const current = () => d.replies.map(({ repo, commentId, sha }) => ({ repo, commentId, sha }));
     return (
-        <Card title={`Reply to the addressed comments (${d.replies.length}/${rows.length})`}>
+        <Card title={`Reply to the addressed comments (${d.replies.length}/${d.outcomes ? d.outcomes.filter((o) => o.addressed).length : rows.length})`}>
             <div className="field-hint">After <b>Approve &amp; push</b>, each ticked comment gets "Addressed in &lt;commit link&gt;" on GitHub from your account. A line comment gets it in its thread; a review or general comment gets a PR comment quoting it.</div>
             {err && <div className="blocked-box">{err}</div>}
             {rows.map(({ repo, r, c }) => {
                 const p = picked(repo, c.id);
                 const commits = d.commits[repo] ?? [];
-                const sha = p?.sha ?? commits[0]?.sha ?? "";
+                // The fix run said whether this round addressed the comment and in which commit: then the reply links
+                // to that commit and a comment it did not address gets no reply at all.
+                const o = d.outcomes?.find((x) => x.repo === repo && x.commentId === c.id);
+                const sha = p?.sha ?? o?.sha ?? commits[0]?.sha ?? "";
+                const commit = commits.find((k) => k.sha === sha);
+                const head = (
+                    <>
+                        <b>{c.author}</b> <span className="chip">{c.kind === "line" ? `${c.path ?? ""}${c.line ? `:${c.line}` : ""}` : c.kind}</span>
+                        <span className="fix-reply-body">{c.body.split("\n")[0]?.slice(0, 140)}</span>
+                        <a href={c.url} target="_blank" rel="noreferrer">↗</a>
+                    </>
+                );
                 return (
                     <div key={`${repo}:${c.id}`} className="fix-reply-row">
-                        <label className="inline">
-                            <input type="checkbox" checked={!!p} disabled={!sha} onChange={(e) => void save(e.target.checked ? [...current(), { repo, commentId: c.id, sha }] : current().filter((x) => !(x.repo === repo && x.commentId === c.id)))} />
-                            <b>{c.author}</b> <span className="chip">{c.kind === "line" ? `${c.path ?? ""}${c.line ? `:${c.line}` : ""}` : c.kind}</span>
-                            <span className="fix-reply-body">{c.body.split("\n")[0]?.slice(0, 140)}</span>
-                            <a href={c.url} target="_blank" rel="noreferrer">↗</a>
-                        </label>
-                        {commits.length > 0 ? (
-                            <select value={sha} disabled={!p} onChange={(e) => void save(current().map((x) => (x.repo === repo && x.commentId === c.id ? { ...x, sha: e.target.value } : x)))}>
-                                {commits.map((k) => <option key={k.sha} value={k.sha}>{k.sha.slice(0, 7)} {k.subject.slice(0, 60)}</option>)}
-                            </select>
-                        ) : <span className="quiet">no commit in this round</span>}
+                        {o && !o.addressed ? (
+                            <>
+                                <span className="inline">{head}</span>
+                                <span className="chip warn">not addressed</span>
+                                {o.note && <span className="field-hint">{o.note}</span>}
+                            </>
+                        ) : (
+                            <>
+                                <label className="inline">
+                                    <input type="checkbox" checked={!!p} disabled={!sha} onChange={(e) => void save(e.target.checked ? [...current(), { repo, commentId: c.id, sha }] : current().filter((x) => !(x.repo === repo && x.commentId === c.id)))} />
+                                    {head}
+                                </label>
+                                {o ? (
+                                    <span className="field-hint">Addressed in <code>{sha.slice(0, 7)}</code> {commit?.subject.slice(0, 70) ?? ""}</span>
+                                ) : commits.length > 0 ? (
+                                    <select value={sha} disabled={!p} onChange={(e) => void save(current().map((x) => (x.repo === repo && x.commentId === c.id ? { ...x, sha: e.target.value } : x)))}>
+                                        {commits.map((k) => <option key={k.sha} value={k.sha}>{k.sha.slice(0, 7)} {k.subject.slice(0, 60)}</option>)}
+                                    </select>
+                                ) : <span className="quiet">no commit in this round</span>}
+                            </>
+                        )}
                         {p?.posted && <a className="chip ok" href={p.posted} target="_blank" rel="noreferrer">replied</a>}
                         {p?.error && <span className="chip bad" title={p.error}>reply failed</span>}
                         <span className="field-hint">PR #{r.number}</span>

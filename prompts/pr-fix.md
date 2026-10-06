@@ -32,7 +32,15 @@ You have about {{maxTurns}} tool calls. At four fifths of that stop opening new 
 Write `{{taskDir}}/{{outputFile}}`:
 
 ```json
-{ "summary": "<one or two sentences: what was wrong, what you changed>" }
+{
+  "summary": "<one or two sentences: what was wrong, what you changed>",
+  "comments": [
+    { "id": 123, "addressed": true, "commit": "<sha of YOUR commit that addresses this comment>", "note": "" },
+    { "id": 456, "addressed": false, "commit": "", "note": "<why not: already done, out of scope, needs the human — one sentence>" }
+  ]
+}
 ```
+
+`comments`: one entry for every PR comment marked `[comment #<id>]` above (leave it `[]` when there are none). `addressed: true` only when a commit of yours in this run actually changes what the comment asked for — then `commit` is that commit's sha (prefer one commit per comment, so the reply links to exactly the change). A comment you answered without changing code, judged wrong, or left for the human is `addressed: false` with the reason in `note`. These entries become "Addressed in <commit>" replies on GitHub, so never mark a comment addressed by a commit that doesn't change it.
 
 Then reply with exactly one line: `DONE`.

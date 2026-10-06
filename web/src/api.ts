@@ -345,6 +345,8 @@ export interface PrFixReplies {
     repos: Record<string, { number: number; prUrl: string; headBefore: string; comments: Array<{ id: number; kind: "review" | "line" | "general"; author: string; url: string; body: string; path?: string; line?: number | null }> }>;
     replies: Array<{ repo: string; commentId: number; sha: string; posted?: string | null; error?: string | null }>;
     commits: Record<string, Array<{ sha: string; subject: string }>>;
+    // The fix run's report per comment, checked against the round's commits (server fillFixReplies).
+    outcomes?: Array<{ repo: string; commentId: number; addressed: boolean; sha: string | null; note: string }>;
 }
 // Task databases (server task-db.ts): the env's config and what exists.
 export interface TaskDbConfig {

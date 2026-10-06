@@ -135,6 +135,11 @@ export type ReviewResult = z.infer<typeof ReviewResult>;
 
 export const PrFixResult = z.object({
     summary: z.string(),
+    // One entry per PR comment the round was asked to address ([comment #<id>] in the brief): whether this round's
+    // change addresses it, and the commit that does — what the "Addressed in <commit>" reply links to.
+    comments: z
+        .array(z.object({ id: z.number().int(), addressed: z.boolean(), commit: z.string().default(""), note: z.string().default("") }))
+        .default([]),
 });
 export type PrFixResult = z.infer<typeof PrFixResult>;
 
