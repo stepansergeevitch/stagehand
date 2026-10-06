@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { anchorOf, api, repoColorClass, repoName, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type LineComment, type Message, type MessageAnchor } from "./api";
+import { anchorOf, api, repoColorClass, repoName, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type FileReviewState, type LineComment, type Message, type MessageAnchor } from "./api";
 import { Markdown } from "./Markdown";
 import { storage } from "./storage";
 import type { CodeScope } from "./routes";
@@ -21,118 +21,6 @@ export interface DiffSource {
 const taskSource = (taskId: string): DiffSource => ({ diff: (f, file) => api.diff(taskId, f, file), commits: () => api.commits(taskId) });
 export const sessionSource = (sessionId: string): DiffSource => ({ diff: (f, file) => api.sessionDiff(sessionId, f, file), commits: () => api.sessionCommits(sessionId) });
 
-// The branch's own commits (this task's work), with Change message (a fast, conflict-free metadata edit) and Remove
-// (a real rewrite the agent performs, since replaying everything after the commit can hit conflicts) per commit, plus
-// a force-push once history has been rewritten. Always shows the full branch, independent of the diff filter above.
-const CommitManager = ({ taskId, repo, commits, busy: taskBusy, onError }: { taskId: string; repo: string; commits: BranchCommit[]; busy: boolean; onError: (m: string) => void }) => {
-    const [editing, setEditing] = useState<string | null>(null);
-    const [text, setText] = useState("");
-    const [removing, setRemoving] = useState<string | null>(null);
-    const [note, setNote] = useState("");
-    const attach = usePendingFiles();
-    const [started, setStarted] = useState<Set<string>>(new Set());
-    const [busy, setBusy] = useState<string | null>(null);
-    const [pushing, setPushing] = useState(false);
-    const [pushed, setPushed] = useState<string | null>(null);
-    if (commits.length === 0) return null;
-    const disabled = taskBusy || busy !== null;
-    const reword = async (sha: string) => {
-        const message = text.trim();
-        if (!message) return;
-        setBusy(sha);
-        try {
-            await api.rewordCommit(taskId, sha, repo, message);
-            setEditing(null);
-        } catch (e) {
-            onError(String((e as Error).message ?? e));
-        } finally {
-            setBusy(null);
-        }
-    };
-    const remove = async (sha: string) => {
-        setBusy(sha);
-        try {
-            await api.removeCommit(taskId, sha, repo, note.trim() || undefined, await api.uploadFiles(taskId, attach.files));
-            setStarted((s) => new Set(s).add(sha));
-            setNote("");
-            attach.clear();
-        } catch (e) {
-            onError(String((e as Error).message ?? e));
-        } finally {
-            setBusy(null);
-        }
-    };
-    return (
-        <div className="commit-manager">
-            {commits.map((c) => (
-                <div className="commit-row" key={c.sha}>
-                    {editing === c.sha ? (
-                        <div className="commit-edit">
-                            <input autoFocus value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void reword(c.sha)} />
-                            <div className="actions" style={{ margin: 0 }}>
-                                <button className="primary" disabled={busy === c.sha || !text.trim()} onClick={() => void reword(c.sha)}>{busy === c.sha ? "Saving…" : "Save"}</button>
-                                <button disabled={busy === c.sha} onClick={() => setEditing(null)}>Cancel</button>
-                            </div>
-                        </div>
-                    ) : (
-                        <>
-                            <code className="commit-sha">{c.short}</code>
-                            <span className="commit-subject">{c.subject}</span>
-                            <small className="field-hint">{c.author} · {ago(c.at)} ago</small>
-                            <span className="commit-actions">
-                                <button className="tiny" disabled={disabled} onClick={() => { setEditing(c.sha); setText(c.subject); }}>Change message</button>
-                                <button className="tiny danger" disabled={disabled} onClick={() => setRemoving(removing === c.sha ? null : c.sha)}>Remove</button>
-                            </span>
-                        </>
-                    )}
-                    {removing === c.sha && !started.has(c.sha) && (
-                        <div className="commit-remove">
-                            <p className="field-hint">Removes this commit from history entirely (not a revert) — the agent replays everything after it and resolves any conflicts, then re-runs tests. Nothing is pushed; you review the result and push it yourself.</p>
-                            <AgentInput placeholder="Optional note for the agent: why remove it" value={note} onChange={setNote} pending={attach} />
-                            <div className="actions" style={{ margin: 0 }}>
-                                <button className="danger" disabled={disabled} onClick={() => void remove(c.sha)}>{busy === c.sha ? "Starting…" : "Remove this commit"}</button>
-                                <button disabled={disabled} onClick={() => { setRemoving(null); setNote(""); }}>Cancel</button>
-                            </div>
-                        </div>
-                    )}
-                    {started.has(c.sha) && (
-                        <div className="commit-remove started">
-                            Removing — the agent is replaying the branch without this commit; the result (and any conflicts it hit) will appear in Chat.
-                            <button className="tiny" onClick={() => { setRemoving(null); setStarted((s) => { const n = new Set(s); n.delete(c.sha); return n; }); }}>Dismiss</button>
-                        </div>
-                    )}
-                </div>
-            ))}
-            <div className="actions" style={{ margin: "8px 0 0" }}>
-                <button
-                    disabled={disabled || pushing}
-                    title="Push the branch with --force-with-lease — needed after Change message or Remove rewrite the history GitHub already has"
-                    onClick={() => {
-                        if (!confirm(`Force-push ${repoName(repo)} (--force-with-lease)? This updates the PR (if one exists) to the rewritten history.`)) return;
-                        setPushing(true);
-                        setPushed(null);
-                        const done = (r: { result: string }) => setPushed(`${r.result} — the PR (if any) now has this history; its checks start over`);
-                        void api
-                            .forcePush(taskId, repo)
-                            .then(done)
-                            .catch(async (e: Error) => {
-                                if (/force-pushing discards them/.test(e.message) && confirm(`${e.message}\n\nDiscard them and force-push anyway?`)) {
-                                    await api.forcePush(taskId, repo, true).then(done).catch((e2: Error) => onError(e2.message));
-                                    return;
-                                }
-                                onError(e.message);
-                            })
-                            .finally(() => setPushing(false));
-                    }}
-                >
-                    {pushing ? "Pushing…" : "Force-push rewritten history"}
-                </button>
-                {pushed && <span className="field-hint" style={{ marginLeft: 8 }}>{pushed}</span>}
-            </div>
-        </div>
-    );
-};
-
 const ago = (iso: string): string => {
     const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
     if (s < 3600) return `${Math.max(1, Math.floor(s / 60))}m`;
@@ -140,45 +28,137 @@ const ago = (iso: string): string => {
     return `${Math.floor(s / 86400)}d`;
 };
 
-// A dropdown over the branch's commits: tick any number of them (newest first), or switch to all / uncommitted.
-const CommitPicker = ({ commits, uncommitted, filter, onChange }: { commits: BranchCommit[]; uncommitted: boolean; filter: DiffFilter; onChange: (f: DiffFilter) => void }) => {
-    const [open, setOpen] = useState(false);
-    const ref = useRef<HTMLDivElement>(null);
-    useEffect(() => {
-        if (!open) return;
-        const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-        const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-        document.addEventListener("mousedown", onDown);
-        document.addEventListener("keydown", onKey);
-        return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
-    }, [open]);
-    const picked = new Set(filter.kind === "commits" ? filter.shas : []);
-    const toggle = (sha: string) => {
-        const next = new Set(picked);
-        next.has(sha) ? next.delete(sha) : next.add(sha);
-        onChange(next.size === 0 ? { kind: "all" } : { kind: "commits", shas: [...next] });
+// The branch's commits, one list: tick any number of them, then View shows their diff, or (a task) Delete removes them
+// from history in one agent run (a real rewrite: everything after them is replayed, conflicts resolved, tests re-run;
+// nothing is pushed). Change message is a conflict-free metadata edit per commit; Force-push publishes a rewritten
+// history. All changes / Uncommitted switch the diff back.
+const CommitList = ({ taskId, repo, commits, uncommitted, filter, onFilter, busy: taskBusy, onError }: {
+    taskId?: string;
+    repo: string;
+    commits: BranchCommit[];
+    uncommitted: boolean;
+    filter: DiffFilter;
+    onFilter: (f: DiffFilter) => void;
+    busy: boolean;
+    onError: (m: string) => void;
+}) => {
+    const shown = filter.kind === "commits" ? filter.shas : [];
+    const [picked, setPicked] = useState<Set<string>>(() => new Set(shown));
+    useEffect(() => setPicked(new Set(filter.kind === "commits" ? filter.shas : [])), [filter.kind === "commits" ? filter.shas.join(",") : filter.kind]); // eslint-disable-line react-hooks/exhaustive-deps
+    const [editing, setEditing] = useState<string | null>(null);
+    const [text, setText] = useState("");
+    const [deleting, setDeleting] = useState(false);
+    const [note, setNote] = useState("");
+    const attach = usePendingFiles();
+    const [started, setStarted] = useState<string | null>(null);
+    const [busy, setBusy] = useState<string | null>(null);
+    const [pushed, setPushed] = useState<string | null>(null);
+    const disabled = taskBusy || busy !== null;
+    const toggle = (sha: string) => setPicked((p) => {
+        const n = new Set(p);
+        if (n.has(sha)) n.delete(sha);
+        else n.add(sha);
+        return n;
+    });
+    const sel = commits.filter((c) => picked.has(c.sha));
+    const allPicked = commits.length > 0 && sel.length === commits.length;
+    const run = async (key: string, fn: () => Promise<void>) => {
+        setBusy(key);
+        try {
+            await fn();
+        } catch (e) {
+            onError(String((e as Error).message ?? e));
+        } finally {
+            setBusy(null);
+        }
     };
-    const label = filter.kind === "all" ? "All changes" : filter.kind === "uncommitted" ? "Uncommitted only" : `${picked.size} commit${picked.size === 1 ? "" : "s"}`;
-    const multiRepo = commits.some((c) => c.repo);
+    const reword = (sha: string) => run(sha, async () => {
+        if (!taskId || !text.trim()) return;
+        await api.rewordCommit(taskId, sha, repo, text.trim());
+        setEditing(null);
+    });
+    const remove = () => run("delete", async () => {
+        if (!taskId || !sel.length) return;
+        await api.removeCommits(taskId, sel.map((c) => c.sha), repo, note.trim() || undefined, await api.uploadFiles(taskId, attach.files));
+        setStarted(sel.length === 1 ? `commit ${sel[0]!.short}` : `${sel.length} commits`);
+        setDeleting(false);
+        setNote("");
+        attach.clear();
+        setPicked(new Set());
+    });
+    const forcePush = () => {
+        if (!taskId || !confirm(`Force-push ${repoName(repo)} (--force-with-lease)? This updates the PR (if one exists) to the rewritten history.`)) return;
+        setPushed(null);
+        const done = (r: { result: string }) => setPushed(`${r.result} — the PR (if any) now has this history; its checks start over`);
+        void run("push", async () => {
+            await api.forcePush(taskId, repo).then(done).catch(async (e: Error) => {
+                if (/force-pushing discards them/.test(e.message) && confirm(`${e.message}\n\nDiscard them and force-push anyway?`)) {
+                    await api.forcePush(taskId, repo, true).then(done);
+                    return;
+                }
+                throw e;
+            });
+        });
+    };
+    const label = filter.kind === "all" ? "all changes vs base" : filter.kind === "uncommitted" ? "uncommitted changes only" : `${shown.length} commit${shown.length === 1 ? "" : "s"}`;
     return (
-        <div className="commit-picker" ref={ref}>
-            <button className={filter.kind === "all" ? "" : "on"} onClick={() => setOpen((v) => !v)} title="Show the diff of specific commits">{label} ▾</button>
-            {open && (
-                <div className="commit-menu">
-                    <label className="inline commit-row"><input type="radio" checked={filter.kind === "all"} onChange={() => onChange({ kind: "all" })} /> <span>All changes vs base</span></label>
-                    <label className="inline commit-row"><input type="radio" checked={filter.kind === "uncommitted"} onChange={() => onChange({ kind: "uncommitted" })} disabled={!uncommitted} /> <span>Uncommitted only{uncommitted ? "" : " (nothing uncommitted)"}</span></label>
-                    <div className="commit-menu-head">Commits on the branch · newest first · tick any</div>
-                    {commits.length === 0 && <div className="quiet">no commits yet</div>}
-                    {commits.map((c) => (
-                        <label key={c.sha} className={`inline commit-row ${picked.has(c.sha) ? "picked" : ""}`}>
-                            <input type="checkbox" checked={picked.has(c.sha)} onChange={() => toggle(c.sha)} />
-                            <span className="commit-text"><code>{c.short}</code> {c.subject}<small>{multiRepo && c.repo ? `${c.repo} · ` : ""}{c.author} · {ago(c.at)} ago</small></span>
-                        </label>
-                    ))}
-                    {picked.size > 0 && <div className="actions" style={{ margin: "6px 0 0" }}><button onClick={() => onChange({ kind: "all" })}>Clear</button><button className="primary" onClick={() => setOpen(false)}>Show {picked.size}</button></div>}
+        <details className="commit-panel" open={filter.kind === "commits" || undefined}>
+            <summary>Commits ({commits.length}) · showing {label}</summary>
+            <div className="commit-list">
+                <div className="commit-toolbar">
+                    <label className="inline"><input type="checkbox" checked={allPicked} disabled={!commits.length} onChange={() => setPicked(allPicked ? new Set() : new Set(commits.map((c) => c.sha)))} /> {sel.length ? `${sel.length} picked` : "Pick commits"}</label>
+                    <button className="primary tiny" disabled={!sel.length} onClick={() => onFilter({ kind: "commits", shas: sel.map((c) => c.sha) })}>View{sel.length ? ` ${sel.length}` : ""}</button>
+                    <button className="tiny" disabled={filter.kind === "all"} onClick={() => onFilter({ kind: "all" })}>All changes</button>
+                    <button className="tiny" disabled={!uncommitted || filter.kind === "uncommitted"} onClick={() => onFilter({ kind: "uncommitted" })}>Uncommitted only</button>
+                    {taskId && (
+                        <>
+                            <span className="dt-spacer" />
+                            <button className="tiny danger" disabled={disabled || !sel.length} onClick={() => setDeleting((d) => !d)}>Delete{sel.length ? ` ${sel.length}` : ""}</button>
+                            <button className="tiny" disabled={disabled} title="Push the branch with --force-with-lease — needed after Change message or Delete rewrite the history GitHub already has" onClick={forcePush}>{busy === "push" ? "Pushing…" : "Force-push"}</button>
+                        </>
+                    )}
                 </div>
-            )}
-        </div>
+                {deleting && sel.length > 0 && (
+                    <div className="commit-remove">
+                        <b>Remove {sel.length === 1 ? `commit ${sel[0]!.short}` : `${sel.length} commits`} from history</b> — not a revert: the agent replays everything after them, resolves conflicts and re-runs tests. Nothing is pushed.
+                        <AgentInput placeholder="Optional note for the agent: why remove them" value={note} onChange={setNote} pending={attach} />
+                        <div className="actions" style={{ margin: 0 }}>
+                            <button className="danger" disabled={disabled} onClick={() => void remove()}>{busy === "delete" ? "Starting…" : "Remove from history"}</button>
+                            <button disabled={disabled} onClick={() => { setDeleting(false); setNote(""); }}>Cancel</button>
+                        </div>
+                    </div>
+                )}
+                {started && (
+                    <div className="commit-remove started">
+                        Removing {started} — the agent is replaying the branch; the result (and any conflicts it hit) will appear in Chat.
+                        <button className="tiny" onClick={() => setStarted(null)}>Dismiss</button>
+                    </div>
+                )}
+                {pushed && <div className="field-hint">{pushed}</div>}
+                {commits.length === 0 && <div className="quiet">no commits yet</div>}
+                {commits.map((c) => (
+                    <div className={`commit-row ${picked.has(c.sha) ? "picked" : ""} ${shown.includes(c.sha) ? "shown" : ""}`} key={c.sha}>
+                        {editing === c.sha ? (
+                            <div className="commit-edit">
+                                <input autoFocus value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void reword(c.sha)} />
+                                <div className="actions" style={{ margin: 0 }}>
+                                    <button className="primary" disabled={busy === c.sha || !text.trim()} onClick={() => void reword(c.sha)}>{busy === c.sha ? "Saving…" : "Save"}</button>
+                                    <button disabled={busy === c.sha} onClick={() => setEditing(null)}>Cancel</button>
+                                </div>
+                            </div>
+                        ) : (
+                            <>
+                                <input type="checkbox" aria-label={`pick ${c.short}`} checked={picked.has(c.sha)} onChange={() => toggle(c.sha)} />
+                                <code className="commit-sha">{c.short}</code>
+                                <span className="commit-subject">{c.subject}</span>
+                                <small className="field-hint">{c.author} · {ago(c.at)} ago</small>
+                                {taskId && <span className="commit-actions"><button className="tiny" disabled={disabled} onClick={() => { setEditing(c.sha); setText(c.subject); }}>Change message</button></span>}
+                            </>
+                        )}
+                    </div>
+                ))}
+            </div>
+        </details>
     );
 };
 
@@ -284,6 +264,10 @@ const FileDiff = ({
     onChange,
     onAsk,
     onExpand,
+    state,
+    print,
+    onOpen,
+    onReviewed,
 }: {
     file: DiffFile;
     comments: Record<string, LineComment>;
@@ -295,7 +279,14 @@ const FileDiff = ({
     onAsk: (anchor: MessageAnchor, text: string, files: File[]) => Promise<void>;
     // Fetches a collapsed file's hunks (generated / very large files are sent without them).
     onExpand: (path: string) => Promise<void>;
+    // The remembered review state of the file, its current change's fingerprint (null: unknown yet), and the setters.
+    state?: FileReviewState;
+    print: string | null;
+    onOpen: (open: boolean) => void;
+    onReviewed: (print: string | null) => void;
 }) => {
+    const reviewed = !!print && state?.reviewed === print;
+    const open = state?.open ?? (!reviewed && file.hunks.length > 0 && file.additions + file.deletions <= 400);
     const [editing, setEditing] = useState<string | null>(null);
     const [expanding, setExpanding] = useState(false);
     // Lines whose question is out with the agent right now (the reply arrives through the messages list).
@@ -319,8 +310,11 @@ const FileDiff = ({
         }
     };
     return (
-        <details className="diff-file" open={file.hunks.length > 0 && file.additions + file.deletions <= 400}>
+        <details className={`diff-file ${reviewed ? "reviewed" : ""}`} open={open} onToggle={(e) => { const now = (e.currentTarget as HTMLDetailsElement).open; if (now !== open) onOpen(now); }}>
             <summary>
+                <label className="inline file-reviewed" title={print ? "Mark as reviewed — the mark drops by itself when the file changes" : "loading…"} onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" checked={reviewed} disabled={!print} onChange={(e) => onReviewed(e.target.checked ? print : null)} /> Reviewed
+                </label>
                 <span className={`chip ${file.status === "added" ? "ok" : file.status === "deleted" ? "bad" : ""}`}>{file.status}</span>
                 <code className="path">{file.path}</code>
                 <span className="mono stat"><span className="add">+{file.additions}</span> <span className="del">−{file.deletions}</span></span>
@@ -409,6 +403,40 @@ const FileDiff = ({
             ))}
         </details>
     );
+};
+
+// FNV-1a over a file's change (status, counts, every hunk line): equal while the change is the same.
+const fingerprint = (f: DiffFile): string => {
+    let h = 0x811c9dc5;
+    const feed = (t: string) => {
+        for (let i = 0; i < t.length; i++) {
+            h ^= t.charCodeAt(i);
+            h = Math.imul(h, 0x01000193) >>> 0;
+        }
+    };
+    feed(`${f.status}|${f.additions}|${f.deletions}|`);
+    for (const hk of f.hunks) for (const l of hk.lines) feed(`${l.type}${l.text}\n`);
+    return h.toString(16);
+};
+
+// Which files are open and which are marked reviewed: kept by the server per task (code-review.json), so it survives
+// reloads and other browsers; a diff without a task (a session) keeps it for the page's lifetime only.
+const useFileReview = (taskId: string | undefined) => {
+    const [state, setState] = useState<Record<string, FileReviewState>>({});
+    useEffect(() => {
+        setState({});
+        if (taskId) void api.reviewState(taskId).then((r) => setState(r.files)).catch(() => undefined);
+    }, [taskId]);
+    const set = (path: string, patch: { open?: boolean | null; reviewed?: string | null }): void => {
+        setState((cur) => {
+            const next: FileReviewState = { ...(cur[path] ?? {}) };
+            if (patch.open !== undefined) { if (patch.open === null) delete next.open; else next.open = patch.open; }
+            if (patch.reviewed !== undefined) { if (patch.reviewed === null) delete next.reviewed; else next.reviewed = patch.reviewed; }
+            return { ...cur, [path]: next };
+        });
+        if (taskId) void api.patchReviewState(taskId, { [path]: patch }).catch(() => undefined);
+    };
+    return { state, set };
 };
 
 export const useDraftComments = (taskId: string): [Record<string, LineComment>, (key: string, c: LineComment | null) => void, () => void] => {
@@ -566,12 +594,19 @@ export const DiffView = ({
         setDiff((d) => d && { ...d, files: d.files.map((f) => (f.path === path ? full : f)), groups: d.groups.map((g) => ({ ...g, files: g.files.map((f) => (f.path === path ? full : f)) })) });
     };
     const threadItems = useMemo(() => threadMessages(threads), [threads]);
+    const review = useFileReview(taskId);
+    // A file's change as it stands vs the base: the fingerprint a Reviewed mark is held against, so the mark drops by
+    // itself when the file's change moves (the agent edited it). Taken from the full diff in every view.
+    const base = filter.kind === "all" ? diff : fullDiff;
+    const printOf = (path: string): string | null => {
+        const f = base?.files.find((x) => x.path === path);
+        return f ? fingerprint(f) : null;
+    };
     // The commit picker only offers this repository's commits — its shas mean nothing in another checkout.
     const repoCommits = branch.commits.filter((c) => c.repo === repo);
     // Comments and questions work in every view: both are placed by the line's text, and a comment saved in a commit
     // slice is re-anchored to the full diff's line numbers (handleChange).
     const commentsOn = canComment;
-    const picker = <CommitPicker commits={repoCommits} uncommitted={branch.uncommitted} filter={filter} onChange={setFilter} />;
     const tabs = repos.length > 1 && (
         <div className="subtabs pr-repo-tabs">
             {repos.map((r) => (
@@ -579,18 +614,14 @@ export const DiffView = ({
             ))}
         </div>
     );
-    const commitPanel = taskId && repoCommits.length > 0 && (
-        <details className="commit-panel">
-            <summary>Commits ({repoCommits.length}) — rename, remove, force-push</summary>
-            <CommitManager taskId={taskId} repo={repo} commits={repoCommits} busy={taskBusy} onError={onError} />
-        </details>
-    );
+    const commitPanel = <CommitList {...(taskId ? { taskId } : {})} repo={repo} commits={repoCommits} uncommitted={branch.uncommitted} filter={filter} onFilter={setFilter} busy={taskBusy} onError={onError} />;
     if (error) return <>{tabs}{commitPanel}<div className="blocked-box">diff: {error}</div></>;
-    if (!diff) return <>{tabs}{commitPanel}<div className="diff"><div className="diff-summary mono">{picker} loading diff…</div></div></>;
+    if (!diff) return <>{tabs}{commitPanel}<div className="diff"><div className="diff-summary mono">loading diff…</div></div></>;
     const files = diff.files.filter((f) => inRepo(f.path, repo));
     const groups = diff.groups.map((g) => ({ ...g, files: g.files.filter((f) => inRepo(f.path, repo)) })).filter((g) => g.files.length > 0);
     const adds = files.reduce((n, f) => n + f.additions, 0);
     const dels = files.reduce((n, f) => n + f.deletions, 0);
+    const reviewedCount = files.filter((f) => { const p = printOf(f.path); return !!p && review.state[f.path]?.reviewed === p; }).length;
     const drifted = (diff.baseDrift ?? []).includes(repo);
     // Everything `git status` counts as uncommitted here — the diff below compares with the base, so a working-tree
     // change that matches the base (or sits outside the diffed files) would otherwise be invisible.
@@ -613,8 +644,7 @@ export const DiffView = ({
                     </p>
                 )}
                 <div className="diff-summary mono">
-                    {picker}
-                    {files.length} file{files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>
+                    {files.length} file{files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>{files.length > 0 && <> · {reviewedCount}/{files.length} reviewed</>}
                     {commentsOn && <span className="hint"> · tap a line to comment{canAsk ? " or ask" : ""}{filter.kind !== "all" ? " (comments are kept against the current file's lines)" : ""}</span>}
                     {!commentsOn && canAsk && <span className="hint"> · tap a line to ask the agent about it</span>}
                 </div>
@@ -637,7 +667,8 @@ export const DiffView = ({
                     <div key={gi} className="diff-group">
                         {diff.filtered && groups.length > 1 && <div className="diff-group-head mono">{g.label} · {g.files.length} file{g.files.length === 1 ? "" : "s"}</div>}
                         {g.files.map((f) => (
-                            <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} threads={threadItems} canComment={commentsOn} canAsk={canAsk} onChange={handleChange} onAsk={onAsk} onExpand={expand} />
+                            <FileDiff key={`${gi}:${f.path}`} file={f} comments={comments} prior={diff.filtered ? [] : prior} threads={threadItems} canComment={commentsOn} canAsk={canAsk} onChange={handleChange} onAsk={onAsk} onExpand={expand}
+                                state={review.state[f.path]} print={printOf(f.path)} onOpen={(open) => review.set(f.path, { open })} onReviewed={(p) => review.set(f.path, p ? { reviewed: p, open: false } : { reviewed: null, open: true })} />
                         ))}
                     </div>
                 ))}

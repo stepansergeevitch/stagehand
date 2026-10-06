@@ -39,6 +39,9 @@ export const accountOrderOf = (env: Pick<Env, "account_order" | "default_account
 export interface ConfigDirContents {
     exists: boolean; skills: string[]; agents: string[]; commands: string[]; hooks: string[]; plugins: number; mcpServers: string[]; hasClaudeMd: boolean; hasSettings: boolean;
 }
+// The human's review state of one file of a task's diff (server code-review.json): shown open or not, and the
+// fingerprint of the file's change when it was marked reviewed.
+export interface FileReviewState { open?: boolean; reviewed?: string }
 export interface ChromeBrowser { deviceId: string; name: string; profile?: string; account?: string | null; profileDir?: string; browser?: string }
 // The Chrome profile name when Stagehand could match it, else the extension's own label ("Browser 1").
 export const chromeBrowserLabel = (b: ChromeBrowser): string => b.profile ?? b.name;
@@ -789,6 +792,10 @@ export const api = {
     // Reword resolves once the (fast, conflict-free) rewrite is done. Remove only resolves once the agent run has
     // *started* — it can take a while and may hit conflicts; the outcome lands in Chat.
     rewordCommit: (id: string, sha: string, repo: string, message: string) => post<{ newSha: string }>(`/api/tasks/${id}/commits/${sha}/reword`, { repo, message }),
+    removeCommits: (id: string, shas: string[], repo: string, note?: string, files?: SharedFile[]) => post<{ started: true }>(`/api/tasks/${id}/commits/remove`, withFiles({ repo, shas, ...(note ? { note } : {}) }, files)),
+    reviewState: (id: string) => fetch(`/api/tasks/${id}/review-state`).then((r) => j<{ files: Record<string, FileReviewState> }>(r)),
+    patchReviewState: (id: string, files: Record<string, { open?: boolean | null; reviewed?: string | null }>) =>
+        fetch(`/api/tasks/${id}/review-state`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ files }) }).then((r) => j<{ files: Record<string, FileReviewState> }>(r)),
     removeCommit: (id: string, sha: string, repo: string, note?: string, files?: SharedFile[]) => post<{ started: true }>(`/api/tasks/${id}/commits/${sha}/remove`, withFiles({ repo, ...(note ? { note } : {}) }, files)),
     forcePush: (id: string, repo: string, force = false) => post<{ ok: true; result: string }>(`/api/tasks/${id}/commits/force-push`, { repo, force }),
     prComments: (id: string, repo: string) => fetch(`/api/tasks/${id}/pr-comments?repo=${encodeURIComponent(repo)}`).then((r) => j<PrComments | null>(r)),

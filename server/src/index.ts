@@ -1506,6 +1506,56 @@ app.post("/api/tasks/:id/commits/:sha/reword", async (c) => {
     }
 });
 
+// Several commits removed in one agent run (the picked commits of Code changes).
+app.post("/api/tasks/:id/commits/remove", async (c) => {
+    const body = json(z.object({ repo: z.string().optional(), shas: z.array(z.string().min(4)).min(1), note: z.string().optional(), files: z.array(SharedFileSchema).optional() }), await c.req.json());
+    try {
+        await engine.removeCommits(c.req.param("id"), body.repo ?? "", body.shas, body.note, sharedFilesOf(c.req.param("id"), body.files));
+        return c.json({ started: true });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
+// The human's review state of a task's diff, per file path: whether it is shown open, and the fingerprint of the
+// file's change when it was marked reviewed (the mark holds while the change is the same). Kept in the task directory.
+type FileReviewState = { open?: boolean; reviewed?: string };
+const reviewStatePath = (taskId: string): string => join(engine.taskDir(taskId), "code-review.json");
+const readFileReviews = (taskId: string): Record<string, FileReviewState> => {
+    try {
+        return (JSON.parse(readFileSync(reviewStatePath(taskId), "utf8")) as { files?: Record<string, FileReviewState> }).files ?? {};
+    } catch {
+        return {};
+    }
+};
+app.get("/api/tasks/:id/review-state", (c) => {
+    if (!engine.getTask(c.req.param("id"))) return c.json({ error: "not found" }, 404);
+    return c.json({ files: readFileReviews(c.req.param("id")) });
+});
+// Partial: per path, `open` / `reviewed` set a value, null clears it.
+app.patch("/api/tasks/:id/review-state", async (c) => {
+    const id = c.req.param("id");
+    if (!engine.getTask(id)) return c.json({ error: "not found" }, 404);
+    const body = json(z.object({ files: z.record(z.object({ open: z.boolean().nullable().optional(), reviewed: z.string().max(100).nullable().optional() })) }), await c.req.json());
+    const files = readFileReviews(id);
+    for (const [path, patch] of Object.entries(body.files)) {
+        const cur: FileReviewState = { ...(files[path] ?? {}) };
+        if (patch.open !== undefined) {
+            if (patch.open === null) delete cur.open;
+            else cur.open = patch.open;
+        }
+        if (patch.reviewed !== undefined) {
+            if (patch.reviewed === null) delete cur.reviewed;
+            else cur.reviewed = patch.reviewed;
+        }
+        if (Object.keys(cur).length) files[path] = cur;
+        else delete files[path];
+    }
+    mkdirSync(engine.taskDir(id), { recursive: true });
+    writeFileSync(reviewStatePath(id), JSON.stringify({ files }, null, 2));
+    return c.json({ files });
+});
+
 // Remove: a real rewrite (everything after the commit is replayed without it) — goes through the agent in the task's
 // own session so it can resolve conflicts; never pushes. Starts in the background; the result lands in Chat.
 app.post("/api/tasks/:id/commits/:sha/remove", async (c) => {

@@ -3848,21 +3848,36 @@ export class Engine extends EventEmitter {
     // (so a bad request — dirty worktree, task busy, unknown commit — surfaces to the button that triggered it) and
     // returns once the run has started; the result (success or failure) lands in Chat when it finishes.
     async removeCommit(taskId: string, repo: string, sha: string, note: string | undefined, files: SharedFile[] = []): Promise<void> {
-        const { task, env, cwd } = await this.gitEditPreflight(taskId, repo, sha);
-        const subject = (await this.git(cwd, ["log", "-1", "--format=%s", sha], env).catch(() => "")).trim();
+        return this.removeCommits(taskId, repo, [sha], note, files);
+    }
+
+    // Several commits in one run (Code changes → tick commits → Delete): dropped newest first, so the older shas stay
+    // valid while the newer ones go.
+    async removeCommits(taskId: string, repo: string, shas: string[], note: string | undefined, files: SharedFile[] = []): Promise<void> {
+        if (!shas.length) throw new Error("no commit picked");
+        let pre: { task: TaskRow; env: EnvRow; cwd: string } | null = null;
+        for (const s of shas) pre = await this.gitEditPreflight(taskId, repo, s);
+        const { task, env, cwd } = pre!;
+        // Newest first: the order the branch's own log lists them in.
+        const order = (await this.git(cwd, ["log", "--format=%H", "-n", "500"], env)).split("\n").filter(Boolean);
+        const full = shas.map((s) => order.find((o) => o.startsWith(s)) ?? s).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+        const subjects = await Promise.all(full.map(async (s) => (await this.git(cwd, ["log", "-1", "--format=%s", s], env).catch(() => "")).trim()));
+        const sha = full.length === 1 ? full[0]! : `${full.length} commits`;
+        const subject = full.length === 1 ? subjects[0]! : subjects.join("; ");
         const cd = this.configDirOf(env);
         const usable = this.usableAccounts(cd.path);
         const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === accountOrderOf(env)[0]) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
         const prevStatus = task.status;
         const prevLine = task.status_line;
-        this.setTaskStatus(taskId, "running", `Removing commit ${sha.slice(0, 7)}${repo ? ` (${repo})` : ""}…`);
+        const label = full.length === 1 ? `commit ${full[0]!.slice(0, 7)}` : `${full.length} commits`;
+        this.setTaskStatus(taskId, "running", `Removing ${label}${repo ? ` (${repo})` : ""}…`);
         const prompt = renderPrompt("git-remove-commit.md", {
             repo,
             cwd,
             branch: task.branch ?? "",
-            sha,
-            subject,
+            commits: full.map((s, i) => `- \`${s}\` ("${subjects[i]}")`).join("\n"),
+            removeSteps: full.map((s) => `\`git rebase --onto ${s}^ ${s}\``).join(", then "),
             humanNote: (note?.trim() ? `\nThe human's note on why: ${note.trim()}` : "") + renderSharedFiles(files, this.taskDir(taskId)),
         });
         const run = startClaude({
@@ -3881,7 +3896,7 @@ export class Engine extends EventEmitter {
             this.setTaskStatus(taskId, prevStatus, prevLine ?? undefined);
             if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "git-edit", stage: null }, outcome.result);
             const reply = outcome.result?.result?.trim() || (outcome.exitCode !== 0 ? `(did not finish: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
-            this.addMessage(taskId, "agent", `🔧 Remove commit ${sha.slice(0, 7)} "${subject}" (${repoLabel(repo)}):\n\n${reply}`);
+            this.addMessage(taskId, "agent", `🔧 Remove ${full.length === 1 ? `commit ${sha.slice(0, 7)} "${subject}"` : `${full.length} commits (${full.map((x) => x.slice(0, 7)).join(", ")})`} (${repoLabel(repo)}):\n\n${reply}`);
             this.emitTask(taskId);
         });
     }
