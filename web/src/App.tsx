@@ -231,7 +231,15 @@ export const App = () => {
         if (!envId && e[0]) setRememberedEnv(e[0].id);
     }, [envId]);
 
-    const loadDetail = useCallback(async (id: string) => setDetail(await api.task(id)), []);
+    // The open task, read by async callbacks at the moment they finish. A detail fetched for a task that is no longer
+    // the open one is dropped: responses arrive out of order, and an update of a busy task (INV-155) fetched just
+    // after the human switched to another (INV-149) used to replace the open task on screen.
+    const selectedRef = useRef<string | null>(selected);
+    selectedRef.current = selected;
+    const loadDetail = useCallback(async (id: string) => {
+        const d = await api.task(id);
+        if (selectedRef.current === id) setDetail(d);
+    }, []);
 
     // A task named by the URL that no longer exists (deleted) sends the view back to its list.
     useEffect(() => {
@@ -273,7 +281,7 @@ export const App = () => {
                     const t = msg.payload as Task | null;
                     if (!t) return;
                     setTasks((prev) => (prev.some((p) => p.id === t.id) ? prev.map((p) => (p.id === t.id ? t : p)) : [t, ...prev]));
-                    if (t.id === selected) void loadDetail(t.id);
+                    if (t.id === selectedRef.current) void loadDetail(t.id);
                 }
                 if (msg.kind === "activity") {
                     const a = msg.payload as { taskId: string; event: { kind: string; summary: string } };
@@ -281,7 +289,7 @@ export const App = () => {
                 }
                 if (msg.kind === "message") {
                     const m = msg.payload as { task_id: string };
-                    if (m.task_id === selected) void loadDetail(m.task_id);
+                    if (m.task_id === selectedRef.current) void loadDetail(m.task_id);
                 }
                 if (msg.kind === "rate_limit" || msg.kind === "account") void Promise.all([api.accounts(), api.configDirs()]).then(([a, d]) => { setAccounts(a); setConfigDirs(d); });
                 if (msg.kind === "prompter") prompterBus.emit(msg.payload as PrompterEvent);
@@ -294,7 +302,7 @@ export const App = () => {
             if (retry) clearTimeout(retry);
             ws?.close();
         };
-    }, [selected, loadDetail, reload]);
+    }, [loadDetail, reload]);
 
     useEffect(() => {
         if (selected) void loadDetail(selected);
@@ -326,7 +334,7 @@ export const App = () => {
     const dir = route.page === "config-dirs" && route.dir ? configDirs.find((d) => d.id === route.dir) : undefined;
 
     // The selected task's detail view — the same on the Tasks page and when a task is opened from the Dashboard.
-    const taskDetailView = detail && (
+    const taskDetailView = detail && detail.task.id === selected && (
         <ErrorBoundary key={detail.task.id} label="Task view">
             <TaskDetailView
                 detail={detail}
