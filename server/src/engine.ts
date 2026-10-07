@@ -3324,7 +3324,12 @@ export class Engine extends EventEmitter {
                     continue;
                 }
                 const want = o.commit.trim().toLowerCase();
-                const sha = !o.addressed ? null : (want ? shas.find((x) => x.startsWith(want)) : undefined) ?? (shas.length === 1 ? shas[0]! : null);
+                let sha = !o.addressed ? null : (want ? shas.find((x) => x.startsWith(want)) : undefined) ?? (shas.length === 1 ? shas[0]! : null);
+                // A rebase since the run rewrote the commit it named: the round's commit with the same subject.
+                if (o.addressed && !sha && want) {
+                    const subject = (await this.git(cwd, ["log", "-1", "--format=%s", want], env).catch(() => "")).trim();
+                    if (subject) sha = (await this.git(cwd, ["log", "--format=%H %s", "-200"], env).catch(() => "")).split("\n").find((l) => l.slice(41) === subject)?.slice(0, 40) ?? null;
+                }
                 const note = o.note || (o.addressed && !sha ? (want ? `commit ${o.commit} is not one of this round's commits` : "no commit named") : "");
                 outcomes.push({ repo, commentId: c.id, addressed: o.addressed && !!sha, sha, note });
                 if (o.addressed && sha) replies.push({ repo, commentId: c.id, sha, posted: null, error: null });
@@ -5718,7 +5723,7 @@ export class Engine extends EventEmitter {
         const wanted = new Set(commentIds);
         const picked = [...comments.human, ...comments.automation].filter((c) => wanted.has(c.id));
         if (!picked.length) return { text: "", count: 0 };
-        return { count: picked.length, picked, text: `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (not necessarily a CI failure):\n${picked.map(describePrComment).join("\n")}` };
+        return { count: picked.length, picked, text: `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${row.number} picked by the human to address (not necessarily a CI failure). Report each one by its id in the output file's \`comments\` (addressed, and the commit that addresses it):\n${picked.map((c) => describePrComment(c).replace(/^- /, `- [comment #${c.id}] `)).join("\n")}` };
     }
 
     // Batched PR jobs — the user's ask (2026-09-21): "batch jobs for agent after PR creation - e.g. rebase onto latest
