@@ -49,6 +49,7 @@ const services = new Services(db, cfg);
 if (!PREVIEW) services.startWatch();
 const engine = new Engine(db, cfg, services);
 services.onNotice = (taskId, text) => engine.serviceNotice(taskId, text);
+services.onMigrateFailed = (task, env, error) => engine.recreateDbAfterMigrateFailure(task, env, error);
 const sessions = new Sessions(db, cfg, engine);
 // Every resource Stagehand started, judged and reaped by policy; the Resources page reads the same snapshot.
 const resources = new Resources(db, cfg, {

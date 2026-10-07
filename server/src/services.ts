@@ -228,6 +228,8 @@ export class Services {
 
     // Called with a one-line notice for the task's Chat when a service was restarted (or given up on) on its own.
     onNotice: ((taskId: string, text: string) => void) | null = null;
+    // A migrate that failed on the task's own database: recreate that database from the template (true when it did).
+    onMigrateFailed: ((task: TaskRow, env: EnvRow, error: string) => Promise<boolean>) | null = null;
 
     private static readonly AUTO_RESTART_MAX = 3;
     private static readonly AUTO_RESTART_WINDOW_MS = 60 * 60_000;
@@ -372,7 +374,17 @@ export class Services {
         // Never start an app, or migrate, against a database the env does not allow (db-hosts.ts).
         await assertDbHosts(env, vars.worktree!, taskDbExpect(this.db, task, env));
         if (kind === "be" && env.migrate_command) {
-            await runMigration(withPrepare(env, env.migrate_command), { worktree: vars.worktree!, envPath: env.path, vars: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id) }, logPath: join(logDir, "migrate.log"), label: "migrate" });
+            const migrate = () => runMigration(withPrepare(env, env.migrate_command!), { worktree: vars.worktree!, envPath: env.path, vars: { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id) }, logPath: join(logDir, "migrate.log"), label: "migrate" });
+            try {
+                await migrate();
+            } catch (e) {
+                // The task's own database holds the branch's migrations as they were when it last migrated; a rebase or
+                // a fix that renamed or rewrote them (INV-155, 2026-10-07: 0855_item_unit_settings became 0856 after a
+                // rebase, and migrate re-created an existing table) leaves it unable to migrate. A fresh copy of the
+                // template takes the branch as it is now; a genuine migration error fails again and surfaces.
+                if (!this.onMigrateFailed || !(await this.onMigrateFailed(task, env, String((e as Error).message ?? e)))) throw e;
+                await migrate();
+            }
         }
         const logPath = join(logDir, `${kind}.log`);
         const tmux = serviceSessionName(task.ticket_id, kind);

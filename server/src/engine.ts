@@ -1912,6 +1912,23 @@ export class Engine extends EventEmitter {
 
     // ---------- task databases (task-db.ts, docs/db-isolation.md) ----------
 
+    // A BE start whose migrate failed on the task's own database (services.ts): the database is recreated from the
+    // template once and the migrate runs again. Only a task's own, ready database — never the shared one or a template.
+    async recreateDbAfterMigrateFailure(task: TaskRow, env: EnvRow, error: string): Promise<boolean> {
+        const row = taskDbRow(this.db, task.id);
+        if (!taskDbActive(taskDbOf(env)) || row?.status !== "ready" || row.owner_kind !== "task" || !task.worktree_path) return false;
+        const why = error.split("\n").map((l) => l.trim()).filter(Boolean).slice(-1)[0]?.slice(0, 200) ?? "migrate failed";
+        this.addAgentNote(task.id, `🗄️ Migrate failed on ${row.name} (${why}) — its migration history no longer matches the branch (a rebase or fix renamed or rewrote a migration). Recreating it from ${row.template} and migrating again; data added to it since it was created is gone.`);
+        try {
+            await this.taskDbs.create({ id: task.id, slug: task.ticket_id, kind: "task" }, env);
+            await this.taskDbs.connect(this.getTask(task.id)!, env);
+            return true;
+        } catch (e) {
+            this.addAgentNote(task.id, `🗄️ Recreating ${row.name} failed: ${String((e as Error).message ?? e).slice(0, 300)}`);
+            return false;
+        }
+    }
+
     // Recreate (a task on its own database) and Adopt (a task still on the shared one) are the same step: stop the
     // task's services, refresh the template, copy it into the task's database, point the worktree at it. The next BE
     // start migrates it to the branch.
