@@ -1011,6 +1011,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         Skip Manual QA
                     </button>
                 )}
+                {task.status !== "running" && !PR_STAGES.has(task.stage) && (detail.prStates ?? []).some((r) => r.number && !r.merged_at && r.state !== "CLOSED" && r.state !== "MERGED") && (
+                    <button title="The PRs are already open: go back to following them (PR Waiting) without the rest of this round's stages — the branch must be pushed first" onClick={() => onAction(() => api.followPrs(task.id))}>
+                        Back to PR Waiting
+                    </button>
+                )}
                 <button onClick={() => onAction(() => api.pin(task.id))}>{task.pinned ? "Unpin" : "Pin"}</button>
                 {terminal ? <button onClick={onCloseTerminal}>Close terminal</button> : <button disabled={task.status === "running"} onClick={onOpenTerminal}>Open terminal</button>}
                 {task.status !== "running" && currentIdx > 0 && <button onClick={() => setReturning((v) => !v)} title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)">{returning ? "Cancel return" : "Return to a stage…"}</button>}

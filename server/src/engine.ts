@@ -1677,6 +1677,31 @@ export class Engine extends EventEmitter {
         this.advance(taskId, "user_review");
     }
 
+    // The human sends a task whose PRs are already open back to following them (PR Waiting), from wherever a code
+    // round left it — Manual QA, User Review, a stopped run — once its branch is pushed (INV-155, 2026-10-07: rebased
+    // and force-pushed after a review round, but the pipeline still wanted Manual QA and User Review first).
+    async followPrs(taskId: string): Promise<void> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        if (task.status === "running" || this.hasLiveRun(taskId)) throw new Error("a run is in progress — stop it first");
+        if (!task.branch) throw new Error("the task has no branch");
+        const open = this.prRows(taskId).filter((r) => r.number && !r.merged_at && r.state !== "CLOSED" && r.state !== "MERGED");
+        if (!open.length) throw new Error("the task has no open pull request — open one first");
+        const env = this.env(task.env_id);
+        for (const r of open) {
+            const cwd = this.checkoutOf(task, env, r.repo);
+            if (!existsSync(cwd)) continue;
+            const ahead = await this.git(cwd, ["rev-list", "--count", `origin/${task.branch}..HEAD`], env).catch(() => "0");
+            if (Number(ahead) > 0) throw new Error(`${repoLabel(r.repo)}: ${ahead} commit(s) not pushed yet — push them first (Force-push in Code changes)`);
+        }
+        this.killTaskRuns(taskId);
+        this.dismissPendingQuestions(taskId);
+        this.addAgentNote(taskId, `Back to PR Waiting by you (it was ${task.stage.replace(/_/g, " ")}, ${task.status}) — the task follows its PRs again`);
+        this.setStage(taskId, "pr_waiting");
+        this.setTaskStatus(taskId, "idle", "PR Waiting · reading the PRs");
+        this.syncPrTaskState(taskId, { force: true });
+    }
+
     // The human discards a pending PR Fix (they undid it, or handled it by hand): nothing is pushed, the proposal is
     // archived, and the task's stage comes from its PRs again (INV-149, 2026-10-06: the human deleted the fix commit,
     // but the task kept waiting on it).
