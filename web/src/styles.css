@@ -905,3 +905,5 @@ section.card h2 .repo-chip { margin-right: 2px; }
 .line-thread.folded { cursor: pointer; color: var(--ink-3); font-size: 12px; padding: 4px 10px; }
 .line-thread.folded:hover { color: var(--accent); }
 .line-thread .thread-fold { float: right; }
+.dt-actions { display: inline-flex; gap: 6px; margin-left: auto; flex-wrap: wrap; } .dt-actions + button { margin-left: 0; }
+a.button { display: inline-flex; align-items: center; padding: 5px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); text-decoration: none; } a.button:hover { border-color: var(--accent); }

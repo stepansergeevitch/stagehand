@@ -80,6 +80,7 @@ const useDismiss = (open: boolean, close: () => void) => {
 export const DataTable = <T,>({
     title,
     entity,
+    actions,
     onCreate,
     createDisabled,
     columns,
@@ -96,6 +97,8 @@ export const DataTable = <T,>({
     // The header row: the list's name on the left, "Create new <entity>" on the right (when onCreate is given).
     title?: ReactNode;
     entity?: string;
+    // More list-level actions in the header row, left of Create new (e.g. Refresh).
+    actions?: ReactNode;
     onCreate?: () => void;
     createDisabled?: string;
     columns: DataColumn<T>[];
@@ -216,9 +219,10 @@ export const DataTable = <T,>({
 
     return (
         <div className="data-table">
-            {(title || onCreate) && (
+            {(title || onCreate || actions) && (
                 <div className="dt-header">
                     <h2 className="dt-title">{title}</h2>
+                    {actions && <span className="dt-actions">{actions}</span>}
                     {onCreate && (
                         <button className="primary" disabled={!!createDisabled} title={createDisabled} onClick={onCreate}>
                             + Create new {entity ?? "item"}

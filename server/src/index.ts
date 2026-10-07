@@ -2314,7 +2314,9 @@ app.post("/api/product-owners/:id/approve-design", async (c) => {
 });
 app.post("/api/product-owners/:id/approve-tickets", async (c) => {
     try {
-        return c.json(await productOwners.approveTickets(c.req.param("id")));
+        const body = (await c.req.json().catch(() => ({}))) as { keys?: unknown };
+        const keys = Array.isArray(body.keys) ? body.keys.filter((k): k is string => typeof k === "string") : undefined;
+        return c.json(await productOwners.approveTickets(c.req.param("id"), keys));
     } catch (e) {
         return poErr(c, e);
     }

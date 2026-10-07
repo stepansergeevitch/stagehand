@@ -1310,7 +1310,8 @@ export class ProductOwners {
     }
 
     // Creates the approved tickets in the task manager, parents first, skipping the ones created before (a retry).
-    async approveTickets(poId: string): Promise<{ created: number; skipped: number }> {
+    // Creates the tickets not created yet in the tracker — all of them, or only `keys` (the ones the human picked).
+    async approveTickets(poId: string, keys?: string[]): Promise<{ created: number; skipped: number }> {
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
         if (this.active.has(poId)) throw new Error("the Product Owner is still answering — wait for it");
@@ -1327,6 +1328,7 @@ export class ProductOwners {
         try {
             for (const t of order) {
                 if (done.has(t.key)) continue;
+                if (keys && !keys.includes(t.key)) continue;
                 if (t.existing) {
                     const found = await findIssue(this.cfg, po.source, t.existing);
                     if (!found) throw new Error(`${t.key} names ${t.existing}, which does not exist`);

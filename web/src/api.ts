@@ -656,7 +656,7 @@ export const api = {
     poFileText: (id: string, file: string) => fetch(`/api/product-owners/${id}/files/${file.split("/").map(encodeURIComponent).join("/")}`).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)))),
     poRevision: (id: string, name: string) => fetch(`/api/product-owners/${id}/revisions/${encodeURIComponent(name)}`).then((r) => j<{ text: string }>(r)),
     poApproveDesign: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/approve-design`),
-    poApproveTickets: (id: string) => post<{ created: number; skipped: number }>(`/api/product-owners/${id}/approve-tickets`),
+    poApproveTickets: (id: string, keys?: string[]) => post<{ created: number; skipped: number }>(`/api/product-owners/${id}/approve-tickets`, keys ? { keys } : {}),
     poAskQuestion: (id: string, q: string, text: string) => post<{ ok: true }>(`/api/product-owners/${id}/questions/${q}/ask`, { text }),
     poConfirmQuestion: (id: string, q: string, resolution?: string) => post<{ ok: true }>(`/api/product-owners/${id}/questions/${q}/confirm`, resolution ? { resolution } : {}),
     poReadEvent: (id: string, eventId: string) => post<{ ok: true }>(`/api/product-owners/${id}/events/${eventId}/read`),
