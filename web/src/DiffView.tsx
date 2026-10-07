@@ -54,6 +54,7 @@ const CommitList = ({ taskId, repo, commits, uncommitted, filter, onFilter, busy
     const [editing, setEditing] = useState<string | null>(null);
     const [text, setText] = useState("");
     const [deleting, setDeleting] = useState(false);
+    const [squashing, setSquashing] = useState<string | null>(null);
     const [note, setNote] = useState("");
     const attach = usePendingFiles();
     const [started, setStarted] = useState<string | null>(null);
@@ -82,6 +83,18 @@ const CommitList = ({ taskId, repo, commits, uncommitted, filter, onFilter, busy
         if (!taskId || !text.trim()) return;
         await api.rewordCommit(taskId, sha, repo, text.trim());
         setEditing(null);
+    });
+    // Squash: only a consecutive run (the server checks it too); the list is newest first, so picked rows must be
+    // adjacent in it. The message defaults to the oldest picked commit's.
+    const idx = sel.map((c) => commits.indexOf(c));
+    const consecutive = sel.length >= 2 && Math.max(...idx) - Math.min(...idx) === sel.length - 1;
+    const oldestPicked = sel.reduce<BranchCommit | undefined>((o, c) => (!o || commits.indexOf(c) > commits.indexOf(o) ? c : o), undefined);
+    const squash = () => run("squash", async () => {
+        if (!taskId || !squashing?.trim() || !consecutive) return;
+        await api.squashCommits(taskId, sel.map((c) => c.sha), repo, squashing.trim());
+        setSquashing(null);
+        setPicked(new Set());
+        if (filter.kind === "commits") onFilter({ kind: "all" });
     });
     const remove = () => run("delete", async () => {
         if (!taskId || !sel.length) return;
@@ -119,11 +132,22 @@ const CommitList = ({ taskId, repo, commits, uncommitted, filter, onFilter, busy
                     {taskId && (
                         <>
                             <span className="dt-spacer" />
+                            <button className="tiny" disabled={disabled || !consecutive} title={sel.length >= 2 && !consecutive ? "only consecutive commits can be squashed" : "Squash the picked consecutive commits into one (files end exactly as they are; nothing is pushed)"} onClick={() => setSquashing((v) => (v === null ? oldestPicked?.subject ?? "" : null))}>Squash{consecutive ? ` ${sel.length}` : ""}</button>
                             <button className="tiny danger" disabled={disabled || !sel.length} onClick={() => setDeleting((d) => !d)}>Delete{sel.length ? ` ${sel.length}` : ""}</button>
-                            <button className="tiny" disabled={disabled} title="Push the branch with --force-with-lease — needed after Change message or Delete rewrite the history GitHub already has" onClick={forcePush}>{busy === "push" ? "Pushing…" : "Force-push"}</button>
+                            <button className="tiny" disabled={disabled} title="Push the branch with --force-with-lease — needed after Change message, Squash or Delete rewrite the history GitHub already has" onClick={forcePush}>{busy === "push" ? "Pushing…" : "Force-push"}</button>
                         </>
                     )}
                 </div>
+                {squashing !== null && consecutive && (
+                    <div className="commit-remove">
+                        <b>Squash {sel.length} commits into one</b>
+                        <input autoFocus value={squashing} onChange={(e) => setSquashing(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void squash()} placeholder="Commit message" />
+                        <div className="actions" style={{ margin: 0 }}>
+                            <button className="primary" disabled={disabled || !squashing.trim()} onClick={() => void squash()}>{busy === "squash" ? "Squashing…" : "Squash"}</button>
+                            <button disabled={disabled} onClick={() => setSquashing(null)}>Cancel</button>
+                        </div>
+                    </div>
+                )}
                 {deleting && sel.length > 0 && (
                     <div className="commit-remove">
                         <b>Remove {sel.length === 1 ? `commit ${sel[0]!.short}` : `${sel.length} commits`} from history</b> — not a revert: the agent replays everything after them, resolves conflicts and re-runs tests. Nothing is pushed.

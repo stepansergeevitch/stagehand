@@ -1507,6 +1507,16 @@ app.post("/api/tasks/:id/commits/:sha/reword", async (c) => {
     }
 });
 
+// Consecutive commits squashed into one: a pure relink like Reword, synchronous.
+app.post("/api/tasks/:id/commits/squash", async (c) => {
+    const body = json(z.object({ repo: z.string().optional(), shas: z.array(z.string().min(4)).min(2), message: z.string().min(1) }), await c.req.json());
+    try {
+        return c.json(await engine.squashCommits(c.req.param("id"), body.repo ?? "", body.shas, body.message));
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+
 // Several commits removed in one agent run (the picked commits of Code changes).
 app.post("/api/tasks/:id/commits/remove", async (c) => {
     const body = json(z.object({ repo: z.string().optional(), shas: z.array(z.string().min(4)).min(1), note: z.string().optional(), files: z.array(SharedFileSchema).optional() }), await c.req.json());

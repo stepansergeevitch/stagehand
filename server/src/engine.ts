@@ -354,6 +354,18 @@ const isFailedCheck = (c: { conclusion?: string; state?: string }): boolean => !
 // The decisive part of a failed git command's output. A rejected push names its reason only in parentheses after the
 // ref ("! [remote rejected] a -> b (reason)"), behind GitHub's "remote: Time …" and "To <url>" lines — INV-155's status
 // kept those and cut the reason off — so the noise goes and a rejection is reduced to its ref and reason.
+// A copy of `meta`'s commit (author, committer, dates, message unless `body` replaces it) with `tree`'s files on
+// `parent` — the building block of the history edits that never re-apply a patch (Change message, Squash).
+export const recommit = (cwd: string, gitEnv: NodeJS.ProcessEnv, meta: string, tree: string, parent: string, body?: string): string => {
+    const [an, ae, ad, cn, ce, cd] = execFileSync("git", ["-C", cwd, "log", "-1", "--format=%an%n%ae%n%ad%n%cn%n%ce%n%cd", "--date=raw", meta], { env: gitEnv, encoding: "utf8" }).split("\n");
+    const message = body ?? execFileSync("git", ["-C", cwd, "show", "-s", "--format=%B", meta], { env: gitEnv, encoding: "utf8" });
+    return execFileSync(
+        "git",
+        ["-C", cwd, "commit-tree", `${tree}^{tree}`, "-p", parent],
+        { env: { ...gitEnv, GIT_AUTHOR_NAME: an ?? "", GIT_AUTHOR_EMAIL: ae ?? "", GIT_AUTHOR_DATE: ad ?? "", GIT_COMMITTER_NAME: cn ?? "", GIT_COMMITTER_EMAIL: ce ?? "", GIT_COMMITTER_DATE: cd ?? "" }, input: message, encoding: "utf8" },
+    ).trim();
+};
+
 export const gitErrorTail = (e: unknown): string => {
     const lines = String((e as Error).message ?? e)
         .split("\n")
@@ -3908,20 +3920,42 @@ export class Engine extends EventEmitter {
         const gitEnv = { ...process.env, ...parseEnvVars(env.env_vars) };
         const chain = (await this.git(cwd, ["rev-list", "--reverse", `${sha}^..HEAD`], env)).split("\n").filter(Boolean);
         let parent = (await this.git(cwd, ["rev-parse", `${sha}^`], env)).trim();
-        for (const commit of chain) {
-            const tree = (await this.git(cwd, ["rev-parse", `${commit}^{tree}`], env)).trim();
-            const meta = execFileSync("git", ["-C", cwd, "log", "-1", "--format=%an%n%ae%n%ad%n%cn%n%ce%n%cd", "--date=raw", commit], { env: gitEnv, encoding: "utf8" }).split("\n");
-            const [an, ae, ad, cn, ce, cd] = meta;
-            const body = commit === sha ? text : execFileSync("git", ["-C", cwd, "show", "-s", "--format=%B", commit], { env: gitEnv, encoding: "utf8" });
-            const newSha = execFileSync(
-                "git",
-                ["-C", cwd, "commit-tree", tree, "-p", parent],
-                { env: { ...gitEnv, GIT_AUTHOR_NAME: an ?? "", GIT_AUTHOR_EMAIL: ae ?? "", GIT_AUTHOR_DATE: ad ?? "", GIT_COMMITTER_NAME: cn ?? "", GIT_COMMITTER_EMAIL: ce ?? "", GIT_COMMITTER_DATE: cd ?? "" }, input: body, encoding: "utf8" },
-            ).trim();
-            parent = newSha;
-        }
+        for (const commit of chain) parent = recommit(cwd, gitEnv, commit, commit, parent, commit === sha ? text : undefined);
         await this.git(cwd, ["reset", "--hard", parent], env);
         this.addAgentNote(taskId, `🔧 ${repoLabel(repo)}: reworded ${sha.slice(0, 7)} → "${text}"`);
+        this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+        this.emitTask(taskId);
+        return { newSha: parent };
+    }
+
+    // Squash: consecutive own commits become one, again a pure relink — the squashed commit takes the newest picked
+    // commit's tree (so the files end exactly as they were), the oldest one's author and date, and the given message;
+    // everything after it keeps its tree. Nothing is re-applied, so it cannot conflict. Commits with others between
+    // them are refused (that needs a replay — Remove's territory).
+    async squashCommits(taskId: string, repo: string, shas: string[], message: string): Promise<{ newSha: string }> {
+        const text = message.trim();
+        if (!text) throw new Error("the commit message cannot be empty");
+        if (/\n/.test(text)) throw new Error("one line only — the same rule as a normal commit here");
+        if (new Set(shas).size < 2) throw new Error("pick at least two commits to squash");
+        const { env, cwd } = await this.gitEditPreflight(taskId, repo, shas[0]!);
+        for (const sha of shas.slice(1)) await this.gitEditPreflight(taskId, repo, sha);
+        const gitEnv = { ...process.env, ...parseEnvVars(env.env_vars) };
+        const full = await Promise.all(shas.map(async (s) => (await this.git(cwd, ["rev-parse", `${s}^{commit}`], env)).trim()));
+        const picked = new Set(full);
+        // Oldest first, from the oldest picked commit to HEAD; the picked ones must be its first |picked| entries.
+        const all = (await this.git(cwd, ["rev-list", "--reverse", "--topo-order", "HEAD"], env)).split("\n").filter(Boolean);
+        const start = all.findIndex((c) => picked.has(c));
+        const run = all.slice(start, start + picked.size);
+        if (start < 0 || run.length !== picked.size || run.some((c) => !picked.has(c))) {
+            throw new Error(`${repoLabel(repo)}: only consecutive commits can be squashed — the picked ones have other commits between them`);
+        }
+        const oldest = run[0]!;
+        const newest = run[run.length - 1]!;
+        let parent = (await this.git(cwd, ["rev-parse", `${oldest}^`], env)).trim();
+        parent = recommit(cwd, gitEnv, oldest, newest, parent, text);
+        for (const commit of all.slice(start + run.length)) parent = recommit(cwd, gitEnv, commit, commit, parent);
+        await this.git(cwd, ["reset", "--hard", parent], env);
+        this.addAgentNote(taskId, `🔧 ${repoLabel(repo)}: squashed ${run.length} commits (${oldest.slice(0, 7)}…${newest.slice(0, 7)}) → "${text}"`);
         this.db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
         this.emitTask(taskId);
         return { newSha: parent };
