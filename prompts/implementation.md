@@ -4,6 +4,7 @@ This is the IMPLEMENTATION stage for ticket {{ticketId}} in the worktree {{workt
 
 {{taskNotes}}
 {{components}}
+{{appTools}}
 
 {{reviewerNotes}}
 

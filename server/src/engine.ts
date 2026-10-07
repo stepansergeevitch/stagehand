@@ -1031,6 +1031,50 @@ export class Engine extends EventEmitter {
         return null;
     }
 
+    // ---------- the agent's own browser, on demand (Implementation checking its change in the app) ----------
+
+    private agentBrowserState(taskId: string): string {
+        return join(this.taskDir(taskId), "browser", "agent", "browse.json");
+    }
+
+    // Starts (or reuses) a headless browser for the task's agent with the same session QA gets (the QA session command,
+    // else the QA Chrome profile's cookies and localStorage) and returns how to drive it. The app should be running first:
+    // the session is set on the app's own origin.
+    async startAgentBrowser(taskId: string): Promise<{ stateFile: string; bin: string; appUrl: string; note: string | null }> {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        const bin = this.gstackBin();
+        if (!bin) throw new Error("gstack's headless browser is not built on this host (config.gstackDir)");
+        const env = this.env(task.env_id);
+        const stateFile = this.agentBrowserState(taskId);
+        if (env.qa_session_command?.trim() && !this.qaSessions.has(task.id)) await this.refreshQaSession(task, env).catch(() => undefined);
+        const note = await this.prepareGstackBrowser(task, env, stateFile);
+        return { stateFile, bin, appUrl: this.appUrlFor(task, env), note };
+    }
+
+    async stopAgentBrowser(taskId: string): Promise<void> {
+        await this.stopGstackBrowser(this.agentBrowserState(taskId));
+    }
+
+    // What the Implementation prompt says about checking its own change in the running app: optional, on demand, never a
+    // second Manual QA.
+    private describeAppTools(task: TaskRow, env: EnvRow): string {
+        if (!this.gstackBin()) return "";
+        const api = `http://127.0.0.1:${this.cfg.port}/api/tasks/${task.id}`;
+        const kinds = [env.be_command?.trim() ? "be" : null, env.fe_command?.trim() ? "fe" : null].filter(Boolean) as string[];
+        if (!kinds.length) return "";
+        return [
+            "## Checking your change in the running app (optional)",
+            "",
+            "Only when a change cannot be judged from tests alone — a layout, a form's behaviour, a page wiring several calls together — you may start the app and look at it in a headless browser. This is a quick check of what you just built, NOT a QA pass: Manual QA runs every scenario of the design after you, with seeded data and screenshots — do not repeat its scenarios, do not seed data for them, do not write QA results.",
+            "",
+            `1. Start the app: ${kinds.map((k) => `\`curl -s -X POST ${api}/services/${k}/start\``).join(", then ")} (each returns when the service is up, with its \`url\`; a failure says why). Status: \`curl -s ${api}/services\`. Logs: \`${join(this.taskDir(task.id), "logs")}/<be|fe>.log\`.`,
+            `2. Get a browser with the app's session: \`eval "$(curl -s -X POST ${api}/browser | jq -r .export)"\` — it sets \`$B\` (gstack's headless Chromium) and prints nothing else; \`curl -s -X POST ${api}/browser | jq -r .note\` explains a missing session.`,
+            "3. Drive it in Bash: `$B goto <app url>/<path>`, `$B wait --networkidle`, `$B snapshot -i` (elements as @e1…), `$B click @eN`, `$B fill @eN 'text'`, `$B text`, `$B console --errors`, `$B screenshot <path>`.",
+            `4. When done: \`curl -s -X POST ${api}/browser/stop\`. Leave the services running; Stagehand stops them when they idle.`,
+        ].join("\n");
+    }
+
     async stopGstackBrowser(stateFile: string): Promise<void> {
         const bin = this.gstackBin();
         if (!bin || !existsSync(stateFile)) return;
@@ -4083,6 +4127,7 @@ export class Engine extends EventEmitter {
             seedReport: "(no shell seeds were run)",
             resumeHint: "",
             components: this.describeComponents(task, env, def.stage),
+            appTools: def.stage === "implementation" ? this.describeAppTools(task, env) : "",
             ...(opts.extraVars ?? {}),
         };
         if (def.stage === "pr_fix" && isPrShard(opts.shard)) {
@@ -6082,6 +6127,8 @@ export class Engine extends EventEmitter {
     private async onRunClosed(taskId: string, runId: string, def: StageDef, account: AccountRow, outcome: RunOutcome, opts: DispatchOpts, stoppedBackground = 0): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) return;
+        // The browser the agent may have started for itself (startAgentBrowser) ends with its run.
+        if (def.stage === "implementation") void this.stopAgentBrowser(taskId).catch(() => undefined);
         if (task.status === "stopped") {
             this.db.prepare(`UPDATE runs SET status = 'stopped', finished_at = ? WHERE id = ?`).run(now(), runId);
             return;

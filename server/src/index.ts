@@ -1556,6 +1556,21 @@ app.patch("/api/tasks/:id/review-state", async (c) => {
     return c.json({ files });
 });
 
+// The agent's own headless browser, on demand: `export` is the shell line that sets $B for it.
+app.post("/api/tasks/:id/browser", async (c) => {
+    try {
+        const b = await engine.startAgentBrowser(c.req.param("id"));
+        const sh = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+        return c.json({ ...b, export: `export BROWSE_STATE_FILE=${sh(b.stateFile)} GSTACK_TELEMETRY_OFF=1 B=${sh(b.bin)}` });
+    } catch (e) {
+        return c.json({ error: String((e as Error).message ?? e) }, 400);
+    }
+});
+app.post("/api/tasks/:id/browser/stop", async (c) => {
+    await engine.stopAgentBrowser(c.req.param("id")).catch(() => undefined);
+    return c.json({ ok: true });
+});
+
 // The PR comments the human picked for the agent (`<repo>:<comment id>`), shared by the PR comments tab and the PR
 // tab's batch jobs, kept in the task directory so a reload keeps them.
 const prPicksPath = (taskId: string): string => join(engine.taskDir(taskId), "pr-picks.json");
