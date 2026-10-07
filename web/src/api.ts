@@ -793,6 +793,8 @@ export const api = {
     // *started* — it can take a while and may hit conflicts; the outcome lands in Chat.
     rewordCommit: (id: string, sha: string, repo: string, message: string) => post<{ newSha: string }>(`/api/tasks/${id}/commits/${sha}/reword`, { repo, message }),
     removeCommits: (id: string, shas: string[], repo: string, note?: string, files?: SharedFile[]) => post<{ started: true }>(`/api/tasks/${id}/commits/remove`, withFiles({ repo, shas, ...(note ? { note } : {}) }, files)),
+    prPicks: (id: string) => fetch(`/api/tasks/${id}/pr-picks`).then((r) => j<{ keys: string[] }>(r)),
+    putPrPicks: (id: string, keys: string[]) => fetch(`/api/tasks/${id}/pr-picks`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ keys }) }).then((r) => j<{ keys: string[] }>(r)),
     reviewState: (id: string) => fetch(`/api/tasks/${id}/review-state`).then((r) => j<{ files: Record<string, FileReviewState> }>(r)),
     patchReviewState: (id: string, files: Record<string, { open?: boolean | null; reviewed?: string | null }>) =>
         fetch(`/api/tasks/${id}/review-state`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ files }) }).then((r) => j<{ files: Record<string, FileReviewState> }>(r)),

@@ -694,14 +694,22 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     // GitHub PR comments (humans + automation), loaded when a tab needs them; line comments are also shown inline in the diff.
     const commentsTab: "user" | "pr" | "automation" = view.tab === "comments" ? view.sub ?? "user" : "user";
     const setCommentsTab = (sub: typeof commentsTab) => onView({ tab: "comments", sub, ...(view.tab === "comments" && view.repo ? { repo: view.repo } : {}) });
-    const [selectedComments, setSelectedComments] = useState<Set<number>>(new Set());
-    const toggleComment = (id: number) => setSelectedComments((s) => { const next = new Set(s); next.has(id) ? next.delete(id) : next.add(id); return next; });
-    useEffect(() => setSelectedComments(new Set()), [task.id]);
+    const [prPicks, setPrPicks] = usePrPicks(task.id);
     // Which repository's PR the comments tab looks at (multi-repo tasks have one PR per repository).
     const prdRepos = (detail.prStates ?? []).filter((r) => r.number).map((r) => r.repo);
     const ghRepoRaw = view.tab === "comments" ? view.repo ?? null : null;
     const setGhRepo = (repo: string) => onView({ tab: "comments", sub: commentsTab, repo });
     const ghRepo = ghRepoRaw !== null && prdRepos.includes(ghRepoRaw) ? ghRepoRaw : (prdRepos[0] ?? null);
+    // This repository's picks (ids) out of the task's shared set.
+    const selectedComments = new Set([...prPicks].filter((k) => k.startsWith(`${ghRepo ?? ""}:`)).map((k) => Number(k.slice((ghRepo ?? "").length + 1))));
+    const toggleComment = (id: number) => {
+        const next = new Set(prPicks);
+        const k = pickKey(ghRepo ?? "", id);
+        if (next.has(k)) next.delete(k);
+        else next.add(k);
+        setPrPicks(next);
+    };
+    const clearPicks = (): void => setPrPicks(new Set([...prPicks].filter((k) => !k.startsWith(`${ghRepo ?? ""}:`))));
     const ghRow = ghRepo !== null ? prStateOf(detail, ghRepo) : undefined;
     const [gh, setGh] = useState<PrComments | null>(null);
     const [ghLoading, setGhLoading] = useState(false);
@@ -1331,11 +1339,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                         <button
                                             className="primary"
                                             disabled={task.status === "running"}
-                                            onClick={() => void onAction(async () => { await api.fixComments(task.id, ghRepo ?? "", [...selectedComments]); setSelectedComments(new Set()); })}
+                                            onClick={() => void onAction(async () => { await api.fixComments(task.id, ghRepo ?? "", [...selectedComments]); clearPicks(); })}
                                         >
                                             Ask agent to address {selectedComments.size} comment(s)
                                         </button>
-                                        <button onClick={() => setSelectedComments(new Set())}>Clear selection</button>
+                                        <button onClick={clearPicks}>Clear selection</button>
                                     </div>
                                 </div>
                             )}
@@ -1529,6 +1537,34 @@ const PrDraftTabs = ({ detail, onAction, focusRepo, onFocusRepo }: { detail: Tas
     );
 };
 
+// The PR comments picked for the agent (`<repo>:<comment id>`): one set per task, shared by the PR comments tab and the
+// PR tab's batch jobs (picking in one picks in the other), kept by the server so a reload keeps it.
+const prPickStore: { taskId: string | null; keys: Set<string>; subs: Set<() => void> } = { taskId: null, keys: new Set(), subs: new Set() };
+const usePrPicks = (taskId: string): [Set<string>, (next: Set<string>) => void] => {
+    const [, rerender] = useState(0);
+    useEffect(() => {
+        const sub = () => rerender((n) => n + 1);
+        prPickStore.subs.add(sub);
+        if (prPickStore.taskId !== taskId) {
+            prPickStore.taskId = taskId;
+            prPickStore.keys = new Set();
+            void api.prPicks(taskId).then((r) => {
+                if (prPickStore.taskId !== taskId) return;
+                prPickStore.keys = new Set(r.keys);
+                prPickStore.subs.forEach((f) => f());
+            }).catch(() => undefined);
+        }
+        return () => { prPickStore.subs.delete(sub); };
+    }, [taskId]);
+    const set = (next: Set<string>): void => {
+        prPickStore.keys = next;
+        prPickStore.subs.forEach((f) => f());
+        void api.putPrPicks(taskId, [...next]).catch(() => undefined);
+    };
+    return [prPickStore.taskId === taskId ? prPickStore.keys : new Set(), set];
+};
+const pickKey = (repo: string, id: number): string => `${repo}:${id}`;
+
 // Batched PR jobs: tick what the agent should do in ONE run — rebase onto the latest base (mechanical first), fix the
 // failing checks, address picked PR comments, follow free-text instructions — then review the diff once and push once.
 const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: string[]; onAction: Props["onAction"] }) => {
@@ -1539,7 +1575,8 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
     const [instructions, setInstructions] = useState("");
     const attach = usePendingFiles();
     const [comments, setComments] = useState<Record<string, PrComments | null>>({});
-    const [picked, setPicked] = useState<Set<string>>(() => new Set());
+    const [picked, setPickedSet] = usePrPicks(task.id);
+    const setPicked = (next: Set<string> | ((p: Set<string>) => Set<string>)): void => setPickedSet(typeof next === "function" ? next(picked) : next);
     const [busy, setBusy] = useState(false);
     const [note, setNote] = useState<string | null>(null);
     const failing = repos.map((r) => ({ repo: r, n: parseChecks(prStateOf(detail, r)?.checks_json).filter((c) => !isApprovalGateCheck(c) && checkOutcome(c) === "fail").length })).filter((x) => x.n > 0);
@@ -1550,14 +1587,16 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
         return () => { alive = false; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [task.id, withPr.join(",")]);
-    const commentKey = (repo: string, id: number) => `${repo}:${id}`;
+    const commentKey = pickKey;
     const allComments = withPr.flatMap((r) => [...(comments[r]?.human ?? []), ...(comments[r]?.automation ?? [])].filter((c) => !(c.kind === "line" && c.resolved)).map((c) => ({ repo: r, c })));
-    const jobs = (rebase ? 1 : 0) + (fixCi && failing.length ? 1 : 0) + (picked.size ? 1 : 0) + (instructions.trim() || attach.files.length ? 1 : 0);
+    // Picks of comments still open here (a pick of a comment resolved since stays stored but is not sent).
+    const openPicks = allComments.map((x) => commentKey(x.repo, x.c.id)).filter((k) => picked.has(k));
+    const jobs = (rebase ? 1 : 0) + (fixCi && failing.length ? 1 : 0) + (openPicks.length ? 1 : 0) + (instructions.trim() || attach.files.length ? 1 : 0);
     const run = async () => {
         setBusy(true);
         setNote(null);
         const byRepo = new Map<string, number[]>();
-        for (const key of picked) {
+        for (const key of openPicks) {
             const [repo = "", id = ""] = key.split(":");
             byRepo.set(repo, [...(byRepo.get(repo) ?? []), Number(id)]);
         }
@@ -1573,7 +1612,7 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
                 });
                 setNote(r.started ? `started: ${r.note}` : r.note);
                 if (r.started) {
-                    setPicked(new Set());
+                    setPicked(new Set([...picked].filter((k) => !openPicks.includes(k))));
                     setInstructions("");
                     attach.clear();
                 }
@@ -1604,7 +1643,7 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
                     {failing.length > 0 && <span className="chip bad">{failing.map((f) => `${repos.length > 1 ? `${repoName(f.repo)} ` : ""}${f.n}`).join(" · ")}</span>}
                 </label>
                 <div className="pr-jobs-comments">
-                    <span>Address PR comments{allComments.length ? ` (${picked.size}/${allComments.length} picked)` : withPr.length ? " — none open" : " — no PR yet"}</span>
+                    <span>Address PR comments{allComments.length ? ` (${openPicks.length}/${allComments.length} picked)` : withPr.length ? " — none open" : " — no PR yet"}</span>
                     {allComments.length > 0 && (
                         <>
                             <button className="tiny" onClick={() => setPicked(new Set(allComments.map((x) => commentKey(x.repo, x.c.id))))}>all</button>

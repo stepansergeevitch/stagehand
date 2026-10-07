@@ -1556,6 +1556,26 @@ app.patch("/api/tasks/:id/review-state", async (c) => {
     return c.json({ files });
 });
 
+// The PR comments the human picked for the agent (`<repo>:<comment id>`), shared by the PR comments tab and the PR
+// tab's batch jobs, kept in the task directory so a reload keeps them.
+const prPicksPath = (taskId: string): string => join(engine.taskDir(taskId), "pr-picks.json");
+app.get("/api/tasks/:id/pr-picks", (c) => {
+    if (!engine.getTask(c.req.param("id"))) return c.json({ error: "not found" }, 404);
+    try {
+        return c.json({ keys: (JSON.parse(readFileSync(prPicksPath(c.req.param("id")), "utf8")) as { keys?: string[] }).keys ?? [] });
+    } catch {
+        return c.json({ keys: [] });
+    }
+});
+app.put("/api/tasks/:id/pr-picks", async (c) => {
+    const id = c.req.param("id");
+    if (!engine.getTask(id)) return c.json({ error: "not found" }, 404);
+    const body = json(z.object({ keys: z.array(z.string().max(300)).max(2000) }), await c.req.json());
+    mkdirSync(engine.taskDir(id), { recursive: true });
+    writeFileSync(prPicksPath(id), JSON.stringify({ keys: [...new Set(body.keys)] }, null, 2));
+    return c.json({ keys: body.keys });
+});
+
 // Remove: a real rewrite (everything after the commit is replayed without it) — goes through the agent in the task's
 // own session so it can resolve conflicts; never pushes. Starts in the background; the result lands in Chat.
 app.post("/api/tasks/:id/commits/:sha/remove", async (c) => {
