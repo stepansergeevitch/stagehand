@@ -1917,7 +1917,8 @@ export class Engine extends EventEmitter {
     async recreateDbAfterMigrateFailure(task: TaskRow, env: EnvRow, error: string): Promise<boolean> {
         const row = taskDbRow(this.db, task.id);
         if (!taskDbActive(taskDbOf(env)) || row?.status !== "ready" || row.owner_kind !== "task" || !task.worktree_path) return false;
-        const why = error.split("\n").map((l) => l.trim()).filter(Boolean).slice(-1)[0]?.slice(0, 200) ?? "migrate failed";
+        // The exception line ("…Error: relation … already exists"), not the traceback's first frame.
+        const why = (/(\w+(?:Error|Exception)\b:[^\n]*)\s*$/.exec(error.trim())?.[1] ?? error.trim().split("\n").slice(-1)[0] ?? "migrate failed").slice(0, 200);
         this.addAgentNote(task.id, `🗄️ Migrate failed on ${row.name} (${why}) — its migration history no longer matches the branch (a rebase or fix renamed or rewrote a migration). Recreating it from ${row.template} and migrating again; data added to it since it was created is gone.`);
         try {
             await this.taskDbs.create({ id: task.id, slug: task.ticket_id, kind: "task" }, env);
