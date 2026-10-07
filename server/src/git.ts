@@ -70,6 +70,19 @@ const baseRefOf = async (repoPath: string, baseBranch: string, vars: Vars): Prom
     throw new Error(`base branch "${baseBranch}" exists neither on origin nor locally in ${repoPath}`);
 };
 
+// `git worktree add` exits non-zero when a post-checkout hook fails, even though the worktree was created and checked
+// out (ENG-24812/24843/24845, 2026-10-07: a local hook calling an undefined shell function failed all three task starts).
+// A worktree that exists with a resolvable HEAD is a success; the hook's complaint is logged, not fatal.
+const addWorktree = async (repoPath: string, args: string[], target: string, vars: Vars): Promise<void> => {
+    try {
+        await git(repoPath, ["worktree", "add", ...args], vars);
+    } catch (e) {
+        const made = existsSync(join(target, ".git")) && (await git(target, ["rev-parse", "-q", "--verify", "HEAD"], vars).then(() => true, () => false));
+        if (!made) throw e;
+        console.warn(`[stagehand] worktree ${target} created, but git reported an error (a failing checkout hook?): ${String((e as Error).message ?? e).split("\n").slice(-2).join(" ").slice(0, 300)}`);
+    }
+};
+
 const createOne = async (repoPath: string, baseBranch: string, branch: string, target: string, vars: Vars): Promise<WorktreeResult> => {
     const baseRef = await baseRefOf(repoPath, baseBranch, vars);
     if (existsSync(target)) {
@@ -78,11 +91,11 @@ const createOne = async (repoPath: string, baseBranch: string, branch: string, t
     }
     const branchExists = (await git(repoPath, ["branch", "--list", branch], vars)) !== "";
     if (branchExists) {
-        await git(repoPath, ["worktree", "add", target, branch], vars);
+        await addWorktree(repoPath, [target, branch], target, vars);
         const log = await git(target, ["log", "--oneline", `origin/${baseBranch}..HEAD`], vars);
         return { path: target, reused: true, existingCommits: log ? log.split("\n").length : 0 };
     }
-    await git(repoPath, ["worktree", "add", target, "-b", branch, baseRef], vars);
+    await addWorktree(repoPath, [target, "-b", branch, baseRef], target, vars);
     return { path: target, reused: false, existingCommits: 0 };
 };
 
