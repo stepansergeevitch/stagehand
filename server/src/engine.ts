@@ -2723,12 +2723,13 @@ export class Engine extends EventEmitter {
             number = list[0].number;
             this.upsertPrRow(task.id, repo, { number, url: list[0].url });
         }
-        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(number), "--json", "url,state,mergedAt,reviewDecision,statusCheckRollup,baseRefName"], env)) as {
+        const pr = JSON.parse(await this.gh(cwd, ["pr", "view", String(number), "--json", "url,state,mergedAt,reviewDecision,statusCheckRollup,baseRefName,headRefOid"], env)) as {
             url: string;
             state: string;
             mergedAt: string | null;
             reviewDecision: string;
             baseRefName?: string;
+            headRefOid?: string;
             statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string; status?: string; startedAt?: string; completedAt?: string; detailsUrl?: string; targetUrl?: string; workflowName?: string }>;
         };
         // A stacked PR's base is retargeted by GitHub once its parent PR merges (e.g. feature-a → dev). Follow it: the
@@ -2744,7 +2745,20 @@ export class Engine extends EventEmitter {
             this.queueRebase(task.id, `GitHub moved PR #${number}'s base to \`${pr.baseRefName}\` after the parent branch merged`, [repo]);
             this.processPendingRebases();
         }
-        this.upsertPrRow(task.id, repo, { url: pr.url, checks_json: JSON.stringify(pr.statusCheckRollup ?? []), review_decision: pr.reviewDecision ?? null, merged_at: pr.mergedAt ?? null, state: pr.state ?? null });
+        // A workflow run that is queued but has no job yet is not in the rollup at all, so a PR whose main CI has not
+        // started looked green on its few quick checks (INV-155, 2026-10-07: "Check, test and build" pending, the rollup
+        // held 4 passed checks). Every unfinished run of the head commit with nothing in the rollup counts as running.
+        const rollup = pr.statusCheckRollup ?? [];
+        if (pr.state === "OPEN" && pr.headRefOid) {
+            const runs = await this.gh(cwd, ["api", `repos/{owner}/{repo}/actions/runs?head_sha=${pr.headRefOid}&per_page=100`, "--jq", "[.workflow_runs[] | select(.status != \"completed\") | {name, status, html_url}]"], env)
+                .then((out) => JSON.parse(out || "[]") as Array<{ name: string; status: string; html_url: string }>)
+                .catch(() => []);
+            for (const run of runs) {
+                if (rollup.some((c) => c.workflowName === run.name)) continue;
+                rollup.push({ name: run.name, workflowName: run.name, status: run.status.toUpperCase(), detailsUrl: run.html_url });
+            }
+        }
+        this.upsertPrRow(task.id, repo, { url: pr.url, checks_json: JSON.stringify(rollup), review_decision: pr.reviewDecision ?? null, merged_at: pr.mergedAt ?? null, state: pr.state ?? null });
         return true;
     }
 
