@@ -26,5 +26,9 @@ Pages are built from the shared components in `web/src/components/`; extend them
 - **A row opens an `EntityView`**: title `<Entity type> / <identifier>`, entity actions on the right, one tab per
   section (never one long page), each tab a set of `Field`s followed by Save / Discard (`EntityForm`).
 - **No free-floating explanatory text.** A field's explanation is its hint, shown on hover of the hint icon.
+- **Every view is in the URL path** (`web/src/routes.ts`): the page, the opened entity, its tab, an item opened inside
+  it, a create dialog (`/new`) and a view selector (environment picker, Files/Tests, diff scope). Components read it from
+  the route and change it with `navigate` — never `useState` or localStorage, or a reload lands somewhere else. Only
+  transient UI (hover, expanded rows, menus, an inline edit) stays in component state.
 - **A setting lives on the entity it describes** (models on the AI account, pipeline behaviour on the environment);
   one concept per Configuration subtab.

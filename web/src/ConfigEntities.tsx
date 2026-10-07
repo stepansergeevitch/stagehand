@@ -108,7 +108,7 @@ const AccountModelsTab = ({ a, settings, save, saving }: { a: Account; settings:
     );
 };
 
-export const AccountPage = ({ a, envs, tasks, settings, onBack, onChanged, onError, onTerminal }: { a: Account; envs: Env[]; tasks: Task[]; settings: Settings | null; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void; onTerminal: (name: string) => void }) => {
+export const AccountPage = ({ a, envs, tasks, settings, tab, onTab, onBack, onChanged, onError, onTerminal }: { tab: string | undefined; onTab: (t: string) => void; a: Account; envs: Env[]; tasks: Task[]; settings: Settings | null; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void; onTerminal: (name: string) => void }) => {
     const { saving, run } = useSaver(onError);
     const [notice, setNotice] = useState<Notice>(null);
     const [busy, setBusy] = useState<string | null>(null);
@@ -138,7 +138,7 @@ export const AccountPage = ({ a, envs, tasks, settings, onBack, onChanged, onErr
     };
     const used = envs.filter((e) => e.default_account_id === a.id).length + tasks.filter((t) => t.account_id === a.id).length;
     return (
-        <EntityView
+        <EntityView tab={tab} onTab={onTab}
             type="AI accounts"
             onType={onBack}
             id={a.name}
@@ -224,7 +224,7 @@ const JevForm = ({ settings, onChanged, onError }: { settings: Settings; onChang
     );
 };
 
-export const IntegrationPage = ({ id, settings, onBack, onChanged, onError }: { id: string; settings: Settings | null; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
+export const IntegrationPage = ({ id, settings, tab, onTab, onBack, onChanged, onError }: { tab: string | undefined; onTab: (t: string) => void; id: string; settings: Settings | null; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
     const [managers, setManagers] = useState<TaskManager[] | null>(null);
     const [notion, setNotion] = useState<{ configured: boolean; token: string | null } | null>(null);
     const [notice, setNotice] = useState<Notice>(null);
@@ -244,7 +244,7 @@ export const IntegrationPage = ({ id, settings, onBack, onChanged, onError }: { 
     if (id.startsWith("tm:") && !m) return <div className="empty">loading…</div>;
     if (m) {
         return (
-            <EntityView type="Integrations" onType={onBack} id={m.label} notice={notice}
+            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id={m.label} notice={notice}
                 actions={<>
                     <button disabled={!m.configured} onClick={() => void attempt("testing…", async () => { const r = await api.testTaskManager(m.source); return r.ok ? { ok: true, text: `OK — ${r.count} ticket(s) assigned to you${r.sample?.length ? `: ${r.sample.join(" · ")}` : ""}` } : { ok: false, text: `failed: ${r.error}` }; })}>Test</button>
                     <button className="danger" disabled={!m.configured} onClick={() => { if (confirm(`Remove the ${m.label} token?`)) void api.patchTaskManager(m.source, { token: null }).then(load); }}>Remove token</button>
@@ -255,7 +255,7 @@ export const IntegrationPage = ({ id, settings, onBack, onChanged, onError }: { 
     if (id === "notion") {
         if (!notion) return <div className="empty">loading…</div>;
         return (
-            <EntityView type="Integrations" onType={onBack} id="Notion"
+            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id="Notion"
                 actions={<button className="danger" disabled={!notion.configured} onClick={() => { if (confirm("Remove the Notion token?")) void api.setNotion(null).then(load); }}>Remove token</button>}
                 tabs={[{ key: "settings", label: "Settings", content: <NotionForm state={notion} onSaved={load} onError={onError} /> }]} />
         );
@@ -263,7 +263,7 @@ export const IntegrationPage = ({ id, settings, onBack, onChanged, onError }: { 
     if (!settings) return <div className="empty">loading…</div>;
     if (id === "notifications") {
         return (
-            <EntityView type="Integrations" onType={onBack} id="Notifications" notice={notice}
+            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id="Notifications" notice={notice}
                 actions={<button onClick={() => void attempt("sending…", async () => { const r = await api.testNotification(); return { ok: !r.error, text: `desktop ${r.macos ? "sent" : "off"} · phone ${r.ntfy === null ? "not configured" : r.ntfy ? "sent" : `failed: ${r.error ?? "?"}`}` }; })}>Send a test</button>}
                 tabs={[{ key: "settings", label: "Settings", content: <NotificationsForm settings={settings} onChanged={onChanged} onError={onError} /> }]} />
         );
@@ -271,7 +271,7 @@ export const IntegrationPage = ({ id, settings, onBack, onChanged, onError }: { 
     if (id === "jev") {
         const configured = Boolean(settings.typesafeApiKey);
         return (
-            <EntityView type="Integrations" onType={onBack} id="Jev (TypeSafe AI)" notice={notice}
+            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id="Jev (TypeSafe AI)" notice={notice}
                 actions={<>
                     <button disabled={!configured} onClick={() => void attempt("asking Jev to triage a sample CI failure…", async () => { const r = await api.testJev(); return r.ok ? { ok: true, text: `OK — ${r.model} answered in ${r.ms} ms (${r.inputTokens} input tokens): ${r.summary}` } : { ok: false, text: `failed: ${r.error}` }; })}>Test</button>
                     <button className="danger" disabled={!configured} onClick={() => { if (confirm("Remove the TypeSafe API key?")) void api.patchSettings({ typesafeApiKey: null }).then(onChanged); }}>Remove key</button>
@@ -284,7 +284,7 @@ export const IntegrationPage = ({ id, settings, onBack, onChanged, onError }: { 
 
 // ---------- Prompter (a singleton: its settings view) ----------
 
-export const PrompterPage = ({ settings, accounts, onChanged, onError }: { settings: Settings; accounts: Account[]; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
+export const PrompterPage = ({ settings, accounts, tab, onTab, onChanged, onError }: { tab: string | undefined; onTab: (t: string) => void; settings: Settings; accounts: Account[]; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
     const p: PrompterSettings = settings.prompter ?? { accountId: null, model: "fable", idleHours: 24, purgeDays: 7, farewell: true, maxTurns: 40, seedFrom: "", seedWings: [] };
     const [status, setStatus] = useState<PrompterStatus | null>(null);
     const [notice, setNotice] = useState<Notice>(null);
@@ -329,7 +329,7 @@ export const PrompterPage = ({ settings, accounts, onChanged, onError }: { setti
         </div>
     );
     return (
-        <EntityView type="Prompter" notice={notice}
+        <EntityView tab={tab} onTab={onTab} type="Prompter" notice={notice}
             actions={<>
                 <button disabled={seeding} onClick={async () => { setSeeding(true); setNotice({ ok: true, text: "copying drawers…" }); try { const r = await api.prompterSeed(); setNotice({ ok: r.ok, text: r.detail }); await refresh(); } catch (e) { setNotice({ ok: false, text: errText(e) }); } finally { setSeeding(false); } }}>{seeding ? "Seeding…" : status?.seeded ? "Seed again" : "Seed the palace"}</button>
                 <button onClick={() => void refresh()}>Refresh</button>

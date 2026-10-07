@@ -324,10 +324,12 @@ const Policies = ({ value, onSaved, onError }: { value: ResourcePolicies; onSave
     );
 };
 
-export const ResourcesPage = ({ onError }: { onError: (m: string) => void }) => {
+type ResourcesTab = "dashboard" | "policies" | "actions";
+// The open tab is routed (#/resources/<tab>).
+export const ResourcesPage = ({ tab: tabArg, onTab: setTab, onError }: { tab: string | undefined; onTab: (t: ResourcesTab) => void; onError: (m: string) => void }) => {
     const [snap, setSnap] = useState<ResourceSnapshot | null>(null);
     const [busy, setBusy] = useState<string | null>(null);
-    const [tab, setTab] = useState<"dashboard" | "policies" | "actions">("dashboard");
+    const tab: ResourcesTab = tabArg === "policies" || tabArg === "actions" ? tabArg : "dashboard";
     const load = useCallback((refresh = false) => api.resources(refresh).then(setSnap).catch((e: Error) => onError(e.message)), [onError]);
     useEffect(() => {
         void load();

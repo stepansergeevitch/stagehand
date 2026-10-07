@@ -394,8 +394,8 @@ const ReviewTab = ({ env, save, saving, onError }: Common & { onError: (m: strin
     );
 };
 
-export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, onChanged, onError }: {
-    env: Env; envs: Env[]; accounts: Account[]; configDirs: ConfigDir[]; onBack: () => void; onOpenDir: (id: string) => void; onChanged: () => Promise<void>; onError: (m: string) => void;
+export const EnvPage = ({ env, envs, accounts, configDirs, tab, onTab, onBack, onOpenDir, onChanged, onError }: {
+    tab: string | undefined; onTab: (t: string) => void; env: Env; envs: Env[]; accounts: Account[]; configDirs: ConfigDir[]; onBack: () => void; onOpenDir: (id: string) => void; onChanged: () => Promise<void>; onError: (m: string) => void;
 }) => {
     const [info, setInfo] = useState<EnvRules | null>(null);
     const reloadInfo = () => void api.envRules(env.id).then(setInfo).catch((e: Error) => onError(e.message));
@@ -407,7 +407,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, onBack, onOpenDir, on
     });
     const common: Common = { env, save, saving };
     return (
-        <EntityView
+        <EntityView tab={tab} onTab={onTab}
             type="Environments"
             onType={onBack}
             id={env.name}

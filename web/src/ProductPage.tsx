@@ -5,7 +5,9 @@ import { Modal } from "./Modal";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { EntityForm, EntityView, Field, ReadField, useDraft, useSaver } from "./components/EntityView";
 import { poBus } from "./poBus";
-import type { PoTab } from "./routes";
+import { navigate, type PoTab, type Route } from "./routes";
+
+type ProductRoute = Extract<Route, { page: "product" }>;
 import { CorrectionsTab, EventsTab, QuestionsTab } from "./PoJournal";
 
 // The Product section: the global product context, the Product Owners (one per project of the product), and the
@@ -160,33 +162,24 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
     );
 };
 
-// The environment the Product context and Memory tabs show; remembered per browser.
-const useProductEnv = (envs: Env[]): [string, (id: string) => void] => {
-    const [env, setEnv] = useState<string>(() => {
-        try { return localStorage.getItem("stagehand.product.env") ?? ""; } catch { return ""; }
-    });
-    const valid = envs.some((e) => e.id === env) ? env : envs[0]?.id ?? "";
-    const set = (id: string): void => {
-        setEnv(id);
-        try { localStorage.setItem("stagehand.product.env", id); } catch { /* not remembered */ }
-    };
-    return [valid, set];
-};
-
 const EnvPicker = ({ envs, value, onChange }: { envs: Env[]; value: string; onChange: (id: string) => void }) => (
     <label className="inline env-picker">Environment
         <select value={value} onChange={(e) => onChange(e.target.value)}>{envs.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
     </label>
 );
 
-const ProductHome = ({ onOpen, onError }: { onOpen: (id: string) => void; onError: (m: string) => void }) => {
+// The subtab, the New dialog and the environment the context/memory tabs show are all routed (#/product/context?env=…).
+const ProductHome = ({ route, onOpen, onError }: { route: ProductRoute; onOpen: (id: string) => void; onError: (m: string) => void }) => {
     const [ctx, setCtx] = useState<string | null>(null);
     const [pos, setPos] = useState<ProductOwner[] | null>(null);
-    const [creating, setCreating] = useState(false);
-    const [tab, setTab] = useState<"owners" | "context" | "memory">("owners");
+    const creating = !!route.create;
+    const setCreating = (on: boolean): void => navigate(on ? { page: "product", create: true } : { page: "product" });
+    const tab: "owners" | "context" | "memory" = route.home ?? "owners";
     const [envs, setEnvs] = useState<Env[]>([]);
     useEffect(() => { void api.envs().then(setEnvs).catch(() => undefined); }, []);
-    const [envId, setEnvId] = useProductEnv(envs);
+    const envId = envs.some((e) => e.id === route.env) ? route.env! : envs[0]?.id ?? "";
+    const setTab = (t: "owners" | "context" | "memory"): void => navigate(t === "owners" ? { page: "product" } : { page: "product", home: t, ...(envId ? { env: envId } : {}) });
+    const setEnvId = (id: string): void => navigate({ page: "product", home: tab === "owners" ? "context" : tab, env: id });
     const envName = (id: string) => envs.find((e) => e.id === id)?.name ?? "…";
     const loadOwners = useCallback(() => void api.productOwners().then(setPos).catch((e: Error) => onError(e.message)), [onError]);
     useEffect(loadOwners, [loadOwners]);
@@ -489,9 +482,10 @@ const LiveIssue = ({ issue }: { issue: PoIssue }) => (
 // The Product Owner's tickets: one list (components/DataTable) — a row opens the ticket's view (components/EntityView).
 // A ticket becomes a tracker issue with Create in Linear/ClickUp, and an issue becomes a Stagehand task with Create task;
 // both work on one ticket or on the checked ones.
-const TicketsTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: string) => void; reload: () => void; send: (t: string) => void }) => {
+const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail; sel: string | null; ticketTab: string | undefined; onError: (m: string) => void; reload: () => void; send: (t: string) => void }) => {
     const tickets = d.tickets?.tickets ?? [];
-    const [sel, setSel] = useState<string | null>(null);
+    // The opened ticket and its tab are routed (#/product/<po>/tickets/<key>/<tab>).
+    const setSel = (key: string | null, tab?: string): void => navigate({ page: "product", po: d.po.id, tab: "tickets", ...(key ? { ticket: key } : {}), ...(key && tab ? { ticketTab: tab } : {}) });
     const [busy, setBusy] = useState(false);
     const [envName, setEnvName] = useState<string | null>(null);
     useEffect(() => { void api.envs().then((all) => setEnvName(all.find((e) => e.id === d.po.env_id)?.name ?? null)).catch(() => undefined); }, [d.po.env_id]);
@@ -527,6 +521,8 @@ const TicketsTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: st
             <EntityView
                 type="Tickets"
                 onType={() => setSel(null)}
+                tab={ticketTab}
+                onTab={(t) => setSel(current.key, t)}
                 id={<>{current.key}{ident ? ` · ${ident}` : ""} · {current.title}</>}
                 actions={
                     <>
@@ -552,7 +548,7 @@ const TicketsTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: st
                         ),
                     },
                     ...(issue ? [{ key: "tracker", label: tracker, content: <LiveIssue issue={issue} /> }] : []),
-                    ...(!link(current.key) ? [{ key: "edit", label: "Edit", content: <TicketEditor key={current.key} t={current} onSave={(t) => void save(t)} onCancel={() => setSel(current.key)} /> }] : []),
+                    ...(!link(current.key) ? [{ key: "edit", label: "Edit", content: <TicketEditor key={current.key} t={current} onSave={(t) => void save(t)} onCancel={() => setSel(current.key, "details")} /> }] : []),
                 ]}
             />
         );
@@ -644,7 +640,7 @@ const PoChat = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => v
     );
 };
 
-const PoPage = ({ id, tab: tabArg, onTab, onBack, onError }: { id: string; tab: PoTab | undefined; onTab: (t: PoTab) => void; onBack: () => void; onError: (m: string) => void }) => {
+const PoPage = ({ id, tab: tabArg, ticket, ticketTab, onTab, onBack, onError }: { id: string; tab: PoTab | undefined; ticket: string | undefined; ticketTab: string | undefined; onTab: (t: PoTab) => void; onBack: () => void; onError: (m: string) => void }) => {
     const [d, setD] = useState<PoDetail | null>(null);
     const reload = useCallback(() => void api.productOwner(id).then(setD).catch((e: Error) => onError(e.message)), [id, onError]);
     useEffect(reload, [reload]);
@@ -687,7 +683,7 @@ const PoPage = ({ id, tab: tabArg, onTab, onBack, onError }: { id: string; tab: 
                     {tab === "context" && <ContextTab d={d} onError={onError} reload={reload} />}
                     {tab === "design" && d.po.scope_kind !== "env" && <DesignTab d={d} onError={onError} reload={reload} send={send} />}
                     {tab === "questions" && <QuestionsTab d={d} onError={onError} reload={reload} />}
-                    {tab === "tickets" && d.po.scope_kind !== "env" && <TicketsTab d={d} onError={onError} reload={reload} send={send} />}
+                    {tab === "tickets" && d.po.scope_kind !== "env" && <TicketsTab d={d} sel={ticket ?? null} ticketTab={ticketTab} onError={onError} reload={reload} send={send} />}
                     {tab === "events" && <EventsTab d={d} onError={onError} reload={reload} />}
                     {tab === "corrections" && <CorrectionsTab d={d} onError={onError} reload={reload} />}
                 </div>
@@ -697,5 +693,9 @@ const PoPage = ({ id, tab: tabArg, onTab, onBack, onError }: { id: string; tab: 
     );
 };
 
-export const ProductPage = ({ po, tab, onNavigate, onError }: { po?: string; tab?: PoTab; onNavigate: (po?: string, tab?: PoTab) => void; onError: (m: string) => void }) =>
-    po ? <PoPage key={po} id={po} tab={tab} onTab={(t) => onNavigate(po, t)} onBack={() => onNavigate()} onError={onError} /> : <ProductHome onOpen={(id) => onNavigate(id)} onError={onError} />;
+export const ProductPage = ({ route, onError }: { route: ProductRoute; onError: (m: string) => void }) => {
+    const po = route.po;
+    return po
+        ? <PoPage key={po} id={po} tab={route.tab} ticket={route.ticket} ticketTab={route.ticketTab} onTab={(t) => navigate({ page: "product", po, tab: t })} onBack={() => navigate({ page: "product" })} onError={onError} />
+        : <ProductHome route={route} onOpen={(id) => navigate({ page: "product", po: id })} onError={onError} />;
+};

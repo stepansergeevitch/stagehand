@@ -196,7 +196,9 @@ export const App = () => {
     const envId = routeEnv ?? selectedTaskEnv ?? rememberedEnv;
     const [detail, setDetail] = useState<TaskDetail | null>(null);
     const [feed, setFeed] = useState<Record<string, string[]>>({});
-    const [modal, setModal] = useState<"env" | "account" | null>(null);
+    // The "Add environment" / "Add AI account" dialogs are routed (#/envs/new, #/accounts/new).
+    const modal: "env" | "account" | null = route.page === "envs" && route.create ? "env" : route.page === "accounts" && route.create ? "account" : null;
+    const setModal = (m: "env" | "account" | null): void => navigate(m === "env" ? { page: "envs", create: true } : m === "account" ? { page: "accounts", create: true } : modal === "env" ? { page: "envs" } : { page: "accounts" });
     const [settings, setSettings] = useState<Settings | null>(null);
     const [readiness, setReadiness] = useState<Readiness[]>([]);
     useEffect(() => {
@@ -427,12 +429,7 @@ export const App = () => {
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
                             <ErrorBoundary label="Product">
-                                <ProductPage
-                                    {...(route.page === "product" && route.po ? { po: route.po } : {})}
-                                    {...(route.page === "product" && route.tab ? { tab: route.tab } : {})}
-                                    onNavigate={(po, tab) => navigate({ page: "product", ...(po ? { po } : {}), ...(tab ? { tab } : {}) })}
-                                    onError={setError}
-                                />
+                                {route.page === "product" && <ProductPage route={route} onError={setError} />}
                             </ErrorBoundary>
                         </main>
                     </div>
@@ -441,7 +438,7 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <ErrorBoundary label="Resources"><ResourcesPage onError={setError} /></ErrorBoundary>
+                            <ErrorBoundary label="Resources"><ResourcesPage tab={route.page === "resources" ? route.tab : undefined} onTab={(t) => navigate({ page: "resources", tab: t })} onError={setError} /></ErrorBoundary>
                         </main>
                     </div>
                 )}
@@ -465,7 +462,11 @@ export const App = () => {
                                     settings={settings}
                                     session={route.page === "sessions" ? route.session ?? null : null}
                                     view={route.page === "sessions" ? route.view ?? "terminal" : "terminal"}
+                                    creating={route.page === "sessions" && !!route.create}
+                                    diff={route.page === "sessions" ? route.diff : undefined}
                                     onNavigate={(session, view) => navigate({ page: "sessions", ...(session ? { session, view: view ?? "terminal" } : {}) })}
+                                    onCreating={(on) => navigate({ page: "sessions", ...(on ? { create: true } : {}) })}
+                                    onDiff={(d) => navigate((r) => (r.page === "sessions" ? { ...r, diff: d } : r))}
                                     onError={setError}
                                 />
                             </ErrorBoundary>
@@ -476,7 +477,7 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <EnvPage key={envPage.id} env={envPage} envs={envs} accounts={accounts} configDirs={configDirs} onBack={() => navigate({ page: "envs" })} onOpenDir={(id) => navigate({ page: "config-dirs", dir: id })} onChanged={reload} onError={setError} />
+                            <EnvPage key={envPage.id} env={envPage} tab={route.page === "envs" ? route.tab : undefined} onTab={(t) => navigate({ page: "envs", env: envPage.id, tab: t })} envs={envs} accounts={accounts} configDirs={configDirs} onBack={() => navigate({ page: "envs" })} onOpenDir={(id) => navigate({ page: "config-dirs", dir: id })} onChanged={reload} onError={setError} />
                         </main>
                     </div>
                 )}
@@ -484,7 +485,7 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <ConfigDirPage key={dir.id} dir={dir} onBack={() => navigate({ page: "config-dirs" })} onChanged={reload} onError={setError} />
+                            <ConfigDirPage key={dir.id} dir={dir} tab={route.page === "config-dirs" ? route.tab : undefined} onTab={(t) => navigate({ page: "config-dirs", dir: dir.id, tab: t })} onBack={() => navigate({ page: "config-dirs" })} onChanged={reload} onError={setError} />
                         </main>
                     </div>
                 )}
@@ -492,7 +493,7 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <AccountPage key={accountPage.id} a={accountPage} envs={envs} tasks={tasks} settings={settings} onBack={() => navigate({ page: "accounts" })} onChanged={reload} onError={setError} onTerminal={setTerminal} />
+                            <AccountPage key={accountPage.id} a={accountPage} tab={route.page === "accounts" ? route.tab : undefined} onTab={(t) => navigate({ page: "accounts", account: accountPage.id, tab: t })} envs={envs} tasks={tasks} settings={settings} onBack={() => navigate({ page: "accounts" })} onChanged={reload} onError={setError} onTerminal={setTerminal} />
                         </main>
                     </div>
                 )}
@@ -500,7 +501,7 @@ export const App = () => {
                     <div className="main page">
                         <main className="detail">
                             {error && <div className="blocked-box">{error}</div>}
-                            <IntegrationPage key={integrationId} id={integrationId} settings={settings} onBack={() => navigate({ page: "integrations" })} onChanged={reload} onError={setError} />
+                            <IntegrationPage key={integrationId} id={integrationId} tab={route.page === "integrations" ? route.tab : undefined} onTab={(t) => navigate({ page: "integrations", integration: integrationId, tab: t })} settings={settings} onBack={() => navigate({ page: "integrations" })} onChanged={reload} onError={setError} />
                         </main>
                     </div>
                 )}
@@ -510,6 +511,7 @@ export const App = () => {
                             {error && <div className="blocked-box">{error}</div>}
                             <ManagePage
                                 tab={MANAGE_TAB[page]!}
+                                route={route}
                                 envs={envs}
                                 configDirs={configDirs}
                                 accounts={accounts}

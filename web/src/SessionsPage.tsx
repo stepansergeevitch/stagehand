@@ -2,19 +2,22 @@ import { useCallback, useEffect, useState } from "react";
 import { accountUsableWith, api, envRepos, modelLabel, type Account, type ConfigDir, type Env, type Session, type Settings } from "./api";
 import { DiffView, sessionSource } from "./DiffView";
 import { LazyTerminal } from "./LazyTerminal";
+import type { DiffRoute } from "./routes";
 
 // Free-form claude sessions: pick an environment (its config dir, env vars and checkout) and an AI account, optionally
 // a fresh worktree on a branch, and get an interactive `claude` in a terminal — plus the same diff view tasks have,
 // for whatever the session changes. Sessions live in tmux, so closing the page keeps them; Open resumes the conversation.
-export const SessionsPage = ({ envs, accounts, configDirs, settings, session, view, onNavigate, onError }: {
+export const SessionsPage = ({ envs, accounts, configDirs, settings, session, view, creating, diff, onNavigate, onCreating, onDiff, onError }: {
     envs: Env[]; accounts: Account[]; configDirs: ConfigDir[]; settings: Settings | null;
     // The open session and its sub-view are routed (#/sessions/<id>/<terminal|changes>).
     session: string | null; view: "terminal" | "changes"; onNavigate: (session: string | null, view?: "terminal" | "changes") => void;
+    // The New session form (#/sessions/new) and the Changes tab's diff view (repository, changes, files/tests).
+    creating: boolean; onCreating: (on: boolean) => void;
+    diff: DiffRoute | undefined; onDiff: (d: DiffRoute) => void;
     onError: (m: string) => void;
 }) => {
     const [sessions, setSessions] = useState<Session[]>([]);
     const active = session;
-    const [creating, setCreating] = useState(false);
     const [busy, setBusy] = useState<string | null>(null);
     const [refreshKey, setRefreshKey] = useState(0);
 
@@ -47,7 +50,7 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, session, vi
                 A plain interactive <code>claude</code> in an environment's checkout (or its own worktree), with the environment's config dir and the AI account you pick. It runs in tmux: leave the page and come back, or Open again after claude exited to resume the same conversation.
             </p>
             <div className="actions" style={{ marginTop: 0 }}>
-                <button className="primary" onClick={() => setCreating((v) => !v)}>{creating ? "Cancel" : "+ Session"}</button>
+                <button className="primary" onClick={() => onCreating(!creating)}>{creating ? "Cancel" : "+ Session"}</button>
             </div>
             {creating && (
                 <NewSession
@@ -60,7 +63,6 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, session, vi
                             const s = await api.createSession(body);
                             onNavigate(s.id, "terminal");
                         });
-                        setCreating(false);
                     }}
                 />
             )}
@@ -110,7 +112,7 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, session, vi
                                 {current.worktree_path ? `Everything on ${current.branch} versus the environment's base branch, committed or not.` : `This session works in the environment's main checkout, so only uncommitted changes there are shown.`}
                                 <button className="tiny" style={{ marginLeft: 8 }} onClick={() => setRefreshKey((k) => k + 1)}>Refresh</button>
                             </p>
-                            <DiffView source={sessionSource(current.id)} refreshKey={`${current.id}:${refreshKey}`} repos={envRepos(currentEnv)} />
+                            <DiffView source={sessionSource(current.id)} refreshKey={`${current.id}:${refreshKey}`} repos={envRepos(currentEnv)} view={diff ?? {}} onView={onDiff} />
                         </>
                     )}
                 </section>

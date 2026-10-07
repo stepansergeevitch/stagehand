@@ -1263,8 +1263,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         <DiffView
                             taskId={task.id}
                             refreshKey={task.updated_at}
-                            view={{ ...(view.tab === "code" && view.repo ? { repo: view.repo } : {}), ...(view.tab === "code" && view.scope ? { filter: view.scope } : {}) }}
-                            onView={(v) => onView({ tab: "code", ...(v.repo ? { repo: v.repo } : {}), ...(v.filter.kind !== "all" ? { scope: v.filter } : {}) })}
+                            view={view.tab === "code" ? { ...(view.repo ? { repo: view.repo } : {}), ...(view.scope ? { scope: view.scope } : {}), ...(view.tests ? { tests: true } : {}) } : {}}
+                            onView={(v) => onView({ tab: "code", ...v })}
                             comments={comments}
                             prior={prior}
                             canComment={canComment || canCommentPr}

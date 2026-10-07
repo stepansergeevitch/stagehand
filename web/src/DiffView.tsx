@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { anchorOf, api, repoColorClass, repoName, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type FileReviewState, type LineComment, type Message, type MessageAnchor } from "./api";
 import { Markdown } from "./Markdown";
 import { storage } from "./storage";
-import type { CodeScope } from "./routes";
+import type { CodeScope, DiffRoute } from "./routes";
 import { AgentInput, usePendingFiles } from "./AgentInput";
 
 // A test file by the common conventions of any stack: a tests / __tests__ / spec directory, test_*.py / *_test.py,
@@ -515,10 +515,9 @@ export const DiffView = ({
 }: {
     // A task's diff (with the commit manager) …
     taskId?: string;
-    // Which repository and which changes are shown. With `onView` the view is controlled (routed by the caller);
-    // without it the component keeps the choice itself (a Sessions-page diff).
-    view?: { repo?: string; filter?: DiffFilter };
-    onView?: (v: { repo: string; filter: DiffFilter }) => void;
+    // Which repository, which changes, files or tests: always the caller's route (a reload lands on the same view).
+    view: DiffRoute;
+    onView: (v: DiffRoute) => void;
     // … or any other checkout's (a Sessions-page session); one of the two is required.
     source?: DiffSource;
     refreshKey: string;
@@ -541,29 +540,16 @@ export const DiffView = ({
     const src = useMemo(() => source ?? taskSource(taskId ?? ""), [source, taskId]);
     const [diff, setDiff] = useState<DiffResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const [localFilter, setLocalFilter] = useState<DiffFilter>({ kind: "all" });
     const [branch, setBranch] = useState<{ commits: BranchCommit[]; uncommitted: boolean; dirty?: string[] }>({ commits: [], uncommitted: false });
-    const [localRepo, setLocalRepo] = useState(repos[0] ?? "");
-    const controlled = !!onView;
-    const filter: DiffFilter = controlled ? (view?.filter ?? { kind: "all" }) : localFilter;
-    const wantRepo = controlled ? (view?.repo ?? "") : localRepo;
+    const filter: DiffFilter = view.scope ?? { kind: "all" };
+    const wantRepo = view.repo ?? "";
     const repo = repos.includes(wantRepo) ? wantRepo : (repos[0] ?? "");
-    const setFilter = (f: DiffFilter): void => (controlled ? onView!({ repo, filter: f }) : setLocalFilter(f));
+    const kind: "files" | "tests" = view.tests ? "tests" : "files";
+    const at = (v: DiffRoute): DiffRoute => ({ ...(v.repo ? { repo: v.repo } : {}), ...(v.scope && v.scope.kind !== "all" ? { scope: v.scope } : {}), ...(v.tests ? { tests: true } : {}) });
+    const setFilter = (f: DiffFilter): void => onView(at({ repo, scope: f, tests: view.tests }));
+    const setKind = (k: "files" | "tests"): void => onView(at({ repo, scope: filter, tests: k === "tests" }));
     // Switching repository always starts from that repository's full diff.
-    const setActiveRepo = (r: string): void => {
-        if (controlled) onView!({ repo: r, filter: { kind: "all" } });
-        else {
-            setLocalRepo(r);
-            setLocalFilter({ kind: "all" });
-        }
-    };
-    const scope = taskId ?? source;
-    useEffect(() => {
-        if (controlled) return;
-        setLocalFilter({ kind: "all" });
-        setLocalRepo(repos[0] ?? "");
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [scope]);
+    const setActiveRepo = (r: string): void => onView(at({ repo: r, tests: view.tests }));
     useEffect(() => {
         void src.commits().then(setBranch).catch(() => undefined);
     }, [src, refreshKey]);
@@ -624,7 +610,6 @@ export const DiffView = ({
     };
     const threadItems = useMemo(() => threadMessages(threads), [threads]);
     const review = useFileReview(taskId);
-    const [kind, setKind] = useState<"files" | "tests">("files");
     // A file's change as it stands vs the base: the fingerprint a Reviewed mark is held against, so the mark drops by
     // itself when the file's change moves (the agent edited it). Taken from the full diff in every view.
     const base = filter.kind === "all" ? diff : fullDiff;

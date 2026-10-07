@@ -15,7 +15,7 @@ export interface EntityTab {
     content: ReactNode;
 }
 
-export const EntityView = ({ type, onType, id, actions, tabs, defaultTab, notice }: {
+export const EntityView = ({ type, onType, id, actions, tabs, tab, onTab, notice }: {
     // The list's title ("Environments"); clicking it goes back to the list. Without onType (a singleton such as the
     // Prompter) it is plain text.
     type: string;
@@ -27,9 +27,11 @@ export const EntityView = ({ type, onType, id, actions, tabs, defaultTab, notice
     // Entity-level actions on the right of the title (Delete, Renew token, …).
     actions?: ReactNode;
     tabs: EntityTab[];
-    defaultTab?: string;
+    // The open tab comes from the route (routes.ts: every view is in the path, so a reload stays on it); an unknown or
+    // absent one shows the first tab. onTab navigates.
+    tab: string | undefined;
+    onTab: (key: string) => void;
 }) => {
-    const [tab, setTab] = useState(defaultTab ?? tabs[0]?.key ?? "");
     const current = tabs.find((t) => t.key === tab) ?? tabs[0];
     return (
         <div className="entity-view">
@@ -44,7 +46,7 @@ export const EntityView = ({ type, onType, id, actions, tabs, defaultTab, notice
             {tabs.length > 1 && (
                 <div className="tabs ev-tabs" role="tablist">
                     {tabs.map((t) => (
-                        <button key={t.key} role="tab" aria-selected={t.key === current?.key} className={t.key === current?.key ? "active" : ""} onClick={() => setTab(t.key)}>
+                        <button key={t.key} role="tab" aria-selected={t.key === current?.key} className={t.key === current?.key ? "active" : ""} onClick={() => onTab(t.key)}>
                             {t.label}
                         </button>
                     ))}

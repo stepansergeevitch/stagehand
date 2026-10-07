@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { Modal } from "./Modal";
+import { navigate, type Route } from "./routes";
 import { authLabel, PrompterPage, type IntegrationType } from "./ConfigEntities";
 import { accountBrowserReady, accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager } from "./api";
 
@@ -22,6 +23,7 @@ const repoList = (json: string | null): string => {
 
 export const ManagePage = ({
     tab,
+    route,
     envs,
     configDirs,
     accounts,
@@ -37,6 +39,8 @@ export const ManagePage = ({
     onError,
 }: {
     tab: ManageTab;
+    // The route: the Prompter's tab and the config dirs' Create dialog live in it.
+    route: Route;
     envs: Env[];
     configDirs: ConfigDir[];
     accounts: Account[];
@@ -62,9 +66,9 @@ export const ManagePage = ({
     return (
         <div className="env-page manage-page">
             {tab === "envs" && <EnvTable envs={envs} configDirs={configDirs} accounts={accounts} tasks={tasks} onConfigure={onConfigureEnv} onAdd={onAddEnv} act={act} />}
-            {tab === "dirs" && <ConfigDirTable dirs={configDirs} onOpen={onOpenDir} act={act} />}
+            {tab === "dirs" && <ConfigDirTable dirs={configDirs} adding={route.page === "config-dirs" && !!route.create} onOpen={onOpenDir} act={act} />}
             {tab === "accounts" && <AccountTable accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} onOpen={onOpenAccount} act={act} />}
-            {tab === "prompter" && settings && <PrompterPage settings={settings} accounts={accounts} onChanged={onChanged} onError={onError} />}
+            {tab === "prompter" && settings && <PrompterPage settings={settings} accounts={accounts} tab={route.page === "prompter" ? route.tab : undefined} onTab={(t) => navigate({ page: "prompter", tab: t })} onChanged={onChanged} onError={onError} />}
             {tab === "integrations" && <IntegrationTable settings={settings} onOpen={onOpenIntegration} onError={onError} />}
         </div>
     );
@@ -108,8 +112,8 @@ const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }
     );
 };
 
-const ConfigDirTable = ({ dirs, onOpen, act }: { dirs: ConfigDir[]; onOpen: (id: string) => void; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
-    const [adding, setAdding] = useState(false);
+const ConfigDirTable = ({ dirs, adding, onOpen, act }: { dirs: ConfigDir[]; adding: boolean; onOpen: (id: string) => void; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
+    const setAdding = (on: boolean): void => navigate(on ? { page: "config-dirs", create: true } : { page: "config-dirs" });
     const [add, setAdd] = useState({ name: "", path: "" });
     const columns: DataColumn<ConfigDir>[] = [
         { key: "name", label: "Name", kind: "label", value: (d) => d.name, filter: false },

@@ -82,7 +82,7 @@ const RulesTab = ({ dir, info, save, saving }: { dir: ConfigDir; info: ConfigDir
     );
 };
 
-export const ConfigDirPage = ({ dir, onBack, onChanged, onError }: { dir: ConfigDir; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void; onTerminal?: (name: string) => void }) => {
+export const ConfigDirPage = ({ dir, tab, onTab, onBack, onChanged, onError }: { tab: string | undefined; onTab: (t: string) => void; dir: ConfigDir; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void; onTerminal?: (name: string) => void }) => {
     const [info, setInfo] = useState<ConfigDirRules | null>(null);
     useEffect(() => {
         void api.configDirRules(dir.id).then(setInfo).catch((e: Error) => onError(e.message));
@@ -93,7 +93,7 @@ export const ConfigDirPage = ({ dir, onBack, onChanged, onError }: { dir: Config
         await onChanged();
     });
     return (
-        <EntityView
+        <EntityView tab={tab} onTab={onTab}
             type="Claude config dirs"
             onType={onBack}
             id={dir.name}
