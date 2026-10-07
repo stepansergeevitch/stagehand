@@ -351,11 +351,19 @@ const isFailedCheck = (c: { conclusion?: string; state?: string }): boolean => !
 
 // execFile's error message is "Command failed: <the whole command>\n<stderr>": the useful part — a pre-push hook's verdict,
 // GitHub's rejection reason — is at the END, which a plain slice(0, 160) never reaches. Keep the last few stderr lines.
-const gitErrorTail = (e: unknown): string => {
+// The decisive part of a failed git command's output. A rejected push names its reason only in parentheses after the
+// ref ("! [remote rejected] a -> b (reason)"), behind GitHub's "remote: Time …" and "To <url>" lines — INV-155's status
+// kept those and cut the reason off — so the noise goes and a rejection is reduced to its ref and reason.
+export const gitErrorTail = (e: unknown): string => {
     const lines = String((e as Error).message ?? e)
         .split("\n")
         .map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").trim())
-        .filter((l) => l && !/^Command failed:/.test(l) && !/^npm warn/i.test(l));
+        .filter((l) => l && !/^Command failed:/.test(l) && !/^npm warn/i.test(l))
+        .filter((l) => !/^remote:\s*(Time\b.*)?$/i.test(l) && !/^To \S+$/.test(l) && !/^hint:/i.test(l))
+        .map((l) => {
+            const m = /^!\s*\[([^\]]+)\]\s+(\S+)\s+->\s+\S+(?:\s+\((.*)\))?/.exec(l);
+            return m ? `${m[1]}: ${m[2]}${m[3] ? ` (${m[3]})` : ""}` : l;
+        });
     return (lines.slice(-4).join(" · ") || "no output").slice(0, 400);
 };
 
@@ -3418,7 +3426,7 @@ export class Engine extends EventEmitter {
         } catch (e) {
             // The fix stays committed and approved: Retry runs this push again (no agent run), and a force-push from
             // Code changes carries on from here by itself.
-            this.setTaskStatus(taskId, "failed", `PR Fix · ${repoLabel(current)}: push failed — ${gitErrorTail(e).slice(0, 200)} · fix the checkout (or force-push from Code changes), then Retry pushes again`);
+            this.setTaskStatus(taskId, "failed", `PR Fix · ${repoLabel(current)}: push failed — ${gitErrorTail(e)} · fix the checkout (or force-push from Code changes), then Retry pushes again`);
             return;
         }
         // A fix can land while a repository's draft is still unapproved (its PR never opened before CI on another
