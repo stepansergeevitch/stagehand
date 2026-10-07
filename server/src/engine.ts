@@ -3264,6 +3264,17 @@ export class Engine extends EventEmitter {
             const shas = log.split("\n").filter(Boolean);
             for (const c of r.comments) {
                 const o = reported.find((x) => x.id === c.id);
+                // A round sent back runs again ("fix the other 3 as well"): the new run reports only what it did now. A
+                // comment an earlier run of the same round addressed keeps that outcome (and its reply) while its commit
+                // is still one of the round's — unless the new run addressed it itself.
+                const prior = fc.outcomes?.find((x) => x.repo === repo && x.commentId === c.id && x.addressed && x.sha);
+                if (prior && !o?.addressed && prior.sha && shas.includes(prior.sha)) {
+                    outcomes.push(prior);
+                    const was = fc.replies.find((x) => x.repo === repo && x.commentId === c.id);
+                    if (was) replies.push(was);
+                    else if (!fc.outcomes?.length) replies.push({ repo, commentId: c.id, sha: prior.sha, posted: null, error: null });
+                    continue;
+                }
                 if (!o) {
                     outcomes.push({ repo, commentId: c.id, addressed: false, sha: null, note: "the fix run did not report on this comment" });
                     continue;
