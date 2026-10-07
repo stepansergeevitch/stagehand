@@ -564,7 +564,8 @@ const TicketsTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: st
         <>
             {d.ticketsError && <div className="blocked-box">tickets.json: {d.ticketsError}</div>}
             <IssuesRefresh d={d} onError={onError} reload={reload} />
-            {(d.po.phase === "tickets" || (d.po.phase === "approved" && pending > 0)) && (
+            {/* A live Product Owner can still propose a ticket later (a new draft): it is created the same way. */}
+            {(d.po.phase === "tickets" || ((d.po.phase === "approved" || d.po.phase === "live") && pending > 0)) && (
                 <div className="review-box">
                     <b>{tickets.length} ticket(s), {points} point(s).</b> Refine them in the chat or edit one here. Approve to create {pending === tickets.length ? "them" : `the ${pending} not created yet`} in {d.po.source === "linear" ? "the Linear project" : "the ClickUp epic"}.
                     <div className="actions"><button className="primary" disabled={busy || d.running} onClick={async () => { setBusy(true); try { await api.poApproveTickets(d.po.id); reload(); } catch (e) { onError(String((e as Error).message ?? e)); } finally { setBusy(false); } }}>{busy ? "Creating…" : "Approve and create"}</button></div>
@@ -588,6 +589,7 @@ const TicketsTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: st
                             {current.acceptanceCriteria.length > 0 && (<><h3>Acceptance criteria</h3><ul className="po-ac">{current.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul></>)}
                             {current.dependsOn.length > 0 && (<><h3>Depends on</h3><div className="po-ticket-meta">{current.dependsOn.map((k) => <button key={k} className="tiny" onClick={() => setSel(k)}>{k} {byKey.get(k)?.title ?? ""}</button>)}</div></>)}
                             {identOf(current) && <TicketTask d={d} identifier={identOf(current)!} reload={reload} onError={onError} />}
+                            {!identOf(current) && <div className="po-ticket-task"><b>Not in {d.po.source === "linear" ? "Linear" : "ClickUp"} yet.</b> <span className="quiet">A task starts from a ticket: create it with Approve and create above, then Create task appears here.</span></div>}
                             {issueOf(current) && <LiveIssue issue={issueOf(current)!} />}
                             {!link(current.key) && <div className="actions"><button onClick={() => setEditing(true)}>Edit</button></div>}
                         </>
