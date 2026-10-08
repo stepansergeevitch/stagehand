@@ -17,6 +17,9 @@ const ConfigSchema = z.object({
     qaShards: z.number().int().default(4),
     // A checkout of github.com/garrytan/gstack: its review/checklist.md is read by the Code Review prompt at run time.
     gstackDir: z.string().default(join(homedir(), ".stagehand", "gstack")),
+    // The headless browsers Stagehand drives (Playwright's PLAYWRIGHT_BROWSERS_PATH for gstack and every run): owned
+    // here, never the shared ~/Library/Caches/ms-playwright a cache cleanup wipes (ENG-24845, 2026-10-08).
+    browsersDir: z.string().default(join(homedir(), ".stagehand", "browsers")),
     clickupToken: z.string().nullable().default(null),
     clickupTeamId: z.string().nullable().default(null),
     // Resolved once from GET /user with the token above and cached here.
@@ -161,6 +164,7 @@ const defaults = (): Config => ({
     preflightUtilizationLimit: 0.9,
     qaShards: 4,
     gstackDir: join(homedir(), ".stagehand", "gstack"),
+    browsersDir: join(homedir(), ".stagehand", "browsers"),
     clickupToken: null,
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
     clickupUserId: null,

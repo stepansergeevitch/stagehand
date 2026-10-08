@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { ensureBrowsers } from "./browsers.js";
 import { loadConfig, PREVIEW, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
@@ -43,6 +44,10 @@ import { attach, capturePane, ensureSession, killSession, loginSessionName, pipe
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cfg = loadConfig();
+// Stagehand's own browsers (config.browsersDir): every child process — gstack daemons, agent runs and their `$B` —
+// inherits this, so no browser Stagehand drives lives in a shared cache. A missing Chromium is installed there now.
+process.env.PLAYWRIGHT_BROWSERS_PATH = cfg.browsersDir;
+ensureBrowsers(cfg.gstackDir, cfg.browsersDir);
 const db = openDb(cfg.dataDir);
 migrateAccountsToConfigDirs(db, { mainConfigDir: cfg.mainConfigDir, scratchAccountsDir: cfg.accountsDir });
 const services = new Services(db, cfg);
