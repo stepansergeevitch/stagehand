@@ -17,7 +17,7 @@ import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, o
 import { activateCloneTab, cloneProfile, launchClone, pickCdpPort, quitClone, sweepClones, type ChromeClone } from "./chrome-clones.js";
 import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stampTaskOnUsage } from "./usage.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
-import { baseDrift, baseOf, branchCommits, commitsDiff, createWorktree, describePaths, dirtyPaths, type RepoLayout, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
+import { baseDrift, baseOf, baseRefFor, branchCommits, commitsDiff, createWorktree, describePaths, dirtyPaths, type RepoLayout, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -1888,7 +1888,7 @@ export class Engine extends EventEmitter {
                 for (const cwd of checkouts) {
                     const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch], env).catch(() => "");
                     const repo = task.worktree_path === cwd ? "" : relative(task.worktree_path, cwd);
-                    const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `origin/${this.baseBranchOf(task, env, repo)}..HEAD`], env).catch(() => "");
+                    const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `${await this.baseRef(cwd, env, this.baseBranchOf(task, env, repo))}..HEAD`], env).catch(() => "");
                     const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
                     if (ahead || dirty) {
                         const what = [ahead ? `${ahead.split("\n").length} unpushed commit(s)` : null, dirty ? "uncommitted changes" : null].filter(Boolean).join(" and ");
@@ -2417,7 +2417,7 @@ export class Engine extends EventEmitter {
         const cwd = this.checkoutOf(task, env, repo);
         const existing = this.prRow(taskId, repo);
         const repoBase = this.baseBranchOf(task, env, repo);
-        const ahead = await this.git(cwd, ["log", "--oneline", `origin/${repoBase}..HEAD`], env).catch(() => "");
+        const ahead = await this.git(cwd, ["log", "--oneline", `${await this.baseRef(cwd, env, repoBase)}..HEAD`], env).catch(() => "");
         const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
         // Nothing committed but changes on disk: an env that forbids agent commits (or an agent that left work
         // uncommitted) — the human has to commit before anything can be pushed or opened.
@@ -3486,7 +3486,7 @@ export class Engine extends EventEmitter {
                 const cwd = this.checkoutOf(task, env, repo);
                 if (!existsSync(cwd)) continue;
                 const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch], env).catch(() => "");
-                const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `origin/${this.baseBranchOf(task, env, repo)}..HEAD`], env).catch(() => "");
+                const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `${await this.baseRef(cwd, env, this.baseBranchOf(task, env, repo))}..HEAD`], env).catch(() => "");
                 if (!ahead) continue;
                 const how = await this.pushBranch(cwd, env, task.branch, this.prRow(taskId, repo)?.pushed_sha ?? null);
                 if (how !== "pushed") this.addAgentNote(taskId, `${repoLabel(repo)}: ${how}`);
@@ -5749,19 +5749,21 @@ export class Engine extends EventEmitter {
                     notes.push(`📦 ${repoLabel(repo)}: uncommitted changes set aside for the rebase and put back after it — ${describePaths(dirty)}`);
                 }
                 headsBefore.set(repo, (await this.git(cwd, ["rev-parse", "HEAD"], env).catch(() => "")).trim());
-                await this.git(cwd, ["fetch", "origin", base], env);
-                const n = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..origin/${base}`], env).catch(() => "0")) || 0;
+                // A base that is not on origin (a parent task's unpushed branch) has nothing to fetch: its local branch is the base.
+                await this.git(cwd, ["fetch", "origin", base], env).catch(() => "");
+                const ref = await this.baseRef(cwd, env, base);
+                const n = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..${ref}`], env).catch(() => "0")) || 0;
                 if (n === 0) continue;
                 // Commits of this checkout's own: on neither the base nor the env's trunk (a stacked task forked from a
                 // newer trunk than its parent carries trunk commits its parent lacks — those are not "its own").
                 await this.git(cwd, ["fetch", "origin", env.base_branch], env).catch(() => "");
-                const own = Number(await this.git(cwd, ["rev-list", "--count", "HEAD", `^origin/${base}`, `^origin/${env.base_branch}`], env).catch(() => "0")) || 0;
+                const own = Number(await this.git(cwd, ["rev-list", "--count", "HEAD", `^${ref}`, `^origin/${env.base_branch}`], env).catch(() => "0")) || 0;
                 // A checkout with nothing of its own (a multi-repo task that only touched the other repository) has no
                 // history to replay: move it to the base outright, so a stacked task's untouched repository matches its
                 // parent. Nothing is lost — every commit here is on the base or the trunk.
                 if (own === 0) {
-                    await this.git(cwd, ["reset", "--hard", `origin/${base}`], env);
-                    fastForwarded.push(`${repoLabel(repo)}: moved to origin/${base} (no commits of its own)`);
+                    await this.git(cwd, ["reset", "--hard", ref], env);
+                    fastForwarded.push(`${repoLabel(repo)}: moved to ${ref} (no commits of its own)`);
                     continue;
                 }
                 behind.push(`${repoLabel(repo)}: ${n} commit(s)`);
@@ -5773,7 +5775,7 @@ export class Engine extends EventEmitter {
                 const cwd = this.checkoutOf(task, env, repo);
                 const repoBase = this.baseBranchOf(task, env, repo);
                 const r = await this.plainRebase(cwd, env, repoBase, headsBefore.get(repo) ?? "");
-                if (r.ok) plain.push(`✅ ${repoLabel(repo)}: plain rebase onto origin/${repoBase}, no conflicts (${r.replayed} commit(s) replayed)`);
+                if (r.ok) plain.push(`✅ ${repoLabel(repo)}: plain rebase onto ${await this.baseRef(cwd, env, repoBase)}, no conflicts (${r.replayed} commit(s) replayed)`);
                 else {
                     conflicted.push(repo);
                     plain.push(`⚠️ ${repoLabel(repo)}: plain rebase conflicted in ${r.conflict} — handed to the agent`);
@@ -5916,14 +5918,21 @@ export class Engine extends EventEmitter {
         return { started: true, note: summary.join(" · ") };
     }
 
-    // `git rebase --onto origin/<base> <parent of the oldest own commit>`: replays exactly this checkout's own commits
+    // What a base branch resolves to in a checkout: origin/<base>, or the local <base> for a task stacked on another task's
+    // branch that is not pushed yet (git.ts baseRefFor).
+    private baseRef(cwd: string, env: EnvRow, base: string): Promise<string> {
+        return baseRefFor(cwd, base, parseEnvVars(env.env_vars));
+    }
+
+    // `git rebase --onto <base ref> <parent of the oldest own commit>`: replays exactly this checkout's own commits
     // (on neither the base nor the trunk), non-interactively. Any conflict aborts and restores the checkout to where it
     // was; the caller hands that checkout to the agent.
     private async plainRebase(cwd: string, env: EnvRow, base: string, headBefore: string): Promise<{ ok: true; replayed: number } | { ok: false; conflict: string }> {
-        const own = (await this.git(cwd, ["rev-list", "--reverse", "HEAD", `^origin/${base}`, `^origin/${env.base_branch}`], env).catch(() => "")).split("\n").filter(Boolean);
+        const ref = await this.baseRef(cwd, env, base);
+        const own = (await this.git(cwd, ["rev-list", "--reverse", "HEAD", `^${ref}`, `^origin/${env.base_branch}`], env).catch(() => "")).split("\n").filter(Boolean);
         if (own.length === 0) return { ok: true, replayed: 0 };
         try {
-            await this.git(cwd, ["-c", "core.editor=true", "-c", "rebase.autoStash=false", "rebase", "--onto", `origin/${base}`, `${own[0]}^`], env);
+            await this.git(cwd, ["-c", "core.editor=true", "-c", "rebase.autoStash=false", "rebase", "--onto", ref, `${own[0]}^`], env);
             return { ok: true, replayed: own.length };
         } catch (e) {
             const files = (await this.git(cwd, ["diff", "--name-only", "--diff-filter=U"], env).catch(() => "")).split("\n").filter(Boolean);
@@ -5950,18 +5959,19 @@ export class Engine extends EventEmitter {
                 lines.push(`❌ ${repoLabel(repo)}: the rebase was left unfinished — aborted, branch unchanged`);
                 continue;
             }
-            const upToDate = await this.git(cwd, ["merge-base", "--is-ancestor", `origin/${base}`, "HEAD"], env).then(() => true, () => false);
+            const ref = await this.baseRef(cwd, env, base);
+            const upToDate = await this.git(cwd, ["merge-base", "--is-ancestor", ref, "HEAD"], env).then(() => true, () => false);
             if (!upToDate) {
-                lines.push(`⚠️ ${repoLabel(repo)}: not rebased (still behind origin/${base})`);
+                lines.push(`⚠️ ${repoLabel(repo)}: not rebased (still behind ${ref})`);
                 continue;
             }
             const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch!], env).catch(() => "");
             if (!remote.trim()) {
-                lines.push(`✅ ${repoLabel(repo)}: on origin/${base} now; the branch is not on GitHub yet, nothing to push`);
+                lines.push(`✅ ${repoLabel(repo)}: on ${ref} now; the branch is not on GitHub yet, nothing to push`);
                 continue;
             }
             if (!rules.allowPush) {
-                lines.push(`✅ ${repoLabel(repo)}: on origin/${base} now; this env forbids agent pushes — push it yourself: \`git push --force-with-lease origin ${task.branch}\``);
+                lines.push(`✅ ${repoLabel(repo)}: on ${ref} now; this env forbids agent pushes — push it yourself: \`git push --force-with-lease origin ${task.branch}\``);
                 continue;
             }
             try {

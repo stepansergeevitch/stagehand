@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createWorktree } from "./git.js";
+import { baseRefFor, changedFiles, commitLog, createWorktree } from "./git.js";
 
 // Plain, unsigned commits regardless of the developer's global git config (commit.gpgsign would need a key here).
 const sh = (cwd: string, args: string[]): string => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
@@ -44,5 +44,25 @@ describe("createWorktree base branch", () => {
     it("names a base that exists nowhere", async () => {
         const { repo } = setup();
         await expect(createWorktree({ path: repo, base_branch: "nope", repos: null }, "task-3")).rejects.toThrow(/base branch "nope" exists neither on origin nor locally/);
+    });
+});
+
+describe("baseRefFor (a base that is another task's unpushed branch)", () => {
+    it("resolves origin/<base> when the remote has it, the local branch when only that exists, origin/<base> otherwise", async () => {
+        const { repo } = setup();
+        expect(await baseRefFor(repo, "dev")).toBe("origin/dev");
+        expect(await baseRefFor(repo, "feat-a")).toBe("feat-a");
+        expect(await baseRefFor(repo, "nope")).toBe("origin/nope");
+    });
+    it("counts and lists only the stacked task's own commits against a local base", async () => {
+        const { repo } = setup();
+        const wt = await createWorktree({ path: repo, base_branch: "feat-a", repos: null }, "task-4");
+        writeFileSync(join(wt.path, "c.txt"), "c\n");
+        sh(wt.path, ["add", "c.txt"]);
+        sh(wt.path, ["commit", "-q", "-m", "stacked work"]);
+        const log = await commitLog(wt.path, "feat-a");
+        expect(log).toMatch(/stacked work/);
+        expect(log).not.toMatch(/feat-a work/);
+        expect(await changedFiles(wt.path, "feat-a")).toEqual(["c.txt"]);
     });
 });

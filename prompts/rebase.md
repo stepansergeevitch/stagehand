@@ -8,7 +8,7 @@ Worktree: `{{worktree}}` (every command below runs there; in a multi-repository 
 
 ## What is known
 
-- Base branch: `{{baseBranch}}` — the branch this task's PR targets (a multi-repository task may name a different base per repository, as `repo: branch`; every `origin/{{baseBranch}}` below then means that repository's own base). Behind by: {{behind}}.
+- Base branch: `{{baseBranch}}` — the branch this task's PR targets (a multi-repository task may name a different base per repository, as `repo: branch`; every `origin/{{baseBranch}}` below then means that repository's own base). A base that is another task's branch may not be on origin yet: when `git fetch origin <base>` finds nothing, the base is the LOCAL branch `<base>` (the task worktrees share one repository), so read every `origin/<base>` below as `<base>` and skip the fetch. Behind by: {{behind}}.
 - The task's accepted design is in `{{taskDir}}/design.md` (its Suggested approach and `**Invariant:**` say what must stay true) — the guide for resolving a conflict in favour of this task's intent versus what landed on the base.
 
 ## Steps
