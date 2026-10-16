@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import { Button } from "./components/ui";
+import { Button } from "@vortex/ds";
 
 // A render error inside one view must not blank the whole app (React unmounts the tree on an uncaught render error —
 // on a phone that was "a blank screen with no way to tell why"). Shows the message and a way back instead.

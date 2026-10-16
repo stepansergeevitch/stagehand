@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, pct, STAGE_LABEL, type Stage, type UsageBucket, type UsageReport } from "./api";
 import { storage } from "./storage";
-import { Button, Card, Tab, TabList } from "./components/ui";
+import { Button, Card, Tab, TabList } from "@vortex/ds";
 
 // Token and cost usage as reported by claude's result events, sliced by environment, account, task, stage, model and day.
 

@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler",
     "jsx": "react-jsx", "strict": true, "noUncheckedIndexedAccess": true,
-    "skipLibCheck": true, "isolatedModules": true, "noEmit": true, "lib": ["ES2022", "DOM", "DOM.Iterable"]
+    "skipLibCheck": true, "baseUrl": ".", "paths": { "@vortex/ds": ["../packages/vortex-ds/src/index.ts"], "@vortex/ds/styles.css": ["../packages/vortex-ds/src/styles.css"] }, "isolatedModules": true, "noEmit": true, "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
   "include": ["src"]
 }

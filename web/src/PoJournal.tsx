@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { api, type PoCorrection, type PoDetail, type PoJournalEvent, type PoQuestion } from "./api";
 import { AgentInput } from "./AgentInput";
 import { Markdown } from "./Markdown";
-import { Button, Card, Chip, Input, Select } from "./components/ui";
+import { Button, Card, Chip, Input, Select } from "@vortex/ds";
 
 // A Product Owner's journal on its page: the outstanding questions it keeps, the events that reached it (and what
 // each changed), and the corrections it suggests for existing tickets and task designs.

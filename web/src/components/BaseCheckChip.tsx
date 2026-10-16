@@ -1,5 +1,5 @@
 import type { BaseCheckState } from "../api";
-import { Chip } from "./ui";
+import { Chip } from "@vortex/ds";
 
 // Whether a task's branch still goes onto its latest base (server base-check.ts): one chip, the detail on hover.
 const LOOK: Record<BaseCheckState, { cls: string; text: string }> = {

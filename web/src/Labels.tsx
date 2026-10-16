@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type TaskLabel } from "./api";
-import { Button, Input } from "./components/ui";
+import { Button, Input } from "@vortex/ds";
 
 // Free-text labels with a colour, chosen by the human: shown on the task in the list, the dashboard and the header.
 export const LABEL_COLORS = ["#1f6f8b", "#2e8b57", "#c98a1b", "#b8413a", "#6b5bb5", "#c2557a", "#3b7dd8", "#5f6b73"];

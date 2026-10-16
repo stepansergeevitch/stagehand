@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ClipboardEvent, type DragEvent } from "react";
 import { api, type SharedFile } from "./api";
-import { Button, Chip, Input } from "./components/ui";
+import { Button, Chip, Input } from "@vortex/ds";
 
 const stamp = (): string => new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "").replace("T", "-");
 

@@ -6,7 +6,7 @@ import type { CodeScope, DiffRoute } from "./routes";
 import { AgentInput, usePendingFiles } from "./AgentInput";
 import { CommentEditor } from "./components/CommentEditor";
 import { LineThread, threadMessages, type ThreadMessage } from "./components/LineThread";
-import { Button, Chip, Input, Tab, TabList } from "./components/ui";
+import { Button, Chip, Input, Tab, TabList } from "@vortex/ds";
 
 // A test file by the common conventions of any stack: a tests / __tests__ / spec directory, test_*.py / *_test.py,
 // *.test.* / *.spec.*, *_test.go, *Test.java / *Tests.cs, conftest.py.

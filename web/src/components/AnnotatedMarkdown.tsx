@@ -4,7 +4,7 @@ import { commentKey } from "../DiffView";
 import { Markdown } from "../Markdown";
 import { CommentEditor } from "./CommentEditor";
 import { LineThread, type ThreadMessage } from "./LineThread";
-import { Button } from "./ui";
+import { Button } from "@vortex/ds";
 
 // A markdown document the reader can talk about. Select text or hover a block → comment on it (a draft that goes with
 // the next review round) or ask the agent about it (answered in a thread under the document). The document's blocks

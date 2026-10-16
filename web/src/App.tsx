@@ -23,7 +23,7 @@ import { LazyTerminal } from "./LazyTerminal";
 import { AgentInput } from "./AgentInput";
 import { Modal } from "./Modal";
 import { BaseCheckChip } from "./components/BaseCheckChip";
-import { Button, Chip, Input, Select, Textarea } from "./components/ui";
+import { Button, Chip, Input, Select, Textarea } from "@vortex/ds";
 
 // Where the user is lives in the URL hash only (see routes.ts): reloads, back/forward, pasted links and anything that
 // reads the path see the same screen.

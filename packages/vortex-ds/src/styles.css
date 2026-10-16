@@ -1,4 +1,46 @@
-/* Component styles for web/src/components/ui — Button, Chip, Card, Input/Select/Textarea, Tabs, Notice, Icon.
+/* Vortex design tokens — the one place colours, type, spacing, radii, shadows and motion are decided.
+   Semantic names (--bg, --panel, --ink, --accent …) are what every stylesheet and component reads; nothing else
+   writes a raw colour. Light is the default, dark follows the system. */
+:root {
+    color-scheme: light dark;
+
+    /* surfaces and text */
+    --bg: #f5f6f8; --panel: #ffffff; --panel-2: #fafbfc; --code: #eceff3;
+    --ink: #0f1722; --ink-2: #3f4b5b; --ink-3: #5d6a7b; --line: #e1e5ea; --line-strong: #c9d0d9;
+    /* brand and intent */
+    --accent: #2b59d6; --accent-ink: #ffffff; --accent-soft: #e6ecfb;
+    --ok: #17803d; --ok-soft: #dff3e6; --warn: #a9640a; --warn-soft: #faedd2;
+    --bad: #c03030; --bad-soft: #fbe3e1; --wait: #6a4fc2; --wait-soft: #ebe6fa;
+    --overlay: rgba(10, 15, 25, .45); --ring: color-mix(in srgb, var(--accent) 45%, transparent);
+
+    /* type */
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --fs-xs: 11px; --fs-sm: 12.5px; --fs-md: 14px; --fs-lg: 16px; --fs-xl: 19px;
+
+    /* space (4px grid), shape, depth, motion */
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+    --r-sm: 4px; --r-md: 6px; --r-lg: 10px; --r-pill: 999px;
+    --shadow-sm: 0 1px 2px rgba(15, 23, 34, .06);
+    --shadow-md: 0 6px 20px rgba(15, 23, 34, .14);
+    --ctl-h: 30px; --ctl-h-sm: 24px;
+    --dur: 140ms; --ease: cubic-bezier(.2, 0, 0, 1);
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #0c1118; --panel: #141b24; --panel-2: #10161e; --code: #1c2530;
+        --ink: #e8edf3; --ink-2: #b6c1cd; --ink-3: #8795a5; --line: #263140; --line-strong: #364457;
+        --accent: #7c9bff; --accent-ink: #0c1118; --accent-soft: #1c2845;
+        --ok: #4cc47e; --ok-soft: #14301f; --warn: #e3ac55; --warn-soft: #382a10;
+        --bad: #f07b74; --bad-soft: #3b1c1b; --wait: #b3a2f2; --wait-soft: #2a2347;
+        --overlay: rgba(0, 0, 0, .6);
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+        --shadow-md: 0 8px 24px rgba(0, 0, 0, .5);
+    }
+}
+@media (prefers-reduced-motion: reduce) { :root { --dur: 0ms; } }
+
+/* Component styles for @vortex/ds — Button, Chip, Card, Input/Select/Textarea, Tabs, Notice, Icon.
    Pages compose these; they do not restyle them. */
 
 /* ---------- Button ---------- */

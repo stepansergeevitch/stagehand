@@ -11,7 +11,7 @@ type ProductRoute = Extract<Route, { page: "product" }>;
 import { CorrectionsTab, EventsTab, QuestionsTab } from "./PoJournal";
 import { Collapsible } from "./components/Collapsible";
 import { CheckboxSelect } from "./components/CheckboxSelect";
-import { Button, Card, Chip, Input, Select, Textarea, Tab, TabList } from "./components/ui";
+import { Button, Card, Chip, Input, Select, Textarea, Tab, TabList } from "@vortex/ds";
 
 // The Product section: the global product context, the Product Owners (one per project of the product), and the
 // palace search. A PO page shows its three documents as pages — context, design, tickets — beside the chat that

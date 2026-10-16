@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
 
 // Optional TLS for the dev server: point STAGEHAND_DEV_TLS_CERT / STAGEHAND_DEV_TLS_KEY at a locally trusted pair
 // (e.g. mkcert's) and the UI is served on https://localhost:5173. Needed when the browser has HSTS pinned for
@@ -14,6 +15,13 @@ const apiPort = Number(process.env["STAGEHAND_API_PORT"] ?? 4747);
 
 export default defineConfig({
     plugins: [react()],
+    // The design system resolves to its source (HMR, no pre-build); `npm run build -w @vortex/ds` produces the dist for consumers outside the app.
+    resolve: {
+        alias: [
+            { find: "@vortex/ds/styles.css", replacement: fileURLToPath(new URL("../packages/vortex-ds/src/styles.css", import.meta.url)) },
+            { find: /^@vortex\/ds$/, replacement: fileURLToPath(new URL("../packages/vortex-ds/src/index.ts", import.meta.url)) },
+        ],
+    },
     server: {
         // Bind the IPv4 loopback explicitly: with the default ("localhost") Node picks ::1 first on macOS and Vite
         // listens on IPv6 only, which Safari 26 (IPv4 first, no fallback) reports as "can't open the page".

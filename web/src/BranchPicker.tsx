@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import { api } from "./api";
-import { Input } from "./components/ui";
+import { Input } from "@vortex/ds";
 
 // Remote branches of one repository of an env, fetched once per (env, repo) and kept for the page's life.
 const cache = new Map<string, Promise<string[]>>();

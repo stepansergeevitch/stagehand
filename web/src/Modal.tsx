@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Button } from "./components/ui";
+import { Button } from "@vortex/ds";
 
 // A dialog over the page: Esc or a click outside closes it.
 export const Modal = ({ title, children, onClose, wide }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) => {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type ClaudeMdFile, type ConfigDir, type ConfigDirRules, type Rules } from "./api";
 import { CheckField, EntityForm, EntityView, Field, ReadField, useDraft, useSaver } from "./components/EntityView";
-import { Button, Chip, Input, Textarea } from "./components/ui";
+import { Button, Chip, Input, Textarea } from "@vortex/ds";
 
 // One Claude config dir's entity view: what it contributes to every agent run (skills, hooks, agents, MCP servers) and
 // the commit/branch/PR rules Stagehand enforces for environments using it.

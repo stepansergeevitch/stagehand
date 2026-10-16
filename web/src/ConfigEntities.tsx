@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type AccountModels, type Env, type ModelOperation, type ModelStage, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
 import { CheckField, EntityForm, EntityView, Field, ReadField, useDraft, useSaver } from "./components/EntityView";
-import { Button, Chip, Input, Select } from "./components/ui";
+import { Button, Chip, Input, Select } from "@vortex/ds";
 
 // The entity views of the Configuration pages that are not big enough for a file of their own: an AI account, an
 // integration, the Prompter (components/EntityView.tsx).

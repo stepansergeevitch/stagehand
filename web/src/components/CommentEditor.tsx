@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AgentInput, usePendingFiles } from "../AgentInput";
-import { Button } from "./ui";
+import { Button } from "@vortex/ds";
 
 // One editor for both things a line takes: a review comment (Save — kept as a draft until the review is sent) and a
 // question for the agent (Ask — sent right away, answered in place). Either button is offered only when allowed.

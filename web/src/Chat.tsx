@@ -4,7 +4,7 @@ import { MessageFiles } from "./FilePicker";
 import { AgentInput, usePendingFiles } from "./AgentInput";
 import { Markdown } from "./Markdown";
 import { Collapsible } from "./components/Collapsible";
-import { Button, Chip } from "./components/ui";
+import { Button, Chip } from "@vortex/ds";
 
 type Mode = "ask" | "do";
 

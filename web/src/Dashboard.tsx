@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { labelsOf, STAGE_LABEL, taskLabel, type Env, type Readiness, type Task, type TaskStatus } from "./api";
 import { LabelChips } from "./Labels";
-import { Card, Chip } from "./components/ui";
+import { Card, Chip } from "@vortex/ds";
 
 // Every task across all environments, grouped by what it is doing: waiting on the human, working, or waiting on others
 // (GitHub checks / reviewers). Finished and stopped tasks stay on the Tasks page.

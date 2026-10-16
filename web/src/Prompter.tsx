@@ -5,7 +5,7 @@ import { storage } from "./storage";
 import { prompterBus } from "./prompterBus";
 import { formatRoute, type Route } from "./routes";
 import { AgentInput, usePendingFiles } from "./AgentInput";
-import { Button, Chip, Select } from "./components/ui";
+import { Button, Chip, Select } from "@vortex/ds";
 
 // Prompter — the assistant in the bottom-right corner. Every chat is a claude session on the server; several can be
 // open at once and the strip under the header switches between them (the list is the server's, so a reload or a

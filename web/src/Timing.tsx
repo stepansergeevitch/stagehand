@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, STAGE_LABEL, type Stage, type TaskTiming, type TimingBucket, type TimingReport } from "./api";
 import { hours } from "./Analytics";
 import { storage } from "./storage";
-import { Button, Card, Chip, Tab, TabList } from "./components/ui";
+import { Button, Card, Chip, Tab, TabList } from "@vortex/ds";
 
 // Time the way Analytics shows cost: how long the agents ran per stage, side operation, task and day, and how long
 // each task sat working, waiting for the human, waiting for GitHub or rate-limited (from the task event log).

@@ -1,6 +1,6 @@
 import { anchorOf, type Message, type MessageAnchor } from "../api";
 import { Markdown } from "../Markdown";
-import { Button } from "./ui";
+import { Button } from "@vortex/ds";
 
 // A chat message with its anchor unpacked, for placement.
 export interface ThreadMessage extends MessageAnchor {

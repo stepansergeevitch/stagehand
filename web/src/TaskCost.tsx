@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, pct, STAGE_LABEL, windowPct, type Stage, type TaskUsage } from "./api";
 import { hours, money, tokens } from "./Analytics";
-import { Button, Card, Chip } from "./components/ui";
+import { Button, Card, Chip } from "@vortex/ds";
 
 // Cost tab of a task: what every claude invocation for this task consumed, in order, plus totals and a per-stage split.
 const when = (iso: string): string => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });

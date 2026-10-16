@@ -3,7 +3,7 @@ import { accountUsableWith, api, envRepos, modelLabel, type Account, type Config
 import { DiffView, sessionSource } from "./DiffView";
 import { LazyTerminal } from "./LazyTerminal";
 import type { DiffRoute } from "./routes";
-import { Button, Card, Chip, Input, Select, Tab, TabList } from "./components/ui";
+import { Button, Card, Chip, Input, Select, Tab, TabList } from "@vortex/ds";
 
 // Free-form claude sessions: pick an environment (its config dir, env vars and checkout) and an AI account, optionally
 // a fresh worktree on a branch, and get an interactive `claude` in a terminal — plus the same diff view tasks have,

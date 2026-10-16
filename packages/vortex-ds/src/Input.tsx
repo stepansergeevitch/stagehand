@@ -2,7 +2,7 @@ import { forwardRef, type InputHTMLAttributes, type SelectHTMLAttributes, type T
 
 const cls = (invalid: boolean | undefined, className: string | undefined): string | undefined => [invalid && "invalid", className].filter(Boolean).join(" ") || undefined;
 
-// Text-like controls share one look (ui.css); pass-through wrappers so every control in the app is one of these three.
+// Text-like controls share one look (styles.css); pass-through wrappers so every control in the app is one of these three.
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement> & { invalid?: boolean }>(({ invalid, className, ...rest }, ref) => (
     <input ref={ref} className={cls(invalid, className)} aria-invalid={invalid || undefined} {...rest} />
 ));

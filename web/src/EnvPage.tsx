@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { accountOrderOf, accountUsableWith, api, envRepos, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, taskDbConfigOf, type Account, type AutopilotRules, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type TaskDbConfig } from "./api";
 import { CheckField, EntityForm, EntityView, Field, Hint, ReadField, useDraft, useSaver } from "./components/EntityView";
-import { Button, Chip, Input, Select, Textarea } from "./components/ui";
+import { Button, Chip, Input, Select, Textarea } from "@vortex/ds";
 
 // An environment's entity view: one tab per area of its configuration (components/EntityView.tsx).
 

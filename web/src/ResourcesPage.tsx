@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Resource, type ResourceKind, type ResourcePolicies, type ResourceSnapshot } from "./api";
 import { hours } from "./Analytics";
-import { Button, Card, Chip, Input, Tab, TabList } from "./components/ui";
+import { Button, Card, Chip, Input, Tab, TabList } from "@vortex/ds";
 
 // Everything Stagehand has started on this host — dev servers, agent runs, terminals, browsers, worktrees — with what
 // each costs (RSS, CPU, disk), who owns it, what the policy will do with it and when. Three tabs: the Dashboard (the

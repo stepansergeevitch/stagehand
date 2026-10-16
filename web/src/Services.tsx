@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, componentsOf, type Env, type EnvComponent, type Service } from "./api";
 import { BranchPicker } from "./BranchPicker";
-import { Button, Chip } from "./components/ui";
+import { Button, Chip } from "@vortex/ds";
 
 // Which branch of the dependency env this task's dependency runs from: the shared instance, or the BE of that env's
 // task on a branch (a change that needs the dependency's own unmerged change). Applied at the next start of the app.

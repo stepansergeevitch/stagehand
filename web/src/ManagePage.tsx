@@ -4,7 +4,7 @@ import { Modal } from "./Modal";
 import { navigate, type Route } from "./routes";
 import { authLabel, PrompterPage, type IntegrationType } from "./ConfigEntities";
 import { accountBrowserReady, accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
-import { Button, Chip, Input } from "./components/ui";
+import { Button, Chip, Input } from "@vortex/ds";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
 export type ManageTab = "envs" | "dirs" | "accounts" | "integrations" | "prompter";

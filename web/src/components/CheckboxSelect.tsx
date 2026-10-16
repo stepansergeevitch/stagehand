@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { useDismiss } from "./useDismiss";
-import { Button, Input } from "./ui";
+import { Button, Input } from "@vortex/ds";
 
 export interface CheckboxOption {
     value: string;

@@ -1,0 +1,31 @@
+{
+  "name": "@vortex/ds",
+  "version": "0.1.0",
+  "description": "Vortex design system: tokens and React UI primitives.",
+  "private": true,
+  "type": "module",
+  "sideEffects": ["**/*.css"],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./styles.css": "./dist/index.css"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}

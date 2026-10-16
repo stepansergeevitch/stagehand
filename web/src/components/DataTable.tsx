@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { storage } from "../storage";
 import { useDismiss } from "./useDismiss";
-import { Button, Input } from "./ui";
+import { Button, Input } from "@vortex/ds";
 
 // Stagehand's standard list of entities. Every page that lists things uses it, so lists look and behave alike:
 //

@@ -1,3 +1,4 @@
+import "./styles.css";
 export { Button } from "./Button";
 export type { ButtonProps, ButtonVariant } from "./Button";
 export { Card } from "./Card";

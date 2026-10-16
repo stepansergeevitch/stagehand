@@ -15,7 +15,7 @@ import { TaskCost } from "./TaskCost";
 import { BaseCheckChip } from "./components/BaseCheckChip";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
 import { anchorOf, type Env, type LineComment, type PoDesignReview, type PoReview, type PrFixReplies as PrFixRepliesData, type CiAutopilot, type TaskDbInfo, type PoReviewComment, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
-import { Button, Card, Chip, Input, Select, Textarea, Tab, TabList } from "./components/ui";
+import { Button, Card, Chip, Input, Select, Textarea, Tab, TabList } from "@vortex/ds";
 
 const isResolved = (c: PrComment): boolean => c.kind === "line" && c.resolved;
 
