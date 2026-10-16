@@ -1,8 +1,30 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, componentsOf, type Env, type EnvComponent, type Service } from "./api";
+import { BranchPicker } from "./BranchPicker";
+
+// Which branch of the dependency env this task's dependency runs from: the shared instance, or the BE of that env's
+// task on a branch (a change that needs the dependency's own unmerged change). Applied at the next start of the app.
+const DependencyBranch = ({ depEnvId, value, disabled, onSave }: { taskId: string; depEnvId: string; value: string | null; disabled: boolean; onSave: (b: string | null) => void }) => {
+    const [editing, setEditing] = useState(false);
+    const [draft, setDraft] = useState("");
+    if (editing)
+        return (
+            <>
+                <BranchPicker envId={depEnvId} value={draft} onChange={setDraft} placeholder="shared instance" style={{ maxWidth: 260 }} autoFocus />
+                <button className="tiny" onClick={() => { onSave(draft.trim() || null); setEditing(false); }}>Save</button>
+                <button className="tiny" onClick={() => setEditing(false)}>×</button>
+            </>
+        );
+    return (
+        <>
+            <code className="small" title="The dependency env's branch this task's dependency runs from — a task of that env must work on it; empty = the shared instance">⎇ {value ?? "shared"}</code>
+            <button className="tiny" disabled={disabled} title="Run this task's dependency from another branch of the dependency env (the BE of its task on that branch); the task's app restarts on it at its next start" onClick={() => { setDraft(value ?? ""); setEditing(true); }}>change</button>
+        </>
+    );
+};
 
 // `busy`: a stage/agent run owns the task right now — Fix with agent needs the task's session, so it waits.
-export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, onFixStarted }: { taskId: string; env: Env | undefined; busy?: boolean; onError: (m: string) => void; onFixStarted?: () => void }) => {
+export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = false, onError, onFixStarted }: { taskId: string; env: Env | undefined; dependencyBranch?: string | null; busy?: boolean; onError: (m: string) => void; onFixStarted?: () => void }) => {
     const [rows, setRows] = useState<Service[]>([]);
     const [busy, setBusy] = useState<string | null>(null);
     const [log, setLog] = useState<{ kind: string; text: string } | null>(null);
@@ -51,10 +73,11 @@ export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, on
     const dep = rows.find((r) => r.kind === "dependency");
     if (!configured.be && !configured.fe && comps.length === 0 && !dep) return <div className="empty">This env has no BE/FE commands configured — edit the env to add them.</div>;
 
-    // Run / Stop / Log like a component, plus its URL; Stop ends it for every task of the env.
+    // Run / Stop / Log like a component, plus its URL; Stop ends it for every task of the env (the shared instance).
     const depRow = (svc: Service) => (
         <div className={`svc ${svc.state === "failed" ? "failed" : ""}`} key="dependency">
-            <span className="svc-kind" title="Shared dependency of this env — one instance for every task; the BE calls it">{svc.label ?? "dependency"}</span>
+            <span className="svc-kind" title={svc.shared === false ? "This task's dependency: the BE of the dependency env's task on the picked branch" : "Shared dependency of this env — one instance for every task; the BE calls it"}>{svc.label ?? "dependency"}</span>
+            {env?.depends_on_env_id && <DependencyBranch taskId={taskId} depEnvId={env.depends_on_env_id} value={dependencyBranch ?? null} disabled={busy !== null || taskBusy} onSave={(b) => act("branch", () => api.patchTask(taskId, { dependencyBranch: b }))} />}
             {svc.state === "stopped" ? (
                 <>
                     <span className="chip">stopped</span>
@@ -69,7 +92,7 @@ export const ServicesPanel = ({ taskId, env, busy: taskBusy = false, onError, on
                             {busy === "retry" ? "restarting…" : "Retry"}
                         </button>
                     )}
-                    <button disabled={busy !== null} title="Stops it for every task of this env" onClick={() => act("dependency", () => api.stopService(taskId, "dependency"))}>{svc.state === "failed" ? "Dismiss" : "Stop"}</button>
+                    <button disabled={busy !== null} title={svc.shared === false ? "Stops the dependency branch task's BE" : "Stops it for every task of this env"} onClick={() => act("dependency", () => api.stopService(taskId, "dependency"))}>{svc.state === "failed" ? "Dismiss" : "Stop"}</button>
                     <button disabled={busy !== null} onClick={() => act("log", () => api.serviceLog(taskId, "dependency").then((text) => setLog({ kind: "dependency", text })))}>Log</button>
                     {svc.state === "failed" && svc.error && <span className="svc-error">{svc.error}</span>}
                 </>

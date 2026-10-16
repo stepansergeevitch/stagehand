@@ -6,3 +6,6 @@ dist/
 \#*\#
 .\#*
 node_modules
+.idea/
+__pycache__/
+*.tsbuildinfo

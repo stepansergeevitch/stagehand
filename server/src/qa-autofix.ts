@@ -54,8 +54,9 @@ export const decideQaFix = (v: QaFixVerdict, fixKind: FixKind, scope: QaAutoFixS
 };
 
 export interface QaFixInput {
-    ticket: string;
-    contract: string;
+    // The ticket's acceptance criteria (its description when none are listed) and the whole design.md: what the change must do and how.
+    acceptanceCriteria: string;
+    design: string;
     pass: "before" | "after";
     fixKind: FixKind;
     question: string;
@@ -105,8 +106,8 @@ export const jevQaFixVerdict = async (cfg: Config, db: DB, ctx: Omit<UsageContex
     const r = await jevAsk(
         cfg,
         {
-            ticket: input.ticket.slice(0, 4000),
-            acceptance: input.contract.slice(0, 4000),
+            ticketAcceptanceCriteria: input.acceptanceCriteria.slice(0, 4000),
+            design: input.design.slice(0, 16000),
             pass: input.pass === "before" ? "baseline, before the change is implemented" : "after the change is implemented",
             correction: { kind: input.fixKind, question: input.question, runnerReason: input.reason.slice(0, 1500), triggeringObservation: input.observation.slice(0, 1500) },
             ...(setup ? { setupChange: setupDiff(input.before, input.after, input.fixKind as "seed" | "teardown") } : { scenarioBefore: input.before, scenarioAfter: input.after }),

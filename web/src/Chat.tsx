@@ -3,6 +3,7 @@ import { anchorOf, api, filesOf, type Message, type TaskStatus } from "./api";
 import { MessageFiles } from "./FilePicker";
 import { AgentInput, usePendingFiles } from "./AgentInput";
 import { Markdown } from "./Markdown";
+import { Collapsible } from "./components/Collapsible";
 
 type Mode = "ask" | "do";
 
@@ -52,8 +53,7 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
           : "Ask about this task… (⌘/Ctrl+Enter to send)";
 
     return (
-        <section className="card chat">
-            <h2>Chat</h2>
+        <Collapsible title="Chat" defaultOpen>
             <p className="field-hint">
                 Notes the agent leaves on its own (implementation notes, CI fixes) appear here. <b>Ask</b> a question and it answers with the full context of this task without touching code.
                 Switch to <b>Do</b> to give it instructions to carry out now — it works in the worktree under this environment's rules (commits/pushes only where allowed), then reports back here; the task returns to its current stage afterwards. Stop halts it like any run.
@@ -108,6 +108,6 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
                     {sending ? (mode === "do" ? "Starting…" : "Asking…") : mode === "do" ? "Run" : "Send"}
                 </button>
             </div>
-        </section>
+        </Collapsible>
     );
 };

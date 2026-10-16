@@ -53,6 +53,12 @@ describe("task databases", () => {
         expect(namesTemplate(`psql -U app -d "$STAGEHAND_TASK_DB"`, "app")).toBe(false);
         expect(namesTemplate(`psql -d app_test_x`, "app")).toBe(false);
         expect(namesTemplate(`open the app and click Save`, "app")).toBe(false);
+        // A file path segment of the same name is not a database.
+        expect(namesTemplate(`cd /home/me/code/app/.claude/worktrees/x/backend && poetry run python app/manage.py shell`, "app")).toBe(false);
+        expect(namesTemplate(`DATABASE_URL=postgres://u:p@db:5432/app?sslmode=disable ./run`, "app")).toBe(true);
+        // A fallback to the template writes to it whenever the variable is unset.
+        expect(namesTemplate(`psql -U app -d "\${STAGEHAND_TASK_DB:-app}" -c x`, "app")).toBe(true);
+        expect(namesTemplate(`psql -U app -d "\${STAGEHAND_TASK_DB:-app_other}" -c x`, "app")).toBe(false);
     });
 });
 

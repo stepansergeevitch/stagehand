@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type Env, type PalaceHit, type PoArtifact, type PoDetail, type PoIssue, type PoPhase, type PoTicket, type ProductOwner } from "./api";
+import { api, poEnvIds, type Env, type PalaceHit, type PoArtifact, type PoDetail, type PoIssue, type PoPhase, type PoTicket, type ProductOwner } from "./api";
 import { Markdown } from "./Markdown";
 import { Modal } from "./Modal";
 import { DataTable, type DataColumn } from "./components/DataTable";
@@ -9,6 +9,8 @@ import { navigate, type PoTab, type Route } from "./routes";
 
 type ProductRoute = Extract<Route, { page: "product" }>;
 import { CorrectionsTab, EventsTab, QuestionsTab } from "./PoJournal";
+import { Collapsible } from "./components/Collapsible";
+import { CheckboxSelect } from "./components/CheckboxSelect";
 
 // The Product section: the global product context, the Product Owners (one per project of the product), and the
 // palace search. A PO page shows its three documents as pages — context, design, tickets — beside the chat that
@@ -73,8 +75,9 @@ const CLICKUP_TASK = /^https?:\/\/app\.clickup\.com\/t\//;
 // A new PO: its environment (which fixes the task manager), the project of that task manager, and the sources it
 // starts from. The PO is created without its first turn, gets the sources, then starts — so it reads them all.
 const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClose: () => void; onCreated: (id: string) => void; onError: (m: string) => void }) => {
-    const [envId, setEnvId] = useState(envs[0]?.id ?? "");
-    const env = envs.find((e) => e.id === envId);
+    // The environments the PO works for, the first picked is its primary one; all on one task manager.
+    const [envIds, setEnvIds] = useState<string[]>(envs[0] ? [envs[0].id] : []);
+    const env = envs.find((e) => e.id === envIds[0]);
     const manager = env?.ticket_source === "clickup" ? "ClickUp" : "Linear";
     const [url, setUrl] = useState("");
     // "env" = the environment's own PO: no project; it reviews the env's tasks that have no project PO.
@@ -88,44 +91,45 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
     const create = async () => {
         if (!env) return;
         setProgress(kind === "env" ? "Creating…" : "Reading the project…");
-        let po: ProductOwner;
+        // A project PO works for every picked environment; an environment PO is one per environment, each with the sources.
+        let pos: ProductOwner[];
         try {
-            po = kind === "env" ? await api.createEnvProductOwner(env.id) : await api.createProductOwner(url.trim(), env.id, false);
+            pos = kind === "env" ? await Promise.all(envIds.map((id) => api.createEnvProductOwner([id]))) : [await api.createProductOwner(url.trim(), envIds, false)];
         } catch (e) {
             setProgress(null);
             onError(String((e as Error).message ?? e));
             return;
         }
         const failed: string[] = [];
-        for (const [i, s] of sources.entries()) {
-            setProgress(`Adding sources ${i + 1} / ${sources.length}…`);
-            try {
-                if (s.kind === "url") await api.poFetch(po.id, s.url);
-                else if (s.kind === "text") await api.poPaste(po.id, s.title, s.text, false);
-                else await api.poUpload(po.id, s.file);
-            } catch (e) {
-                failed.push(`${s.kind === "url" ? s.url : s.kind === "text" ? s.title || "pasted text" : s.file.name}: ${String((e as Error).message ?? e)}`);
+        for (const po of pos) {
+            for (const [i, s] of sources.entries()) {
+                setProgress(`Adding sources ${i + 1} / ${sources.length}…`);
+                try {
+                    if (s.kind === "url") await api.poFetch(po.id, s.url);
+                    else if (s.kind === "text") await api.poPaste(po.id, s.title, s.text, false);
+                    else await api.poUpload(po.id, s.file);
+                } catch (e) {
+                    failed.push(`${s.kind === "url" ? s.url : s.kind === "text" ? s.title || "pasted text" : s.file.name}: ${String((e as Error).message ?? e)}`);
+                }
             }
+            await api.startProductOwner(po.id).catch(() => undefined);
         }
-        await api.startProductOwner(po.id).catch(() => undefined);
         if (failed.length) onError(`Some sources were not added — add them on the Context tab:\n${failed.join("\n")}`);
-        onCreated(po.id);
+        onCreated(pos[0]!.id);
     };
     const label = (s: PendingSource) => (s.kind === "url" ? s.url : s.kind === "text" ? `${s.title || "Pasted text"} (${s.text.length} characters)` : `${s.file.name} (${Math.round(s.file.size / 1024)} KB)`);
     return (
         <Modal title="New product owner" onClose={() => !progress && onClose()} wide>
-            <label>Environment
-                <select value={envId} onChange={(e) => { setEnvId(e.target.value); setUrl(""); }}>
-                    {envs.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-                </select>
+            <label>Environments
+                <EnvsSelect envs={envs} value={envIds} switchable onChange={(ids) => { if (envs.find((e) => e.id === ids[0])?.ticket_source !== env?.ticket_source) setUrl(""); setEnvIds(ids); }} />
             </label>
             <div className="po-kind">
                 <label className="inline"><input type="radio" checked={kind === "project"} onChange={() => setKind("project")} /> <b>Project</b> — one {manager === "Linear" ? "Linear project" : "ClickUp epic"}: plans it, designs it, splits it into tickets</label>
-                <label className="inline"><input type="radio" checked={kind === "env"} onChange={() => setKind("env")} /> <b>Whole environment</b> — no project: briefs and reviews every task of the environment that has no project PO, from the product context and the environment's memory</label>
+                <label className="inline"><input type="radio" checked={kind === "env"} onChange={() => setKind("env")} /> <b>Whole environment</b> — no project: briefs and reviews every task of the environment that has no project PO, from the product context and the environment's memory (one per picked environment)</label>
             </div>
             {kind === "project" && (
                 <>
-                    <div className="field-hint">Task manager: <b>{manager}</b> — the Product Owner reads its project and creates tickets only there. Only this environment's tasks get it.</div>
+                    <div className="field-hint">Task manager: <b>{manager}</b> — the Product Owner reads its project and creates tickets only there. Only the tasks of the picked environments get it.</div>
                     <label>{manager === "Linear" ? "Linear project" : "ClickUp epic"}
                         <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={manager === "Linear" ? "https://linear.app/<workspace>/project/…" : "https://app.clickup.com/t/…"} />
                     </label>
@@ -162,6 +166,26 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
     );
 };
 
+// The environments a PO works for: any number on the task manager of the first picked one (the primary). With
+// `switchable` (a PO not created yet) an environment on another task manager replaces the selection instead of being
+// disabled — otherwise the first environment's task manager would lock the others out for good.
+const EnvsSelect = ({ envs, value, onChange, disabled, switchable }: { envs: Env[]; value: string[]; onChange: (ids: string[]) => void; disabled?: boolean; switchable?: boolean }) => {
+    const source = envs.find((e) => e.id === value[0])?.ticket_source;
+    const sourceOf = (id: string) => envs.find((e) => e.id === id)?.ticket_source;
+    return (
+        <CheckboxSelect
+            options={envs.map((e) => ({ value: e.id, label: e.name, disabled: !switchable && source && e.ticket_source !== source ? `uses ${e.ticket_source === "linear" ? "Linear" : "ClickUp"}, not ${source === "linear" ? "Linear" : "ClickUp"}` : undefined }))}
+            value={value}
+            onChange={(ids) => {
+                const added = ids.find((id) => !value.includes(id));
+                onChange(added && sourceOf(added) !== source ? [added] : ids);
+            }}
+            min={1}
+            {...(disabled ? { disabled } : {})}
+        />
+    );
+};
+
 const EnvPicker = ({ envs, value, onChange }: { envs: Env[]; value: string; onChange: (id: string) => void }) => (
     <label className="inline env-picker">Environment
         <select value={value} onChange={(e) => onChange(e.target.value)}>{envs.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
@@ -192,7 +216,7 @@ const ProductHome = ({ route, onOpen, onError }: { route: ProductRoute; onOpen: 
     const typeOf = (po: ProductOwner): string => (po.scope_kind === "env" ? "Whole environment" : po.source === "linear" ? "Linear project" : "ClickUp epic");
     const columns: DataColumn<ProductOwner>[] = [
         { key: "name", label: "Name", kind: "label", value: (po) => po.title, filter: false },
-        { key: "env", label: "Environment", value: (po) => envName(po.env_id), filter: "auto" },
+        { key: "env", label: "Environments", value: (po) => poEnvIds(po).map(envName).join(", "), filter: "auto" },
         { key: "type", label: "Type", value: typeOf, filter: "auto" },
         {
             key: "status",
@@ -241,13 +265,15 @@ const ProductHome = ({ route, onOpen, onError }: { route: ProductRoute; onOpen: 
                     empty={<>No Product Owner yet. Use <b>Create new product owner</b> to start one.</>}
                 />
             ))}
-            {tab === "context" && <section className="card">
-                <div className="po-head">
+            {tab === "context" && <details className="card">
+                <summary>
                     <h2>Product context <span className="field-hint">— this environment's product; its Product Owners read it</span></h2>
-                    <EnvPicker envs={envs} value={envId} onChange={setEnvId} />
+                    <span style={{ marginLeft: "auto" }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}><EnvPicker envs={envs} value={envId} onChange={setEnvId} /></span>
+                </summary>
+                <div className="card-body">
+                    {ctx === null ? <div className="empty">loading…</div> : <EditableMarkdown key={envId} text={ctx} empty="Empty. Describe the product: what it is, who uses it, its main areas, its rules." onSave={async (t) => { await api.setProductContext(envId, t); setCtx(t); }} />}
                 </div>
-                {ctx === null ? <div className="empty">loading…</div> : <EditableMarkdown key={envId} text={ctx} empty="Empty. Describe the product: what it is, who uses it, its main areas, its rules." onSave={async (t) => { await api.setProductContext(envId, t); setCtx(t); }} />}
-            </section>}
+            </details>}
             {tab === "memory" && <section className="card">
                 <div className="po-head">
                     <h2>Memory <span className="field-hint">— this environment's product and its Product Owners</span></h2>
@@ -322,10 +348,9 @@ const ContextTab = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) 
                     </div>
                 </div>
             )}
-            <section className="card">
-                <h2>Project context <span className="field-hint">— the PO keeps it current; filed in its palace wing after every turn</span></h2>
+            <Collapsible title="Project context" hint="— the PO keeps it current; filed in its palace wing after every turn">
                 <EditableMarkdown text={d.context} empty="Empty — the Product Owner writes it in the first turn." onSave={(t) => api.poSetContext(d.po.id, t).then(reload)} />
-            </section>
+            </Collapsible>
             <section className="card">
                 <h2>Sources <span className="chip">{d.artifacts.length}</span></h2>
                 <div className="po-row">
@@ -487,8 +512,13 @@ const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail;
     // The opened ticket and its tab are routed (#/product/<po>/tickets/<key>/<tab>).
     const setSel = (key: string | null, tab?: string): void => navigate({ page: "product", po: d.po.id, tab: "tickets", ...(key ? { ticket: key } : {}), ...(key && tab ? { ticketTab: tab } : {}) });
     const [busy, setBusy] = useState(false);
-    const [envName, setEnvName] = useState<string | null>(null);
-    useEffect(() => { void api.envs().then((all) => setEnvName(all.find((e) => e.id === d.po.env_id)?.name ?? null)).catch(() => undefined); }, [d.po.env_id]);
+    // Tasks are created in one of the PO's environments: its primary one unless another is picked.
+    const [allEnvs, setAllEnvs] = useState<Env[]>([]);
+    useEffect(() => { void api.envs().then(setAllEnvs).catch(() => undefined); }, []);
+    const poEnvs = poEnvIds(d.po);
+    const [target, setTarget] = useState(d.po.env_id);
+    const targetEnv = poEnvs.includes(target) ? target : d.po.env_id;
+    const envName = allEnvs.find((e) => e.id === targetEnv)?.name ?? null;
     const tracker = d.po.source === "linear" ? "Linear" : "ClickUp";
     const byKey = useMemo(() => new Map(tickets.map((t) => [t.key, t])), [tickets]);
     const link = (k: string) => d.links.find((l) => l.key === k);
@@ -500,7 +530,12 @@ const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail;
         try { await fn(); reload(); } catch (e) { onError(String((e as Error).message ?? e)); } finally { setBusy(false); }
     };
     const createIssues = (keys?: string[]) => act(() => api.poApproveTickets(d.po.id, keys));
-    const createTasks = (ids: string[]) => act(() => api.createTasks({ envId: d.po.env_id ?? "", tickets: ids, mode: "each", productOwnerId: d.po.id }));
+    const createTasks = (ids: string[]) => act(() => api.createTasks({ envId: targetEnv, tickets: ids, mode: "each", productOwnerId: d.po.id }));
+    const targetPicker = poEnvs.length > 1 && (
+        <select value={targetEnv} title="The environment new tasks are created in" onChange={(e) => setTarget(e.target.value)}>
+            {poEnvs.map((id) => <option key={id} value={id}>{allEnvs.find((e) => e.id === id)?.name ?? id}</option>)}
+        </select>
+    );
     if (!d.tickets) {
         return (
             <div className="empty">
@@ -527,7 +562,7 @@ const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail;
                 actions={
                     <>
                         {!ident && <button className="primary" disabled={busy || d.running} onClick={() => void createIssues([current.key])}>Create in {tracker}</button>}
-                        {ident && !task && <button className="primary" disabled={busy || !d.po.env_id} title={d.po.env_id ? undefined : "this Product Owner has no environment"} onClick={() => void createTasks([ident])}>Create task{envName ? ` in ${envName}` : ""}</button>}
+                        {ident && !task && <>{targetPicker}<button className="primary" disabled={busy || !d.po.env_id} title={d.po.env_id ? undefined : "this Product Owner has no environment"} onClick={() => void createTasks([ident])}>Create task{envName ? ` in ${envName}` : ""}</button></>}
                         {task && <a className="button" href={`#/tasks/${encodeURIComponent(task.id)}`}>Open task · {task.stage.replace(/_/g, " ")}</a>}
                         {url && <a className="button" href={url} target="_blank" rel="noreferrer">{ident} ↗</a>}
                     </>
@@ -587,6 +622,7 @@ const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail;
                     return (
                         <>
                             {toCreate.length > 0 && <button className="tiny" disabled={busy || d.running} onClick={() => void createIssues(toCreate.map((t) => t.key)).then(clear)}>Create {toCreate.length} in {tracker}</button>}
+                            {toStart.length > 0 && targetPicker}
                             {toStart.length > 0 && <button className="tiny primary" disabled={busy || !d.po.env_id} onClick={() => void createTasks(toStart.map((t) => identOf(t)!)).then(clear)}>Create {toStart.length} task{toStart.length === 1 ? "" : "s"}{envName ? ` in ${envName}` : ""}</button>}
                         </>
                     );
@@ -640,6 +676,18 @@ const PoChat = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => v
     );
 };
 
+// The environments the PO works for, changed in place; an environment's own PO stays with its environment.
+const PoEnvs = ({ d, onSaved, onError }: { d: PoDetail; onSaved: () => void; onError: (m: string) => void }) => {
+    const [envs, setEnvs] = useState<Env[]>([]);
+    useEffect(() => { void api.envs().then(setEnvs).catch(() => undefined); }, []);
+    const env = d.po.scope_kind === "env";
+    return (
+        <span className="inline" title={env ? "An environment's own Product Owner belongs to that one environment" : "The environments this Product Owner works for; the first is its primary one"}>
+            <EnvsSelect envs={envs} value={poEnvIds(d.po)} disabled={env} onChange={(ids) => void api.setProductOwnerEnvs(d.po.id, ids).then(onSaved).catch((e: Error) => onError(e.message))} />
+        </span>
+    );
+};
+
 const PoPage = ({ id, tab: tabArg, ticket, ticketTab, onTab, onBack, onError }: { id: string; tab: PoTab | undefined; ticket: string | undefined; ticketTab: string | undefined; onTab: (t: PoTab) => void; onBack: () => void; onError: (m: string) => void }) => {
     const [d, setD] = useState<PoDetail | null>(null);
     const reload = useCallback(() => void api.productOwner(id).then(setD).catch((e: Error) => onError(e.message)), [id, onError]);
@@ -660,6 +708,7 @@ const PoPage = ({ id, tab: tabArg, ticket, ticketTab, onTab, onBack, onError }: 
                 <button onClick={onBack}>← Product</button>
                 <h1>{d.po.title}</h1>
                 {d.po.scope_url && <a href={d.po.scope_url} target="_blank" rel="noreferrer">{d.po.source === "linear" ? "Linear project" : "ClickUp epic"} ↗</a>}
+                <PoEnvs d={d} onSaved={reload} onError={onError} />
                 <span className="po-phases">{PHASES.map((p, i) => <span key={p} className={`chip ${i < idx ? "ok" : i === idx ? "accent" : ""}`}>{PHASE_LABEL[p]}</span>)}</span>
                 {d.po.status_line && <span className={`field-hint ${d.po.status === "failed" ? "bad" : ""}`}>{d.po.status_line}</span>}
                 <span className="spacer" />
@@ -687,7 +736,7 @@ const PoPage = ({ id, tab: tabArg, ticket, ticketTab, onTab, onBack, onError }: 
                     {tab === "events" && <EventsTab d={d} onError={onError} reload={reload} />}
                     {tab === "corrections" && <CorrectionsTab d={d} onError={onError} reload={reload} />}
                 </div>
-                <PoChat d={d} onError={onError} reload={reload} />
+                <Collapsible title="Chat with the Product Owner" defaultOpen><PoChat d={d} onError={onError} reload={reload} /></Collapsible>
             </div>
         </div>
     );

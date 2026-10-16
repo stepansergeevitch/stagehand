@@ -1,15 +1,18 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LabelEditor } from "./Labels";
 import { BranchPicker } from "./BranchPicker";
-import { api, baseLabel, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseBaseBranch, parseChecks, pendingQuestions, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, stageOf, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaChange, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
+import { api, baseLabel, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseBaseBranch, parseChecks, pendingQuestions, poEnvIds, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, stageOf, taskLabel, type Account, type MergeMethod, type PrCheck, type PrDraftEntry, type PrState, type QaChange, type QaPass, type QuestionRound, type Stage, type TaskDetail, type Ticket, type TicketAttachment } from "./api";
 import { storage } from "./storage";
 import { LazyTerminal } from "./LazyTerminal";
 import type { TaskTab, TaskView } from "./routes";
 import { Chat } from "./Chat";
+import { AnnotatedMarkdown } from "./components/AnnotatedMarkdown";
+import { threadMessages } from "./components/LineThread";
 import { AgentInput, FileChips, usePendingFiles } from "./AgentInput";
 import { Markdown } from "./Markdown";
 import { ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
+import { BaseCheckChip } from "./components/BaseCheckChip";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
 import { anchorOf, type Env, type LineComment, type PoDesignReview, type PoReview, type PrFixReplies as PrFixRepliesData, type CiAutopilot, type TaskDbInfo, type PoReviewComment, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
 
@@ -619,6 +622,48 @@ const PrRepoRow = ({ detail, repo, repos, onAction, onOpenInTab }: { detail: Tas
 };
 
 // PR status for the header widget: one row per repository, from the stored PR rows (or the draft's repositories).
+// Whether each repository's branch still goes onto its latest base: merged in memory, then the env's base check on the
+// result (server base-check.ts), every 10 minutes and on "check now". The detail (conflicted files, the check's output)
+// opens under the line.
+const BaseChecks = ({ detail, onAction }: { detail: TaskDetail; onAction: Props["onAction"] }) => {
+    const { task } = detail;
+    const rows = detail.baseChecks ?? [];
+    const [checking, setChecking] = useState(false);
+    if (!task.branch || !task.worktree_path) return null;
+    const repos = rows.map((r) => r.repo);
+    const now = () => {
+        setChecking(true);
+        void onAction(() => api.baseCheck(task.id)).finally(() => setChecking(false));
+    };
+    return (
+        <div className="base-checks">
+            {rows.map((r) => {
+                const [head, ...rest] = r.detail.split("\n");
+                return (
+                    <div key={r.repo} className="branch-line field-hint">
+                        <RepoChip repo={r.repo} repos={repos} />
+                        <BaseCheckChip state={r.state} detail={r.detail} />
+                        {rest.length > 0 ? (
+                            <details>
+                                <summary className="small">{head}</summary>
+                                <pre className="small">{rest.join("\n")}</pre>
+                            </details>
+                        ) : (
+                            <span className="small">{head}</span>
+                        )}
+                        <span className="small" title={`branch ${r.head_sha.slice(0, 10)} · ${r.base} ${r.base_sha.slice(0, 10)}`}>{new Date(r.checked_at).toLocaleTimeString()}</span>
+                    </div>
+                );
+            })}
+            {task.status !== "running" && (
+                <button className="tiny" disabled={checking} title="Merge each repository's branch with its latest base now and run the env's base check on the result" onClick={now}>
+                    {checking ? "checking…" : rows.length ? "↻ check base now" : "check against latest base"}
+                </button>
+            )}
+        </div>
+    );
+};
+
 const PrWidget = ({ detail, onAction, onOpenInTab }: { detail: TaskDetail; onAction: Props["onAction"]; onOpenInTab: (repo: string) => void }) => {
     const { task, pr } = detail;
     const repos = prRepos(detail);
@@ -651,6 +696,7 @@ const PrWidget = ({ detail, onAction, onOpenInTab }: { detail: TaskDetail; onAct
                 </div>
             )}
             {repos.map((repo) => <PrRepoRow key={repo} detail={detail} repo={repo} repos={repos} onAction={onAction} onOpenInTab={onOpenInTab} />)}
+            <BaseChecks detail={detail} onAction={onAction} />
             {repos.length > 0 && (
                 <div className="field-hint">
                     {lastPoll ? `last poll ${new Date(lastPoll).toLocaleTimeString()} · ` : ""}polls every 2 min
@@ -678,6 +724,15 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const [comments, changeComment, clearComments] = useDraftComments(task.id);
     const pending = Object.entries(comments);
     const canComment = task.status === "waiting_user" && task.stage === "user_review";
+    // Design Proposal: comments on (and questions about) passages of design.md, plus the Product Owner's picked review comments, go
+    // into ONE Request changes round. The comments are drafts of the same store the diff uses, told apart by their path.
+    const canCommentDesign = task.status === "waiting_user" && task.stage === "design_proposal";
+    const designPending = pending.filter(([, c]) => c.path === DESIGN_DOC);
+    const [poPicked, setPoPicked] = useState(0);
+    useEffect(() => {
+        if (task.stage !== "design_proposal" || !task.product_owner_id) return setPoPicked(0);
+        void api.poReview(task.id).then((r) => setPoPicked(pickedOf(r))).catch(() => undefined);
+    }, [task.id, task.stage, task.product_owner_id, task.updated_at]);
     // Product Owners, for the header's picker and the Product owner review tab.
     const [owners, setOwners] = useState<ProductOwner[]>([]);
     useEffect(() => { void api.productOwners().then(setOwners).catch(() => setOwners([])); }, [task.id]);
@@ -780,7 +835,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const setPrFocusRepo = (repo: string) => onView({ tab: "pr", repo });
     const openPrTab = (repo?: string) => onView({ tab: "pr", ...(repo ? { repo } : {}) });
 
-    const reviewBox = waiting && (
+    const reviewBox = waiting && task.stage !== "implementation" && (
         <div className="review-box">
             <b>{STAGE_LABEL[task.stage]} — your call.</b>
             {task.stage === "user_review" && (
@@ -796,6 +851,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 <label className="inline" style={{ display: "block", margin: "6px 0" }}>
                     <input type="checkbox" checked={skipQa} onChange={(e) => setSkipQa(e.target.checked)} /> Skip Manual QA this pass — come straight back here after the agent's changes (you QA by hand)
                 </label>
+            )}
+            {canCommentDesign && (
+                <div className="field-hint" style={{ margin: "6px 0" }}>
+                    One round for everything: {designPending.length} comment{designPending.length === 1 ? "" : "s"} on the proposal (select text in <b>Proposal</b>), {poPicked} picked Product owner comment{poPicked === 1 ? "" : "s"} (<b>Product owner review</b> tab), and your general comment below.
+                </div>
             )}
             <AgentInput placeholder={canComment ? "General comments (optional if you left line comments in Code changes)" : "Notes for Claude (required for 'Request changes')"} value={notes} onChange={setNotes} pending={attach} />
             {canComment && pending.length > 0 && (
@@ -821,7 +881,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     </button>
                 )}
                 <button
-                    disabled={!notes.trim() && attach.files.length === 0 && !(canComment && pending.length > 0)}
+                    disabled={!notes.trim() && attach.files.length === 0 && !(canComment && pending.length > 0) && !(canCommentDesign && (designPending.length > 0 || poPicked > 0))}
                     onClick={() =>
                         onAction(async () => {
                             const files = await api.uploadFiles(task.id, attach.files);
@@ -830,14 +890,16 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                 ...(notes.trim() ? { notes } : {}),
                                 ...(files.length ? { files } : {}),
                                 ...(task.stage === "user_review" ? { routeTo, comments: pending.map(([, c]) => c), ...(skipQa ? { skipQa: true } : {}) } : {}),
+                                ...(task.stage === "design_proposal" ? { comments: designPending.map(([, c]) => c), ...(poPicked > 0 ? { includePoReview: true } : {}) } : {}),
                             });
                             clearComments();
+                            setPoPicked(0);
                             setNotes("");
                             attach.clear();
                         })
                     }
                 >
-                    Request changes{canComment && pending.length > 0 ? ` (${pending.length})` : ""}
+                    Request changes{canComment && pending.length > 0 ? ` (${pending.length})` : canCommentDesign && designPending.length + poPicked > 0 ? ` (${designPending.length + poPicked})` : ""}
                 </button>
                 {task.stage === "user_review" && <button onClick={() => setTab("code")}>Open Code changes to comment on lines</button>}
             </div>
@@ -990,7 +1052,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         product owner{" "}
                         <select value={task.product_owner_id ?? ""} onChange={(e) => onAction(() => api.setTaskProductOwner(task.id, e.target.value || null))}>
                             <option value="">none</option>
-                            {owners.filter((o) => o.env_id === task.env_id).map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+                            {owners.filter((o) => poEnvIds(o).includes(task.env_id)).map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
                         </select>
                     </label>
                 )}
@@ -1102,7 +1164,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {task.worktree_path ? (
                     <section className="card widget">
                         <h2>App</h2>
-                        <ServicesPanel taskId={task.id} env={env} busy={task.status === "running"} onError={onError} onFixStarted={() => void onAction(async () => undefined)} />
+                        <ServicesPanel taskId={task.id} env={env} dependencyBranch={task.dependency_branch ?? null} busy={task.status === "running"} onError={onError} onFixStarted={() => void onAction(async () => undefined)} />
                     </section>
                 ) : (
                     <section className="card widget"><h2>App</h2><div className="empty">no worktree yet</div></section>
@@ -1238,7 +1300,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 design ? (
                     <Card title="Design proposal" badge={<><span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>{(design.affectedRepos ?? []).map((r) => <span key={r} className="chip">{r}</span>)}</>}>
                         {task.stage === "design_proposal" && reviewBox}
-                        <DesignTabs task={task} owner={owners.find((o) => o.id === task.product_owner_id) ?? null} design={design} md={designMd} before={qaBefore} section={view.tab === "design" ? view.section : undefined} onSection={(s) => onView({ tab: "design", section: s })} onAction={onAction} onError={onError} />
+                        <DesignTabs annot={{ comments, threads: threadMessages(detail.messages ?? []), canComment: canCommentDesign, canAsk: task.status !== "running", onChange: changeComment, onAsk: (anchor, text, files) => onAction(async () => { await api.sendMessage(task.id, text, anchor, await api.uploadFiles(task.id, files)); }) }} onPicked={setPoPicked} task={task} owner={owners.find((o) => o.id === task.product_owner_id) ?? null} design={design} md={designMd} before={qaBefore} section={view.tab === "design" ? view.section : undefined} onSection={(s) => onView({ tab: "design", section: s })} onAction={onAction} onError={onError} />
                     </Card>
                 ) : <div className="empty">No design proposal yet.</div>
             )}
@@ -1441,7 +1503,7 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
                     <div className="kv"><b>Title</b><span>{entry.title}</span><b>Base</b><code>{pr?.base}</code></div>
                     {entry.stackedOn && (
                         <div className="review-box" style={{ marginTop: 6 }}>
-                            <b>Stacked PR.</b> Base <code>{pr?.base}</code> is open as <a href={entry.stackedOn.url} target="_blank" rel="noreferrer">#{entry.stackedOn.number} {entry.stackedOn.title} ↗</a> — that one merges first; GitHub retargets this PR to the trunk afterwards and the task follows. The body will open with a "Stacked on #{entry.stackedOn.number}" line.
+                            <b>Stacked PR.</b> Base <code>{pr?.base}</code> is open as <a href={entry.stackedOn.url} target="_blank" rel="noreferrer">#{entry.stackedOn.number} {entry.stackedOn.title} ↗</a> — that one merges first; GitHub retargets this PR to the trunk afterwards and the task follows.
                         </div>
                     )}
                     {!entry.stackedOn && entry.stackNote && (
@@ -2112,10 +2174,12 @@ const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, 
     );
 };
 
-const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["task"]; owner: ProductOwner | null; onAction: Props["onAction"]; onError: (m: string) => void }) => {
+const PoReviewPanel = ({ task, owner, onPicked, onAction, onError }: { task: TaskDetail["task"]; owner: ProductOwner | null; onPicked: (n: number) => void; onAction: Props["onAction"]; onError: (m: string) => void }) => {
     const [r, setR] = useState<PoDesignReview | null>(null);
     const load = useCallback(() => void api.poReview(task.id).then(setR).catch((e: Error) => onError(e.message)), [task.id, onError]);
     useEffect(load, [load, task.updated_at]);
+    // Before the early returns: a hook after them runs on some renders only ("Rendered more hooks than during the previous render").
+    useEffect(() => { if (r) onPicked(pickedOf(r)); }, [r, onPicked]);
     if (!owner) return <div className="empty">No Product Owner for this task. Pick one in the header (<b>product owner</b>) to get a product review of the proposal.</div>;
     if (!r) return <div className="empty">loading…</div>;
     const canSend = task.stage === "design_proposal" && task.status === "waiting_user";
@@ -2162,12 +2226,11 @@ const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["t
                             onAsk={(text) => call(() => api.askPoReviewComment(task.id, c.id, text))}
                         />
                     ))}
-                    {!rev.sentAt && <div className="actions">
-                        <button className="primary" disabled={!canSend || r.running || picked.length === 0} title={canSend ? "Another design round with the picked comments as the notes" : "The proposal must be waiting for your review"} onClick={() => void onAction(async () => { await api.sendPoReview(task.id); })}>
-                            Send {picked.length} comment{picked.length === 1 ? "" : "s"} to agent
-                        </button>
-                        <span className="field-hint">{rev.comments.length - picked.length} skipped this round</span>
-                    </div>}
+                    {!rev.sentAt && (
+                        <div className="field-hint">
+                            {picked.length} picked, {rev.comments.length - picked.length} skipped — {canSend ? "the picked comments go to the agent with Request changes above, together with your own comments." : "the proposal must be waiting for your review to send them."}
+                        </div>
+                    )}
                 </>
             )}
         </div>
@@ -2175,7 +2238,11 @@ const PoReviewPanel = ({ task, owner, onAction, onError }: { task: TaskDetail["t
 };
 
 // The design tab: the proposal as one document, the QA tests with their baseline, and the Product owner review.
-const DesignTabs = ({ task, owner, design, md, before, section, onSection, onAction, onError }: { task: TaskDetail["task"]; owner: ProductOwner | null; design: NonNullable<TaskDetail["design"]>; md: string | null; before: QaPass | null; section?: string; onSection: (s: string) => void; onAction: Props["onAction"]; onError: (m: string) => void }) => {
+const DESIGN_DOC = "design.md";
+// Unsent, picked, not withdrawn comments of the Product Owner's review: what Request changes takes along.
+const pickedOf = (r: PoDesignReview): number => (r.review && !r.review.sentAt ? r.review.comments.filter((c) => c.include && !c.withdrawn).length : 0);
+
+const DesignTabs = ({ annot, onPicked, task, owner, design, md, before, section, onSection, onAction, onError }: { annot: { comments: Record<string, LineComment>; threads: ReturnType<typeof threadMessages>; canComment: boolean; canAsk: boolean; onChange: (key: string, c: LineComment | null) => void; onAsk: (anchor: MessageAnchor, text: string, files: File[]) => Promise<void> }; onPicked: (n: number) => void; task: TaskDetail["task"]; owner: ProductOwner | null; design: NonNullable<TaskDetail["design"]>; md: string | null; before: QaPass | null; section?: string; onSection: (s: string) => void; onAction: Props["onAction"]; onError: (m: string) => void }) => {
     const active = section === "qa" ? "qa" : section === "po" ? "po" : "proposal";
     const body = useMemo(() => (md ?? "").replace(/^#\s[^\n]*\n/, ""), [md]);
     const ran = design.qa.filter((s) => before?.scenarios.some((x) => x.id === s.id)).length;
@@ -2187,7 +2254,7 @@ const DesignTabs = ({ task, owner, design, md, before, section, onSection, onAct
                 <button className={active === "po" ? "active" : ""} onClick={() => onSection("po")}>Product owner review{owner ? "" : " · none"}</button>
             </div>
             <div className="design-section">
-                {active === "proposal" ? (md ? <Markdown source={body} /> : <div className="empty">design.md is missing</div>) : active === "qa" ? <QaTests taskId={task.id} design={design} before={before} /> : <PoReviewPanel task={task} owner={owner} onAction={onAction} onError={onError} />}
+                {active === "proposal" ? (md ? <AnnotatedMarkdown source={body} path={DESIGN_DOC} comments={annot.comments} threads={annot.threads} canComment={annot.canComment} canAsk={annot.canAsk} onChange={annot.onChange} onAsk={annot.onAsk} /> : <div className="empty">design.md is missing</div>) : active === "qa" ? <QaTests taskId={task.id} design={design} before={before} /> : <PoReviewPanel task={task} owner={owner} onPicked={onPicked} onAction={onAction} onError={onError} />}
             </div>
         </>
     );

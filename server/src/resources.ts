@@ -106,7 +106,8 @@ export interface ResourcePolicies {
 export interface ResourceHooks {
     clones(): Array<{ key: string; taskId: string; slot: string; dir: string; pid: number | null; cdpPort: number }>;
     stopService(taskId: string, kind: string): Promise<void>;
-    stopDependency(env: EnvRow): Promise<void>;
+    // Stops the shared instance of `dep` — the env other envs depend on.
+    stopDependency(dep: EnvRow): Promise<void>;
     stopBrowser(stateFile: string): Promise<void>;
     releaseClone(key: string): Promise<void>;
     notice(taskId: string, text: string): void;
@@ -503,6 +504,11 @@ export class Resources {
             case "service": {
                 if (!task) return stopAfter("its task no longer exists", Date.now(), 0);
                 if (BUSY.has(task.status)) return keep(BROWSER_STAGES.has(task.stage) ? "task runs a browser stage" : "task is running");
+                // The BE another env's task runs as its dependency (tasks.dependency_branch = this task's branch).
+                if (r.label.startsWith("BE") && task.branch) {
+                    const users = [...tasks.values()].filter((x) => x.dependency_branch === task.branch && envs.get(x.env_id)?.depends_on_env_id === task.env_id);
+                    if (users.some((x) => BUSY.has(x.status))) return keep(`the dependency of ${users.filter((x) => BUSY.has(x.status)).map((x) => x.ticket_id).join(", ")}, which is running`);
+                }
                 // Counted from the last use (task update, start, or the pane's last output), not only from the start.
                 const lastUse = r.idleMs === null ? lastTouch : Math.max(lastTouch, Date.now() - r.idleMs);
                 if (["done", "stopped", "failed"].includes(task.status) || AFTER_QA_STAGES.has(task.stage)) return stopAfter(`task is ${task.status === "done" ? "done" : `${task.status} at ${task.stage.replace(/_/g, " ")}`} — no QA left`, lastUse, p.doneServiceMinutes * MIN);
@@ -526,7 +532,9 @@ export class Resources {
             case "login":
                 return stopAfter(`login helper older than ${p.loginMinutes} min`, Date.now() - r.ageMs, p.loginMinutes * MIN);
             case "browser": {
-                if (task && BUSY.has(task.status) && r.owner.status && !r.owner.status.startsWith("no run")) return keep("its QA run is in progress");
+                // A live run of the task decides, not the task's status: a status gone stale mid-run must not take the
+                // browser from under the run (2026-10-13: stopped 1.5 min before its QA run finished).
+                if (task && r.owner.status && !r.owner.status.startsWith("no run")) return keep("its QA run is in progress");
                 return stopAfter(r.procs ? "no run drives this daemon" : "state file without a daemon", r.startedAt ? Date.parse(r.startedAt) : Date.now() - r.ageMs, 2 * MIN);
             }
             case "clone":

@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { baseRefFor, changedFiles, commitLog, createWorktree } from "./git.js";
+import { baseRefFor, changedFiles, commitLog, createWorktree, forkPointFor } from "./git.js";
 
 // Plain, unsigned commits regardless of the developer's global git config (commit.gpgsign would need a key here).
 const sh = (cwd: string, args: string[]): string => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
@@ -64,5 +64,36 @@ describe("baseRefFor (a base that is another task's unpushed branch)", () => {
         expect(log).toMatch(/stacked work/);
         expect(log).not.toMatch(/feat-a work/);
         expect(await changedFiles(wt.path, "feat-a")).toEqual(["c.txt"]);
+    });
+});
+
+describe("forkPointFor (a stacked base rewritten under the task)", () => {
+    // feat-a is pushed, a task stacks on it, then feat-a is rewritten (amended) and force-pushed.
+    const rewritten = async (): Promise<{ wt: string }> => {
+        const { repo } = setup();
+        sh(repo, ["push", "-q", "origin", "feat-a"]);
+        sh(repo, ["fetch", "-q", "origin"]);
+        const wt = (await createWorktree({ path: repo, base_branch: "feat-a", repos: null }, "task-5")).path;
+        writeFileSync(join(wt, "c.txt"), "c\n");
+        sh(wt, ["add", "c.txt"]);
+        sh(wt, ["commit", "-q", "-m", "stacked work"]);
+        sh(repo, ["checkout", "-q", "feat-a"]);
+        sh(repo, ["commit", "-q", "--amend", "-m", "feat-a work, rewritten"]);
+        sh(repo, ["push", "-q", "--force", "origin", "feat-a"]);
+        sh(repo, ["checkout", "-q", "dev"]);
+        sh(repo, ["fetch", "-q", "origin"]);
+        return { wt };
+    };
+    it("lists only the task's own commits after the base was rewritten", async () => {
+        const { wt } = await rewritten();
+        const log = await commitLog(wt, "feat-a");
+        expect(log).toMatch(/stacked work/);
+        expect(log).not.toMatch(/feat-a work/);
+        expect(await changedFiles(wt, "feat-a")).toEqual(["c.txt"]);
+    });
+    it("falls back to the newest ancestor when no pin exists", async () => {
+        const { wt } = await rewritten();
+        sh(wt, ["for-each-ref", "--format=%(refname)", "refs/stagehand/"]).split("\n").filter(Boolean).forEach((r) => sh(wt, ["update-ref", "-d", r]));
+        expect(sh(wt, ["rev-list", "--count", `${await forkPointFor(wt, "feat-a")}..HEAD`])).toBe("1");
     });
 });

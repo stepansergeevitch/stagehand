@@ -155,6 +155,8 @@ export interface EnvRow {
     qa_script: string | null;
     // Free text for agents: how to create test data in this env (local DB connection, API auth, seed scripts, tables).
     qa_seed_hints: string | null;
+    // Free text for agents: how QA keeps third-party services (email, payments, SMS, webhooks) from being reached for real: env vars, stub servers, sandbox keys, where captured calls are read.
+    qa_mock_hints: string | null;
     be_command: string | null;
     fe_command: string | null;
     fe_url_template: string | null;
@@ -205,6 +207,8 @@ export interface EnvRow {
     // Runs from the worktree after every implementation / PR-fix run; non-zero = the run goes back to the agent with the
     // output (e.g. Django `check --database default` + `makemigrations --check`, which tests and a dev server never run).
     check_command: string | null;
+    // The base check per repository (base-check.ts): JSON {repoDir: command}, "" for a single repo.
+    base_check?: string | null;
     // JSON array of EnvComponent: optional per-task services next to the BE/FE (a queue worker, a scheduler), started
     // on demand by the human or the agents, or automatically (autoStart / a QA scenario's `services`).
     components: string | null;
@@ -365,6 +369,9 @@ export interface TaskRow {
     // The branch this task's work is based on and its PR targets; null = the env's base_branch. Another task's branch
     // for a stacked PR; the PR poller rewrites it when GitHub retargets the PR after that base is merged.
     base_branch: string | null;
+    // The branch of the env's dependency (envs.depends_on_env_id) this task's dependency runs from: the BE of that
+    // env's task on the branch (its worktree, setup and database) instead of the shared instance; null = shared.
+    dependency_branch?: string | null;
     // One-shot: the human asked (from User Review's "Request changes" or "Return to a stage…") to skip the browser QA
     // stages on the way back to User Review this pass; advance() consumes it there.
     skip_qa: number;
@@ -715,6 +722,19 @@ CREATE TABLE IF NOT EXISTS questions (
     answered_at TEXT
 );
 CREATE INDEX IF NOT EXISTS questions_task ON questions(task_id, created_at);
+-- The latest base check per task and repository (base-check.ts): does the branch still go onto its latest base.
+CREATE TABLE IF NOT EXISTS base_checks (
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    repo TEXT NOT NULL,
+    base TEXT NOT NULL,
+    base_sha TEXT NOT NULL,
+    head_sha TEXT NOT NULL,
+    command TEXT NOT NULL,
+    state TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, repo)
+);
 CREATE TABLE IF NOT EXISTS env_services (
     env_id TEXT PRIMARY KEY REFERENCES envs(id),
     port INTEGER NOT NULL,
@@ -925,8 +945,12 @@ export interface ProductOwnerRow {
     account_id: string | null;
     created_at: string;
     updated_at: string;
-    // Every PO has one (backfilled at start for POs from before environments).
+    // Every PO has one (backfilled at start for POs from before environments): its primary environment — the first of
+    // env_ids, where its product context proposals land and its usage is counted.
     env_id: string;
+    // Every environment the PO works for (JSON array of env ids, env_id first); null = only env_id. A project PO may span
+    // several environments of the same task manager (one product built in several repositories); an environment PO has one.
+    env_ids?: string | null;
     // The last refresh of the project's issues (null = never), and why the last one failed.
     issues_refreshed_at?: string | null;
     issues_error?: string | null;
@@ -996,6 +1020,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.account_order", `ALTER TABLE envs ADD COLUMN account_order TEXT`],
     ["envs.chrome_device_id", `ALTER TABLE envs ADD COLUMN chrome_device_id TEXT`],
     ["envs.qa_seed_hints", `ALTER TABLE envs ADD COLUMN qa_seed_hints TEXT`],
+    ["envs.qa_mock_hints", `ALTER TABLE envs ADD COLUMN qa_mock_hints TEXT`],
     ["accounts.login_ok", `ALTER TABLE accounts ADD COLUMN login_ok INTEGER`],
     ["accounts.login_dir", `ALTER TABLE accounts ADD COLUMN login_dir TEXT`],
     ["accounts.chrome_browsers", `ALTER TABLE accounts ADD COLUMN chrome_browsers TEXT`],
@@ -1010,6 +1035,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["tasks.extra_tickets", `ALTER TABLE tasks ADD COLUMN extra_tickets TEXT`],
     ["envs.cleanup_command", `ALTER TABLE envs ADD COLUMN cleanup_command TEXT`],
     ["envs.check_command", `ALTER TABLE envs ADD COLUMN check_command TEXT`],
+    ["envs.base_check", `ALTER TABLE envs ADD COLUMN base_check TEXT`],
     ["envs.components", `ALTER TABLE envs ADD COLUMN components TEXT`],
     ["envs.keep_services", `ALTER TABLE envs ADD COLUMN keep_services INTEGER NOT NULL DEFAULT 0`],
     ["envs.qa_browser", `ALTER TABLE envs ADD COLUMN qa_browser TEXT NOT NULL DEFAULT 'chrome'`],
@@ -1045,6 +1071,9 @@ const MIGRATIONS: Array<[string, string]> = [
     ["tasks.labels", `ALTER TABLE tasks ADD COLUMN labels TEXT`],
     // Per-task base branch (stacked PRs); null = the env's base_branch.
     ["tasks.base_branch", `ALTER TABLE tasks ADD COLUMN base_branch TEXT`],
+    // The dependency env's branch this task's dependency runs from (a change that needs the dependency's own unmerged
+    // change); null = the shared instance.
+    ["tasks.dependency_branch", `ALTER TABLE tasks ADD COLUMN dependency_branch TEXT`],
     // One-shot "skip Manual QA (and QA baseline) this pass", set from Request changes / Return to a stage.
     ["tasks.skip_qa", `ALTER TABLE tasks ADD COLUMN skip_qa INTEGER NOT NULL DEFAULT 0`],
     ["tasks.product_owner_id", `ALTER TABLE tasks ADD COLUMN product_owner_id TEXT`],
@@ -1073,6 +1102,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["po_artifacts.description", `ALTER TABLE po_artifacts ADD COLUMN description TEXT`],
     ["po_artifacts.text_file", `ALTER TABLE po_artifacts ADD COLUMN text_file TEXT`],
     ["product_owners.env_id", `ALTER TABLE product_owners ADD COLUMN env_id TEXT REFERENCES envs(id)`],
+    ["product_owners.env_ids", `ALTER TABLE product_owners ADD COLUMN env_ids TEXT`],
     // A BE/FE that never came up (start timeout, command exited, tmux session gone) — the row stays visible as failed
     // until it is stopped or restarted, so the human sees why and can hand it to the agent.
     ["services.failed_at", `ALTER TABLE services ADD COLUMN failed_at TEXT`],

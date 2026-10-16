@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { storage } from "../storage";
+import { useDismiss } from "./useDismiss";
 
 // Stagehand's standard list of entities. Every page that lists things uses it, so lists look and behave alike:
 //
@@ -58,23 +59,6 @@ const Check = ({ checked, indeterminate, onChange, label }: { checked: boolean; 
         if (ref.current) ref.current.indeterminate = !!indeterminate && !checked;
     }, [indeterminate, checked]);
     return <input ref={ref} type="checkbox" aria-label={label} checked={checked} onChange={(e) => onChange(e.target.checked)} onClick={(e) => e.stopPropagation()} />;
-};
-
-// Closes a dropdown on an outside click or Esc.
-const useDismiss = (open: boolean, close: () => void) => {
-    const ref = useRef<HTMLDivElement>(null);
-    useEffect(() => {
-        if (!open) return;
-        const onDown = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && close();
-        const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
-        document.addEventListener("mousedown", onDown);
-        document.addEventListener("keydown", onKey);
-        return () => {
-            document.removeEventListener("mousedown", onDown);
-            document.removeEventListener("keydown", onKey);
-        };
-    }, [open, close]);
-    return ref;
 };
 
 export const DataTable = <T,>({

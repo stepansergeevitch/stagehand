@@ -61,10 +61,10 @@ export const modelLabel = (id: string | null | undefined, models: Array<{ value:
 };
 export interface Env {
     id: string; name: string; path: string; base_branch: string; default_account_id: string | null; account_order: string | null; config_dir_id: string | null;
-    chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; app_url: string | null; qa_script: string | null;
+    chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; qa_mock_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
     setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
-    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; ci_autopilot?: number; test_command?: string | null; ci_autopilot_rules?: string | null; callback_ports?: string | null; prepare_command?: string | null; qa_session_command?: string | null; qa_browser_cookies?: string | null; code_review?: number; db_hosts_command?: string | null; allowed_db_hosts?: string | null; task_db?: string | null; qa_auto_fix?: string | null; check_command?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
+    rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; ci_autopilot?: number; test_command?: string | null; ci_autopilot_rules?: string | null; callback_ports?: string | null; prepare_command?: string | null; qa_session_command?: string | null; qa_browser_cookies?: string | null; code_review?: number; db_hosts_command?: string | null; allowed_db_hosts?: string | null; task_db?: string | null; qa_auto_fix?: string | null; check_command?: string | null; base_check?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
     // JSON ReviewChecklist: gstack categories switched off, points added, extra do-not-flag rules for Code Review; null = the full checklist.
     review_checklist?: string | null;
     // Open every PR this env creates as a GitHub draft (the human marks it ready for review).
@@ -284,9 +284,12 @@ export interface Session {
 export interface AgentQuestion { id: string; text: string; context: string; options: string[] }
 export interface QuestionRound { id: string; run_id: string | null; stage: Stage; questions: AgentQuestion[]; answers: Record<string, string> | null; created_at: string; answered_at: string | null }
 export const pendingQuestions = (d: Pick<TaskDetail, "questions">): QuestionRound | undefined => d.questions?.find((q) => q.answers === null);
+// Whether a repository's branch still goes onto its latest base (server base-check.ts).
+export type BaseCheckState = "up_to_date" | "clean" | "conflicts" | "check_failed" | "error";
+export interface BaseCheck { task_id: string; repo: string; base: string; base_sha: string; head_sha: string; command: string; state: BaseCheckState; detail: string; checked_at: string }
 export interface Task {
     id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
-    branch: string | null; base_branch: string | null; skip_qa?: number; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
+    branch: string | null; base_branch: string | null; dependency_branch?: string | null; base_check_state?: BaseCheckState | null; base_check_detail?: string | null; skip_qa?: number; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
     pinned: number; notes: string | null; extra_tickets: string | null; labels?: string | null; product_owner_id?: string | null; ci_autopilot?: number | null; created_at: string; updated_at: string;
 }
 // Product Owners: one per project of the product (a Linear project, a ClickUp epic).
@@ -294,9 +297,19 @@ export type PoPhase = "context" | "design" | "tickets" | "approved" | "live";
 export interface ProductOwner {
     id: string; title: string; slug: string; source: "linear" | "clickup"; scope_kind: "project" | "epic" | "env"; scope_id: string; scope_url: string | null;
     team_id: string | null; phase: PoPhase; status: "idle" | "running" | "failed"; status_line: string | null; account_id: string | null; created_at: string; updated_at: string;
-    issues_refreshed_at?: string | null; issues_error?: string | null; env_id: string;
+    issues_refreshed_at?: string | null; issues_error?: string | null; env_id: string; env_ids?: string | null;
     tasks?: number; created?: number; tickets?: number; ticketsDone?: number; progress?: number | null;
 }
+// Every environment a PO works for, its primary one first (server: product-owners.ts poEnvIds).
+export const poEnvIds = (po: Pick<ProductOwner, "env_id" | "env_ids">): string[] => {
+    let list: unknown = null;
+    try {
+        list = JSON.parse(po.env_ids ?? "null");
+    } catch {
+        list = null;
+    }
+    return [...new Set([po.env_id, ...(Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [])].filter(Boolean))];
+};
 export interface PoMessage { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
 export interface PoArtifact { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; description?: string | null; text_file?: string | null; chunks?: number | null }
 export interface PoTicket { key: string; type: "epic" | "story" | "task" | "bug"; title: string; parent: string | null; summary: string; description: string; acceptanceCriteria: string[]; estimate: number | null; dependsOn: string[]; labels: string[]; existing?: string | null }
@@ -483,7 +496,7 @@ export interface ReviewFinding {
 }
 export interface ReviewResult { summary: string; findings: ReviewFinding[] }
 export interface TaskDetail {
-    task: Task; onBase?: boolean; runs: Run[]; artifacts: Array<{ path: string; size: number }>;
+    task: Task; onBase?: boolean; baseChecks?: BaseCheck[]; runs: Run[]; artifacts: Array<{ path: string; size: number }>;
     // Raw research.json as written by the agent — optional fields may be missing when the file predates them or the agent skipped them.
     research: { classification: string; title: string; branchName: string; summary: string; affectedAreas?: string[] } | null;
     design: Design | null; impl: Impl | null; qaBefore: QaPass | null; qaAfter: QaPass | null;
@@ -635,8 +648,10 @@ export const api = {
     palaceSearch: (q: string, scope: { wing?: string; env?: string }) => fetch(`/api/product/search?${new URLSearchParams({ q, ...(scope.wing ? { wing: scope.wing } : {}), ...(scope.env ? { env: scope.env } : {}) })}`).then((r) => j<{ results: PalaceHit[] }>(r)),
     palaceStatus: () => fetch("/api/product/palace").then((r) => j<{ home: string; total: number; wings: Record<string, Record<string, number>> }>(r)),
     productOwners: () => fetch("/api/product-owners").then((r) => j<ProductOwner[]>(r)),
-    createProductOwner: (url: string, envId: string, start = true) => post<ProductOwner>("/api/product-owners", { url, envId, start }),
-    createEnvProductOwner: (envId: string) => post<ProductOwner>("/api/product-owners", { kind: "env", envId }),
+    createProductOwner: (url: string, envIds: string[], start = true) => post<ProductOwner>("/api/product-owners", { url, envIds, start }),
+    // One environment PO per environment.
+    createEnvProductOwner: (envIds: string[]) => post<ProductOwner>("/api/product-owners", { kind: "env", envIds }),
+    setProductOwnerEnvs: (id: string, envIds: string[]) => fetch(`/api/product-owners/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ envIds }) }).then((r) => j<ProductOwner>(r)),
     startProductOwner: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/start`),
     productOwner: (id: string) => fetch(`/api/product-owners/${id}`).then((r) => j<PoDetail>(r)),
     deleteProductOwner: (id: string) => fetch(`/api/product-owners/${id}`, { method: "DELETE" }).then((r) => j<{ ok: true }>(r)),
@@ -703,12 +718,12 @@ export const api = {
         id: string,
         body: {
             name?: string; baseBranch?: string; defaultAccountId?: string | null; accountOrder?: string[]; configDirId?: string | null;
-            qaSeedHints?: string | null; appUrl?: string | null;
+            qaSeedHints?: string | null; qaMockHints?: string | null; appUrl?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
             setupCommand?: string | null; repos?: string[] | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
             qaBrowser?: "chrome" | "gstack"; qaAutoFix?: QaAutoFixScope;
             reviewChecklist?: ReviewChecklist | null;
-            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; ciAutopilotRules?: AutopilotRules | null; prepareCommand?: string | null; qaSessionCommand?: string | null; qaBrowserCookies?: string | null; codeReview?: boolean; dbHostsCommand?: string | null; allowedDbHosts?: string[] | null; taskDb?: TaskDbConfig | null; callbackPorts?: Array<{ port: number; relay: boolean }> | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; dependsOnEnvId?: string | null;
+            cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; ciAutopilotRules?: AutopilotRules | null; prepareCommand?: string | null; qaSessionCommand?: string | null; qaBrowserCookies?: string | null; codeReview?: boolean; dbHostsCommand?: string | null; allowedDbHosts?: string[] | null; taskDb?: TaskDbConfig | null; callbackPorts?: Array<{ port: number; relay: boolean }> | null; baseCheck?: Record<string, string> | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; dependsOnEnvId?: string | null;
         },
     ) =>
         fetch(`/api/envs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Env>(r)),
@@ -744,7 +759,7 @@ export const api = {
     envDbs: (envId: string, refresh = false) => fetch(`/api/envs/${envId}/dbs${refresh ? "?refresh=1" : ""}`).then((r) => j<EnvDbOverview>(r)),
     refreshTemplate: (envId: string) => post<EnvDbOverview>(`/api/envs/${envId}/dbs/refresh-template`),
     dropEnvDb: (envId: string, name: string) => post<EnvDbOverview>(`/api/envs/${envId}/dbs/drop`, { name }),
-    patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[]; baseBranch?: string | Record<string, string> | null; files?: SharedFile[]; ciAutopilot?: boolean | null }) =>
+    patchTask: (id: string, body: { notes?: string | null; labels?: TaskLabel[]; baseBranch?: string | Record<string, string> | null; dependencyBranch?: string | null; files?: SharedFile[]; ciAutopilot?: boolean | null }) =>
         fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Task>(r)),
     returnTo: (id: string, body: { stage: Stage; notes?: string; comments?: LineComment[]; skipQa?: boolean; files?: SharedFile[] }) => post<Task>(`/api/tasks/${id}/return`, body),
     patchPrDraft: (id: string, body: { repo: string; title?: string; body?: string; base?: string }) =>
@@ -815,6 +830,7 @@ export const api = {
     fixCi: (id: string, repo: string) => post<{ started: true }>(`/api/tasks/${id}/fix-ci`, { repo }),
     // `repos`: only these repository directories; omitted = every repository of the task.
     rebase: (id: string, repos?: string[]) => post<{ started: true }>(`/api/tasks/${id}/rebase`, repos?.length ? { repos } : {}),
+    baseCheck: (id: string) => post<BaseCheck[]>(`/api/tasks/${id}/base-check`),
     refreshPr: (id: string) => post<{ task: Task; prStates: PrState[] }>(`/api/tasks/${id}/pr/refresh`),
     createApprovedPrs: (id: string) => post<{ ok: true; done: string[]; task: Task; prStates: PrState[] }>(`/api/tasks/${id}/pr/create`),
     mergePr: (id: string, body: { repo: string; method: MergeMethod; deleteBranch: boolean }) => post<{ ok: true; result: string; task: Task }>(`/api/tasks/${id}/pr/merge`, body),

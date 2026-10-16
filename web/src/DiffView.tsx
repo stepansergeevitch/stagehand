@@ -4,6 +4,8 @@ import { Markdown } from "./Markdown";
 import { storage } from "./storage";
 import type { CodeScope, DiffRoute } from "./routes";
 import { AgentInput, usePendingFiles } from "./AgentInput";
+import { CommentEditor } from "./components/CommentEditor";
+import { LineThread, threadMessages, type ThreadMessage } from "./components/LineThread";
 
 // A test file by the common conventions of any stack: a tests / __tests__ / spec directory, test_*.py / *_test.py,
 // *.test.* / *.spec.*, *_test.go, *Test.java / *Tests.cs, conftest.py.
@@ -198,36 +200,6 @@ export const commentKey = (c: Pick<LineComment, "path" | "side" | "line">): stri
 const lineAnchor = (path: string, l: DiffLine): Pick<LineComment, "path" | "side" | "line"> =>
     l.type === "del" ? { path, side: "old", line: l.oldNo ?? 0 } : { path, side: "new", line: l.newNo ?? 0 };
 
-// One editor for both things a line takes: a review comment (Save — kept as a draft until the review is sent) and a
-// question for the agent (Ask — sent right away, answered in place). Either button is offered only when allowed.
-// Files go with a question (the agent gets them with the anchored message); a saved draft comment is text only.
-const CommentEditor = ({ initial, placeholder, onSave, onAsk, onCancel, onDelete }: { initial: string; placeholder: string; onSave?: (t: string) => void; onAsk?: (t: string, files: File[]) => void; onCancel: () => void; onDelete?: () => void }) => {
-    const [text, setText] = useState(initial);
-    const attach = usePendingFiles();
-    const ask = () => onAsk?.(text.trim() || "See the attached file(s).", attach.files);
-    return (
-        <div className="line-comment editing">
-            <AgentInput
-                autoFocus
-                value={text}
-                onChange={setText}
-                placeholder={placeholder}
-                pending={onAsk ? attach : undefined}
-                chips="below"
-                onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) onSave ? onSave(text.trim()) : ask();
-                }}
-            />
-            <div className="actions">
-                {onSave && <button className="primary" disabled={!text.trim()} onClick={() => onSave(text.trim())}>Save comment</button>}
-                {onAsk && <button className={onSave ? "" : "primary"} disabled={!text.trim() && attach.files.length === 0} title="Ask the task's agent about this line; the answer appears here and in Chat" onClick={ask}>Ask agent</button>}
-                <button onClick={onCancel}>Cancel</button>
-                {onDelete && <button className="danger" onClick={onDelete}>Delete</button>}
-            </div>
-        </div>
-    );
-};
-
 // round > 0 = an earlier Stagehand review round; round 0 = a comment on the GitHub PR (author in `by`).
 export interface PriorComment extends LineComment {
     round: number;
@@ -256,43 +228,6 @@ const placeAnchored = <T extends MessageAnchor>(file: DiffFile, items: T[]): { b
         (byKey[key] ??= []).push(c);
     }
     return { byKey, outdated };
-};
-
-// A chat message with its anchor unpacked, for placement.
-interface ThreadMessage extends MessageAnchor {
-    msg: Message;
-}
-const threadMessages = (messages: Message[]): ThreadMessage[] =>
-    messages.flatMap((msg) => {
-        const a = anchorOf(msg);
-        return a ? [{ ...a, msg }] : [];
-    });
-
-const LineThread = ({ items, asking, canAsk, onReply, open, onOpen }: { items: ThreadMessage[]; asking: boolean; canAsk: boolean; onReply: () => void; open: boolean; onOpen: (open: boolean) => void }) => {
-    const first = items.find((t) => t.msg.role === "user")?.msg.text ?? "";
-    if (!open && !asking) {
-        return (
-            <div className="line-thread folded" onClick={() => onOpen(true)} title="Show the discussion">
-                ▸ Q&amp;A · {items.length} message{items.length === 1 ? "" : "s"}{first ? ` — ${first.replace(/\s+/g, " ").slice(0, 90)}` : ""}
-            </div>
-        );
-    }
-    return (
-    <div className="line-thread">
-        <button className="tiny thread-fold" onClick={() => onOpen(false)} title="Collapse this discussion">▾ Collapse</button>
-        {items.map(({ msg }) => (
-            <div key={msg.id} className={`thread-msg ${msg.role}`}>
-                <div className="chat-msg-head">
-                    <b>{msg.role === "user" ? "You" : "Agent"}</b>
-                    <span className="field-hint">{new Date(msg.created_at).toLocaleString()}</span>
-                </div>
-                {msg.role === "agent" ? <Markdown source={msg.text} /> : <div>{msg.text}</div>}
-            </div>
-        ))}
-        {asking && <div className="thread-msg agent pending">Agent is answering…</div>}
-        {canAsk && !asking && <button className="tiny" onClick={onReply}>Reply</button>}
-    </div>
-    );
 };
 
 const FileDiff = ({

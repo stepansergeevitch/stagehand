@@ -29,6 +29,20 @@ import { PoJournal, type PoEventChanges, type PoEventKind, type PoEventRefs, typ
 // Linear, ClickUp and Notion are reached by Stagehand with API keys, never by the agent.
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+// Every environment a PO works for, its primary one (env_id) first.
+export const poEnvIds = (po: Pick<ProductOwnerRow, "env_id" | "env_ids">): string[] => {
+    let list: unknown = null;
+    try {
+        list = JSON.parse(po.env_ids ?? "null");
+    } catch {
+        list = null;
+    }
+    return [...new Set([po.env_id, ...(Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [])].filter(Boolean))];
+};
+export const poWorksFor = (po: Pick<ProductOwnerRow, "env_id" | "env_ids"> | undefined, envId: string): boolean => !!po && poEnvIds(po).includes(envId);
+// SQL: the PO aliased `p` works for the environment bound twice to `? ?`.
+const PO_IN_ENV = `(p.env_id = ? OR EXISTS (SELECT 1 FROM json_each(COALESCE(p.env_ids, '[]')) WHERE value = ?))`;
 const TEMPLATES = join(REPO_ROOT, "product-owner");
 const PALACE_SCRIPT = join(REPO_ROOT, "scripts", "palace.py");
 
@@ -439,7 +453,7 @@ export class ProductOwners {
         return `product-${envId.slice(0, 8)}`;
     }
     envWings(envId: string): string[] {
-        const pos = this.db.prepare(`SELECT slug FROM product_owners WHERE env_id = ?`).all(envId) as Array<{ slug: string }>;
+        const pos = this.db.prepare(`SELECT slug FROM product_owners p WHERE ${PO_IN_ENV}`).all(envId, envId) as Array<{ slug: string }>;
         const env = this.db.prepare(`SELECT memory_wings FROM envs WHERE id = ?`).get(envId) as { memory_wings: string | null } | undefined;
         let extra: string[] = [];
         try {
@@ -520,13 +534,17 @@ export class ProductOwners {
     // ---------- creation ----------
 
     // `start: false` creates the PO without its first turn, so the creation dialog can add sources first (then start()).
-    async create(url: string, envId: string, accountId: string | null, opts: { start?: boolean } = {}): Promise<ProductOwnerRow> {
-        const env = this.db.prepare(`SELECT id, name, ticket_source FROM envs WHERE id = ?`).get(envId) as { id: string; name: string; ticket_source: string } | undefined;
-        if (!env) throw new Error("no such environment");
+    // `envIds`: every environment the PO works for, the primary one first.
+    async create(url: string, envIds: string[], accountId: string | null, opts: { start?: boolean } = {}): Promise<ProductOwnerRow> {
+        const envs = this.envsOf(envIds);
+        const env = envs[0]!;
         const scope = await fetchScope(this.cfg, url);
-        if (env.ticket_source !== scope.source) throw new Error(`environment "${env.name}" uses ${env.ticket_source === "linear" ? "Linear" : "ClickUp"}, and this is a ${scope.source === "linear" ? "Linear project" : "ClickUp epic"}`);
-        const existing = this.db.prepare(`SELECT * FROM product_owners WHERE env_id = ? AND source = ? AND scope_id = ?`).get(env.id, scope.source, scope.id) as ProductOwnerRow | undefined;
-        if (existing) return existing;
+        for (const e of envs) if (e.ticket_source !== scope.source) throw new Error(`environment "${e.name}" uses ${e.ticket_source === "linear" ? "Linear" : "ClickUp"}, and this is a ${scope.source === "linear" ? "Linear project" : "ClickUp epic"}`);
+        // The project's PO in any of these environments is this one: it takes the other environments too.
+        const existing = envs
+            .map((e) => this.db.prepare(`SELECT * FROM product_owners p WHERE ${PO_IN_ENV} AND p.source = ? AND p.scope_id = ?`).get(e.id, e.id, scope.source, scope.id) as ProductOwnerRow | undefined)
+            .find(Boolean);
+        if (existing) return this.setEnvs(existing.id, [...poEnvIds(existing), ...envs.map((e) => e.id)]);
         let slug = `po-${slugify(scope.title)}`;
         for (let i = 2; this.db.prepare(`SELECT 1 FROM product_owners WHERE slug = ?`).get(slug); i++) slug = `po-${slugify(scope.title)}-${i}`;
         const row: ProductOwnerRow = {
@@ -546,10 +564,11 @@ export class ProductOwners {
             created_at: now(),
             updated_at: now(),
             env_id: env.id,
+            env_ids: JSON.stringify(envs.map((e) => e.id)),
         };
         this.db
-            .prepare(`INSERT INTO product_owners (id, title, slug, source, scope_kind, scope_id, scope_url, team_id, phase, status, status_line, session_id, account_id, created_at, updated_at, env_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .run(row.id, row.title, row.slug, row.source, row.scope_kind, row.scope_id, row.scope_url, row.team_id, row.phase, row.status, row.status_line, row.session_id, row.account_id, row.created_at, row.updated_at, row.env_id);
+            .prepare(`INSERT INTO product_owners (id, title, slug, source, scope_kind, scope_id, scope_url, team_id, phase, status, status_line, session_id, account_id, created_at, updated_at, env_id, env_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(row.id, row.title, row.slug, row.source, row.scope_kind, row.scope_id, row.scope_url, row.team_id, row.phase, row.status, row.status_line, row.session_id, row.account_id, row.created_at, row.updated_at, row.env_id, row.env_ids);
         mkdirSync(join(this.dir(row.id), "artifacts"), { recursive: true });
         writeFileSync(join(this.dir(row.id), "context.md"), "");
         this.addArtifactText(row.id, scope.source, `${scope.kind === "project" ? "Linear project" : "ClickUp epic"}: ${scope.title}`, scope.url, scope.markdown);
@@ -584,6 +603,39 @@ export class ProductOwners {
         this.emit({ poId: row.id, kind: "updated" });
         return row;
     }
+    // The environments named, in order; every one must exist.
+    private envsOf(envIds: string[]): Array<{ id: string; name: string; ticket_source: string }> {
+        const ids = [...new Set(envIds.filter(Boolean))];
+        if (!ids.length) throw new Error("pick at least one environment");
+        return ids.map((id) => {
+            const e = this.db.prepare(`SELECT id, name, ticket_source FROM envs WHERE id = ?`).get(id) as { id: string; name: string; ticket_source: string } | undefined;
+            if (!e) throw new Error(`no such environment: ${id}`);
+            return e;
+        });
+    }
+
+    // The environments a PO works for (the first is its primary one). An environment PO stays with its one environment;
+    // a project PO takes any set of environments on its task manager, and the open tasks of the added ones join it.
+    setEnvs(poId: string, envIds: string[]): ProductOwnerRow {
+        const po = this.get(poId);
+        if (!po) throw new Error("product owner not found");
+        const envs = this.envsOf(envIds);
+        if (po.scope_kind === "env" && (envs.length !== 1 || envs[0]!.id !== po.env_id)) throw new Error("an environment's own Product Owner belongs to that one environment");
+        for (const e of envs) if (e.ticket_source !== po.source) throw new Error(`environment "${e.name}" uses ${e.ticket_source === "linear" ? "Linear" : "ClickUp"}, and this Product Owner's project is in ${po.source === "linear" ? "Linear" : "ClickUp"}`);
+        const ids = envs.map((e) => e.id);
+        this.db.prepare(`UPDATE product_owners SET env_id = ?, env_ids = ?, updated_at = ? WHERE id = ?`).run(ids[0], JSON.stringify(ids), now(), poId);
+        // Tasks of an environment it no longer works for drop it (the environment's own PO takes them on the next brief).
+        const dropped = this.db.prepare(`SELECT id, env_id FROM tasks WHERE product_owner_id = ? AND env_id NOT IN (${ids.map(() => "?").join(", ")})`).all(poId, ...ids) as Array<{ id: string; env_id: string }>;
+        for (const t of dropped) {
+            this.db.prepare(`UPDATE tasks SET product_owner_id = ?, updated_at = ? WHERE id = ?`).run(this.envPo(t.env_id)?.id ?? null, now(), t.id);
+            this.onTaskChanged(t.id);
+        }
+        const row = this.get(poId)!;
+        if (row.scope_kind !== "env") void this.assignExistingTasks(row);
+        this.emit({ poId, kind: "updated" });
+        return row;
+    }
+
     envPo(envId: string): ProductOwnerRow | undefined {
         return this.db.prepare(`SELECT * FROM product_owners WHERE env_id = ? AND scope_kind = 'env'`).get(envId) as ProductOwnerRow | undefined;
     }
@@ -608,9 +660,11 @@ export class ProductOwners {
 
     // A PO works only with its environment's task manager: the env must still use the PO's.
     private checkManager(po: ProductOwnerRow): void {
-        const env = this.db.prepare(`SELECT name, ticket_source FROM envs WHERE id = ?`).get(po.env_id) as { name: string; ticket_source: string } | undefined;
-        if (!env) throw new Error("this Product Owner's environment no longer exists");
-        if (env.ticket_source !== po.source) throw new Error(`environment "${env.name}" now uses ${env.ticket_source === "linear" ? "Linear" : "ClickUp"}, but this Product Owner's project is in ${po.source === "linear" ? "Linear" : "ClickUp"}`);
+        for (const envId of poEnvIds(po)) {
+            const env = this.db.prepare(`SELECT name, ticket_source FROM envs WHERE id = ?`).get(envId) as { name: string; ticket_source: string } | undefined;
+            if (!env) throw new Error("one of this Product Owner's environments no longer exists");
+            if (env.ticket_source !== po.source) throw new Error(`environment "${env.name}" now uses ${env.ticket_source === "linear" ? "Linear" : "ClickUp"}, but this Product Owner's project is in ${po.source === "linear" ? "Linear" : "ClickUp"}`);
+        }
     }
 
     async remove(poId: string): Promise<void> {
@@ -901,8 +955,21 @@ export class ProductOwners {
                 : `You are the Product Owner of "${po.title}" — ${po.source === "linear" ? "a Linear project" : "a ClickUp epic"}: ${po.scope_url ?? po.scope_id}.`,
             `Your folder: ${d}. Your palace wing: ${this.wing(po)}. Your diary agent name: ${po.slug}.`,
             envPo ? "You plan no project and write no design.md or tickets.json. Keep context.md for what you learn about the product across tasks." : `Phase: ${PHASE_LABEL[po.phase]}. ${phaseNote[po.phase]}`,
-            `## Product context (this environment's product — read-only; propose a change in product-context-proposal.md; palace wing ${this.productWing(po.env_id)})\n\n${this.productContext(po.env_id).trim() || "(empty — ask the human for it when you need it)"}`,
-            `## Memory of this environment\n\nSearch only these wings: ${this.envWings(po.env_id).join(", ")}. Never use the wings of other environments' Product Owners: they are other products.`,
+            ...((): string[] => {
+                const envIds = poEnvIds(po);
+                const name = (id: string): string => (this.db.prepare(`SELECT name FROM envs WHERE id = ?`).get(id) as { name: string } | undefined)?.name ?? id;
+                if (envIds.length === 1)
+                    return [
+                        `## Product context (this environment's product — read-only; propose a change in product-context-proposal.md; palace wing ${this.productWing(po.env_id)})\n\n${this.productContext(po.env_id).trim() || "(empty — ask the human for it when you need it)"}`,
+                        `## Memory of this environment\n\nSearch only these wings: ${this.envWings(po.env_id).join(", ")}. Never use the wings of other environments' Product Owners: they are other products.`,
+                    ];
+                // A project built in several environments: each one's product context, the memory of all of them.
+                return [
+                    `## Environments\n\nThis project is built in ${envIds.length} environments: ${envIds.map((id, i) => `"${name(id)}"${i === 0 ? " (primary)" : ""}`).join(", ")}. A product context proposal (product-context-proposal.md) replaces the primary environment's.`,
+                    ...envIds.map((id) => `## Product context of "${name(id)}" (read-only; palace wing ${this.productWing(id)})\n\n${this.productContext(id).trim() || "(empty — ask the human for it when you need it)"}`),
+                    `## Memory of these environments\n\nSearch only these wings: ${[...new Set(envIds.flatMap((id) => this.envWings(id)))].join(", ")}. Never use the wings of other environments' Product Owners: they are other products.`,
+                ];
+            })(),
             `## Your project context (context.md)\n\n${ctx.trim() || "(empty — write it)"}`,
             ...(envPo ? [] : [`## Issues and the project\n\nEvery issue of the project, with its comments, is in your wing, room \`issues\` (current state in full: issues.md); the project's own description and documents in room \`project\` (in full: project.md). Stagehand reads them again every hour and tells you what changed. Images and documents they contain are artifacts: an image comes with a description, and you can open the file to look at it.`]),
             `## Artifacts (${arts.length}) — search them in your wing, room \`artifacts\`; read a file only when search is not enough\n\n${arts.map((a) => `- ${a.file} — ${a.title}${a.source_url ? ` (${a.source_url})` : ""} [${a.kind}${a.chunks ? `, ${a.chunks} chunks` : ""}]${a.description ? ` — image: ${a.description.split("\n")[0]!.slice(0, 160)} (open the file to look at it)` : a.text_file ? ` — text extracted to ${a.text_file}` : ""}`).join("\n") || "(none)"}`,
@@ -1077,9 +1144,18 @@ export class ProductOwners {
         this.emit({ poId: po.id, kind: "updated" });
     }
 
+    // Tasks of the PO's environments on its task manager that have no PO or only their environment's own one.
+    private tasksForAssignment(po: ProductOwnerRow, openOnly: boolean): Array<{ id: string; source: string; ticket_id: string }> {
+        const envs = poEnvIds(po);
+        const envPos = envs.map((e) => this.envPo(e)?.id).filter((x): x is string => !!x);
+        return this.db
+            .prepare(`SELECT id, source, ticket_id FROM tasks WHERE env_id IN (${envs.map(() => "?").join(", ")}) AND source = ?${openOnly ? " AND stage != 'done'" : ""} AND (product_owner_id IS NULL${envPos.length ? ` OR product_owner_id IN (${envPos.map(() => "?").join(", ")})` : ""})`)
+            .all(...envs, po.source, ...envPos) as Array<{ id: string; source: string; ticket_id: string }>;
+    }
+
     // Open Stagehand tasks whose ticket belongs to this PO's project or epic get it as their Product Owner.
     private async assignExistingTasks(po: ProductOwnerRow): Promise<void> {
-        const tasks = this.db.prepare(`SELECT id, source, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND stage != 'done' AND (product_owner_id IS NULL OR product_owner_id = ?)`).all(po.env_id, po.source, this.envPo(po.env_id)?.id ?? "") as Array<{ id: string; source: "linear" | "clickup"; ticket_id: string }>;
+        const tasks = this.tasksForAssignment(po, true) as Array<{ id: string; source: "linear" | "clickup"; ticket_id: string }>;
         for (const t of tasks) {
             const scope = await ticketScopeId(this.cfg, t.source, t.ticket_id);
             if (scope === po.scope_id) {
@@ -1288,7 +1364,7 @@ export class ProductOwners {
     // Open tasks for one of the project's issues get this PO, so a product ticket and its task are linked.
     private assignTasksOfIssues(po: ProductOwnerRow, issues: TrackedIssue[]): void {
         const ids = new Set(issues.flatMap((i) => [i.identifier.toUpperCase(), i.remoteId]));
-        const tasks = this.db.prepare(`SELECT id, ticket_id FROM tasks WHERE env_id = ? AND source = ? AND (product_owner_id IS NULL OR product_owner_id = ?)`).all(po.env_id, po.source, this.envPo(po.env_id)?.id ?? "") as Array<{ id: string; ticket_id: string }>;
+        const tasks = this.tasksForAssignment(po, false);
         for (const t of tasks) {
             if (!ids.has(t.ticket_id.toUpperCase()) && !ids.has(t.ticket_id)) continue;
             this.db.prepare(`UPDATE tasks SET product_owner_id = ?, updated_at = ? WHERE id = ?`).run(po.id, now(), t.id);
@@ -1378,10 +1454,10 @@ export class ProductOwners {
 
     // The PO of a ticket: one that created it, else the one whose project or epic the ticket belongs to.
     async ownerOfTicket(envId: string, source: string, ticketId: string): Promise<string | null> {
-        const link = this.db.prepare(`SELECT l.po_id FROM po_ticket_links l JOIN product_owners p ON p.id = l.po_id WHERE p.env_id = ? AND p.source = ? AND (UPPER(l.identifier) = UPPER(?) OR l.remote_id = ?)`).get(envId, source, ticketId, ticketId) as { po_id: string } | undefined;
+        const link = this.db.prepare(`SELECT l.po_id FROM po_ticket_links l JOIN product_owners p ON p.id = l.po_id WHERE ${PO_IN_ENV} AND p.source = ? AND (UPPER(l.identifier) = UPPER(?) OR l.remote_id = ?)`).get(envId, envId, source, ticketId, ticketId) as { po_id: string } | undefined;
         if (link) return link.po_id;
         if (source !== "linear" && source !== "clickup") return null;
-        const owners = this.db.prepare(`SELECT * FROM product_owners WHERE env_id = ? AND source = ? AND scope_kind != 'env'`).all(envId, source) as ProductOwnerRow[];
+        const owners = this.db.prepare(`SELECT * FROM product_owners p WHERE ${PO_IN_ENV} AND p.source = ? AND p.scope_kind != 'env'`).all(envId, envId, source) as ProductOwnerRow[];
         const scope = owners.length ? await ticketScopeId(this.cfg, source, ticketId) : null;
         // The project's PO when there is one, else the environment's.
         return owners.find((o) => o.scope_id === scope)?.id ?? this.envPo(envId)?.id ?? null;

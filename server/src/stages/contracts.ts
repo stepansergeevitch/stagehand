@@ -33,6 +33,10 @@ export const QaScenario = z.object({
     // true: the scenario cannot run beside the others (it changes a global setting, restarts a component, or asserts
     // on counts that other scenarios' fixtures would move) — it runs alone after the parallel shards of the pass.
     exclusive: z.boolean().default(false),
+    // "chrome": the journey needs a real browser (WebGL, a map, canvas, media, an extension) — on an environment whose
+    // QA browser is headless it runs in the QA Chrome profile instead. Set by the design, or by Stagehand when a
+    // headless runner reports `needsChrome` for the scenario.
+    browser: z.enum(["chrome"]).optional(),
     // Data the journey needs, as concrete steps the runner performs itself before the first step (UI actions, API calls
     // with payloads, SQL, or a repo script) — never a request for a human to prepare something. Empty = nothing to seed.
     seed: z.array(z.string()).default([]),
@@ -74,6 +78,9 @@ export const QaPassResult = z.object({
             superseded: z.string().optional(),
             // API scenarios: the exact command(s) run and their trimmed output — the evidence a screenshot is for a browser step.
             log: z.string().default(""),
+            // A headless run only: the journey cannot work in a headless browser at all (no WebGL, a map or canvas that
+            // never renders) — what failed and why. The scenario is `blocked`; Stagehand re-runs it in the real Chrome.
+            needsChrome: z.string().optional(),
         }),
     ),
     blockers: z.array(z.string()).default([]),

@@ -36,7 +36,7 @@ import { Engine } from "./engine.js";
 import { Services, DEPENDENCY_KIND } from "./services.js";
 import { Sessions } from "./sessions.js";
 import { Palace } from "./palace.js";
-import { ProductOwners, PoTickets, readReview, readReviewState, reviewNotes } from "./product-owners.js";
+import { ProductOwners, PoTickets, poWorksFor, readReview, readReviewState, reviewNotes } from "./product-owners.js";
 import { Prompter } from "./prompter.js";
 import { authDirFor, authEnv, browserDirFor, OAUTH_TOKEN_RE, probeChrome, probeDefaultModel, probeRateLimits, readAuthStatus, SETUP_TOKEN_COMMAND } from "./claude/accounts.js";
 import { collapseLargeFiles, envRepos, isGitRepo, repoPaths, type DiffGroup } from "./git.js";
@@ -60,7 +60,8 @@ const sessions = new Sessions(db, cfg, engine);
 const resources = new Resources(db, cfg, {
     clones: () => engine.cloneList(),
     stopService: (taskId, kind) => services.stop(taskId, kind as ServiceKind),
-    stopDependency: (env) => services.stopDependency(env),
+    // The dependency env itself (the shared instance), not a dependent of it.
+    stopDependency: (dep) => services.stopEnvService(dep),
     stopBrowser: (f) => engine.stopGstackBrowser(f),
     releaseClone: (key) => engine.releaseClone(key),
     notice: (taskId, text) => engine.serviceNotice(taskId, text),
@@ -836,6 +837,7 @@ app.patch("/api/envs/:id", async (c) => {
             accountOrder: z.array(z.string()).optional(),
             configDirId: z.string().nullable().optional(),
             qaSeedHints: z.string().nullable().optional(),
+            qaMockHints: z.string().nullable().optional(),
             baseBranch: z.string().optional(),
             appUrl: z.string().nullable().optional(),
             beCommand: z.string().nullable().optional(),
@@ -857,6 +859,8 @@ app.patch("/api/envs/:id", async (c) => {
             testCommand: z.string().nullable().optional(),
             // The identity provider's fixed login-callback ports; `relay`: Stagehand holds the port and redirects (any browser).
             callbackPorts: z.array(z.object({ port: z.number().int().min(1).max(65535), relay: z.boolean().default(false) })).nullable().optional(),
+            // The base check per repository: {repoDir: command} ("" for a single repo); empty commands drop out.
+            baseCheck: z.record(z.string()).nullable().optional(),
             // Bash run before every command of the env (env-config.ts).
             prepareCommand: z.string().nullable().optional(),
             // Run by Stagehand before a QA pass; its last output line is the pass's $STAGEHAND_QA_SESSION.
@@ -912,12 +916,13 @@ app.patch("/api/envs/:id", async (c) => {
         return Object.keys(merged).length ? JSON.stringify(merged) : null;
     })();
     db.prepare(
-        `UPDATE envs SET name = ?, account_order = ?, config_dir_id = ?, qa_seed_hints = ?, base_branch = ?, app_url = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, check_command = ?, components = ?, keep_services = ?, pr_templates = ?, depends_on_env_id = ?, rebase_command = ? WHERE id = ?`,
+        `UPDATE envs SET name = ?, account_order = ?, config_dir_id = ?, qa_seed_hints = ?, qa_mock_hints = ?, base_branch = ?, app_url = ?, be_command = ?, fe_command = ?, be_url_template = ?, fe_url_template = ?, be_port = ?, fe_port = ?, setup_command = ?, repos = ?, ticket_source = ?, env_vars = ?, cleanup_command = ?, check_command = ?, components = ?, keep_services = ?, pr_templates = ?, depends_on_env_id = ?, rebase_command = ? WHERE id = ?`,
     ).run(
         body.name ?? env.name,
         JSON.stringify(order),
         pick(body.configDirId, env.config_dir_id),
         pick(body.qaSeedHints, env.qa_seed_hints),
+        pick(body.qaMockHints, env.qa_mock_hints),
         body.baseBranch ?? env.base_branch,
         pick(body.appUrl, env.app_url),
         pick(body.beCommand, env.be_command),
@@ -958,6 +963,10 @@ app.patch("/api/envs/:id", async (c) => {
     if (body.qaSessionCommand !== undefined) db.prepare(`UPDATE envs SET qa_session_command = ? WHERE id = ?`).run(body.qaSessionCommand?.trim() || null, env.id);
     if (body.prepareCommand !== undefined) db.prepare(`UPDATE envs SET prepare_command = ? WHERE id = ?`).run(body.prepareCommand?.trim() || null, env.id);
     if (body.callbackPorts !== undefined) db.prepare(`UPDATE envs SET callback_ports = ? WHERE id = ?`).run(body.callbackPorts && body.callbackPorts.length ? JSON.stringify(body.callbackPorts) : null, env.id);
+    if (body.baseCheck !== undefined) {
+        const checks = Object.fromEntries(Object.entries(body.baseCheck ?? {}).filter(([, v]) => v.trim()));
+        db.prepare(`UPDATE envs SET base_check = ? WHERE id = ?`).run(Object.keys(checks).length ? JSON.stringify(checks) : null, env.id);
+    }
     if (body.testCommand !== undefined) db.prepare(`UPDATE envs SET test_command = ? WHERE id = ?`).run(body.testCommand?.trim() || null, env.id);
     if (body.migrateDownCommand !== undefined) db.prepare(`UPDATE envs SET migrate_down_command = ? WHERE id = ?`).run(body.migrateDownCommand, env.id);
     if (body.qaAutoFix !== undefined) db.prepare(`UPDATE envs SET qa_auto_fix = ? WHERE id = ?`).run(body.qaAutoFix, env.id);
@@ -1022,6 +1031,14 @@ app.get("/api/timing", (c) => {
 
 app.get("/api/tasks", (c) => c.json(engine.listTasks(c.req.query("env"))));
 
+// The base check now, for every repository of the task, whatever the last one saw.
+app.post("/api/tasks/:id/base-check", async (c) => {
+    const task = engine.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    if (task.status === "running") return c.json({ error: "the task is running — the check runs once it stops" }, 400);
+    return c.json(await engine.checkBase(task.id, { force: true }));
+});
+
 // Remote branch names of one repository of an env (`repo` = sub-repo dir, "" or omitted for a single repo), for the
 // base-branch pickers. `git ls-remote --heads` against the env's own checkout, cached a minute per repo.
 const branchCache = new Map<string, { at: number; names: string[] }>();
@@ -1065,7 +1082,7 @@ app.post("/api/tasks", async (c) => {
     );
     const tickets = [...new Set([...(body.ticket ? [body.ticket] : []), ...(body.tickets ?? [])].map((t) => t.trim()).filter(Boolean))];
     if (tickets.length === 0) return c.json({ error: "no ticket given" }, 400);
-    if (body.productOwnerId && productOwners.get(body.productOwnerId)?.env_id !== body.envId) return c.json({ error: "that Product Owner belongs to another environment" }, 400);
+    if (body.productOwnerId && !poWorksFor(productOwners.get(body.productOwnerId), body.envId)) return c.json({ error: "that Product Owner does not work for this task's environment" }, 400);
     const created = body.mode === "batch" || tickets.length === 1 ? [engine.createTask(body.envId, tickets, body.accountId, body.model, body.notes, body.baseBranch)] : tickets.map((t) => engine.createTask(body.envId, [t], body.accountId, body.model, body.notes, body.baseBranch));
     for (const t of created) {
         if (body.productOwnerId !== undefined) engine.setProductOwner(t.id, body.productOwnerId);
@@ -1108,6 +1125,8 @@ app.patch("/api/tasks/:id", async (c) => {
             notes: z.string().nullable().optional(),
             labels: z.array(z.object({ text: z.string().min(1).max(60), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) })).max(20).optional(),
             baseBranch: z.union([z.string(), z.record(z.string())]).nullable().optional(),
+            // The dependency env's branch this task's dependency runs from; null = the shared instance.
+            dependencyBranch: z.string().nullable().optional(),
             // Files attached to the instructions: listed by path at the end of the notes, so every stage sees them.
             files: z.array(SharedFileSchema).optional(),
             productOwnerId: z.string().nullable().optional(),
@@ -1121,7 +1140,7 @@ app.patch("/api/tasks/:id", async (c) => {
     if (body.productOwnerId !== undefined) {
         const po = body.productOwnerId ? productOwners.get(body.productOwnerId) : null;
         if (body.productOwnerId && !po) return c.json({ error: "no such Product Owner" }, 400);
-        if (po && po.env_id !== task.env_id) return c.json({ error: "that Product Owner belongs to another environment" }, 400);
+        if (po && !poWorksFor(po, task.env_id)) return c.json({ error: "that Product Owner does not work for this task's environment" }, 400);
         engine.setProductOwner(task.id, body.productOwnerId);
     }
     const files = sharedFilesOf(task.id, body.files);
@@ -1129,6 +1148,13 @@ app.patch("/api/tasks/:id", async (c) => {
     if (body.labels !== undefined) engine.setLabels(task.id, body.labels);
     if (body.ciAutopilot !== undefined) engine.setAutopilot(task.id, body.ciAutopilot);
     if (body.baseBranch !== undefined) engine.setBaseBranch(task.id, body.baseBranch);
+    if (body.dependencyBranch !== undefined) {
+        try {
+            engine.setDependencyBranch(task.id, body.dependencyBranch);
+        } catch (e) {
+            return c.json({ error: String((e as Error).message ?? e) }, 400);
+        }
+    }
     return c.json(engine.getTask(task.id));
 });
 
@@ -1389,6 +1415,8 @@ app.get("/api/tasks/:id", (c) => {
         task,
         // A QA baseline has the worktree on base code right now (migrations.ts).
         onBase: engine.onBaseCode(task.id),
+        // Does each repository's branch still go onto its latest base (base-check.ts).
+        baseChecks: engine.baseChecks.rows(task.id),
         runs: engine.listRuns(task.id),
         artifacts,
         research: engine.readArtifactJson(task.id, "research.json"),
@@ -1437,6 +1465,8 @@ app.post("/api/tasks/:id/review", async (c) => {
             repo: z.string().optional(),
             routeTo: z.enum(["implementation", "design_proposal"]).optional(),
             notes: z.string().optional(),
+            // Design Proposal: the Product Owner's picked review comments go into this same round.
+            includePoReview: z.boolean().optional(),
             comments: z
                 .array(z.object({ path: z.string().min(1), line: z.number().int().positive(), side: z.enum(["new", "old"]), snippet: z.string(), text: z.string().min(1) }))
                 .optional(),
@@ -1446,7 +1476,13 @@ app.post("/api/tasks/:id/review", async (c) => {
         }),
         await c.req.json(),
     );
-    engine.review(c.req.param("id"), { ...body, files: sharedFilesOf(c.req.param("id"), body.files) });
+    const { includePoReview, ...input } = body;
+    const task = engine.getTask(c.req.param("id"));
+    if (includePoReview && task?.stage === "design_proposal" && body.verdict === "changes") {
+        const po = takePoReviewNotes(task);
+        if (po) input.notes = [po, input.notes?.trim()].filter(Boolean).join("\n\n");
+    }
+    engine.review(c.req.param("id"), { ...input, files: sharedFilesOf(c.req.param("id"), body.files) });
     return c.json(engine.getTask(c.req.param("id")));
 });
 
@@ -1997,6 +2033,8 @@ app.post("/api/tasks/:id/services/:kind/start", async (c) => {
     if ("error" in k) return c.json({ error: k.error }, 400);
     try {
         if (k.kind === DEPENDENCY_KIND) return c.json(await services.startDependency(k.env, task.id));
+        // A task on a dependency branch: that branch's BE is up and the worktree points at it before the BE starts.
+        if (k.kind === "be" && task.dependency_branch && k.env.depends_on_env_id) await engine.ensureTaskDependency(task, k.env);
         const row = await services.start(task, k.env, k.kind);
         // Started by the human: the resource policy leaves it alone until they stop it or the task is cleaned up.
         resources.pin(`service:${row.id}`, true);
@@ -2011,7 +2049,7 @@ app.post("/api/tasks/:id/services/:kind/stop", async (c) => {
     if (!task) return c.json({ error: "not found" }, 404);
     const k = serviceKindOf(task, c.req.param("kind"));
     if ("error" in k) return c.json({ error: k.error }, 400);
-    if (k.kind === DEPENDENCY_KIND) await services.stopDependency(k.env);
+    if (k.kind === DEPENDENCY_KIND) await services.stopDependency(k.env, task.id);
     else await services.stop(task.id, k.kind);
     return c.json(await taskServices(task));
 });
@@ -2222,11 +2260,20 @@ app.get("/api/product-owners", (c) =>
 );
 app.post("/api/product-owners", async (c) => {
     // kind "env": the environment's own PO — no project URL.
-    const body = json(z.object({ kind: z.enum(["project", "env"]).default("project"), url: z.string().optional(), envId: z.string(), accountId: z.string().nullable().optional(), start: z.boolean().optional() }), await c.req.json());
+    // `envIds`: the environments the PO works for (the first is its primary one); an environment PO is made per environment.
+    const body = json(z.object({ kind: z.enum(["project", "env"]).default("project"), url: z.string().optional(), envIds: z.array(z.string()).min(1), accountId: z.string().nullable().optional(), start: z.boolean().optional() }), await c.req.json());
     try {
-        if (body.kind === "env") return c.json(productOwners.createEnvPo(body.envId, body.accountId ?? null));
+        if (body.kind === "env") return c.json(body.envIds.map((envId) => productOwners.createEnvPo(envId, body.accountId ?? null))[0]);
         if (!body.url || body.url.trim().length < 8) return c.json({ error: "a project PO needs its Linear project or ClickUp epic URL" }, 400);
-        return c.json(await productOwners.create(body.url, body.envId, body.accountId ?? null, { start: body.start ?? true }));
+        return c.json(await productOwners.create(body.url, body.envIds, body.accountId ?? null, { start: body.start ?? true }));
+    } catch (e) {
+        return poErr(c, e);
+    }
+});
+app.patch("/api/product-owners/:id", async (c) => {
+    const body = json(z.object({ envIds: z.array(z.string()).min(1) }), await c.req.json());
+    try {
+        return c.json(productOwners.setEnvs(c.req.param("id"), body.envIds));
     } catch (e) {
         return poErr(c, e);
     }
@@ -2597,6 +2644,21 @@ app.post("/api/tasks/:id/po-review/comments/:cid/ask", async (c) => {
         return poErr(c, e);
     }
 });
+// The picked comments of the task's Product Owner review as notes for the next design round; marks them sent (the review
+// is closed). Null when there is nothing picked or the review was already sent.
+const takePoReviewNotes = (task: TaskRow): string | null => {
+    const dir = engine.taskDir(task.id);
+    const review = readReview(dir);
+    if (!review || review.sentAt || !review.comments.some((x) => x.include && !x.withdrawn)) return null;
+    const po = task.product_owner_id ? productOwners.get(task.product_owner_id) : undefined;
+    const notes = reviewNotes(review, po?.title ?? null);
+    const at = new Date().toISOString();
+    for (const x of review.comments) if (x.include && !x.withdrawn) x.sentAt = at;
+    review.sentAt = at;
+    writeFileSync(join(dir, "po-review.json"), JSON.stringify(review, null, 2));
+    return notes;
+};
+
 app.post("/api/tasks/:id/po-review/send", (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
@@ -2606,13 +2668,8 @@ app.post("/api/tasks/:id/po-review/send", (c) => {
     if (review.sentAt) return c.json({ error: "this review was already sent to the agent" }, 409);
     if (task.stage !== "design_proposal" || task.status !== "waiting_user") return c.json({ error: "the design proposal is not waiting for review" }, 400);
     if (!review.comments.some((x) => x.include && !x.withdrawn)) return c.json({ error: "pick at least one comment for the next round" }, 400);
-    const po = task.product_owner_id ? productOwners.get(task.product_owner_id) : undefined;
-    const notes = reviewNotes(review, po?.title ?? null);
-    const at = new Date().toISOString();
-    for (const x of review.comments) if (x.include && !x.withdrawn) x.sentAt = at;
-    review.sentAt = at;
-    writeFileSync(join(dir, "po-review.json"), JSON.stringify(review, null, 2));
-    engine.review(task.id, { verdict: "changes", notes });
+    const notes = takePoReviewNotes(task);
+    engine.review(task.id, { verdict: "changes", ...(notes ? { notes } : {}) });
     return c.json(engine.getTask(task.id));
 });
 

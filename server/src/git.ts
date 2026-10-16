@@ -72,6 +72,42 @@ export const baseRefFor = async (cwd: string, baseBranch: string, vars: Vars = {
     return `origin/${baseBranch}`;
 };
 
+// The base commit a task branch sits on, pinned when the branch is created and after every rebase Stagehand finishes:
+// `refs/stagehand/base/<branch>` in the repository (shared by every worktree of it, so no table to keep in sync).
+const pinRef = (branch: string): string => `refs/stagehand/base/${branch}`;
+
+export const pinBase = async (cwd: string, sha: string, vars: Vars = {}): Promise<void> => {
+    const branch = (await git(cwd, ["symbolic-ref", "--short", "-q", "HEAD"], vars).catch(() => "")).trim();
+    if (!branch || !sha) return;
+    await git(cwd, ["update-ref", pinRef(branch), sha], vars);
+};
+
+// The commit this branch's own work starts after — what its diff, commit list and own-commit count compare to. Not the
+// base branch's tip: once the base is rewritten (a stacked parent rebased and force-pushed), the merge-base with the new
+// tip falls back to the trunk and the parent's old commits show up as this task's own (2026-10-11: the parent's
+// rebase put its 36 commits into the child's Commits list). Of the candidates that are ancestors of HEAD — the live base
+// tip, the pinned base, git's reflog fork point of the base, the plain merge-base — the newest one (fewest commits
+// to HEAD) wins: a stale pin never hides a later rebase done outside Stagehand.
+export const forkPointFor = async (cwd: string, baseBranch: string, vars: Vars = {}): Promise<string> => {
+    const ref = await baseRefFor(cwd, baseBranch, vars);
+    const out = (args: string[]): Promise<string> => git(cwd, args, vars).then((s) => s.trim(), () => "");
+    const branch = await out(["symbolic-ref", "--short", "-q", "HEAD"]);
+    const candidates = [
+        await out(["rev-parse", "-q", "--verify", `${ref}^{commit}`]),
+        branch ? await out(["rev-parse", "-q", "--verify", `${pinRef(branch)}^{commit}`]) : "",
+        await out(["merge-base", "--fork-point", ref, "HEAD"]),
+        await out(["merge-base", ref, "HEAD"]),
+    ];
+    let best = "";
+    let bestDistance = Infinity;
+    for (const sha of new Set(candidates.filter(Boolean))) {
+        if (!(await git(cwd, ["merge-base", "--is-ancestor", sha, "HEAD"], vars).then(() => true, () => false))) continue;
+        const distance = Number(await out(["rev-list", "--count", `${sha}..HEAD`]));
+        if (distance < bestDistance) [best, bestDistance] = [sha, distance];
+    }
+    return best || ref;
+};
+
 // The ref a new task branch starts from: `origin/<base>` when the base exists on GitHub, else a local `<base>` (a stacked
 // task whose base is another task's branch that was never pushed), else a clear error instead of git's.
 const baseRefOf = async (repoPath: string, baseBranch: string, vars: Vars): Promise<string> => {
@@ -107,6 +143,7 @@ const createOne = async (repoPath: string, baseBranch: string, branch: string, t
         return { path: target, reused: true, existingCommits: log ? log.split("\n").length : 0 };
     }
     await addWorktree(repoPath, [target, "-b", branch, baseRef], target, vars);
+    await pinBase(target, await git(target, ["rev-parse", "HEAD"], vars), vars).catch(() => undefined);
     return { path: target, reused: false, existingCommits: 0 };
 };
 
@@ -255,9 +292,8 @@ export const parseUnifiedDiff = (raw: string, prefix = ""): DiffFile[] => {
 const diffOne = async (checkout: string, baseBranch: string, prefix: string, vars: Vars): Promise<DiffFile[]> => {
     // Diff against the commit the branch actually forked from, not the base branch's current tip: once a fetch moves
     // origin/<base> past the fork point, a tip diff shows every upstream commit since then as if the task had changed
-    // those files. Two-dot against the merge-base keeps uncommitted work in the diff (three-dot would drop it).
-    const ref = await baseRefFor(checkout, baseBranch, vars);
-    const base = (await git(checkout, ["merge-base", ref, "HEAD"], vars).catch(() => "")).trim() || ref;
+    // those files. Two-dot against the fork point keeps uncommitted work in the diff (three-dot would drop it).
+    const base = await forkPointFor(checkout, baseBranch, vars);
     const tracked = await git(checkout, ["diff", "--no-color", "--no-ext-diff", "--unified=3", "--find-renames", base, "--"], vars);
     const files = parseUnifiedDiff(tracked, prefix);
     const untracked = await git(checkout, ["ls-files", "--others", "--exclude-standard"], vars);
@@ -346,7 +382,7 @@ export const branchCommits = async (env: RepoLayout, worktree: string, vars: Var
     const commits: BranchCommit[] = [];
     const dirty: string[] = [];
     for (const { checkout, repo, prefix } of checkoutsOf(env, worktree)) {
-        const raw = await git(checkout, ["log", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI", `${await baseRefFor(checkout, baseOf(env, repo), vars)}..HEAD`], vars).catch(() => "");
+        const raw = await git(checkout, ["log", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI", `${await forkPointFor(checkout, baseOf(env, repo), vars)}..HEAD`], vars).catch(() => "");
         for (const line of raw.split("\n").filter(Boolean)) {
             const [sha = "", short = "", subject = "", author = "", at = ""] = line.split("\x1f");
             commits.push({ sha, short, subject, author, at, repo });
@@ -387,7 +423,7 @@ export const commitsDiff = async (env: RepoLayout, worktree: string, shas: strin
     const groups: DiffGroup[] = [];
     for (const { checkout, prefix, repo } of checkoutsOf(env, worktree)) {
         // Oldest first, so runs are in history order.
-        const ordered = (await git(checkout, ["log", "--reverse", "--format=%H", `${await baseRefFor(checkout, baseOf(env, repo), vars)}..HEAD`], vars).catch(() => "")).split("\n").filter(Boolean);
+        const ordered = (await git(checkout, ["log", "--reverse", "--format=%H", `${await forkPointFor(checkout, baseOf(env, repo), vars)}..HEAD`], vars).catch(() => "")).split("\n").filter(Boolean);
         let run: string[] = [];
         const flush = async (): Promise<void> => {
             if (run.length === 0) return;
@@ -410,12 +446,12 @@ export const uncommittedGroup = async (env: RepoLayout, worktree: string, vars: 
 
 // Per-checkout helpers; for a multi-repo worktree pass the sub-repo checkout (<worktree>/<dir>).
 export const diffStat = async (checkout: string, baseBranch: string): Promise<string> =>
-    git(checkout, ["diff", "--stat", `${await baseRefFor(checkout, baseBranch)}...HEAD`]);
+    git(checkout, ["diff", "--stat", `${await forkPointFor(checkout, baseBranch)}..HEAD`]);
 
 export const changedFiles = async (checkout: string, baseBranch: string): Promise<string[]> => {
-    const out = await git(checkout, ["diff", "--name-only", `${await baseRefFor(checkout, baseBranch)}...HEAD`]);
+    const out = await git(checkout, ["diff", "--name-only", `${await forkPointFor(checkout, baseBranch)}..HEAD`]);
     return out ? out.split("\n") : [];
 };
 
 export const commitLog = async (checkout: string, baseBranch: string): Promise<string> =>
-    git(checkout, ["log", "--oneline", `${await baseRefFor(checkout, baseBranch)}..HEAD`]);
+    git(checkout, ["log", "--oneline", `${await forkPointFor(checkout, baseBranch)}..HEAD`]);

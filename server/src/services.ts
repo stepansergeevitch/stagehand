@@ -272,6 +272,23 @@ export class Services {
     // FEs on 13005, 10 ms apart). Reserved here by pickPort, released by start() once the row exists (or on failure).
     private readonly reserving = new Set<number>();
 
+    // The FE port a task's BE was started with ({{feUrl}} / {{fePort}} in the BE command: an app whose backend checks the
+    // browser's Origin against its frontend's, 2026-10-14) while that FE is not up yet: its FE start takes this port, and
+    // no other task's start takes it meanwhile.
+    private readonly plannedFePort = new Map<string, number>();
+
+    // The task's FE origin for its BE command: the live FE's, else the port its FE start will take.
+    private async feFor(task: TaskRow, env: EnvRow): Promise<{ port: number; url: string }> {
+        const live = this.get(task.id, "fe");
+        if (live && !live.failed_at) return { port: live.port, url: live.url };
+        let port = this.plannedFePort.get(task.id);
+        if (port === undefined) {
+            port = await this.choosePort("fe", env.fe_port, task);
+            this.plannedFePort.set(task.id, port);
+        }
+        return { port, url: render(env.fe_url_template ?? "http://localhost:{{port}}", { port: String(port) }) };
+    }
+
     private async pickPort(kind: CoreServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
         const port = await this.choosePort(kind, fixed, task);
         this.reserving.add(port);
@@ -281,6 +298,9 @@ export class Services {
     private async choosePort(kind: CoreServiceKind, fixed: number | null, task: TaskRow): Promise<number> {
         const taken = new Set((this.db.prepare(`SELECT port FROM services WHERE stopped_at IS NULL`).all() as Array<{ port: number }>).map((r) => r.port));
         for (const p of this.reserving) taken.add(p);
+        for (const [taskId, p] of this.plannedFePort) if (taskId !== task.id) taken.add(p);
+        const planned = kind === "fe" ? this.plannedFePort.get(task.id) : undefined;
+        if (planned !== undefined && !taken.has(planned) && (await portFree(planned))) return planned;
         // A pinned port is a preference, not a requirement: when another task, the user's own dev server or anything
         // else holds it, the service takes a free port from the range like every other one (user, 2026-09-21:
         // "it doesn't matter inside or outside - just pick a free port" — PRODUCT-10501 sat blocked on Core's 7777).
@@ -306,7 +326,21 @@ export class Services {
         return [...this.failures.entries()].filter(([k]) => k.startsWith(`${taskId}:`)).map(([, v]) => v);
     }
 
-    async start(task: TaskRow, env: EnvRow, kind: ServiceKind): Promise<ServiceRow> {
+    // Starts in flight per task and service: a second caller meanwhile gets the same start instead of launching another
+    // copy on a fresh port (2026-10-13: three concurrent starts left one BE on one port and two on another, which
+    // never listened and blocked the task).
+    private readonly starting = new Map<string, Promise<ServiceRow>>();
+
+    start(task: TaskRow, env: EnvRow, kind: ServiceKind): Promise<ServiceRow> {
+        const key = `${task.id}:${kind}`;
+        const inFlight = this.starting.get(key);
+        if (inFlight) return inFlight;
+        const p = this.startOnce(task, env, kind).finally(() => this.starting.delete(key));
+        this.starting.set(key, p);
+        return p;
+    }
+
+    private async startOnce(task: TaskRow, env: EnvRow, kind: ServiceKind): Promise<ServiceRow> {
         try {
             const row = await this.startInner(task, env, kind);
             this.failures.delete(`${task.id}:${kind}`);
@@ -366,6 +400,11 @@ export class Services {
             worktree: task.worktree_path ?? env.path,
             taskDir: join(this.cfg.dataDir, "tasks", task.id),
         };
+        if (kind === "be" && /\{\{fe(Url|Port)\}\}/.test(template) && env.fe_command) {
+            const fe = await this.feFor(task, env);
+            vars.fePort = String(fe.port);
+            vars.feUrl = fe.url;
+        }
         const command = withPrepare(env, render(template, vars));
         const logDir = join(this.cfg.dataDir, "tasks", task.id, "logs");
         mkdirSync(logDir, { recursive: true });
@@ -407,6 +446,7 @@ export class Services {
         this.db
             .prepare(`INSERT INTO services (id, task_id, kind, port, url, tmux, command, log_path, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
             .run(id, task.id, kind, port, url, tmux, command, logPath, now());
+        if (kind === "fe") this.plannedFePort.delete(task.id);
         return this.db.prepare(`SELECT * FROM services WHERE id = ?`).get(id) as ServiceRow;
     }
 
@@ -475,6 +515,20 @@ export class Services {
         return dep;
     }
 
+    // A task that picked a branch of its dependency (tasks.dependency_branch — a change that needs the dependency's own
+    // unmerged change, a task needing an endpoint another task adds to its dependency, 2026-10-14): its dependency is the BE of the
+    // dependency env's task on that branch — that task's worktree, setup and database — instead of the shared instance.
+    // Null when the task uses the shared one.
+    dependencyTask(env: EnvRow, task: Pick<TaskRow, "dependency_branch"> | null | undefined): { dep: EnvRow; source: TaskRow } | null {
+        const dep = this.dependencyEnv(env);
+        const branch = task?.dependency_branch?.trim();
+        if (!dep || !branch) return null;
+        const source = this.db.prepare(`SELECT * FROM tasks WHERE env_id = ? AND branch = ? ORDER BY updated_at DESC LIMIT 1`).get(dep.id, branch) as TaskRow | undefined;
+        if (!source?.worktree_path || !existsSync(source.worktree_path))
+            throw new Error(`no task of "${dep.name}" works on branch ${branch} in a worktree — the dependency runs from that task's checkout; create the task there, or clear the dependency branch`);
+        return { dep, source };
+    }
+
     private dependencyTmux(dep: EnvRow): string {
         return `sh-dep-${dep.id.slice(0, 8)}`;
     }
@@ -505,6 +559,21 @@ export class Services {
     async dependencyStatus(env: EnvRow, taskId: string): Promise<ServiceStatus | null> {
         const dep = this.dependencyEnv(env);
         if (!dep) return null;
+        const task = this.db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(taskId) as TaskRow | undefined;
+        if (task?.dependency_branch?.trim()) {
+            const label = `${dep.name} @ ${task.dependency_branch.trim()}`;
+            let own: { dep: EnvRow; source: TaskRow } | null;
+            try {
+                own = this.dependencyTask(env, task);
+            } catch (e) {
+                const error = String((e as Error).message ?? e);
+                return { id: `dependency:${taskId}`, task_id: taskId, kind: DEPENDENCY_KIND, port: 0, url: "", tmux: "", command: "", log_path: "", started_at: "", stopped_at: null, failed_at: now(), error, auto_restart: 0, running: false, state: "failed", label };
+            }
+            const be = own ? (await this.status(own.source.id)).find((s) => s.kind === "be") : undefined;
+            const base = { id: `dependency:${taskId}`, task_id: taskId, kind: DEPENDENCY_KIND, label: `${label} (${own!.source.ticket_id}'s BE)`, shared: false };
+            if (be) return { ...be, ...base };
+            return { ...base, port: 0, url: "", tmux: "", command: own!.dep.be_command ?? "", log_path: "", started_at: "", stopped_at: null, failed_at: null, error: null, auto_restart: 0, running: false, state: "stopped" };
+        }
         const row = this.envServiceRow(dep.id);
         let state: ServiceState = "stopped";
         let error: string | null = null;
@@ -548,14 +617,25 @@ export class Services {
     async startDependency(env: EnvRow, taskId: string): Promise<ServiceStatus> {
         const dep = this.dependencyEnv(env);
         if (!dep) throw new Error(`env "${env.name}" has no dependency configured`);
-        await this.launchDependency(env, dep);
+        const own = this.dependencyTask(env, this.db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(taskId) as TaskRow | undefined);
+        if (own) await this.start(own.source, own.dep, "be");
+        else await this.launchDependency(env, dep);
         return (await this.dependencyStatus(env, taskId))!;
     }
 
-    // Stop (…/services/dependency/stop): for every task of the env at once — it is one shared instance.
-    async stopDependency(env: EnvRow): Promise<void> {
+    // Stop (…/services/dependency/stop): for every task of the env at once — it is one shared instance; a task on a
+    // dependency branch stops that branch's task BE.
+    async stopDependency(env: EnvRow, taskId?: string): Promise<void> {
+        const own = taskId ? this.dependencyTask(env, this.db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(taskId) as TaskRow | undefined) : null;
+        if (own) return this.stop(own.source.id, "be");
         const dep = this.dependencyEnv(env);
-        if (!dep) return;
+        if (dep) await this.stopEnvService(dep);
+    }
+
+    // Stops the shared instance of `dep` itself (the env other envs depend on) — the resource reaper knows the
+    // dependency, not a dependent: handing it to stopDependency looked up the dependency's own dependency, found none,
+    // and stopped nothing, every 20 s (a dependency BE, 2026-10-13).
+    async stopEnvService(dep: EnvRow): Promise<void> {
         const row = this.envServiceRow(dep.id);
         if (!row) return;
         const hadSession = await sessionExists(row.tmux);
@@ -579,9 +659,16 @@ export class Services {
     // once and reusing it for every task afterward — it isn't itself under test, so it never gets its own worktree
     // or a fresh instance per task. Blocks until it listens (or the start budget is spent). Returns null when `env`
     // has no dependency configured.
-    async ensureDependency(env: EnvRow): Promise<{ url: string } | null> {
+    async ensureDependency(env: EnvRow, task?: Pick<TaskRow, "dependency_branch"> | null): Promise<{ url: string } | null> {
         const dep = this.dependencyEnv(env);
         if (!dep) return null;
+        const own = this.dependencyTask(env, task);
+        if (own) {
+            const row = await this.start(own.source, own.dep, "be");
+            const r = await this.waitUntilUp(row);
+            if (!r.ok) throw new Error(`dependency "${dep.name}" on ${own.source.branch} (${own.source.ticket_id}'s BE) did not come up: ${r.error}`);
+            return { url: row.url };
+        }
         const row = await this.launchDependency(env, dep);
         if (await portListening(row.port)) return { url: row.url };
         if (!(await this.waitForPort(row.port, DEP_START_TIMEOUT_MS))) throw new Error(`dependency "${dep.name}" did not come up on port ${row.port} within ${Math.round(DEP_START_TIMEOUT_MS / 60_000)} min — check ${row.log_path}`);

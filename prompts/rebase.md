@@ -1,5 +1,7 @@
 This is a REBASE ("Rebase onto latest base", or automatic after the base branch was rewritten) — not a stage of this task's pipeline. Stagehand already tried a plain `git rebase --onto origin/{{baseBranch}}` of this branch's own commits: it went through cleanly in every repository except {{conflicted}}, where it hit conflicts and was aborted (that checkout is exactly as it was). Bring the task branch `{{branch}}` up to date with the latest `origin/{{baseBranch}}` there by rebasing, resolve the conflicts in the spirit of this task's change, make sure the result still builds and passes the fast checks, and report. Do NOT push: Stagehand pushes the rebased branch itself (force-with-lease) when the environment allows it.
 
+{{checkFailure}}
+
 {{repoLayout}}
 
 Worktree: `{{worktree}}` (every command below runs there; in a multi-repository workspace, inside each repository directory that has commits on this branch).

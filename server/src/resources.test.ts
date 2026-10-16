@@ -9,7 +9,7 @@ const res = new Resources({} as DB, { resources: DEFAULT_POLICIES } as unknown a
 
 const task = (over: Partial<TaskRow>): TaskRow => ({ id: "t1", ticket_id: "INV-1", stage: "user_review", status: "waiting_user", env_id: "e1", updated_at: new Date(Date.now() - 45 * 60_000).toISOString(), created_at: "2026-09-24T00:00:00Z", worktree_path: null, ...over }) as TaskRow;
 const base = (over: Partial<Resource>): Resource => ({
-    id: "service:s1", kind: "service", label: "FE :13001", owner: { type: "task", id: "t1", name: "INV-1", stage: "user_review", status: "waiting_user" }, tmux: "sh-inv-1-fe", pid: 1, port: 13001, path: null,
+    id: "service:s1", kind: "service", label: "FE :13001", owner: { type: "task", id: "t1", name: "T-1", stage: "user_review", status: "waiting_user" }, tmux: "sh-inv-1-fe", pid: 1, port: 13001, path: null,
     rssMb: 4000, cpuPct: 0, procs: 3, top: "next-server", startedAt: new Date(Date.now() - 2 * 3_600_000).toISOString(), ageMs: 2 * 3_600_000, idleMs: 45 * 60_000, diskMb: null, pinned: false, policy: { verdict: "keep", reason: "", dueAt: null },
     ...over,
 });
@@ -89,9 +89,14 @@ describe("resource policy", () => {
 
     it("a QA browser without a run stops after 2 min; with its run in progress it is kept", () => {
         const t = task({ status: "running", stage: "qa_baseline" });
-        expect(res.judge(base({ kind: "browser", owner: { type: "task", id: "t1", name: "INV-1", status: "running" } }), tasks(t), envs, ok, DEFAULT_POLICIES).verdict).toBe("keep");
-        const v = res.judge(base({ kind: "browser", owner: { type: "task", id: "t1", name: "INV-1", status: "no run · waiting_user" }, startedAt: new Date(Date.now() - 10 * 60_000).toISOString() }), tasks(task({})), envs, ok, DEFAULT_POLICIES);
+        expect(res.judge(base({ kind: "browser", owner: { type: "task", id: "t1", name: "T-1", status: "running" } }), tasks(t), envs, ok, DEFAULT_POLICIES).verdict).toBe("keep");
+        const v = res.judge(base({ kind: "browser", owner: { type: "task", id: "t1", name: "T-1", status: "no run · waiting_user" }, startedAt: new Date(Date.now() - 10 * 60_000).toISOString() }), tasks(task({})), envs, ok, DEFAULT_POLICIES);
         expect(v.verdict).toBe("stop");
         expect(Date.parse(v.dueAt!)).toBeLessThanOrEqual(Date.now());
+    });
+
+    it("keeps a QA browser whose run is live even when the task's status says blocked", () => {
+        const t = task({ status: "blocked", stage: "qa_baseline" });
+        expect(res.judge(base({ kind: "browser", owner: { type: "task", id: "t1", name: "T-1", status: "blocked" }, startedAt: new Date(Date.now() - 10 * 60_000).toISOString() }), tasks(t), envs, ok, DEFAULT_POLICIES).verdict).toBe("keep");
     });
 });

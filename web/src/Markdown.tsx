@@ -56,16 +56,27 @@ const asMarkdownText = (source: unknown): string => {
     return "```json\n" + JSON.stringify(source, null, 2) + "\n```";
 };
 
-const render = (source: unknown): string => {
+// Leaf blocks (paragraph, heading, code block, table row, list item without a paragraph of its own) numbered 1… in
+// document order: the stable "line" a comment or question about the document points at.
+const numberBlocks = (root: Element): void => {
+    let n = 0;
+    for (const el of root.querySelectorAll("p, h1, h2, h3, h4, h5, h6, pre, tr, li")) {
+        if (el.tagName === "LI" && el.querySelector("p, pre")) continue;
+        el.setAttribute("data-block", String(++n));
+    }
+};
+
+const render = (source: unknown, numbered: boolean): string => {
     const clean = DOMPurify.sanitize(marked.parse(asMarkdownText(source), { async: false }) as string);
     const doc = new DOMParser().parseFromString(`<div>${clean}</div>`, "text/html");
     const root = doc.body.firstElementChild;
     if (!root) return clean;
     foldHeadings(root, 2);
+    if (numbered) numberBlocks(root);
     return root.innerHTML;
 };
 
-export const Markdown = ({ source }: { source: string | unknown }) => {
-    const html = useMemo(() => render(source), [source]);
+export const Markdown = ({ source, numbered = false }: { source: string | unknown; numbered?: boolean }) => {
+    const html = useMemo(() => render(source, numbered), [source, numbered]);
     return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 };

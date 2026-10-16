@@ -17,7 +17,7 @@ import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, o
 import { activateCloneTab, cloneProfile, launchClone, pickCdpPort, quitClone, sweepClones, type ChromeClone } from "./chrome-clones.js";
 import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stampTaskOnUsage } from "./usage.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
-import { baseDrift, baseOf, baseRefFor, branchCommits, commitsDiff, createWorktree, describePaths, dirtyPaths, type RepoLayout, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
+import { baseDrift, baseOf, baseRefFor, branchCommits, forkPointFor, pinBase, commitsDiff, createWorktree, describePaths, dirtyPaths, type RepoLayout, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -36,6 +36,7 @@ import { autoFixKinds, decideQaFix, DEFAULT_QA_AUTO_FIX, jevQaFixVerdict } from 
 import { fillQaVars, newQaPassId, qaContractProblems, type QaVars } from "./qa-vars.js";
 import { mergeQuestions, mergeScenarios, planQaShards, shardFiles, type QaShard } from "./qa-shards.js";
 import { flagSubstitutions, isNetworkError } from "./qa-grade.js";
+import { BaseChecks, baseChecksOf, worstBaseCheck, type BaseCheckRow } from "./base-check.js";
 import { jevAsk, jevEnabled } from "./jev.js";
 import { djangoBatchCommand, djangoBatchEnv, parseBatchOutput, planSeedUnits, type SeedItem } from "./seed-batch.js";
 import { DesignResult, ImplResult, PrDraft, PrFixResult, QaPassResult, QuestionsFile, ResearchResult, ReviewResult, type AgentQuestion, QaScenario } from "./stages/contracts.js";
@@ -163,12 +164,21 @@ const renderUnblockHint = (qa: QaPassResult, blocked: QaPassResult["scenarios"],
 // Stages at which Code-changes line comments go to a PR-fix round instead of User Review's "Request changes".
 const LOCAL_COMMENT_FIX_STAGES: ReadonlySet<Stage> = new Set(["pr_waiting", "pr_fix", "pr_green", "pr_approved"]);
 
+// The path a comment or question about the design proposal carries as its anchor (the web view numbers the proposal's blocks).
+const DESIGN_DOC = "design.md";
+
 const renderReviewNotes = (round: number, notes: string | undefined, comments: LineComment[], stage: Stage): string => {
     const parts: string[] = [`## Reviewer notes — review round ${round} (address every point)`];
     if (notes?.trim()) parts.push(notes.trim());
     if (comments.length) {
-        parts.push("### Line comments (path:line refer to the current diff against the base branch; the quoted text is the line as it is now)");
-        for (const c of comments) parts.push(`- \`${c.path}:${c.line}\` (${c.side === "old" ? "removed line" : "line"}) — \`${c.snippet.trim().slice(0, 160)}\`\n  → ${c.text.trim()}`);
+        if (stage === "design_proposal") {
+            // Comments on the proposal itself (design.md): there is no diff, the quoted passage is what identifies the spot.
+            parts.push("### Comments on the proposal (the quoted text is the passage of design.md the reviewer commented on)");
+            for (const c of comments) parts.push(`- "${c.snippet.trim().replace(/\s+/g, " ").slice(0, 240)}"\n  → ${c.text.trim()}`);
+        } else {
+            parts.push("### Line comments (path:line refer to the current diff against the base branch; the quoted text is the line as it is now)");
+            for (const c of comments) parts.push(`- \`${c.path}:${c.line}\` (${c.side === "old" ? "removed line" : "line"}) — \`${c.snippet.trim().slice(0, 160)}\`\n  → ${c.text.trim()}`);
+        }
     }
     const closing: Partial<Record<Stage, string>> = {
         implementation: "When done, list in impl.json `notes` (one markdown string, not an array) each reviewer point and how you resolved it (or why not).",
@@ -455,9 +465,12 @@ const stableJson = (v: unknown): string =>
 const sha1 = (s: string): string => createHash("sha1").update(s).digest("hex");
 // Defaults are not content either: a scenario is hashed as the contract reads it, so a rewrite that drops
 // `"exclusive": false` or `"shot": false` keeps its baseline (INV-149, 2026-10-02: such a rewrite reran all four).
+// Which browser drives the journey is not content either: moving a scenario to Chrome keeps its baseline.
 const normalScenario = (s: unknown): unknown => {
     const parsed = QaScenario.safeParse(s);
-    return parsed.success ? parsed.data : s;
+    if (!parsed.success) return s;
+    const { browser: _browser, ...content } = parsed.data;
+    return content;
 };
 export const scenarioHashes = (design: DesignResult | null): Record<string, string> => Object.fromEntries((design?.qa ?? []).map((s) => [s.id, sha1(stableJson(normalScenario(s)))]));
 // Hashes recorded before normalisation took the scenario as written.
@@ -611,6 +624,7 @@ export class Engine extends EventEmitter {
     private readonly baseCheckout: BaseCheckout;
     // Each task's own database, copied from the env's template (task-db.ts).
     readonly taskDbs: TaskDbs;
+    readonly baseChecks: BaseChecks;
     // Ad-hoc instruction runs (Chat → Do), keyed by task: no `runs` row, so Stop finds them here.
     private readonly instructing = new Map<string, ClaudeRun>();
     private timer: NodeJS.Timeout | null = null;
@@ -623,11 +637,60 @@ export class Engine extends EventEmitter {
         super();
         this.baseCheckout = new BaseCheckout(cfg.dataDir);
         this.taskDbs = new TaskDbs(db, cfg.dataDir);
+        this.baseChecks = new BaseChecks(db, join(cfg.dataDir, "tmp"));
+    }
+
+    // ---------- base check (base-check.ts) ----------
+
+    // Every repository of the task against its latest base: merged in memory, then the env's base check for that
+    // repository on the merged tree. Skipped while the task runs (an agent may be mid-rebase) or the worktree is on the
+    // base for a QA baseline; a repository whose branch, base and command are unchanged keeps its last result.
+    async checkBase(taskId: string, opts: { force?: boolean; fetched?: Set<string> } = {}): Promise<BaseCheckRow[]> {
+        const task = this.getTask(taskId);
+        if (!task?.branch || !task.worktree_path || !existsSync(task.worktree_path)) return [];
+        if (task.status === "running" || this.hasLiveRun(taskId) || this.baseCheckout.isOn(taskId)) return this.baseChecks.rows(taskId);
+        const env = this.env(task.env_id);
+        const layout = this.layoutOf(task, env);
+        const commands = baseChecksOf(env.base_check);
+        const vars = parseEnvVars(env.env_vars);
+        const repos = envRepos(env);
+        for (const repo of repos.length ? repos : [""]) {
+            const cwd = repo ? join(task.worktree_path, repo) : task.worktree_path;
+            if (!existsSync(cwd)) continue;
+            const base = baseOf(layout, repo);
+            const repoPath = repo ? join(env.path, repo) : env.path;
+            const key = `${repoPath}\0${base}`;
+            const fetch = !opts.fetched?.has(key);
+            opts.fetched?.add(key);
+            try {
+                await this.baseChecks.check({ taskId, env, repo, cwd, repoPath, base, command: commands[repo] ?? "", vars, fetch, force: opts.force === true });
+            } catch (e) {
+                console.warn(`[base-check] ${task.ticket_id} ${repo || "repo"}: ${String((e as Error).message ?? e).slice(0, 200)}`);
+            }
+        }
+        this.emitTask(taskId);
+        return this.baseChecks.rows(taskId);
+    }
+
+    // Every open task in turn, one at a time, every 10 minutes (each base fetched once per pass).
+    private baseCheckBusy = false;
+    private async baseCheckPass(): Promise<void> {
+        if (this.baseCheckBusy) return;
+        this.baseCheckBusy = true;
+        try {
+            const fetched = new Set<string>();
+            const tasks = this.db.prepare(`SELECT id FROM tasks WHERE branch IS NOT NULL AND worktree_path IS NOT NULL AND status NOT IN ('done', 'running')`).all() as Array<{ id: string }>;
+            for (const t of tasks) await this.checkBase(t.id, { fetched });
+        } finally {
+            this.baseCheckBusy = false;
+        }
     }
 
     // ---------- lifecycle ----------
 
     startScheduler(): void {
+        setTimeout(() => void this.baseCheckPass(), 60_000).unref();
+        setInterval(() => void this.baseCheckPass(), 10 * 60_000).unref();
         this.timer = setInterval(() => {
             this.tick();
             void this.reapClones();
@@ -784,10 +847,17 @@ export class Engine extends EventEmitter {
         if (task) this.emit("task", task);
     }
 
-    listTasks(envId?: string): TaskRow[] {
-        return envId
+    // Each with its worst base check across repositories (base_check_state / base_check_detail), for the list.
+    listTasks(envId?: string): Array<TaskRow & { base_check_state: string | null; base_check_detail: string | null }> {
+        const tasks = envId
             ? (this.db.prepare(`SELECT * FROM tasks WHERE env_id = ? ORDER BY pinned DESC, updated_at DESC`).all(envId) as TaskRow[])
             : (this.db.prepare(`SELECT * FROM tasks ORDER BY pinned DESC, updated_at DESC`).all() as TaskRow[]);
+        const checks = new Map<string, BaseCheckRow[]>();
+        for (const r of this.db.prepare(`SELECT * FROM base_checks`).all() as BaseCheckRow[]) checks.set(r.task_id, [...(checks.get(r.task_id) ?? []), r]);
+        return tasks.map((t) => {
+            const w = worstBaseCheck(checks.get(t.id) ?? []);
+            return { ...t, base_check_state: w?.state ?? null, base_check_detail: w ? `${w.repo ? `${w.repo}: ` : ""}${w.detail}` : null };
+        });
     }
 
     listRuns(taskId: string): RunRow[] {
@@ -951,8 +1021,19 @@ export class Engine extends EventEmitter {
 
     private gstackWarned = false;
     // Which browser this env's QA runners drive; an env set to gstack without a built binary falls back to Chrome, once with a warning.
-    private qaEngine(env: EnvRow): "chrome" | "gstack" {
+    // The scenarios one QA run drives: the pass's, narrowed to a resumed pass's open ones and to a shard's own.
+    private runScenarios(taskId: string, stage: Stage, opts: DispatchOpts): QaScenario[] {
+        const resumeOnly = opts.extraVars?.["resumeOnly"]?.split(",").filter(Boolean);
+        const shard = opts.shard && !isPrShard(opts.shard) ? opts.shard : null;
+        return this.qaScenariosForPass(this.readArtifactJson<DesignResult>(taskId, "design.json"), stage)
+            .filter((s) => !resumeOnly || resumeOnly.includes(s.id))
+            .filter((s) => !shard || shard.scenarios.includes(s.id));
+    }
+
+    // A run whose scenarios include one marked `browser: "chrome"` (it needs WebGL, a map, …) drives the real Chrome.
+    private qaEngine(env: EnvRow, scenarios: QaScenario[] = []): "chrome" | "gstack" {
         if (env.qa_browser !== "gstack") return "chrome";
+        if (scenarios.some((s) => s.browser === "chrome" && (s.kind ?? "browser") === "browser")) return "chrome";
         if (this.gstackBin()) return "gstack";
         if (!this.gstackWarned) {
             this.gstackWarned = true;
@@ -991,17 +1072,13 @@ export class Engine extends EventEmitter {
             origin = "http://localhost";
         }
         const run = (args: string[], timeout = 30_000) => execFileAsync(bin, args, { env: this.gstackEnv(stateFile), cwd: join(stateFile, ".."), timeout });
-        // The browser's own session first: the env's QA session command signs a QA user in on its own, so nothing the
-        // headless browser does (a token refresh that rotates the refresh token, a logout an app sends from a tab it
-        // sees as orphaned) reaches the human's browser session (INV-155, 2026-10-05: every pass logged the human out).
-        // Only without one are the QA Chrome profile's cookies copied.
-        const session = env.qa_session_command?.trim() ? parseCookies(this.qaSessions.get(task.id)) : [];
+        // The browser is signed in with the QA Chrome profile's cookies and localStorage. The env's QA session command only
+        // signs API scenarios in ($STAGEHAND_QA_SESSION): its cookies once replaced the Chrome copy here (2026-10-05:
+        // a pass logged the human out), which left the browser on a session the app's newer login no longer took (2026-10-15).
         const extra = parseCookies(env.qa_browser_cookies);
         let source: string;
         let storage: Record<string, string> = {};
-        if (session.length) {
-            source = `${session.length} cookie(s) from the QA session command`;
-        } else {
+        {
             const picked = this.qaBrowser(task, env);
             if ("error" in picked) return `Headless QA browser started without a session: ${picked.error}. The runner will meet the login page.`;
             const names: Record<string, string> = { Google: "chrome", Chromium: "chromium", Arc: "arc", Brave: "brave", "Microsoft Edge": "edge", Comet: "comet" };
@@ -1026,7 +1103,7 @@ export class Engine extends EventEmitter {
         }
         // The session's cookies and the env's extra ones (envs.qa_browser_cookies), set on the app's host. gstack sets
         // cookies only for the page it is on, so it first opens a static URL there — no app code runs before they are in.
-        const toSet = [...session, ...extra];
+        const toSet = extra;
         if (toSet.length) {
             const file = join(stateFile, "..", "qa-cookies.json");
             try {
@@ -1057,8 +1134,8 @@ export class Engine extends EventEmitter {
         return join(this.taskDir(taskId), "browser", "agent", "browse.json");
     }
 
-    // Starts (or reuses) a headless browser for the task's agent with the same session QA gets (the QA session command,
-    // else the QA Chrome profile's cookies and localStorage) and returns how to drive it. The app should be running first:
+    // Starts (or reuses) a headless browser for the task's agent with the same session QA gets (the QA Chrome profile's
+    // cookies and localStorage) and returns how to drive it. The app should be running first:
     // the session is set on the app's own origin.
     async startAgentBrowser(taskId: string): Promise<{ stateFile: string; bin: string; appUrl: string; note: string | null }> {
         const task = this.getTask(taskId);
@@ -1067,7 +1144,6 @@ export class Engine extends EventEmitter {
         if (!bin) throw new Error("gstack's headless browser is not built on this host (config.gstackDir)");
         const env = this.env(task.env_id);
         const stateFile = this.agentBrowserState(taskId);
-        if (env.qa_session_command?.trim() && !this.qaSessions.has(task.id)) await this.refreshQaSession(task, env).catch(() => undefined);
         const note = await this.prepareGstackBrowser(task, env, stateFile);
         return { stateFile, bin, appUrl: this.appUrlFor(task, env), note };
     }
@@ -1354,9 +1430,11 @@ export class Engine extends EventEmitter {
     retry(taskId: string): void {
         const task = this.getTask(taskId);
         if (!task) return;
+        // Already running or getting ready (a repeated click): a second chain would race the first one.
+        if (task.status === "running") return;
         // A task parked in the separate QA baseline stage from before it was folded into the design stage (no loop pass
         // running): Retry moves on to Implementation instead of running it.
-        if (task.stage === "qa_baseline" && task.status !== "running" && this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json")?.status !== "running") {
+        if (task.stage === "qa_baseline" && this.readArtifactJson<DesignBaseline>(taskId, "design-baseline.json")?.status !== "running") {
             this.killTaskRuns(taskId);
             if (this.baseCheckout.isOn(taskId)) {
                 void this.fromBase(taskId).then((ok) => ok && this.advance(taskId, "qa_baseline"));
@@ -1434,15 +1512,28 @@ export class Engine extends EventEmitter {
             throw new Error(picked.error);
         }
         const { browser } = picked;
-        const appUrl = this.appUrlFor(task, env).replace(/\/+$/, "");
         const where = `Chrome profile "${chromeBrowserLabel(browser)}"`;
-        const helpLine = `log in at ${appUrl} in ${where}; the helper watches the tab and re-runs the stage by itself`;
+        let appUrl = this.appUrlFor(task, env).replace(/\/+$/, "");
+        const help = (): string => `log in at ${appUrl || "the app"} in ${where}; the helper watches the tab and re-runs the stage by itself`;
         if (this.loginWaits.has(taskId)) {
-            this.setTaskStatus(taskId, "blocked", `waiting for you to ${helpLine}`);
+            this.setTaskStatus(taskId, "blocked", `waiting for you to ${help()}`);
             return "failed";
         }
         this.loginWaits.add(taskId);
         try {
+            // The login lands back on the app, so it has to be up. A baseline that hit the login wall has just been
+            // blocked, which takes the worktree back to its branch and stops the servers (2026-10-12: the
+            // helper read no FE URL and opened "", "Invalid URL"): wait for that, then bring them up again.
+            await this.leavingBase.get(taskId);
+            if (env.depends_on_env_id) await this.ensureTaskDependency(task, env);
+            for (const kind of ["be", "fe"] as const) {
+                if (!(kind === "be" ? env.be_command : env.fe_command)) continue;
+                const r = await this.services.waitUntilUp(await this.services.start(task, env, kind));
+                if (!r.ok) throw new Error(`${kind.toUpperCase()} did not come up: ${r.error}`);
+            }
+            appUrl = this.appUrlFor(task, env).replace(/\/+$/, "");
+            if (!appUrl) throw new Error("the app has no URL — the env's App URL and the task's FE / BE give none");
+            const helpLine = help();
             const kind = browser.browser ?? "Google";
             // Tabs that exist before the open are stale (earlier attempts); only tabs that appear or change afterwards count.
             const before = new Set((await listChromeTabs(kind)).map(tabKey));
@@ -1459,7 +1550,7 @@ export class Engine extends EventEmitter {
             return "timeout";
         } catch (e) {
             const msg = String((e as Error).message ?? e).slice(0, 120);
-            this.setTaskStatus(taskId, "blocked", `login helper failed: ${msg} — ${helpLine}`);
+            this.setTaskStatus(taskId, "blocked", `login helper failed: ${msg} — ${help()}`);
             return "failed";
         } finally {
             this.loginWaits.delete(taskId);
@@ -1532,7 +1623,10 @@ export class Engine extends EventEmitter {
                 for (const p of callbackPortsOf(e.callback_ports)) if (p.relay) declared.add(p.port);
             for (const port of declared) {
                 if (this.relays.has(port)) continue;
-                this.relays.set(port, new CallbackRelay(port, tls, () => [...new Set(this.callbackApps().filter((a) => a.ports.some((p) => p.port === port && p.relay)).map((a) => a.origin))].filter((o) => !o.endsWith(`:${port}`))));
+                // Every app whose env names this port, relayed or not: once Stagehand holds the port, a login of an env that
+                // only lists it (on a fixed port) lands here too, and must not go to another env's app (2026-10-14: one env's
+                // callback went to another env's app the relay alone knew).
+                this.relays.set(port, new CallbackRelay(port, tls, () => [...new Set(this.callbackApps().filter((a) => a.ports.some((p) => p.port === port)).map((a) => a.origin))].filter((o) => !o.endsWith(`:${port}`))));
             }
             for (const r of this.relays.values()) r.sync();
         };
@@ -1745,6 +1839,10 @@ export class Engine extends EventEmitter {
             this.writeDesignBaseline(taskId, { status: "running", round: prev?.round ?? 1, qaHash: qaHashOf(this.readArtifactJson<DesignResult>(taskId, "design.json")), ...(prev?.hashes ? { hashes: prev.hashes } : {}) });
         }
         this.setStage(taskId, stage);
+        // Running from the click on: dispatch awaits its preparation (DB host check, base checkout, BE/FE) before any
+        // status changes, and a second Re-run click meanwhile started a second chain (2026-10-13: three chains
+        // started three BEs; two lost the port race and blocked the task while the third's QA run went on).
+        this.setTaskStatus(taskId, "running", `${def.label} · starting`);
         this.dispatch(taskId, stage, { notes: "This stage is being re-run on request. Do the work again from scratch for this stage; earlier stages' outputs in the task directory are still valid." });
     }
 
@@ -1888,7 +1986,7 @@ export class Engine extends EventEmitter {
                 for (const cwd of checkouts) {
                     const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch], env).catch(() => "");
                     const repo = task.worktree_path === cwd ? "" : relative(task.worktree_path, cwd);
-                    const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `${await this.baseRef(cwd, env, this.baseBranchOf(task, env, repo))}..HEAD`], env).catch(() => "");
+                    const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `${await this.forkPoint(cwd, env, this.baseBranchOf(task, env, repo))}..HEAD`], env).catch(() => "");
                     const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
                     if (ahead || dirty) {
                         const what = [ahead ? `${ahead.split("\n").length} unpushed commit(s)` : null, dirty ? "uncommitted changes" : null].filter(Boolean).join(" and ");
@@ -2066,6 +2164,10 @@ export class Engine extends EventEmitter {
         const lateDraftApproval =
             input.verdict === "approve" && input.repo !== undefined && task.status !== "running" && (task.stage === "pr_waiting" || task.stage === "pr_fix" || task.stage === "pr_green") && !this.prRow(taskId, input.repo)?.number;
         if (task.status !== "waiting_user" && !lateDraftApproval) throw new Error("task is not waiting for review");
+        // Implementation has nothing to approve: its run moves the task on by itself. It shows waiting_user for a moment
+        // while it prepares, and a second Approve of the design landing then (2026-10-08: a double click 11 s
+        // after the first) was taken for an approval of Implementation and sent the task to Code Review before any code.
+        if (task.stage === "implementation") throw new Error("Implementation moves on by itself when its run finishes — there is nothing to approve");
         if (this.pendingQuestions(taskId)) throw new Error("the agent is waiting for answers to its questions — answer (or dismiss) them first");
         this.autopilotHuman(taskId);
         const comments = input.comments ?? [];
@@ -2253,9 +2355,8 @@ export class Engine extends EventEmitter {
     }
 
     // A draft whose base is not the env's trunk is a stacked PR. Record on each draft the parent branch's open PR
-    // (so the reviewer sees "stacked on #n" and the body says so on creation), or a note when that branch has no PR
-    // yet — the human then opens the parent's PR first or changes the base. Runs when the draft lands and whenever
-    // the base is edited; PR creation re-checks live.
+    // (so the reviewer sees "stacked on #n" in Stagehand), or a note when that branch has no PR yet — the human then
+    // opens the parent's PR first or changes the base. Runs when the draft lands and whenever the base is edited.
     private async annotateStackedDrafts(taskId: string): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) return;
@@ -2277,12 +2378,6 @@ export class Engine extends EventEmitter {
         }
         writeFileSync(p, JSON.stringify({ base, drafts }, null, 2));
         this.emitTask(taskId);
-    }
-
-    // The line a stacked PR's body opens with, so GitHub readers know what to merge first and what the diff is against.
-    private stackedBodyPrefix(parent: { number: number; title: string } | null, base: string, trunk: string): string {
-        if (parent) return `> **Stacked on #${parent.number}** — ${parent.title}. Merge that first; this diff is relative to \`${base}\`.\n\n`;
-        return base !== trunk ? `> Targets \`${base}\` (not \`${trunk}\`); this diff is relative to that branch.\n\n` : "";
     }
 
     // The human edits one repository's drafted PR (title / markdown body) or the shared base before approving it.
@@ -2417,7 +2512,7 @@ export class Engine extends EventEmitter {
         const cwd = this.checkoutOf(task, env, repo);
         const existing = this.prRow(taskId, repo);
         const repoBase = this.baseBranchOf(task, env, repo);
-        const ahead = await this.git(cwd, ["log", "--oneline", `${await this.baseRef(cwd, env, repoBase)}..HEAD`], env).catch(() => "");
+        const ahead = await this.git(cwd, ["log", "--oneline", `${await this.forkPoint(cwd, env, repoBase)}..HEAD`], env).catch(() => "");
         const dirty = await this.git(cwd, ["status", "--porcelain"], env).catch(() => "");
         // Nothing committed but changes on disk: an env that forbids agent commits (or an agent that left work
         // uncommitted) — the human has to commit before anything can be pushed or opened.
@@ -2448,12 +2543,10 @@ export class Engine extends EventEmitter {
             return `pushed \`${task.branch}\` — this env forbids agent PR creation: open the PR yourself (draft below); Stagehand picks it up by branch`;
         }
         try {
-            // A PR against a non-trunk base is stacked: say what it sits on (checked live — the parent PR may have been
-            // opened after the draft landed) so reviewers merge the parent first and read the diff against the right branch.
+            // The body is the draft as approved: a "Stacked on #n" line Stagehand once put on top changed nothing (GitHub
+            // shows the base branch itself), so it is gone (2026-10-15).
             const prBase = entry.base?.trim() || this.baseBranchOf(task, env, repo);
-            const parent = prBase !== env.base_branch ? await this.openPrForBranch(cwd, env, prBase) : null;
-            const body = this.stackedBodyPrefix(parent, prBase, env.base_branch) + entry.body;
-            const url = await this.gh(cwd, ["pr", "create", "--base", prBase, "--head", task.branch, "--title", entry.title, "--body", body, ...(rulesOf(this.configDirOf(env)).prDraft ? ["--draft"] : [])], env);
+            const url = await this.gh(cwd, ["pr", "create", "--base", prBase, "--head", task.branch, "--title", entry.title, "--body", entry.body, ...(rulesOf(this.configDirOf(env)).prDraft ? ["--draft"] : [])], env);
             const number = Number(url.split("/").pop());
             this.upsertPrRow(taskId, repo, { number: Number.isFinite(number) ? number : null, url, pushed_at: now(), pushed_sha: pushed, state: "OPEN" });
             return `PR #${Number.isFinite(number) ? number : "?"} created`;
@@ -3480,18 +3573,24 @@ export class Engine extends EventEmitter {
         }
         this.setTaskStatus(taskId, "running", opts.approved ? "PR Waiting · pushing the approved changes to the open PRs" : "PR Fix · pushing the approved fix");
         let current = "";
+        let moved = false;
         try {
             for (const repo of this.prRepos(env)) {
                 current = repo;
                 const cwd = this.checkoutOf(task, env, repo);
                 if (!existsSync(cwd)) continue;
                 const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch], env).catch(() => "");
-                const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `${await this.baseRef(cwd, env, this.baseBranchOf(task, env, repo))}..HEAD`], env).catch(() => "");
+                const ahead = await this.git(cwd, ["log", "--oneline", remote ? `origin/${task.branch}..HEAD` : `${await this.forkPoint(cwd, env, this.baseBranchOf(task, env, repo))}..HEAD`], env).catch(() => "");
                 if (!ahead) continue;
                 const how = await this.pushBranch(cwd, env, task.branch, this.prRow(taskId, repo)?.pushed_sha ?? null);
                 if (how !== "pushed") this.addAgentNote(taskId, `${repoLabel(repo)}: ${how}`);
                 this.resetPrState(taskId, repo, await this.headSha(cwd, env));
+                moved = true;
             }
+            // Tasks stacked on this branch follow it after a plain push too, not only after a force-push: a fix that
+            // renames a migration they depend on breaks them just the same (a parent's migration renumbering, 2026-10-13: two child tasks
+            // stayed on the old commits and their migrate failed until a human rebased them).
+            if (moved) this.onBranchRewritten(env, task.branch, "moved");
         } catch (e) {
             // The fix stays committed and approved: Retry runs this push again (no agent run), and a force-push from
             // Code changes carries on from here by itself.
@@ -3576,7 +3675,16 @@ export class Engine extends EventEmitter {
 
     // Back to the branch after the baseline: servers stop (they ran base code), the branch and its stash come back,
     // migrations go up.
-    private async fromBase(taskId: string): Promise<boolean> {
+    private fromBase(taskId: string): Promise<boolean> {
+        const p = this.leavingBase.get(taskId) ?? this.fromBaseOnce(taskId).finally(() => this.leavingBase.delete(taskId));
+        this.leavingBase.set(taskId, p);
+        return p;
+    }
+
+    // The return to the branch in flight per task: the login helper waits for it before it brings the servers back up.
+    private readonly leavingBase = new Map<string, Promise<boolean>>();
+
+    private async fromBaseOnce(taskId: string): Promise<boolean> {
         const task = this.getTask(taskId);
         if (!task?.worktree_path || !this.baseCheckout.isOn(taskId)) return true;
         const env = this.env(task.env_id);
@@ -3719,11 +3827,20 @@ export class Engine extends EventEmitter {
     private runningBrowserRun(accountId: string, exceptTaskId: string): { ticket_id: string; stage: Stage } | null {
         const browserStages = STAGES.filter((s) => STAGE_DEFS[s]?.chrome);
         if (browserStages.length === 0) return null;
-        const row = this.db
-            .prepare(`SELECT t.ticket_id, r.stage FROM runs r JOIN tasks t ON t.id = r.task_id WHERE r.account_id = ? AND r.status = 'running' AND r.task_id != ? AND r.stage IN (${browserStages.map(() => "?").join(",")}) LIMIT 1`)
-            .get(accountId, exceptTaskId, ...browserStages) as { ticket_id: string; stage: Stage } | undefined;
-        return row ?? null;
+        // Only runs that drive the shared Chrome profile: a headless (gstack) or API-only QA run on the same account
+        // leaves it free (2026-10-13: the Chrome shard S2 waited 7 min behind its headless sibling S1).
+        const rows = this.db
+            .prepare(`SELECT r.id, t.ticket_id, r.stage FROM runs r JOIN tasks t ON t.id = r.task_id WHERE r.account_id = ? AND r.status = 'running' AND r.task_id != ? AND r.stage IN (${browserStages.map(() => "?").join(",")})`)
+            .all(accountId, exceptTaskId, ...browserStages) as Array<{ id: string; ticket_id: string; stage: Stage }>;
+        const row = rows.find((r) => this.sharedChromeRuns.has(r.id));
+        return row ? { ticket_id: row.ticket_id, stage: row.stage } : null;
     }
+
+    // Runs in progress that drive an account's shared Chrome profile (not a copy of their own, not headless).
+    private readonly sharedChromeRuns = new Set<string>();
+    // A profile copy that failed for this run key: the run's later dispatches (a deferred shard) use the shared profile
+    // instead of copying again (2026-10-13: nine failed copies in a row, each ~45 s).
+    private readonly cloneFailedAt = new Map<string, number>();
 
     private runningCount(accountId: string): number {
         const row = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE account_id = ? AND status = 'running'`).get(accountId) as { n: number };
@@ -3810,6 +3927,13 @@ export class Engine extends EventEmitter {
               `Answer directly and briefly about that comment. Read the code it points at (in ${task.worktree_path ?? env.path}) and this branch's commits as needed: say whether the point makes sense and why, ` +
               `whether the branch already addresses it (cite the commit or path:line), and if not what a fix would take and its risk. ` +
               `If they are actually asking for a change, say what you would do and that it happens through "Ask agent to address" on the PR comments tab or a review round — do not make code changes from this chat.`
+            : anchor?.path === DESIGN_DOC
+            ? `The human is reading this task's design proposal (${DESIGN_DOC} in ${this.taskDir(taskId)}, with design.json beside it) and asked about ONE passage of it, which reads:\n\n` +
+              `${anchor.snippet.trim().split("\n").map((l) => `    ${l}`).join("\n")}\n\n` +
+              (earlier.length ? `Earlier in this same thread:\n${earlier.map((m) => `- ${m.role === "user" ? "Human" : "You"}: ${m.text.replace(/\s+/g, " ").slice(0, 400)}`).join("\n")}\n\n` : "") +
+              `Their question: ${quoted}\n\n` +
+              `Answer directly and briefly: why the proposal says this, what it rests on in the code (open files in ${task.worktree_path ?? env.path} as needed), or what the alternatives would cost. ` +
+              `If they are asking for a change, say what you would change and that it happens when they press Request changes on the proposal — do not edit ${DESIGN_DOC}, design.json or any code from this chat.`
             : anchor
             ? `The human is looking at this task's diff (branch vs base) and asked about ONE specific line of it — ` +
               `file \`${anchor.path}\`, ${anchor.side === "old" ? `the removed line at old line ${anchor.line}` : `line ${anchor.line} of the current file`}, which reads:\n\n` +
@@ -4228,12 +4352,21 @@ export class Engine extends EventEmitter {
                 };
             })(),
             seedHints: env.qa_seed_hints?.trim() ? env.qa_seed_hints.trim() : "(none configured for this environment — inspect the repo's configs/ and models to find the local database and API)",
+            mockHints: env.qa_mock_hints?.trim() ? env.qa_mock_hints.trim() : "(none configured for this environment — find how the app reaches each external service in its configs and code, and stub it locally before a scenario can trigger it)",
             seedReport: "(no shell seeds were run)",
             resumeHint: "",
             components: this.describeComponents(task, env, def.stage),
             appTools: def.stage === "implementation" ? this.describeAppTools(task, env) : "",
             ...(opts.extraVars ?? {}),
         };
+        // A PR Fix round run again without a brief of its own (Request changes on its diff, sent back to it) keeps the
+        // round's jobs: without them the agent never sees the `[comment #<id>]` markers, reports `comments: []`, and
+        // every picked comment shows "not addressed" even when the run fixed it (2026-10-13).
+        if (def.stage === "pr_fix" && !isPrShard(opts.shard) && !vars["failureOutput"]) {
+            const round = this.readArtifactJson<PrRoundSpec>(task.id, "pr_fix_round.json");
+            const jobs = Object.values(round?.jobs ?? {}).filter(Boolean);
+            if (jobs.length) vars["failureOutput"] = `This round's original brief (the human's notes below say what to do now; report every \`[comment #<id>]\` again in \`comments\`, including ones an earlier run of this round already handled):\n\n${jobs.join("\n\n---\n\n")}`;
+        }
         if (def.stage === "pr_fix" && isPrShard(opts.shard)) {
             const sh = opts.shard;
             vars["failureOutput"] = sh.failureOutput;
@@ -4275,11 +4408,12 @@ export class Engine extends EventEmitter {
             const firstBrowser = scenarios.find((s) => (s.kind ?? "browser") === "browser");
             vars["firstUrl"] = firstBrowser?.url ?? "/";
             const beUrl = be?.url ?? "";
-            const gstackRun = !!firstBrowser && this.qaEngine(env) === "gstack";
+            const gstackRun = !!firstBrowser && this.qaEngine(env, scenarios) === "gstack";
             vars["browserNotes"] = gstackRun
                 ? [
                       `- **Browser mapping for this run (overrides every tool name in the bullets below):** \`browser_batch\`, \`computer\`, \`find\`, \`read_page\`, \`get_page_text\`, \`javascript_tool\`, \`tabs_context_mcp\` and \`resize_window\` do not exist here — the browser is gstack's headless Chromium, driven with the \`$B\` command in Bash: \`$B snapshot -i\` instead of find/read_page, \`$B click @eN\` / \`$B fill @eN "text"\` / \`$B press Enter\` instead of computer, \`$B text\` instead of get_page_text, \`$B js "<expr>"\` instead of javascript_tool, \`$B screenshot <path>\` for shots. One Bash call may chain several \`$B\` commands with \`&&\` (that is your "batch"). No zoom check, no tab juggling, no "hidden tab" rule: there is one headless tab.`,
                       `- **Reading a page:** after every navigation or click that loads data, \`$B wait --networkidle\` then \`$B snapshot -i\` (interactive elements as \`@e1\`…; add \`-C\` for clickable elements outside the ARIA tree, \`@c1\`…). Refs change after a navigation: re-snapshot before clicking. Dropdowns and pickers: click the trigger, snapshot, click the option ref; type-to-filter with \`$B fill\` on the search box first. Tables: \`$B text\` or \`$B html <css selector>\`. Console errors: \`$B console --errors\`; requests: \`$B network\`.`,
+                      `- **What headless cannot do:** a page that needs WebGL (a map, a 3D view), a canvas or media the headless browser cannot render — it crashes, stays blank, or throws a WebGL/context error in \`$B console --errors\` — is not an app bug and not a seed problem. Record that scenario \`blocked\` with \`"needsChrome": "<what failed, one line>"\` and go on with the others: Stagehand re-runs it in the real Chrome. Only for that; any other block is reported the normal way.`,
                   ].join("\n")
                 : "";
             // The browser steps of the setup only when a scenario drives a browser; an API-only pass must not touch Chrome.
@@ -4406,7 +4540,7 @@ export class Engine extends EventEmitter {
         const browserNeeded = def.chrome === true && (opts.shard ? opts.shard.browser : this.qaNeedsBrowser(taskId));
         // gstack's headless daemon replaces the Chrome profile machinery below: no window, no copy, no extension bridge,
         // and the run needs no browser login — it runs on the token account like any headless stage.
-        const gstack = browserNeeded && this.qaEngine(env) === "gstack";
+        const gstack = browserNeeded && this.qaEngine(env, this.runScenarios(taskId, stage, opts)) === "gstack";
         const gstackState = gstack ? this.gstackStateFile(taskId, opts.shard) : null;
         const chromeNeeded = browserNeeded && !gstack;
         // A shard of a parallel QA pass: a gate that blocks the task records the shard as failed (the group decides
@@ -4488,7 +4622,8 @@ export class Engine extends EventEmitter {
             // Accounts that clone their QA profile per run: several browser runs at once, each in its own Chrome
             // started with the QA flags — no shared-profile queue, no launch-flag check; the bridge confirmation is
             // part of preparing the copy. A failed copy falls back to the shared profile for this dispatch.
-            const cloneSource = opts.cloneFailed ? null : this.cloneSourceFor(chrome.account);
+            const copyFailed = opts.cloneFailed || Date.now() - (this.cloneFailedAt.get(cloneKey) ?? 0) < 30 * 60_000;
+            const cloneSource = copyFailed ? null : this.cloneSourceFor(chrome.account);
             if (cloneSource && !(opts.cloneReady && this.clones.has(cloneKey))) {
                 if (this.clonesOf(chrome.account.id) >= this.cfg.maxChromeClonesPerAccount) {
                     if (shard) {
@@ -4510,6 +4645,7 @@ export class Engine extends EventEmitter {
                         this.dispatch(taskId, stage, { ...opts, cloneReady: true, chromeVerified: true, chromeFlagsVerified: true });
                     })
                     .catch((e: unknown) => {
+                        this.cloneFailedAt.set(cloneKey, Date.now());
                         this.addAgentNote(taskId, `No cloned Chrome profile for this run${shard ? ` (shard ${shard.id})` : ""} (${String((e as Error).message ?? e).slice(0, 200)}) — running in the shared QA profile instead.`);
                         this.dispatch(taskId, stage, { ...opts, cloneFailed: true });
                     });
@@ -4632,6 +4768,7 @@ export class Engine extends EventEmitter {
             )
             .run(runId, taskId, stage, fresh ? "fresh-session" : "task-session", account.id, now(), attempt, explicitModel, shard?.id ?? null, shard?.group ?? null);
         if (shard) this.shardStarted(shard, runId);
+        if (chromeNeeded && !this.clones.has(cloneKey)) this.sharedChromeRuns.add(runId);
         const label = shard ? `${def.label} · ${shard.id}` : def.label;
         this.setTaskStatus(taskId, "running", `${label} · starting`);
 
@@ -4723,6 +4860,7 @@ export class Engine extends EventEmitter {
         void run.done.then((outcome) => {
             if (tabKeeper) clearInterval(tabKeeper);
             this.active.delete(runId);
+            this.sharedChromeRuns.delete(runId);
             // The copy served this run only; a retry or unblock makes a fresh one.
             void this.releaseClone(cloneKey);
             if (gstackState) void this.stopGstackBrowser(gstackState);
@@ -5376,10 +5514,50 @@ export class Engine extends EventEmitter {
         return lines.length > 1 ? lines.join("\n") : "(no seed steps in the design)";
     }
 
+    // Brings up the task's dependency (the shared instance, or its dependency branch's task BE) and points the worktree
+    // at it — before any start of the task's BE: a stage's, the login helper's, or the App widget's.
+    async ensureTaskDependency(task: TaskRow, env: EnvRow): Promise<void> {
+        const dep = await this.services.ensureDependency(env, task);
+        if (dep) await this.applyDependencyUrl(task, env, dep.url);
+    }
+
+    // The dependency URL the task's worktree was set up with ($STAGEHAND_DEP_URL to the env's setup, which writes it into
+    // the app's config) is kept in the task dir. Another one — the task picked or cleared a dependency branch — stops
+    // the task's app and re-runs the setup with it, so the next start talks to that dependency.
+    async applyDependencyUrl(task: TaskRow, env: EnvRow, url: string): Promise<void> {
+        const file = join(this.taskDir(task.id), "dependency-url");
+        const shared = env.depends_on_env_id ? (this.services.envServiceRow(env.depends_on_env_id)?.url ?? null) : null;
+        const last = existsSync(file) ? readFileSync(file, "utf8").trim() : shared;
+        if (last === url) return;
+        if (env.setup_command && task.worktree_path && existsSync(task.worktree_path)) {
+            await this.services.stop(task.id, "fe");
+            await this.services.stop(task.id, "be");
+            const out = await runWorktreeSetup(task.worktree_path, env.path, withPrepare(env, env.setup_command), { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id), STAGEHAND_DEP_URL: url });
+            if (out) console.error(`[setup] ${task.ticket_id} ${task.worktree_path} (dependency ${url})\n${out.slice(-1500)}`);
+            if (taskDbRow(this.db, task.id)?.status === "ready") await this.taskDbs.connect(this.getTask(task.id)!, env);
+        }
+        writeFileSync(file, `${url}\n`);
+        const branch = task.dependency_branch?.trim();
+        this.addAgentNote(task.id, `🔗 Dependency now ${url}${branch ? ` — ${this.services.dependencyEnv(env)?.name ?? "the dependency"} on ${branch}` : " — the shared instance"}; the worktree's setup re-ran with it.`);
+    }
+
+    // Sets the dependency env's branch this task's dependency runs from (null = the shared instance). Checked now — a
+    // branch no task of the dependency env works on is refused — and applied at the next start of the task's app.
+    setDependencyBranch(taskId: string, branch: string | null): void {
+        const task = this.getTask(taskId);
+        if (!task) throw new Error("task not found");
+        const env = this.env(task.env_id);
+        if (!env.depends_on_env_id) throw new Error(`env "${env.name}" has no dependency`);
+        const value = branch?.trim() || null;
+        this.services.dependencyTask(env, { dependency_branch: value });
+        this.db.prepare(`UPDATE tasks SET dependency_branch = ?, updated_at = ? WHERE id = ?`).run(value, now(), taskId);
+        this.emitTask(taskId);
+    }
+
     private async bringUpServices(task: TaskRow, env: EnvRow): Promise<boolean> {
         if (env.depends_on_env_id) {
             this.setTaskStatus(task.id, "running", `${STAGE_DEFS[task.stage]?.label ?? task.stage} · starting the dependency service this env needs`);
-            await this.services.ensureDependency(env);
+            await this.ensureTaskDependency(task, env);
         }
         // A service that fails to come up throws with the probe's reason (command exited, start budget spent), which
         // the caller puts on the blocked line — and the App widget shows the same failure with a Fix-with-agent button.
@@ -5444,6 +5622,32 @@ export class Engine extends EventEmitter {
                 ? `## Resumed pass — ${recorded.map((s) => s.id).join(", ")} already recorded\n\nThese scenarios were completed by the previous attempt and are NOT listed below; do not run them again. Copy these entries verbatim into your output file next to the ones you run now:\n\n\`\`\`json\n${JSON.stringify(recorded, null, 2)}\n\`\`\``
                 : "",
         };
+    }
+
+    // Scenarios a headless run reported `needsChrome` for: marked `browser: "chrome"` in design.json (every later pass
+    // drives them in the QA Chrome profile) and the pass's blocked scenarios run again. False when there is nothing to
+    // move — a scenario already on Chrome that is still blocked goes the normal blocked way.
+    private moveToChrome(taskId: string, def: StageDef, qa: QaPassResult): boolean {
+        const task = this.getTask(taskId);
+        if (!task || this.env(task.env_id).qa_browser !== "gstack") return false;
+        const asked = new Map(qa.scenarios.filter((s) => s.outcome === "blocked" && s.needsChrome).map((s) => [s.id, s.needsChrome!]));
+        if (!asked.size) return false;
+        const file = join(this.taskDir(taskId), "design.json");
+        let raw: { qa?: Array<Record<string, unknown>> };
+        try {
+            raw = JSON.parse(readFileSync(file, "utf8")) as typeof raw;
+        } catch {
+            return false;
+        }
+        const moved = (raw.qa ?? []).filter((s) => asked.has(String(s["id"])) && s["browser"] !== "chrome");
+        if (!moved.length) return false;
+        for (const s of moved) s["browser"] = "chrome";
+        writeFileSync(file, JSON.stringify(raw, null, 2));
+        this.addAgentNote(taskId, `${def.label}: ${moved.map((s) => `${String(s["id"])} (${asked.get(String(s["id"]))})`).join("; ")} — cannot run in the headless browser; moved to the QA Chrome profile for this and every later pass, running the blocked scenarios again`);
+        const pass = def.stage === "qa_baseline" ? "before" : "after";
+        const blocked = qa.scenarios.filter((s) => s.outcome === "blocked").map((s) => s.id);
+        this.dispatch(taskId, def.stage, { extraVars: this.resumeVars(taskId, pass, qa.scenarios.filter(isRecorded), blocked) });
+        return true;
     }
 
     // What qa/<pass>.partial.json holds: the scenarios earlier runs of this pass recorded (verdicts and hand-offs).
@@ -5654,10 +5858,21 @@ export class Engine extends EventEmitter {
         const usable = this.usableAccounts(cd.path);
         const acc = usable.find((a) => a.id === task.account_id) ?? usable.find((a) => a.id === accountOrderOf(env)[0]) ?? usable[0];
         if (!acc) throw new Error(`no AI account can run in config dir ${cd.name}`);
-        const { repos, behind, fastForwarded, headsBefore, plain, conflicted } = await this.rebasePlainPass(task, env, opts.repos);
+        const { allRepos, repos, behind, fastForwarded, headsBefore, plain, conflicted } = await this.rebasePlainPass(task, env, opts.repos);
         const header = opts.auto ? `🔀 Auto-rebase onto origin/${base} (${opts.auto}):` : `🔀 Rebase onto origin/${base}:`;
         if (repos.length === 0) {
             const warnings = plain.filter((l) => l.startsWith("⚠️"));
+            // On the base locally is not on the base on GitHub: a rebase whose push never happened leaves the PR on the
+            // old history, which GitHub shows as conflicting with its base (2026-10-13: the checkout was on
+            // the parent's latest, the pushed branch 51 commits behind it, and the button only said "already up to date").
+            const unpushed = fastForwarded.length ? [] : await this.rebasedButNotPushed(task, env, allRepos);
+            if (unpushed.length) {
+                const lines = await this.finishRebase(task, env, unpushed, headsBefore);
+                const summary = `${unpushed.map((r) => `↻ ${repoLabel(r)}: on the latest base locally, but the branch on GitHub is not — pushing it`).join("\n")}\n${lines.join("\n")}`;
+                this.addMessage(taskId, "agent", `${header}\n\n${summary}`);
+                this.emitTask(taskId);
+                return { agent: false, summary, failed: /❌/.test(summary) };
+            }
             if (fastForwarded.length === 0) throw new Error(`already up to date with origin/${base}${warnings.length ? ` — ${warnings.join("; ")}` : ""}`);
             const resync = await this.resyncAfterHistoryChange(task, env, headsBefore);
             const summary = `${plain.join("\n")}${resync ? `\n${resync}` : ""}`;
@@ -5665,7 +5880,11 @@ export class Engine extends EventEmitter {
             this.emitTask(taskId);
             return { agent: false, summary, failed: /❌/.test(summary) };
         }
-        if (conflicted.length === 0) {
+        // A rebase without textual conflicts can still break the branch: a parent task renamed a migration this branch
+        // depends on (2026-10-13: replayed cleanly onto its parent, pushed, and every task stacked on it failed
+        // migrate with NodeNotFoundError). The env's verification command decides; a failure goes to the agent, not to GitHub.
+        const checkFailure = conflicted.length === 0 ? await this.checkAfterRebase(task, env) : null;
+        if (conflicted.length === 0 && !checkFailure) {
             const lines = await this.finishRebase(task, env, repos, headsBefore);
             const summary = `${plain.join("\n")}\n${lines.join("\n")}`;
             this.addMessage(taskId, "agent", `${header}\n\n${summary}`);
@@ -5674,15 +5893,19 @@ export class Engine extends EventEmitter {
         }
         const prevStatus = task.status;
         const prevLine = task.status_line;
-        this.setTaskStatus(taskId, "running", `Rebasing \`${task.branch}\` onto the latest base (${base}) with the agent (plain rebase conflicted in ${conflicted.map(repoLabel).join(", ")})…`);
+        const why = checkFailure ? "the plain rebase went through, but the env's verification command fails on it" : `plain rebase conflicted in ${conflicted.map(repoLabel).join(", ")}`;
+        this.setTaskStatus(taskId, "running", `Rebasing \`${task.branch}\` onto the latest base (${base}) with the agent (${why})…`);
         const prompt = renderPrompt("rebase.md", {
             branch: task.branch,
             baseBranch: base,
             worktree: task.worktree_path,
             taskDir: this.taskDir(taskId),
             repoLayout: describeRepoLayout(this.layoutOf(task, env), task.worktree_path),
-            behind: behind.filter((l) => conflicted.some((repo) => l.startsWith(`${repoLabel(repo)}:`))).join("; "),
-            conflicted: conflicted.map(repoLabel).join(", "),
+            behind: (checkFailure ? behind : behind.filter((l) => conflicted.some((repo) => l.startsWith(`${repoLabel(repo)}:`)))).join("; "),
+            conflicted: checkFailure ? "none (it went through everywhere)" : conflicted.map(repoLabel).join(", "),
+            checkFailure: checkFailure
+                ? `## The rebased branch fails the environment's verification command\n\nThe plain rebase went through without conflicts and is in place (do not rebase again), but this command, run from the worktree, now fails:\n\n\`\`\`\n${env.check_command}\n\`\`\`\n\n\`\`\`\n${checkFailure}\n\`\`\`\n\nSomething the base changed broke this branch's own work — typically a migration of this branch that depends on a migration the base renamed or renumbered. Fix it in this branch's commits (step 3), keeping this task's behaviour, until the command passes; then report.`
+                : "",
             taskNotes: task.notes?.trim() ? `The human's standing notes on this task: ${task.notes.trim()}` : "",
         });
         const rulesMat = materializeRules(rulesOf(cd), env, task.worktree_path, this.cfg.dataDir);
@@ -5704,12 +5927,56 @@ export class Engine extends EventEmitter {
         void run.done.then(async (outcome: RunOutcome) => {
             if (outcome.result) recordUsage(this.db, { accountId: acc.id, envId: env.id, taskId, runId: null, kind: "rebase", stage: null }, outcome.result);
             const reply = outcome.result?.result?.trim() || (outcome.exitCode !== 0 ? `(did not finish: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
-            const lines = await this.finishRebase(task, env, repos, headsBefore);
-            this.setTaskStatus(taskId, prevStatus, prevLine ?? "rebase finished — see Chat");
+            // Pushed only as a finished whole: a fix the agent left uncommitted, or a verification that still fails, holds
+            // the push (2026-10-14: the commit of the migration fix was refused, and the rebase went to GitHub
+            // without it — a PR with conflicting migrations).
+            const dirty: string[] = [];
+            for (const repo of repos) {
+                const status = await this.git(this.checkoutOf(task, env, repo), ["status", "--porcelain", "--untracked-files=no"], env).catch(() => "");
+                if (status.trim()) dirty.push(repo);
+            }
+            const stillFails = dirty.length ? null : await this.checkAfterRebase(task, env);
+            const held = dirty.length
+                ? `⏸ Not pushed: ${dirty.map(repoLabel).join(", ")} has uncommitted changes — the agent's fix is not committed. Commit it (or discard it), then use Rebase onto latest base again to push.`
+                : stillFails
+                  ? `⏸ Not pushed: the env's verification command still fails on the rebased branch:\n\`\`\`\n${stillFails}\n\`\`\``
+                  : null;
+            const lines = held ? [held] : await this.finishRebase(task, env, repos, headsBefore);
+            this.setTaskStatus(taskId, prevStatus, held ? `${prevLine ?? ""} · rebase not pushed — see Chat`.replace(/^ · /, "") : (prevLine ?? "rebase finished — see Chat"), held ? { notify: true } : undefined);
             this.addMessage(taskId, "agent", `${header}\n\n${plain.join("\n")}\n\n${reply}\n\n${lines.join("\n")}`);
             this.emitTask(taskId);
         });
-        return { agent: true, summary: `the plain rebase conflicted in ${conflicted.map(repoLabel).join(", ")} — the agent is resolving it; the result lands in Chat`, failed: false };
+        return { agent: true, summary: `${checkFailure ? "the plain rebase went through, but the env's verification command fails on it" : `the plain rebase conflicted in ${conflicted.map(repoLabel).join(", ")}`} — the agent is fixing it; the result lands in Chat`, failed: false };
+    }
+
+    // The env's verification command on the rebased worktree: null when it passes (or the env has none), else the tail
+    // of its output.
+    private async checkAfterRebase(task: TaskRow, env: EnvRow): Promise<string | null> {
+        if (!env.check_command?.trim() || !task.worktree_path) return null;
+        try {
+            await runWorktreeSetup(task.worktree_path, env.path, withPrepare(env, env.check_command), parseEnvVars(env.env_vars));
+            return null;
+        } catch (e) {
+            const err = e as { stdout?: string; stderr?: string; message?: string };
+            const out = `${err.stdout ?? ""}\n${err.stderr ?? ""}`.trim() || String(err.message ?? e);
+            return out.split("\n").slice(-40).join("\n").slice(-3000);
+        }
+    }
+
+    // Checkouts whose HEAD contains the base while the branch on GitHub does not: rebased here, never pushed. A branch
+    // not on GitHub, or GitHub out of reach, is not counted (finishRebase reports those when it pushes).
+    private async rebasedButNotPushed(task: TaskRow, env: EnvRow, repos: string[]): Promise<string[]> {
+        const out: string[] = [];
+        for (const repo of repos) {
+            const cwd = this.checkoutOf(task, env, repo);
+            const ref = await this.baseRef(cwd, env, this.baseBranchOf(task, env, repo));
+            const remote = `refs/remotes/origin/${task.branch}`;
+            const fetched = await this.git(cwd, ["fetch", "origin", `+refs/heads/${task.branch}:${remote}`], env).then(() => true, () => false);
+            if (!fetched) continue;
+            const isAncestor = (of: string): Promise<boolean> => this.git(cwd, ["merge-base", "--is-ancestor", ref, of], env).then(() => true, () => false);
+            if ((await isAncestor("HEAD")) && !(await isAncestor(remote))) out.push(repo);
+        }
+        return out;
     }
 
     // Preflight + mechanical pass shared by "Rebase onto latest base" and the batched PR jobs: sets uncommitted changes
@@ -5754,15 +6021,17 @@ export class Engine extends EventEmitter {
                 const ref = await this.baseRef(cwd, env, base);
                 const n = Number(await this.git(cwd, ["rev-list", "--count", `HEAD..${ref}`], env).catch(() => "0")) || 0;
                 if (n === 0) continue;
-                // Commits of this checkout's own: on neither the base nor the env's trunk (a stacked task forked from a
-                // newer trunk than its parent carries trunk commits its parent lacks — those are not "its own").
+                // Commits of this checkout's own: after its fork point (git.ts forkPointFor — a rewritten base's old
+                // commits are not its own) and not on the env's trunk (a stacked task forked from a newer trunk than its
+                // parent carries trunk commits its parent lacks — those are not "its own" either).
                 await this.git(cwd, ["fetch", "origin", env.base_branch], env).catch(() => "");
-                const own = Number(await this.git(cwd, ["rev-list", "--count", "HEAD", `^${ref}`, `^origin/${env.base_branch}`], env).catch(() => "0")) || 0;
+                const own = Number(await this.git(cwd, ["rev-list", "--count", "HEAD", `^${await this.forkPoint(cwd, env, base)}`, `^${ref}`, `^origin/${env.base_branch}`], env).catch(() => "0")) || 0;
                 // A checkout with nothing of its own (a multi-repo task that only touched the other repository) has no
                 // history to replay: move it to the base outright, so a stacked task's untouched repository matches its
                 // parent. Nothing is lost — every commit here is on the base or the trunk.
                 if (own === 0) {
                     await this.git(cwd, ["reset", "--hard", ref], env);
+                    await pinBase(cwd, (await this.headSha(cwd, env)) ?? "", parseEnvVars(env.env_vars)).catch(() => undefined);
                     fastForwarded.push(`${repoLabel(repo)}: moved to ${ref} (no commits of its own)`);
                     continue;
                 }
@@ -5862,6 +6131,12 @@ export class Engine extends EventEmitter {
                     `Rebase onto the latest base. Stagehand already tried a plain \`git rebase --onto\` of this branch's own commits: ${done.length ? `it went through in ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}; ` : ""}it CONFLICTED in ${pass.conflicted.map(repoLabel).join(", ")} and was aborted there (those checkouts are exactly as they were). In each of those repositories run \`git fetch origin <base>\` and \`git rebase origin/<base>\` (${bases}) — a checkout with uncommitted changes or untracked files: \`git stash push --include-untracked\` before the rebase and \`git stash pop\` after it, never commit or discard them — resolve the conflicts in the spirit of this task's change (keep this task's behaviour, take the base's changes for everything else; drop a commit of this branch that the base now already provides, e.g. a duplicate merge migration), \`git add\` + \`git rebase --continue\` until done — never \`--abort\` and leave it, never \`-i\`. Do the rebase BEFORE the other jobs so they are made on top of the rebased history.`,
                 );
             }
+            // A clean replay is checked like the Rebase button's (startRebase): a failing verification command is a job, never a push.
+            const checkFailure = rebasedRepos.length ? await this.checkAfterRebase(task, env) : null;
+            if (checkFailure) {
+                for (const repo of rebasedRepos) addJob(repo, `Fix what the rebase broke. Stagehand's plain rebase onto the latest base went through without conflicts (it is in place — do not rebase again), but the environment's verification command now fails:\n\n\`\`\`\n${env.check_command}\n\`\`\`\n\n\`\`\`\n${checkFailure}\n\`\`\`\n\nSomething the base changed broke this branch's own work — typically a migration of this branch that depends on a migration the base renamed or renumbered. Fix it in this branch's commits, keeping this task's behaviour, until the command passes.`);
+                summary.push("fix what the rebase broke");
+            }
             if (pass.conflicted.length) summary.push(`rebase (conflicts in ${pass.conflicted.map(repoLabel).join(", ")})`);
             else if (pass.repos.length || pass.fastForwarded.length) summary.push("rebase (done mechanically)");
             const setAside = pass.plain.filter((l) => l.startsWith("📦") || (l.startsWith("⚠️") && l.includes("set aside")));
@@ -5924,12 +6199,17 @@ export class Engine extends EventEmitter {
         return baseRefFor(cwd, base, parseEnvVars(env.env_vars));
     }
 
+    // The commit this checkout's own work starts after (git.ts forkPointFor): diffs, commit lists and the rebase compare to it.
+    private forkPoint(cwd: string, env: EnvRow, base: string): Promise<string> {
+        return forkPointFor(cwd, base, parseEnvVars(env.env_vars));
+    }
+
     // `git rebase --onto <base ref> <parent of the oldest own commit>`: replays exactly this checkout's own commits
-    // (on neither the base nor the trunk), non-interactively. Any conflict aborts and restores the checkout to where it
-    // was; the caller hands that checkout to the agent.
+    // (after its fork point, on neither the base nor the trunk), non-interactively. Any conflict aborts and restores the
+    // checkout to where it was; the caller hands that checkout to the agent.
     private async plainRebase(cwd: string, env: EnvRow, base: string, headBefore: string): Promise<{ ok: true; replayed: number } | { ok: false; conflict: string }> {
         const ref = await this.baseRef(cwd, env, base);
-        const own = (await this.git(cwd, ["rev-list", "--reverse", "HEAD", `^${ref}`, `^origin/${env.base_branch}`], env).catch(() => "")).split("\n").filter(Boolean);
+        const own = (await this.git(cwd, ["rev-list", "--reverse", "HEAD", `^${await this.forkPoint(cwd, env, base)}`, `^${ref}`, `^origin/${env.base_branch}`], env).catch(() => "")).split("\n").filter(Boolean);
         if (own.length === 0) return { ok: true, replayed: 0 };
         try {
             await this.git(cwd, ["-c", "core.editor=true", "-c", "rebase.autoStash=false", "rebase", "--onto", ref, `${own[0]}^`], env);
@@ -5965,7 +6245,17 @@ export class Engine extends EventEmitter {
                 lines.push(`⚠️ ${repoLabel(repo)}: not rebased (still behind ${ref})`);
                 continue;
             }
-            const remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch!], env).catch(() => "");
+            // The base this branch now sits on, kept even if the base is rewritten later (git.ts forkPointFor).
+            await pinBase(cwd, (await this.git(cwd, ["rev-parse", `${ref}^{commit}`], env)).trim(), parseEnvVars(env.env_vars)).catch(() => undefined);
+            // A failed lookup is not "not on GitHub": that skipped the push of a rebased branch whose PR was open
+            // (2026-10-11: the network was down, the PR kept the old history and the stacked child looked up to date).
+            let remote: string;
+            try {
+                remote = await this.git(cwd, ["ls-remote", "--heads", "origin", task.branch!], env);
+            } catch (e) {
+                lines.push(`❌ ${repoLabel(repo)}: on ${ref} now, but GitHub could not be reached to push it (${gitErrorTail(e)}) — push it yourself: \`git push --force-with-lease origin ${task.branch}\``);
+                continue;
+            }
             if (!remote.trim()) {
                 lines.push(`✅ ${repoLabel(repo)}: on ${ref} now; the branch is not on GitHub yet, nothing to push`);
                 continue;
@@ -6026,9 +6316,9 @@ export class Engine extends EventEmitter {
         return candidates.filter((t) => this.basedOn(t, env, branch).length > 0);
     }
 
-    private onBranchRewritten(env: EnvRow, branch: string): void {
+    private onBranchRewritten(env: EnvRow, branch: string, how: "rewritten" | "moved" = "rewritten"): void {
         const children = this.childrenOf(env, branch).filter((t) => t.branch && t.worktree_path);
-        for (const c of children) this.queueRebase(c.id, `the base branch \`${branch}\` was rewritten`, this.basedOn(c, env, branch));
+        for (const c of children) this.queueRebase(c.id, `the base branch \`${branch}\` ${how === "moved" ? "got new commits" : "was rewritten"}`, this.basedOn(c, env, branch));
         if (children.length) this.processPendingRebases();
     }
 
@@ -6537,8 +6827,8 @@ export class Engine extends EventEmitter {
         if (allowed.size === 0 || !jevEnabled(this.cfg)) return { remaining: asked.questions, answers, notes };
         const design = this.readArtifactJson<DesignResult>(taskId, "design.json");
         const pass: "before" | "after" = def.stage === "qa_baseline" ? "before" : "after";
-        const ticket = renderTicketsForPrompt(this.tickets(task), this.taskDir(taskId));
-        const contract = this.designContract(taskId);
+        const acceptanceCriteria = this.ticketCriteria(task);
+        const designText = this.designText(taskId);
         const partial = this.readPartial(taskId, pass);
         const approved: FixRequest[] = [];
         for (const q of asked.questions) {
@@ -6569,7 +6859,7 @@ export class Engine extends EventEmitter {
             const observation = partial.find((s) => s.id === scenario.id)?.observation ?? "";
             let verdict;
             try {
-                verdict = await jevQaFixVerdict(this.cfg, this.db, { accountId: null, envId: env.id, taskId, runId: null, stage: def.stage }, { ticket, contract, pass, fixKind: fix.kind, question: q.text, reason: q.context ?? "", observation, before: scenario, after: dry.after });
+                verdict = await jevQaFixVerdict(this.cfg, this.db, { accountId: null, envId: env.id, taskId, runId: null, stage: def.stage }, { acceptanceCriteria, design: designText, pass, fixKind: fix.kind, question: q.text, reason: q.context ?? "", observation, before: scenario, after: dry.after });
             } catch (e) {
                 remaining.push(q);
                 notes.push(`🧭 ${label}: left for you — Jev did not answer (${String((e as Error).message ?? e).slice(0, 120)})`);
@@ -6593,15 +6883,18 @@ export class Engine extends EventEmitter {
         return { remaining, answers, notes };
     }
 
-    // What the change must do — the Problem statement and the Suggested approach with its Invariant (an older proposal:
-    // its Contract section) — the acceptance Jev judges corrections against.
-    private designContract(taskId: string): string {
+    // What the change must do, for Jev's judgment of a QA correction: the acceptance criteria of the task's tickets (the
+    // description when none are listed — the stage prompts say to derive them from it) …
+    private ticketCriteria(task: TaskRow): string {
+        return this.tickets(task)
+            .map((t) => `## ${t.id} — ${t.title}\n${t.acceptanceCriteria.length ? t.acceptanceCriteria.map((c) => `- ${c}`).join("\n") : `(none listed) Description:\n${t.description.slice(0, 2500)}`}`)
+            .join("\n\n");
+    }
+
+    // … and the whole design proposal (problem, approach, technical changes, acceptance criteria), not just two sections of it.
+    private designText(taskId: string): string {
         const p = join(this.taskDir(taskId), "design.md");
-        if (!existsSync(p)) return "";
-        const md = readFileSync(p, "utf8");
-        const part = (name: string): string | null => new RegExp(`^##[^\\n]*${name}[^\\n]*\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, "im").exec(md)?.[1]?.trim() ?? null;
-        const now = [part("problem statement"), part("suggested approach")].filter((x): x is string => !!x);
-        return (now.length ? now.join("\n\n") : (part("contract") ?? md)).trim().slice(0, 4000);
+        return existsSync(p) ? readFileSync(p, "utf8").trim() : "";
     }
 
     // Every applied correction is logged; a step, assert, seed or scenario change during Manual QA also makes that
@@ -7062,8 +7355,11 @@ export class Engine extends EventEmitter {
                     }
                     if (env.depends_on_env_id) {
                         this.setTaskStatus(taskId, "running", "starting the dependency service this env needs");
-                        const dep = await this.services.ensureDependency(env);
-                        if (dep) envVars.STAGEHAND_DEP_URL = dep.url;
+                        const dep = await this.services.ensureDependency(env, this.getTask(taskId));
+                        if (dep) {
+                            envVars.STAGEHAND_DEP_URL = dep.url;
+                            writeFileSync(join(this.taskDir(taskId), "dependency-url"), `${dep.url}\n`);
+                        }
                     }
                     // The task's own database first (docs/db-isolation.md): setup then sees $STAGEHAND_TASK_DB, and
                     // connect points the worktree's config at it once setup has written that config.
@@ -7120,6 +7416,10 @@ export class Engine extends EventEmitter {
                 this.dispatch(taskId, def.stage, { attempt: attempt + 1 });
                 return;
             }
+            // A headless runner that cannot drive a journey at all (no WebGL: a map that crashes the form) says so per
+            // scenario; those scenarios move to the real Chrome for good and the blocked ones run again, no human needed
+            // (2026-10-13: the new deal form's map crashed headless Chromium and the task went blocked).
+            if (this.moveToChrome(taskId, def, qa)) return;
             const blockedByAuth = qa.blockers.some((b) => /auth0|log ?in/i.test(b));
             if (blockedByAuth) {
                 const env = this.env(task.env_id);

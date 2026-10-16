@@ -140,10 +140,13 @@ export const taskDbExpect = (db: DB, task: Pick<TaskRow, "id">, env: EnvRow): st
 };
 
 // Database names a QA step addresses explicitly (`-d x`, `--dbname=x`, `dbname=x`, `…/x` in a URL): a step naming the
-// template would write to it instead of the task's database.
+// template would write to it instead of the task's database. Only a URL's path counts — a file path segment of the
+// same name (`~/code/<template>/…`, `backend/<template>/manage.py`) is not a database (2026-10-13). A shell
+// fallback to it (`${STAGEHAND_TASK_DB:-<template>}`) counts too: whenever the variable is unset the step quietly
+// writes to the template, and every task database copied from it afterwards inherits the rows.
 export const namesTemplate = (text: string, template: string): boolean => {
     const t = template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`(?:-d\\s*|--dbname[= ]|dbname=|/)["']?${t}["']?(?![\\w])`).test(text);
+    return new RegExp(`(?:-d\\s*|--dbname[= ]|dbname=|://[^\\s/]+/|:-)["']?${t}["']?(?![\\w/])`).test(text);
 };
 
 export class TaskDbs {

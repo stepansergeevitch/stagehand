@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountOrderOf, accountUsableWith, api, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, taskDbConfigOf, type Account, type AutopilotRules, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type TaskDbConfig } from "./api";
+import { accountOrderOf, accountUsableWith, api, envRepos, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, taskDbConfigOf, type Account, type AutopilotRules, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type TaskDbConfig } from "./api";
 import { CheckField, EntityForm, EntityView, Field, Hint, ReadField, useDraft, useSaver } from "./components/EntityView";
 
 // An environment's entity view: one tab per area of its configuration (components/EntityView.tsx).
@@ -26,7 +26,7 @@ const csv = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Bo
 type Patch = Parameters<typeof api.patchEnv>[1];
 type Common = { env: Env; save: (key: string, body: Patch) => Promise<void>; saving: string | null };
 
-const PLACEHOLDERS = "Placeholders: {{port}}, {{url}}, {{bePort}}, {{beUrl}} (FE only), {{worktree}}, {{taskDir}}, {{envPath}} (setup only). Commands run from the task's worktree in tmux.";
+const PLACEHOLDERS = "Placeholders: {{port}}, {{url}}, {{bePort}}, {{beUrl}} (FE only), {{feUrl}}, {{fePort}} (BE only: the port the task's FE has or will take), {{worktree}}, {{taskDir}}, {{envPath}} (setup only). Commands run from the task's worktree in tmux.";
 
 // ---------- General ----------
 const GeneralTab = ({ env, envs, save, saving }: Common & { envs: Env[] }) => {
@@ -174,18 +174,30 @@ const AppTab = ({ env, save, saving }: Common) => {
     );
 };
 
+// The base check per repository (envs.base_check, {repoDir: command}; "" for a single repo).
+const baseCheckRepos = (env: Env): string[] => (envRepos(env).length ? envRepos(env) : [""]);
+const baseCheckOf = (env: Env): Record<string, string> => {
+    try {
+        return { ...(JSON.parse(env.base_check ?? "{}") as Record<string, string>) };
+    } catch {
+        return {};
+    }
+};
+
 // ---------- Lifecycle: what runs around a task ----------
 const LifecycleTab = ({ env, save, saving }: Common) => {
     const d = useDraft(() => ({
         envVars: env.env_vars ?? "", prepareCommand: env.prepare_command ?? "", setupCommand: env.setup_command ?? "", migrateCommand: env.migrate_command ?? "", migrateDownCommand: env.migrate_down_command ?? "",
         cleanupCommand: env.cleanup_command ?? "", rebaseCommand: env.rebase_command ?? "", checkCommand: env.check_command ?? "", testCommand: env.test_command ?? "",
+        baseCheck: baseCheckOf(env),
     }), [env]);
     const v = d.value;
-    const area = (k: keyof typeof v, tall = false) => <textarea className={tall ? "tall" : undefined} spellCheck={false} value={v[k]} onChange={(e) => d.patch({ [k]: e.target.value } as Partial<typeof v>)} />;
+    const area = (k: Exclude<keyof typeof v, "baseCheck">, tall = false) => <textarea className={tall ? "tall" : undefined} spellCheck={false} value={v[k]} onChange={(e) => d.patch({ [k]: e.target.value } as Partial<typeof v>)} />;
     return (
         <EntityForm dirty={d.dirty} saving={saving === "lifecycle"} onDiscard={d.reset} onSave={() => save("lifecycle", {
             envVars: nul(v.envVars), prepareCommand: nul(v.prepareCommand), setupCommand: nul(v.setupCommand), migrateCommand: nul(v.migrateCommand), migrateDownCommand: nul(v.migrateDownCommand),
             cleanupCommand: nul(v.cleanupCommand), rebaseCommand: nul(v.rebaseCommand), checkCommand: nul(v.checkCommand), testCommand: nul(v.testCommand),
+            baseCheck: v.baseCheck,
         })}>
             <Field label="Environment variables" hint="KEY=VALUE per line; exported into git, setup, BE/FE, Claude runs and the terminal. Lines starting with # are comments.">{area("envVars")}</Field>
             <Field label="Prepare" hint="Bash that runs before every command of this environment — setup, BE, FE, components, migrate, cleanup, rebase, verification — e.g. bring up the datastores it needs. A non-zero exit stops the command.">{area("prepareCommand", true)}</Field>
@@ -196,6 +208,11 @@ const LifecycleTab = ({ env, save, saving }: Common) => {
             <Field label="Rebase" hint="Runs from the worktree after every successful rebase onto the base branch — rebuild what a rebase makes stale, e.g. per-task test databases. {{worktree}} / {{envPath}}.">{area("rebaseCommand")}</Field>
             <Field label="Verification" hint="Runs from the worktree after every Implementation and PR Fix run. A non-zero exit sends the output back to the agent, twice, then blocks for you. For what tests and a dev server never exercise, e.g. a framework's system checks.">{area("checkCommand")}</Field>
             <Field label="Test command" hint="Runs named tests. {{tests}} = the test ids, {{envPath}}. The CI autopilot runs it on a checkout of the base to prove an untouched failing test passes there when CI has no green run on the base.">{area("testCommand")}</Field>
+            {baseCheckRepos(env).map((repo) => (
+                <Field key={repo} label={repo ? `Base check · ${repo}` : "Base check"} hint="Runs in the background on every open task: the branch is merged with its latest base in memory and, when that merges cleanly, this runs on a temporary checkout of the result — e.g. a check that no migration conflicts with the base's. The task shows the outcome (merge conflicts, a failing check). Empty: only the merge is checked. {{envPath}} = the env's checkout of this repository, {{worktree}} = the task's (for an env file, a virtualenv).">
+                    <textarea spellCheck={false} value={v.baseCheck[repo] ?? ""} onChange={(e) => d.patch({ baseCheck: { ...v.baseCheck, [repo]: e.target.value } })} />
+                </Field>
+            ))}
         </EntityForm>
     );
 };
@@ -252,14 +269,14 @@ const DatabaseTab = ({ env, save, saving }: Common) => {
 const QaTab = ({ env, save, saving }: Common) => {
     const d = useDraft(() => ({
         qaBrowser: (env.qa_browser ?? "chrome") as "chrome" | "gstack", qaAutoFix: ((env.qa_auto_fix as QaAutoFixScope | null | undefined) ?? "seeds+steps") as QaAutoFixScope,
-        qaSeedHints: env.qa_seed_hints ?? "", qaSessionCommand: env.qa_session_command ?? "", qaBrowserCookies: env.qa_browser_cookies ?? "",
+        qaSeedHints: env.qa_seed_hints ?? "", qaMockHints: env.qa_mock_hints ?? "", qaSessionCommand: env.qa_session_command ?? "", qaBrowserCookies: env.qa_browser_cookies ?? "",
     }), [env]);
     const v = d.value;
     return (
         <EntityForm dirty={d.dirty} saving={saving === "qa"} onDiscard={d.reset} onSave={() => save("qa", {
-            qaBrowser: v.qaBrowser, qaAutoFix: v.qaAutoFix, qaSeedHints: nul(v.qaSeedHints), qaSessionCommand: nul(v.qaSessionCommand), qaBrowserCookies: nul(v.qaBrowserCookies),
+            qaBrowser: v.qaBrowser, qaAutoFix: v.qaAutoFix, qaSeedHints: nul(v.qaSeedHints), qaMockHints: nul(v.qaMockHints), qaSessionCommand: nul(v.qaSessionCommand), qaBrowserCookies: nul(v.qaBrowserCookies),
         })}>
-            <Field label="QA browser" hint="Chrome profile: the QA account's Chrome via claude-in-chrome (windows, profile copies per run, browser login). gstack: a headless Chromium with no windows; its session comes from the QA session command, else from that Chrome profile's cookies and localStorage; runs on a token account.">
+            <Field label="QA browser" hint="Chrome profile: the QA account's Chrome via claude-in-chrome (windows, profile copies per run, browser login). gstack: a headless Chromium with no windows; its session comes from that Chrome profile's cookies and localStorage; runs on a token account.">
                 <select value={v.qaBrowser} onChange={(e) => d.patch({ qaBrowser: e.target.value as "chrome" | "gstack" })}>
                     <option value="chrome">Chrome profile of the QA account</option>
                     <option value="gstack">gstack headless Chromium</option>
@@ -274,7 +291,8 @@ const QaTab = ({ env, save, saving }: Common) => {
                 </select>
             </Field>
             <Field label="Seeding hints" hint="How agents create test data here: database connection and key tables, API auth, seed recipes. Given to the Design and QA prompts verbatim."><textarea className="tall" spellCheck={false} value={v.qaSeedHints} onChange={(e) => d.patch({ qaSeedHints: e.target.value })} /></Field>
-            <Field label="QA session command" hint="Runs from the worktree before every QA pass; the last line it prints reaches the QA run and its seeds as $STAGEHAND_QA_SESSION — e.g. a signed session cookie for API scenarios, so the agent never handles the app's secrets."><textarea className="tall" spellCheck={false} value={v.qaSessionCommand} onChange={(e) => d.patch({ qaSessionCommand: e.target.value })} /></Field>
+            <Field label="Third-party stubs" hint="How QA keeps external services (email, payments, SMS, webhooks, …) from being reached for real: environment variables, a local stub server command, sandbox keys, where captured calls can be read. Given to the Design and QA prompts verbatim; agents stub every third party a scenario can trigger."><textarea className="tall" spellCheck={false} value={v.qaMockHints} onChange={(e) => d.patch({ qaMockHints: e.target.value })} /></Field>
+            <Field label="QA session command" hint="Runs from the worktree before every QA pass; the last line it prints reaches the QA run and its seeds as $STAGEHAND_QA_SESSION — e.g. a signed session cookie for API scenarios, so the agent never handles the app's secrets. The headless browser does not use it."><textarea className="tall" spellCheck={false} value={v.qaSessionCommand} onChange={(e) => d.patch({ qaSessionCommand: e.target.value })} /></Field>
             <Field label="QA browser cookies" hint="One name=value per line; the headless QA browser gets them on the app's host after its session — e.g. a cookie that tells the app a tab is a fresh sign-in."><textarea spellCheck={false} value={v.qaBrowserCookies} onChange={(e) => d.patch({ qaBrowserCookies: e.target.value })} /></Field>
         </EntityForm>
     );

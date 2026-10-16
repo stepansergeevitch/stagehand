@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LabelChips } from "./Labels";
 import { BranchPicker } from "./BranchPicker";
-import { accountOrderOf, accountUsableWith, api, envRepos, labelsOf, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type PoEvent, type ProductOwner, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
+import { accountOrderOf, accountUsableWith, api, envRepos, poEnvIds, labelsOf, modelLabel, STAGE_LABEL, STAGE_ORDER, taskLabel, type Account, type ConfigDir, type Env, type MyTicket, type PoEvent, type ProductOwner, type Readiness, type Settings, type Task, type TaskDetail } from "./api";
 import { TaskDetailView } from "./TaskDetail";
 import { formatRoute, navigate, taskRoute, useRoute, type Page, type TaskView } from "./routes";
 import { Prompter } from "./Prompter";
@@ -22,6 +22,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { LazyTerminal } from "./LazyTerminal";
 import { AgentInput } from "./AgentInput";
 import { Modal } from "./Modal";
+import { BaseCheckChip } from "./components/BaseCheckChip";
 
 // Where the user is lives in the URL hash only (see routes.ts): reloads, back/forward, pasted links and anything that
 // reads the path see the same screen.
@@ -568,7 +569,7 @@ export const App = () => {
                                             <span className={`icon ${cls}`}>{glyph}</span>
                                             <span className="name">{taskLabel(t)}<small>{t.title ?? ""}</small></span>
                                             <span className="age">{age(t.updated_at)}</span>
-                                            <span className="pr" />
+                                            <span className="pr"><BaseCheckChip state={t.base_check_state} detail={t.base_check_detail} compact /></span>
                                             <span className="status"><LabelChips labels={labelsOf(t)} /><span className="status-text">{t.status_line ?? STAGE_LABEL[t.stage]}</span></span>
                                         </div>
                                     );
@@ -747,7 +748,7 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                     <select value={owner} onChange={(e) => setOwner(e.target.value)}>
                         <option value="">automatic — the one whose project the ticket belongs to</option>
                         <option value="none">none</option>
-                        {owners.filter((o) => o.env_id === env.id).map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+                        {owners.filter((o) => poEnvIds(o).includes(env.id)).map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
                     </select>
                 </label>
             )}
