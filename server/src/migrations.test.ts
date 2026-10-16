@@ -38,7 +38,7 @@ describe("QA baseline on base code", () => {
         expect(repos).toHaveLength(1);
         expect(repos[0]!.base).toBe(base);
         const log = join(data, "migrate.log");
-        await bc.enter("t1", repos, { downCommand: "echo down $STAGEHAND_BASE_REF > down.out", worktree: root, envPath: root, vars: {}, logPath: log });
+        await bc.enter("t1", repos, { downCommand: "echo down $VORTEX_BASE_REF > down.out", worktree: root, envPath: root, vars: {}, logPath: log });
         expect(bc.isOn("t1")).toBe(true);
         expect(g(root, "rev-parse", "HEAD")).toBe(base);
         expect(readFileSync(join(root, "app.txt"), "utf8")).toBe("base\n");

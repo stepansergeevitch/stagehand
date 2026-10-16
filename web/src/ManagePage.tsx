@@ -6,7 +6,7 @@ import { authLabel, PrompterPage, type IntegrationType } from "./ConfigEntities"
 import { accountBrowserReady, accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
 import { Button, Chip, Input } from "@vortex/ds";
 
-// List / create / read / update / delete for the things Stagehand is configured with.
+// List / create / read / update / delete for the things Vortex is configured with.
 export type ManageTab = "envs" | "dirs" | "accounts" | "integrations" | "prompter";
 
 // Every card on the Integrations page carries one of these, so a new kind of integration announces what it is.
@@ -211,7 +211,7 @@ const AccountTable = ({ accounts, envs, tasks, settings, onAdd, onOpen, act }: {
     );
 };
 
-// One row per integration Stagehand talks to; a row opens its entity view.
+// One row per integration Vortex talks to; a row opens its entity view.
 type IntegrationRow = { id: string; name: string; type: IntegrationType; status: string; ok: boolean; usedBy: string };
 
 const IntegrationTable = ({ settings, onOpen, onError }: { settings: Settings | null; onOpen: (id: string) => void; onError: (m: string) => void }) => {

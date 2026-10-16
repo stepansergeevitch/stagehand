@@ -488,7 +488,7 @@ const ChecksList = ({ checks, compact }: { checks: PrCheck[]; compact?: boolean 
     );
 };
 
-const MERGE_KEY = "stagehand.mergeMethod";
+const MERGE_KEY = "vortex.mergeMethod";
 
 // A repository's name as a coloured chip — the same colour for the same repo everywhere, so the PR rows, tabs and
 // comments of one repository are recognisable at a glance.

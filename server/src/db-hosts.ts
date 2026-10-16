@@ -6,7 +6,7 @@ import { loginShellArgs, loginShellEnv } from "./git.js";
 
 // Which databases a task may touch: the env's DB host check (envs.db_hosts_command, inline, run from the worktree)
 // prints the hosts the worktree's app would connect to; every one must be in envs.allowed_db_hosts (JSON array,
-// default localhost / 127.0.0.1 / ::1). Stagehand runs it before agent runs, service starts and migrations, and a host
+// default localhost / 127.0.0.1 / ::1). Vortex runs it before agent runs, service starts and migrations, and a host
 // outside the list blocks the task — so a worktree whose config points at a shared database never migrates or seeds it
 // (INV-155, 2026-10-02: its .env copy pointed at a remote dev database).
 

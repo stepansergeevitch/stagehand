@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
+import { userDataDir } from "./home.js";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { ClassicLevel } from "classic-level";
@@ -24,7 +25,7 @@ import { APP_NAMES, QA_CHROME_FLAGS } from "./chrome-profiles.js";
 const execFileAsync = promisify(execFile);
 
 export const EXTENSION_ID = "fcoeoabgfenejglbffodgkkbkcdhcgfn";
-export const CLONES_ROOT = join(homedir(), ".stagehand", "chrome-clones");
+export const CLONES_ROOT = join(userDataDir(), "chrome-clones");
 const CDP_PORT_RANGE: [number, number] = [9333, 9399];
 const LAUNCH_TIMEOUT_MS = 30_000;
 

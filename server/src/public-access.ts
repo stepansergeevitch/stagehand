@@ -4,7 +4,8 @@ import type { Context, MiddlewareHandler } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import type { Config } from "./config.js";
 
-const COOKIE = "stagehand_session";
+const COOKIE = "vortex_session";
+const LEGACY_COOKIE = "stagehand_session";
 
 export const hashPassword = (password: string): string => {
     const salt = randomBytes(16).toString("hex");
@@ -62,7 +63,7 @@ export const publicAuth = (cfg: Config): MiddlewareHandler => {
         if (!pa.enabled || !isPublicRequest(c, pa.port)) return next();
         if (!pa.user || !pa.passwordHash || !pa.sessionSecret) return c.text("public access is enabled but user/passwordHash/sessionSecret are not configured", 503);
         const secret = pa.sessionSecret;
-        if (tokenUser(secret, getCookie(c, COOKIE)) === pa.user) return next();
+        if (tokenUser(secret, getCookie(c, COOKIE) ?? getCookie(c, LEGACY_COOKIE)) === pa.user) return next();
         const creds = basicCredentials(c.req.header("authorization"));
         if (creds && creds.user === pa.user && verifyPassword(creds.password, pa.passwordHash)) {
             setCookie(c, COOKIE, mintToken(secret, pa.user, pa.sessionDays), {
@@ -74,6 +75,6 @@ export const publicAuth = (cfg: Config): MiddlewareHandler => {
             });
             return next();
         }
-        return c.text("authentication required", 401, { "WWW-Authenticate": 'Basic realm="Stagehand", charset="UTF-8"' });
+        return c.text("authentication required", 401, { "WWW-Authenticate": 'Basic realm="Vortex", charset="UTF-8"' });
     };
 };

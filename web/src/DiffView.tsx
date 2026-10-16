@@ -201,7 +201,7 @@ export const commentKey = (c: Pick<LineComment, "path" | "side" | "line">): stri
 const lineAnchor = (path: string, l: DiffLine): Pick<LineComment, "path" | "side" | "line"> =>
     l.type === "del" ? { path, side: "old", line: l.oldNo ?? 0 } : { path, side: "new", line: l.newNo ?? 0 };
 
-// round > 0 = an earlier Stagehand review round; round 0 = a comment on the GitHub PR (author in `by`).
+// round > 0 = an earlier Vortex review round; round 0 = a comment on the GitHub PR (author in `by`).
 export interface PriorComment extends LineComment {
     round: number;
     by?: string;
@@ -429,7 +429,7 @@ const useFileReview = (taskId: string | undefined) => {
 };
 
 export const useDraftComments = (taskId: string): [Record<string, LineComment>, (key: string, c: LineComment | null) => void, () => void] => {
-    const storageKey = `stagehand.review.${taskId}`;
+    const storageKey = `vortex.review.${taskId}`;
     const [comments, setComments] = useState<Record<string, LineComment>>(() => {
         try {
             return JSON.parse(storage.get(storageKey) ?? "{}") as Record<string, LineComment>;

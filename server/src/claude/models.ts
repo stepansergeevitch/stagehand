@@ -5,7 +5,7 @@ import { z } from "zod";
 // ("opus" = the newest Opus), or an exact model id.
 export interface ModelOption { value: string; label: string }
 
-// One model of GET https://api.anthropic.com/v1/models (only the fields Stagehand reads).
+// One model of GET https://api.anthropic.com/v1/models (only the fields Vortex reads).
 export const ApiModel = z.object({ id: z.string(), display_name: z.string(), created_at: z.string() });
 export type ApiModel = z.infer<typeof ApiModel>;
 const ApiModels = z.object({ data: z.array(ApiModel) });

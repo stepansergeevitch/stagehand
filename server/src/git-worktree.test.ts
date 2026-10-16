@@ -93,7 +93,7 @@ describe("forkPointFor (a stacked base rewritten under the task)", () => {
     });
     it("falls back to the newest ancestor when no pin exists", async () => {
         const { wt } = await rewritten();
-        sh(wt, ["for-each-ref", "--format=%(refname)", "refs/stagehand/"]).split("\n").filter(Boolean).forEach((r) => sh(wt, ["update-ref", "-d", r]));
+        sh(wt, ["for-each-ref", "--format=%(refname)", "refs/vortex/"]).split("\n").filter(Boolean).forEach((r) => sh(wt, ["update-ref", "-d", r]));
         expect(sh(wt, ["rev-list", "--count", `${await forkPointFor(wt, "feat-a")}..HEAD`])).toBe("1");
     });
 });

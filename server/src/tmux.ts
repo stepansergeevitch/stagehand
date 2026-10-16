@@ -1,3 +1,4 @@
+import { withLegacyEnv } from "./home.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import * as pty from "node-pty";
@@ -28,7 +29,7 @@ export const sessionExistsSync = (name: string): boolean => {
 export const ensureSession = async (name: string, cwd: string, command: string, env: Record<string, string>): Promise<void> => {
     if (await sessionExists(name)) return;
     // `export`, not a `K=V cmd` prefix: the command may be a `cd …; ( … )` chain, and a prefix would only apply to its first word.
-    const exports = Object.entries(env)
+    const exports = Object.entries(withLegacyEnv(env))
         .map(([k, v]) => `export ${k}=${JSON.stringify(v)};`)
         .join(" ");
     // tmux inherits the server's environment; unset the dev-toolchain variables inside the pane too.

@@ -9,7 +9,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; label?: stri
         return { error };
     }
     override componentDidCatch(error: Error, info: ErrorInfo): void {
-        console.error("[stagehand] render error", error, info.componentStack);
+        console.error("[vortex] render error", error, info.componentStack);
     }
     override render(): ReactNode {
         if (!this.state.error) return this.props.children;

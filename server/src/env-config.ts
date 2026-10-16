@@ -18,7 +18,7 @@ export const callbackPortsOf = (json: string | null | undefined): Array<{ port: 
 // a non-zero exit stops the command. Works the same from zsh (tmux panes) and bash.
 export const withPrepare = (env: Pick<EnvRow, "prepare_command">, command: string): string => {
     const prep = env.prepare_command?.trim();
-    return prep ? `{ bash -s <<'STAGEHAND_PREPARE'\n${prep}\nSTAGEHAND_PREPARE\n} && ${command}` : command;
+    return prep ? `{ bash -s <<'VORTEX_PREPARE'\n${prep}\nVORTEX_PREPARE\n} && ${command}` : command;
 };
 
 // Cookies as text: a Cookie header value (`a=1; b=2`, what a QA session command prints) or one `name=value` per line

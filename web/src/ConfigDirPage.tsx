@@ -4,7 +4,7 @@ import { CheckField, EntityForm, EntityView, Field, ReadField, useDraft, useSave
 import { Button, Chip, Input, Textarea } from "@vortex/ds";
 
 // One Claude config dir's entity view: what it contributes to every agent run (skills, hooks, agents, MCP servers) and
-// the commit/branch/PR rules Stagehand enforces for environments using it.
+// the commit/branch/PR rules Vortex enforces for environments using it.
 
 const splitLines = (s: string): string[] => s.split("\n").map((x) => x.trim()).filter(Boolean);
 const items = (xs: string[], empty = "none") => (xs.length ? xs.join(", ") : <span className="quiet">{empty}</span>);

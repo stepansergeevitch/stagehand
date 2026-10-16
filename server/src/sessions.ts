@@ -126,18 +126,18 @@ export class Sessions {
         if (!(await sessionExists(s.tmux))) {
             const model = s.model ? ` --model ${JSON.stringify(s.model)}` : "";
             const first = !s.opened_at;
-            const setup = first && s.worktree_path && env.setup_command ? `echo '[stagehand] running the env setup command in the new worktree…'; ( ${withPrepare(env, env.setup_command.replace(/\{\{envPath\}\}/g, env.path).replace(/\{\{worktree\}\}/g, s.worktree_path))}
- ) || echo '[stagehand] setup command failed — see above; claude starts anyway'; ` : "";
+            const setup = first && s.worktree_path && env.setup_command ? `echo '[vortex] running the env setup command in the new worktree…'; ( ${withPrepare(env, env.setup_command.replace(/\{\{envPath\}\}/g, env.path).replace(/\{\{worktree\}\}/g, s.worktree_path))}
+ ) || echo '[vortex] setup command failed — see above; claude starts anyway'; ` : "";
             // After setup (which writes the worktree's config), point the config at the session's own database.
             const tdb = taskDbRow(this.db, s.id);
             const c = taskDbOf(env);
-            const connect = first && s.worktree_path && tdb?.status === "ready" && c?.connect.trim() ? `echo "[stagehand] pointing the worktree at its database $STAGEHAND_TASK_DB…"; ( ${withPrepare(env, c.connect.replace(/\{\{envPath\}\}/g, env.path).replace(/\{\{worktree\}\}/g, s.worktree_path))}
- ) || echo '[stagehand] connect failed — the worktree may still point at the env database; Recreate the database on the Sessions page'; ` : "";
+            const connect = first && s.worktree_path && tdb?.status === "ready" && c?.connect.trim() ? `echo "[vortex] pointing the worktree at its database $VORTEX_TASK_DB…"; ( ${withPrepare(env, c.connect.replace(/\{\{envPath\}\}/g, env.path).replace(/\{\{worktree\}\}/g, s.worktree_path))}
+ ) || echo '[vortex] connect failed — the worktree may still point at the env database; Recreate the database on the Sessions page'; ` : "";
             const claude = first ? `claude --session-id ${s.claude_session_id}${model}` : `claude --resume ${s.claude_session_id}${model}`;
             await ensureSession(
                 s.tmux,
                 s.cwd,
-                `${setup}${connect}${claude}; echo; echo '[stagehand] claude exited — Open on the Sessions page starts it again (resuming this conversation); press Enter to close this pane'; read -r`,
+                `${setup}${connect}${claude}; echo; echo '[vortex] claude exited — Open on the Sessions page starts it again (resuming this conversation); press Enter to close this pane'; read -r`,
                 { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, s.id), ...authEnv(acc), CLAUDE_CONFIG_DIR: cd.path },
             );
             this.db.prepare(`UPDATE sessions SET opened_at = ? WHERE id = ?`).run(now(), id);
@@ -147,7 +147,7 @@ export class Sessions {
     }
 
     // Recreate (own database) or Adopt (still on the env's): close the pane, copy the template, point the worktree at
-    // the copy. The next Open starts claude with $STAGEHAND_TASK_DB.
+    // the copy. The next Open starts claude with $VORTEX_TASK_DB.
     async recreateDb(id: string): Promise<TaskDbRow> {
         const s = this.row(id);
         const env = this.env(s.env_id);

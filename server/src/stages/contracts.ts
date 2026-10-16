@@ -34,7 +34,7 @@ export const QaScenario = z.object({
     // on counts that other scenarios' fixtures would move) — it runs alone after the parallel shards of the pass.
     exclusive: z.boolean().default(false),
     // "chrome": the journey needs a real browser (WebGL, a map, canvas, media, an extension) — on an environment whose
-    // QA browser is headless it runs in the QA Chrome profile instead. Set by the design, or by Stagehand when a
+    // QA browser is headless it runs in the QA Chrome profile instead. Set by the design, or by Vortex when a
     // headless runner reports `needsChrome` for the scenario.
     browser: z.enum(["chrome"]).optional(),
     // Data the journey needs, as concrete steps the runner performs itself before the first step (UI actions, API calls
@@ -79,7 +79,7 @@ export const QaPassResult = z.object({
             // API scenarios: the exact command(s) run and their trimmed output — the evidence a screenshot is for a browser step.
             log: z.string().default(""),
             // A headless run only: the journey cannot work in a headless browser at all (no WebGL, a map or canvas that
-            // never renders) — what failed and why. The scenario is `blocked`; Stagehand re-runs it in the real Chrome.
+            // never renders) — what failed and why. The scenario is `blocked`; Vortex re-runs it in the real Chrome.
             needsChrome: z.string().optional(),
         }),
     ),

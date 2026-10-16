@@ -177,7 +177,7 @@ const TaskManagerForm = ({ m, onSaved, onError }: { m: TaskManager; onSaved: () 
             await onSaved();
         })}>
             <ReadField label="Used by">{m.envs.join(", ") || "no environment yet"}</ReadField>
-            <Field label={m.source === "clickup" ? "Personal API token" : "API key"} hint="Stored in ~/.stagehand/config.json. With a token, tickets are fetched server-side (fast, no Claude run); without one, Research fetches them through the account's MCP. Empty: unchanged.">
+            <Field label={m.source === "clickup" ? "Personal API token" : "API key"} hint="Stored in ~/.vortex/config.json. With a token, tickets are fetched server-side (fast, no Claude run); without one, Research fetches them through the account's MCP. Empty: unchanged.">
                 <Input value={d.value.token} onChange={(e) => d.patch({ token: e.target.value })} placeholder={m.token ?? (m.source === "clickup" ? "pk_…" : "lin_api_…")} />
             </Field>
             {m.source === "clickup" && <Field label="Team id"><Input value={d.value.teamId} onChange={(e) => d.patch({ teamId: e.target.value })} /></Field>}
@@ -307,7 +307,7 @@ export const PrompterPage = ({ settings, accounts, tab, onTab, onChanged, onErro
             await onChanged();
             await refresh();
         })}>
-            <ReadField label="Status" hint={`The assistant in the bottom-right corner. It runs headless on a token account, in its own config dir with its own MemPalace under ${status?.home ?? "~/.stagehand/prompter"}; every chat is a session of its own and the palace is its memory between chats. It sees the current page with every message and acts through the local API. Usage shows in Analytics as kind prompter.`}>
+            <ReadField label="Status" hint={`The assistant in the bottom-right corner. It runs headless on a token account, in its own config dir with its own MemPalace under ${status?.home ?? "~/.vortex/prompter"}; every chat is a session of its own and the palace is its memory between chats. It sees the current page with every message and acts through the local API. Usage shows in Analytics as kind prompter.`}>
                 {status ? (status.ready ? <Chip tone="ok">ready</Chip> : <><Chip tone="bad">not ready</Chip> {status.reason}</>) : "…"}
                 {status && status.open > 0 && <Chip>{status.open} open chat{status.open === 1 ? "" : "s"}</Chip>}
             </ReadField>

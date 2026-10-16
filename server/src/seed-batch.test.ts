@@ -34,8 +34,8 @@ describe("parseBatchOutput", () => {
     });
     it("encodes the items for the runner's environment", () => {
         const env = djangoBatchEnv([{ label: "S1 seed 1", code: "print(1)" }], "dryrun");
-        expect(JSON.parse(Buffer.from(env.STAGEHAND_SEEDS_B64!, "base64").toString("utf8"))).toEqual([{ label: "S1 seed 1", code: "print(1)" }]);
-        expect(env.STAGEHAND_SEED_MODE).toBe("dryrun");
-        expect(env.STAGEHAND_SEED_RUNNER).toContain("transaction.atomic()");
+        expect(JSON.parse(Buffer.from(env.VORTEX_SEEDS_B64!, "base64").toString("utf8"))).toEqual([{ label: "S1 seed 1", code: "print(1)" }]);
+        expect(env.VORTEX_SEED_MODE).toBe("dryrun");
+        expect(env.VORTEX_SEED_RUNNER).toContain("transaction.atomic()");
     });
 });

@@ -27,7 +27,7 @@ export const desktopNotifier = (): string => (TERMINAL_NOTIFIER ? "terminal-noti
 const macos = (n: Notice): Promise<void> =>
     new Promise((resolve) => {
         if (TERMINAL_NOTIFIER) {
-            const args = ["-title", "Stagehand", "-subtitle", n.title.slice(0, 80), "-message", n.message.slice(0, 200), "-sound", "default"];
+            const args = ["-title", "Vortex", "-subtitle", n.title.slice(0, 80), "-message", n.message.slice(0, 200), "-sound", "default"];
             if (n.group) args.push("-group", n.group);
             const target = n.localUrl ?? n.url;
             if (target) args.push("-open", target);
@@ -35,7 +35,7 @@ const macos = (n: Notice): Promise<void> =>
             return;
         }
         const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-        execFile("osascript", ["-e", `display notification "${esc(n.message.slice(0, 200))}" with title "${esc(n.title.slice(0, 80))}" subtitle "Stagehand"`], () => resolve());
+        execFile("osascript", ["-e", `display notification "${esc(n.message.slice(0, 200))}" with title "${esc(n.title.slice(0, 80))}" subtitle "Vortex"`], () => resolve());
     });
 
 const ntfy = async (cfg: Config, n: Notice): Promise<void> => {
@@ -64,7 +64,7 @@ export const notify = async (cfg: Config, n: Notice): Promise<{ macos: boolean; 
             out.ntfy = true;
         } catch (e) {
             out.error = String((e as Error).message ?? e);
-            console.warn(`[stagehand] ntfy push failed: ${out.error}`);
+            console.warn(`[vortex] ntfy push failed: ${out.error}`);
         }
     }
     return out;

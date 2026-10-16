@@ -96,8 +96,8 @@ const DEP_START_TIMEOUT_MS = 180_000;
 
 // The wrapper around every BE/FE command prints these markers into the log: one when it starts, one when the command
 // exits (the pane then sleeps so the log stays readable). "exited" after the latest start marker = the process is gone.
-const startMarker = (kind: ServiceKind): string => `[stagehand] ${kind.toUpperCase()} on `;
-const exitMarker = (kind: ServiceKind): RegExp => new RegExp(`^\\[stagehand\\] ${kind.toUpperCase()} exited \\((.*)\\)`);
+const startMarker = (kind: ServiceKind): string => `[vortex] ${kind.toUpperCase()} on `;
+const exitMarker = (kind: ServiceKind): RegExp => new RegExp(`^\\[vortex\\] ${kind.toUpperCase()} exited \\((.*)\\)`);
 
 // The log lines written by the current start (after the latest start marker), oldest first.
 const currentRunLog = (row: Pick<ServiceRow, "kind" | "log_path">): string[] => {
@@ -431,15 +431,15 @@ export class Services {
         // The command may be an && chain; run it in a subshell so its whole stdout+stderr reaches the log. The pane
         // runs in tmux's default shell (the user's — zsh here, where the pipe statuses are `pipestatus[1]`; bash's
         // is `PIPESTATUS[0]`), so both spellings are tried before falling back to tee's own status.
-        const wrapped = `cd ${JSON.stringify(cwd)}; echo "[stagehand] ${kind.toUpperCase()} on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command}
- ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind.toUpperCase()} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
+        const wrapped = `cd ${JSON.stringify(cwd)}; echo "[vortex] ${kind.toUpperCase()} on ${url} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command}
+ ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[vortex] ${kind.toUpperCase()} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
         await ensureSession(tmux, cwd, wrapped, {
             ...parseEnvVars(env.env_vars),
             ...taskDbEnv(this.db, task.id),
             PORT: String(port),
-            STAGEHAND_PORT: String(port),
-            STAGEHAND_BE_URL: be?.url ?? "",
-            STAGEHAND_BE_PORT: be ? String(be.port) : "",
+            VORTEX_PORT: String(port),
+            VORTEX_BE_URL: be?.url ?? "",
+            VORTEX_BE_PORT: be ? String(be.port) : "",
         });
 
         const id = randomUUID();
@@ -450,7 +450,7 @@ export class Services {
         return this.db.prepare(`SELECT * FROM services WHERE id = ?`).get(id) as ServiceRow;
     }
 
-    // Ports outside the ranges Stagehand allocates from were pinned by the env (and may be shared with the user's own servers).
+    // Ports outside the ranges Vortex allocates from were pinned by the env (and may be shared with the user's own servers).
     private isFixedPort(port: number): boolean {
         return !Object.values(PORT_RANGE).some(([lo, hi]) => port >= lo && port <= hi);
     }
@@ -464,7 +464,7 @@ export class Services {
         const hadSession = await sessionExists(row.tmux);
         await killSessionTree(row.tmux);
         // Only sweep leftover listeners when this service actually owned the port: a process we started, on a port
-        // Stagehand chose. On a fixed port (3000/8000-style pins) the listener may be the user's own dev server.
+        // Vortex chose. On a fixed port (3000/8000-style pins) the listener may be the user's own dev server.
         if (hadSession && row.port > 0 && !this.isFixedPort(row.port)) {
             await new Promise((r) => setTimeout(r, 1500));
             try {
@@ -689,7 +689,7 @@ export class Services {
 
     // The live (running or still starting) row, or a fresh start. Prefers the dependency's own configured port (its
     // app most likely assumes it), then the port the previous row ran on — the dependents' worktrees have that URL
-    // baked into their config (Deal's stagehand.cfg → https://localhost:7777), so it is kept through stops and host
+    // baked into their config (Deal's vortex.cfg → https://localhost:7777), so it is kept through stops and host
     // restarts (2026-09-23: a restart on 19000 left the task's BE calling a dead 7777) — and only then a free one.
     private async launchDependencyNow(env: EnvRow, dep: EnvRow): Promise<EnvServiceRow> {
         if (!dep.be_command) throw new Error(`dependency env "${dep.name}" has no BE command configured`);
@@ -712,9 +712,9 @@ export class Services {
         const tmux = this.dependencyTmux(dep);
         // Same start/exit markers as a task's services (kind DEPENDENCY), so dependencyState reads the log the same way.
         const kind = DEPENDENCY_KIND.toUpperCase();
-        const wrapped = `cd ${JSON.stringify(dep.path)}; echo "[stagehand] ${kind} on ${url} · ${dep.name}, for ${env.name} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command}
- ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[stagehand] ${kind} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
-        await ensureSession(tmux, dep.path, wrapped, { ...parseEnvVars(dep.env_vars), PORT: String(port), STAGEHAND_PORT: String(port) });
+        const wrapped = `cd ${JSON.stringify(dep.path)}; echo "[vortex] ${kind} on ${url} · ${dep.name}, for ${env.name} · $(date)" | tee -a ${JSON.stringify(logPath)}; ( ${command}
+ ) 2>&1 | tee -a ${JSON.stringify(logPath)}; echo "[vortex] ${kind} exited (\${pipestatus[1]:-\${PIPESTATUS[0]:-$?}})" | tee -a ${JSON.stringify(logPath)}; sleep 86400`;
+        await ensureSession(tmux, dep.path, wrapped, { ...parseEnvVars(dep.env_vars), PORT: String(port), VORTEX_PORT: String(port) });
         this.db.prepare(`DELETE FROM env_services WHERE env_id = ?`).run(dep.id);
         this.db
             .prepare(`INSERT INTO env_services (env_id, port, url, tmux, command, log_path, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)

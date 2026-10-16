@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDb } from "./db.js";
 
-// A database made by an older Stagehand: runs and usage still declare account_id as a foreign key to accounts (and
+// A database made by an older Vortex: runs and usage still declare account_id as a foreign key to accounts (and
 // runs lacks the columns later migrations add). Rows are inserted with foreign keys off, as the old rows exist today.
 const oldDatabase = (dir: string): void => {
-    const raw = new Database(join(dir, "stagehand.sqlite"));
+    const raw = new Database(join(dir, "vortex.sqlite"));
     raw.pragma("foreign_keys = OFF");
     raw.exec(`CREATE TABLE runs (
         id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), stage TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
@@ -33,7 +33,7 @@ describe("openDb", () => {
     });
 
     it("rebuilds runs and usage without the foreign key to accounts, keeping their rows and indexes", () => {
-        const dir = mkdtempSync(join(tmpdir(), "stagehand-db-"));
+        const dir = mkdtempSync(join(tmpdir(), "vortex-db-"));
         dirs.push(dir);
         oldDatabase(dir);
         const db = openDb(dir);
@@ -51,7 +51,7 @@ describe("openDb", () => {
     });
 
     it("lets an account with run and usage history be deleted", () => {
-        const dir = mkdtempSync(join(tmpdir(), "stagehand-db-"));
+        const dir = mkdtempSync(join(tmpdir(), "vortex-db-"));
         dirs.push(dir);
         const db = openDb(dir);
         db.prepare(`INSERT INTO accounts (id, name, auth_dir, created_at) VALUES ('a1', 'old', '/tmp/old', '2026-09-01T00:00:00Z')`).run();

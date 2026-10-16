@@ -44,8 +44,8 @@ import { attach, capturePane, ensureSession, killSession, loginSessionName, pipe
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cfg = loadConfig();
-// Stagehand's own browsers (config.browsersDir): every child process — gstack daemons, agent runs and their `$B` —
-// inherits this, so no browser Stagehand drives lives in a shared cache. A missing Chromium is installed there now.
+// Vortex's own browsers (config.browsersDir): every child process — gstack daemons, agent runs and their `$B` —
+// inherits this, so no browser Vortex drives lives in a shared cache. A missing Chromium is installed there now.
 process.env.PLAYWRIGHT_BROWSERS_PATH = cfg.browsersDir;
 ensureBrowsers(cfg.gstackDir, cfg.browsersDir);
 const db = openDb(cfg.dataDir);
@@ -56,7 +56,7 @@ const engine = new Engine(db, cfg, services);
 services.onNotice = (taskId, text) => engine.serviceNotice(taskId, text);
 services.onMigrateFailed = (task, env, error) => engine.recreateDbAfterMigrateFailure(task, env, error);
 const sessions = new Sessions(db, cfg, engine);
-// Every resource Stagehand started, judged and reaped by policy; the Resources page reads the same snapshot.
+// Every resource Vortex started, judged and reaped by policy; the Resources page reads the same snapshot.
 const resources = new Resources(db, cfg, {
     clones: () => engine.cloneList(),
     stopService: (taskId, kind) => services.stop(taskId, kind as ServiceKind),
@@ -72,7 +72,7 @@ if (!PREVIEW) resources.start();
 const palace = new Palace(cfg.dataDir);
 {
     const { migrated } = palace.ensure(join(cfg.dataDir, "prompter"));
-    if (migrated) console.log(`[stagehand] palace: the Prompter's palace copied to ${palace.home} (the old one stays as a backup)`);
+    if (migrated) console.log(`[vortex] palace: the Prompter's palace copied to ${palace.home} (the old one stays as a backup)`);
 }
 const prompter = new Prompter(db, cfg, (ev) => engine.emit("prompter", ev), palace);
 const productOwners = new ProductOwners(db, cfg, palace, (ev) => engine.emit("po", ev), `http://127.0.0.1:${cfg.port}`, (taskId) => engine.touchTask(taskId));
@@ -221,10 +221,10 @@ const startTokenSetup = async (acc: AccountRow): Promise<string> => {
     await ensureSession(
         tmuxName,
         acc.auth_dir,
-        `${SETUP_TOKEN_COMMAND}; echo; echo '[stagehand] token setup finished — Stagehand stores the token and closes this terminal.'; sleep 900`,
+        `${SETUP_TOKEN_COMMAND}; echo; echo '[vortex] token setup finished — Vortex stores the token and closes this terminal.'; sleep 900`,
         { CLAUDE_CONFIG_DIR: acc.auth_dir },
     );
-    if (!(await pipePane(tmuxName, logFile))) console.warn(`[stagehand] could not mirror the ${tmuxName} pane; relying on scrollback capture`);
+    if (!(await pipePane(tmuxName, logFile))) console.warn(`[vortex] could not mirror the ${tmuxName} pane; relying on scrollback capture`);
     watchTokenSetup(acc);
     return tmuxName;
 };
@@ -320,7 +320,7 @@ const autoLoginRefresh = async (): Promise<void> => {
         const after = await refreshBrowserLogin(acc).catch(() => null);
         if (after && after.login_ok !== before) {
             emitAccount(acc.id);
-            console.log(`[stagehand] browser login for ${acc.name}: ${after.login_ok ? "present" : "GONE"} (${after.login_dir ?? "no dir"})`);
+            console.log(`[vortex] browser login for ${acc.name}: ${after.login_ok ? "present" : "GONE"} (${after.login_dir ?? "no dir"})`);
         }
     }
 };
@@ -390,7 +390,7 @@ app.patch("/api/accounts/:id", async (c) => {
     return c.json(publicAccount(accountById(acc.id)!));
 });
 
-// Deleting an account only forgets it in Stagehand (its token and auth dir go, config dirs stay); refused while an env,
+// Deleting an account only forgets it in Vortex (its token and auth dir go, config dirs stay); refused while an env,
 // task, session or running run still points at it. Past runs and usage keep the id as history (no foreign key); the
 // account's rate-limit and calibration rows go with it, and it leaves every env's failover order.
 app.delete("/api/accounts/:id", (c) => {
@@ -445,7 +445,7 @@ app.patch("/api/config-dirs/:id", async (c) => {
     return c.json(configDirView(configDirById(dir.id)!));
 });
 
-// Forgets the dir in Stagehand (nothing on disk changes); refused while an environment uses it.
+// Forgets the dir in Vortex (nothing on disk changes); refused while an environment uses it.
 app.delete("/api/config-dirs/:id", (c) => {
     const dir = configDirById(c.req.param("id"));
     if (!dir) return c.json({ error: "not found" }, 404);
@@ -459,11 +459,11 @@ app.delete("/api/config-dirs/:id", (c) => {
 
 // The Chrome extension is bound to the claude.ai account signed into a Chrome profile, and only a browser login (not a
 // token) gets the bridge, so both live on the account: its browser dir holds the login, the probe runs there.
-// A browser login may live in the account's auth dir (a real config dir such as the main one) or in the Stagehand-owned
-// browser dir; the Stagehand-owned one wins when both are valid — it is the one every env can use via mirrorConfigDir
+// A browser login may live in the account's auth dir (a real config dir such as the main one) or in the Vortex-owned
+// browser dir; the Vortex-owned one wins when both are valid — it is the one every env can use via mirrorConfigDir
 // (engine.browserDir), while the auth dir only ever satisfies the one env whose path happens to equal it. Checking
-// auth_dir first would permanently starve the Stagehand dir: once auth_dir has a login (the common case — it is
-// wherever the account was first set up), it never expires, so the Stagehand dir's login would never be picked up
+// auth_dir first would permanently starve the Vortex dir: once auth_dir has a login (the common case — it is
+// wherever the account was first set up), it never expires, so the Vortex dir's login would never be picked up
 // no matter how many times the human completes it there.
 const refreshBrowserLogin = async (acc: AccountRow): Promise<AccountRow> => {
     const own = browserDirFor(cfg, acc);
@@ -489,7 +489,7 @@ app.post("/api/accounts/:id/login", async (c) => {
     await ensureSession(
         name,
         dir,
-        `claude auth login --claudeai${acc.email ? ` --email ${JSON.stringify(acc.email)}` : ""}; echo; echo '[stagehand] login finished — run Probe Chrome on the AI accounts page, then close this terminal.'; sleep 600`,
+        `claude auth login --claudeai${acc.email ? ` --email ${JSON.stringify(acc.email)}` : ""}; echo; echo '[vortex] login finished — run Probe Chrome on the AI accounts page, then close this terminal.'; sleep 600`,
         { CLAUDE_CONFIG_DIR: dir },
     );
     return c.json({ terminal: name, dir });
@@ -579,7 +579,7 @@ app.get("/api/envs", (c) => c.json(envsAll()));
 // gstack's built-in review categories, for the env page's Code review section (keys are what envs.review_checklist stores).
 app.get("/api/review-categories", (c) => c.json(REVIEW_CATEGORIES));
 
-// ---------- resources: everything Stagehand started on this host, with the policy verdict on each ----------
+// ---------- resources: everything Vortex started on this host, with the policy verdict on each ----------
 app.get("/api/resources", async (c) => {
     const s = c.req.query("refresh") === "1" || !resources.current() ? await resources.refresh() : resources.current()!;
     return c.json(s);
@@ -866,13 +866,13 @@ app.patch("/api/envs/:id", async (c) => {
             memoryWings: z.array(z.string().trim().min(1)).nullable().optional(),
             ciAutopilot: z.boolean().optional(),
             testCommand: z.string().nullable().optional(),
-            // The identity provider's fixed login-callback ports; `relay`: Stagehand holds the port and redirects (any browser).
+            // The identity provider's fixed login-callback ports; `relay`: Vortex holds the port and redirects (any browser).
             callbackPorts: z.array(z.object({ port: z.number().int().min(1).max(65535), relay: z.boolean().default(false) })).nullable().optional(),
             // The base check per repository: {repoDir: command} ("" for a single repo); empty commands drop out.
             baseCheck: z.record(z.string()).nullable().optional(),
             // Bash run before every command of the env (env-config.ts).
             prepareCommand: z.string().nullable().optional(),
-            // Run by Stagehand before a QA pass; its last output line is the pass's $STAGEHAND_QA_SESSION.
+            // Run by Vortex before a QA pass; its last output line is the pass's $VORTEX_QA_SESSION.
             qaSessionCommand: z.string().nullable().optional(),
             // Extra cookies for the headless QA browser, one name=value per line (set after its session).
             qaBrowserCookies: z.string().nullable().optional(),
@@ -1289,7 +1289,7 @@ app.post("/api/server/restart", async (c) => {
     const script = `cd /; sleep 1; tmux send-keys -t ${JSON.stringify(session)} C-c; sleep 3; pgrep -f '[s]cripts/serve.sh' >/dev/null || tmux send-keys -t ${JSON.stringify(session)} ${JSON.stringify(command)} Enter`;
     const child = spawn("sh", ["-c", script], { detached: true, stdio: "ignore" });
     child.unref();
-    console.log(`[stagehand] restart requested${body.force ? " (forced)" : ""} — tmux ${session}`);
+    console.log(`[vortex] restart requested${body.force ? " (forced)" : ""} — tmux ${session}`);
     return c.json({ ok: true, detail: `restarting in tmux ${session}; the API answers again in a few seconds` }, 202);
 });
 
@@ -1327,13 +1327,13 @@ app.post("/api/models/refresh", async (c) => {
 app.post("/api/notifications/test", async (c) =>
     c.json(
         await notify(cfg, {
-            title: "Stagehand test",
-            message: "Pushes from Stagehand reach this device.",
+            title: "Vortex test",
+            message: "Pushes from Vortex reach this device.",
             priority: "default",
             tags: ["white_check_mark"],
             ...(cfg.notifications.baseUrl ? { url: `${cfg.notifications.baseUrl.replace(/\/+$/, "")}/#/dashboard` } : {}),
             localUrl: `${cfg.notifications.localBaseUrl.replace(/\/+$/, "")}/#/dashboard`,
-            group: "stagehand-test",
+            group: "vortex-test",
         }),
     ),
 );
@@ -1787,7 +1787,7 @@ app.post("/api/tasks/:id/pr/merge", async (c) => {
     }
 });
 
-// "Rebase onto latest base": the task's agent rebases the branch onto origin/<base> and resolves conflicts; Stagehand
+// "Rebase onto latest base": the task's agent rebases the branch onto origin/<base> and resolves conflicts; Vortex
 // force-pushes with lease afterwards where the env allows pushes. Errors (run in progress, dirty tree, up to date) → 400.
 app.post("/api/tasks/:id/rebase", async (c) => {
     // `repos`: only these repository directories; omitted/empty = every repository of the task.
@@ -1831,7 +1831,7 @@ app.post("/api/tasks/:id/fix-ci", async (c) => {
     }
 });
 
-// Line comments / notes left in Stagehand's own Code changes view at a PR stage → a PR-fix round (nothing posted to GitHub).
+// Line comments / notes left in Vortex's own Code changes view at a PR stage → a PR-fix round (nothing posted to GitHub).
 app.post("/api/tasks/:id/fix-local-comments", async (c) => {
     const body = json(
         z.object({
@@ -2128,7 +2128,7 @@ app.post("/api/tasks/:id/terminal", async (c) => {
     await ensureSession(
         name,
         task.worktree_path ?? env.path,
-        `claude --resume ${task.session_id}; echo; echo '[stagehand] claude exited — press Enter to close'; read -r`,
+        `claude --resume ${task.session_id}; echo; echo '[vortex] claude exited — press Enter to close'; read -r`,
         { ...parseEnvVars(env.env_vars), ...authEnv(acc), CLAUDE_CONFIG_DIR: cd.path },
     );
     return c.json({ terminal: name });
@@ -2227,7 +2227,7 @@ app.put("/api/product/context", async (c) => {
     await productOwners.setProductContext(body.env, body.text);
     return c.json({ text: productOwners.productContext(body.env) });
 });
-// Search Stagehand's palace: one PO's wing (`wing`), or all of it.
+// Search Vortex's palace: one PO's wing (`wing`), or all of it.
 app.get("/api/product/search", async (c) => {
     const q = c.req.query("q")?.trim();
     if (!q) return c.json({ results: [] });
@@ -2545,7 +2545,7 @@ const poReviewOf = (taskId: string) => {
     const running = productOwners.reviewing(taskId);
     // "running" with no live run: a restart killed it.
     const lost = !running && (st.status === "running" || !!st.asking);
-    return { running, status: lost ? "failed" : (st.status ?? null), error: lost ? "interrupted by a Stagehand restart — run it again" : (st.error ?? null), at: st.at ?? null, asking: running ? (st.asking ?? null) : null, review: readReview(dir) };
+    return { running, status: lost ? "failed" : (st.status ?? null), error: lost ? "interrupted by a Vortex restart — run it again" : (st.error ?? null), at: st.at ?? null, asking: running ? (st.asking ?? null) : null, review: readReview(dir) };
 };
 // The CI autopilot of a task: on or off, its rounds (triage, verification, fix review, push).
 // ---------- task databases (task-db.ts) ----------
@@ -2604,7 +2604,7 @@ const poBriefOf = (taskId: string) => {
     }
     const running = productOwners.briefing(taskId);
     const lost = !running && state.status === "running";
-    return { running, status: lost ? "failed" : (state.status ?? null), error: lost ? "interrupted by a Stagehand restart — write it again" : (state.error ?? null), at: state.at ?? null, text: read("po-brief.md") };
+    return { running, status: lost ? "failed" : (state.status ?? null), error: lost ? "interrupted by a Vortex restart — write it again" : (state.error ?? null), at: state.at ?? null, text: read("po-brief.md") };
 };
 app.get("/api/tasks/:id/po-brief", (c) => (engine.getTask(c.req.param("id")) ? c.json(poBriefOf(c.req.param("id"))) : c.json({ error: "not found" }, 404)));
 app.post("/api/tasks/:id/po-brief", (c) => {
@@ -2711,14 +2711,14 @@ app.get(
         return {
             async onOpen(_evt, ws) {
                 if (!(await sessionExists(name))) {
-                    ws.send(`\r\n[stagehand] tmux session "${name}" not found\r\n`);
+                    ws.send(`\r\n[vortex] tmux session "${name}" not found\r\n`);
                     ws.close();
                     return;
                 }
                 try {
                     term = attach(name, 120, 36);
                 } catch (e) {
-                    ws.send(`\r\n[stagehand] could not open a pty: ${String((e as Error).message ?? e)}\r\n`);
+                    ws.send(`\r\n[vortex] could not open a pty: ${String((e as Error).message ?? e)}\r\n`);
                     ws.close();
                     return;
                 }
@@ -2775,8 +2775,8 @@ const startPublicListener = (): void => {
     const pa = cfg.publicAccess;
     if (!pa.enabled) return;
     if (!pa.certPath || !pa.keyPath) throw new Error("publicAccess.enabled needs certPath and keyPath");
-    if (!existsSync(join(process.cwd(), WEB_DIST, "index.html"))) console.warn(`[stagehand] ${WEB_DIST}/index.html missing — run \`npx vite build\` in web/ for the public UI`);
-    else if (webBundleStale()) console.warn(`[stagehand] ${WEB_DIST} is older than web/src — phones on the public listener see an old UI; run \`npx vite build\` in web/`);
+    if (!existsSync(join(process.cwd(), WEB_DIST, "index.html"))) console.warn(`[vortex] ${WEB_DIST}/index.html missing — run \`npx vite build\` in web/ for the public UI`);
+    else if (webBundleStale()) console.warn(`[vortex] ${WEB_DIST} is older than web/src — phones on the public listener see an old UI; run \`npx vite build\` in web/`);
     const publicServer = serve(
         {
             fetch: app.fetch,
@@ -2785,7 +2785,7 @@ const startPublicListener = (): void => {
             createServer: createHttpsServer,
             serverOptions: { key: readFileSync(pa.keyPath), cert: readFileSync(pa.certPath) },
         },
-        (info) => console.log(`stagehand public listener on https://${info.address}:${info.port} (user ${pa.user ?? "unset"})`),
+        (info) => console.log(`vortex public listener on https://${info.address}:${info.port} (user ${pa.user ?? "unset"})`),
     );
     injectWebSocket(publicServer);
     if (pa.natPmpGateway) {
@@ -2793,8 +2793,8 @@ const startPublicListener = (): void => {
         const renew = (): void => {
             execFile(NATPMPC, ["-g", gateway, "-a", String(pa.port), String(pa.port), "tcp", "7200"], (err, stdout) => {
                 const line = stdout.split("\n").find((l) => /Mapped public port/.test(l));
-                if (err || !line) console.warn(`[stagehand] NAT-PMP mapping failed: ${err?.message ?? stdout.trim().slice(-200)}`);
-                else console.log(`[stagehand] ${line.trim()} via ${gateway}`);
+                if (err || !line) console.warn(`[vortex] NAT-PMP mapping failed: ${err?.message ?? stdout.trim().slice(-200)}`);
+                else console.log(`[vortex] ${line.trim()} via ${gateway}`);
             });
         };
         renew();
@@ -2803,12 +2803,12 @@ const startPublicListener = (): void => {
 };
 
 const server = serve({ fetch: app.fetch, port: cfg.port, hostname: "127.0.0.1" }, (info) => {
-    console.log(`stagehand server on http://127.0.0.1:${info.port}`);
+    console.log(`vortex server on http://127.0.0.1:${info.port}`);
 });
 injectWebSocket(server);
 if (PREVIEW) {
     // scripts/preview.sh: a second instance from a worktree branch — API + UI for testing, nothing that acts on its own.
-    console.log("[stagehand] PREVIEW instance: no scheduler, no pollers, no public listener, no runs started");
+    console.log("[vortex] PREVIEW instance: no scheduler, no pollers, no public listener, no runs started");
 } else {
     startPublicListener();
     engine.startScheduler();

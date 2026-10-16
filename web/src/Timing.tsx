@@ -127,10 +127,10 @@ const TaskRows = ({ rows }: { rows: TaskTiming[] }) => {
 
 // The period is routed (#/timing?days=<n>); without one, the period used last.
 export const Timing = ({ days: routedDays, onDays, onError }: { days?: number; onDays: (days: number) => void; onError: (m: string) => void }) => {
-    const days = routedDays ?? Number(storage.get("stagehand.timingDays") ?? "7");
+    const days = routedDays ?? Number(storage.get("vortex.timingDays") ?? "7");
     const [report, setReport] = useState<TimingReport | null>(null);
     useEffect(() => {
-        storage.set("stagehand.timingDays", String(days));
+        storage.set("vortex.timingDays", String(days));
         setReport(null);
         void api.timing(days).then(setReport).catch((e: Error) => onError(e.message));
     }, [days, onError]);

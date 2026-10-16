@@ -25,7 +25,7 @@ export const Rules = z.object({
     ),
     // Prepended to every task branch Research proposes (e.g. "yourname/"); the branch pattern applies after it.
     branchPrefix: z.string().default(""),
-    // Every PR Stagehand opens is a draft; the human marks it ready for review.
+    // Every PR Vortex opens is a draft; the human marks it ready for review.
     prDraft: z.boolean().default(false),
     // GitHub logins whose PR comments are shown under "Automation comments" instead of human comments.
     // "Copilot" (no [bot]) is the login GitHub uses for Copilot's line-level review comments.
@@ -42,8 +42,8 @@ export const rulesOf = (holder: { rules: string | null }): Rules => {
     }
 };
 
-const STAGEHAND_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-export const GUARD_HOOK = join(STAGEHAND_ROOT, "hooks", "guard.py");
+const VORTEX_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+export const GUARD_HOOK = join(VORTEX_ROOT, "hooks", "guard.py");
 
 // ---------- PR template auto-detection ----------
 
@@ -103,7 +103,7 @@ export interface Materialized {
 
 const skillCommit = (r: Rules): string => `---
 name: git-commit
-description: How to write a commit in this environment (Stagehand rule; enforced by a hook on every git commit). Use before any git commit.
+description: How to write a commit in this environment (Vortex rule; enforced by a hook on every git commit). Use before any git commit.
 ---
 
 # Committing in this environment
@@ -120,7 +120,7 @@ The guard hook rejects a \`git commit\` that breaks these rules and tells you wh
 
 const skillBranch = (r: Rules, prefix: string | null): string => `---
 name: git-branch
-description: Branch naming rule for this environment (Stagehand rule; enforced by a hook on git checkout -b / switch -c). Use when creating or naming a branch.
+description: Branch naming rule for this environment (Vortex rule; enforced by a hook on git checkout -b / switch -c). Use when creating or naming a branch.
 ---
 
 # Branch names in this environment
@@ -132,7 +132,7 @@ ${prefix ? `- The prefix \`${prefix}\` is added by the orchestrator; when you pr
 
 const skillPr = (r: Rules, templates: Array<{ dir: string; path: string | null }>): string => `---
 name: pr-description
-description: How pull request titles and descriptions are written in this environment (Stagehand rule). Use when drafting or editing a PR.
+description: How pull request titles and descriptions are written in this environment (Vortex rule). Use when drafting or editing a PR.
 ---
 
 # Pull requests in this environment
@@ -153,7 +153,7 @@ const guardSettings = (rulesPath: string): string =>
                 PreToolUse: [
                     {
                         matcher: "Bash",
-                        hooks: [{ type: "command", command: `STAGEHAND_RULES=${JSON.stringify(rulesPath)} python3 ${JSON.stringify(GUARD_HOOK)}` }],
+                        hooks: [{ type: "command", command: `VORTEX_RULES=${JSON.stringify(rulesPath)} python3 ${JSON.stringify(GUARD_HOOK)}` }],
                     },
                 ],
             },
@@ -162,7 +162,7 @@ const guardSettings = (rulesPath: string): string =>
         2,
     );
 
-// Writes ~/.stagehand/envs/<env>/{rules.json,settings.json} and the three skills into <worktree>/.claude/skills (git-excluded).
+// Writes ~/.vortex/envs/<env>/{rules.json,settings.json} and the three skills into <worktree>/.claude/skills (git-excluded).
 // `rules` come from the env's config dir (branch prefix included); the PR templates are the env's own.
 export const materializeRules = (rules: Rules, env: EnvRow, worktree: string | null, dataDir: string): Materialized => {
     const dir = join(dataDir, "envs", env.id);

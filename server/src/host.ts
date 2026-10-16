@@ -1,5 +1,5 @@
 // What the host is doing right now, read from the OS (macOS): memory, processes, listening ports, tmux sessions.
-// resources.ts joins this with what Stagehand meant to start. Everything here is a plain read; nothing is changed.
+// resources.ts joins this with what Vortex meant to start. Everything here is a plain read; nothing is changed.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 

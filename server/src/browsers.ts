@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-// Installs Playwright's Chromium into Stagehand's own browsers dir (config.browsersDir) when it is not there yet, with
+// Installs Playwright's Chromium into Vortex's own browsers dir (config.browsersDir) when it is not there yet, with
 // the gstack checkout's own Playwright so the build matches what its `browse` binary launches. Runs in the background
 // at startup; a failure is logged and the next start tries again (a QA run then reports "Executable doesn't exist").
 export const ensureBrowsers = (gstackDir: string, browsersDir: string): void => {

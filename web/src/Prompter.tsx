@@ -15,9 +15,9 @@ import { Button, Chip, Select } from "@vortex/ds";
 // Messages sent while it answers stack up (dashed) and go out together as the next turn; ArrowUp in an empty input
 // takes the last stacked message back for editing.
 
-const OPEN_KEY = "stagehand.prompter.open";
-const SESSION_KEY = "stagehand.prompter.session";
-const WIDE_KEY = "stagehand.prompter.wide";
+const OPEN_KEY = "vortex.prompter.open";
+const SESSION_KEY = "vortex.prompter.session";
+const WIDE_KEY = "vortex.prompter.wide";
 
 interface ChatState {
     messages: PrompterMessage[];

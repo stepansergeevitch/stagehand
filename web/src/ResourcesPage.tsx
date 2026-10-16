@@ -3,7 +3,7 @@ import { api, type Resource, type ResourceKind, type ResourcePolicies, type Reso
 import { hours } from "./Analytics";
 import { Button, Card, Chip, Input, Tab, TabList } from "@vortex/ds";
 
-// Everything Stagehand has started on this host — dev servers, agent runs, terminals, browsers, worktrees — with what
+// Everything Vortex has started on this host — dev servers, agent runs, terminals, browsers, worktrees — with what
 // each costs (RSS, CPU, disk), who owns it, what the policy will do with it and when. Three tabs: the Dashboard (the
 // tiles and the tables, stop and pin per row), the Policies, and the Recent actions of the reaper.
 
@@ -382,7 +382,7 @@ export const ResourcesPage = ({ tab: tabArg, onTab: setTab, onError }: { tab: st
                     <div className="tiles">
                         <Tile label="Host RAM" value={`${gb(h.usedMb)} used`} sub={`${gb(h.availableMb)} available of ${gb(h.totalMb)} · ${gb(h.compressedMb)} compressed`} tone={tone} />
                         <Tile label="Swap" value={gb(h.swapUsedMb)} sub={`of ${gb(h.swapTotalMb)}`} tone={h.swapUsedMb > snap.policies.maxSwapMb ? "bad" : h.swapUsedMb > snap.policies.maxSwapMb / 2 ? "warn" : "ok"} />
-                        <Tile label="Vortex processes" value={gb(snap.stagehand.rssMb)} sub={`${snap.stagehand.procs} processes · ${snap.stagehand.runs} agent run${snap.stagehand.runs === 1 ? "" : "s"} · ${snap.stagehand.browsers} browser${snap.stagehand.browsers === 1 ? "" : "s"}`} />
+                        <Tile label="Vortex processes" value={gb(snap.vortex.rssMb)} sub={`${snap.vortex.procs} processes · ${snap.vortex.runs} agent run${snap.vortex.runs === 1 ? "" : "s"} · ${snap.vortex.browsers} browser${snap.vortex.browsers === 1 ? "" : "s"}`} />
                         <Tile
                             label="Host storage"
                             value={d ? `${gb(d.freeMb)} free` : "—"}
@@ -391,7 +391,7 @@ export const ResourcesPage = ({ tab: tabArg, onTab: setTab, onError }: { tab: st
                         />
                     </div>
                     {orphans.length > 0 && groups.filter((g) => g.kind === "orphan").map((g) => <Group key={g.kind} kind={g.kind} rows={g.rows} busy={busy} act={act} />)}
-                    {services.length > 0 && <DevServers rows={services} tasks={snap.stagehand.devServerTasks} max={snap.policies.maxDevServerTasks} busy={busy} act={act} />}
+                    {services.length > 0 && <DevServers rows={services} tasks={snap.vortex.devServerTasks} max={snap.policies.maxDevServerTasks} busy={busy} act={act} />}
                     {groups.filter((g) => g.kind !== "orphan").map((g) => <Group key={g.kind} kind={g.kind} rows={g.rows} busy={busy} act={act} />)}
                     {worktrees.length > 0 && <Worktrees rows={worktrees} busy={busy} act={act} />}
                     {databases.length > 0 && <Databases rows={databases} onChanged={() => void load(true)} onError={onError} />}

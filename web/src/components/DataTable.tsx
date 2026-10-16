@@ -3,7 +3,7 @@ import { storage } from "../storage";
 import { useDismiss } from "./useDismiss";
 import { Button, Input } from "@vortex/ds";
 
-// Stagehand's standard list of entities. Every page that lists things uses it, so lists look and behave alike:
+// Vortex's standard list of entities. Every page that lists things uses it, so lists look and behave alike:
 //
 //   header row   <title>                                         [Create new <entity>]
 //   tools row    [filter] [search…]            (n selected · bulk actions)   [columns]
@@ -107,7 +107,7 @@ export const DataTable = <T,>({
     const [sort, setSort] = useState<Sort | null>(defaultSort ?? null);
     const [checked, setChecked] = useState<Set<string>>(new Set());
     const [hidden, setHidden] = useState<Set<string>>(() => {
-        const saved = storageKey ? storage.get(`stagehand.table.${storageKey}.hidden`) : null;
+        const saved = storageKey ? storage.get(`vortex.table.${storageKey}.hidden`) : null;
         if (saved) {
             try {
                 return new Set(JSON.parse(saved) as string[]);
@@ -124,7 +124,7 @@ export const DataTable = <T,>({
             const next = new Set(cur);
             if (next.has(key)) next.delete(key);
             else next.add(key);
-            if (storageKey) storage.set(`stagehand.table.${storageKey}.hidden`, JSON.stringify([...next]));
+            if (storageKey) storage.set(`vortex.table.${storageKey}.hidden`, JSON.stringify([...next]));
             return next;
         });
 

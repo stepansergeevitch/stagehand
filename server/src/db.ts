@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { existingOrFirst } from "./home.js";
 
 export type Stage =
     | "research"
@@ -56,7 +57,7 @@ export interface AccountRow {
     // `chrome_browsers` lists the Chrome profiles (extension instances) seen, `chrome_device_id` the one to use.
     login_ok: number | null;
     // Which dir holds that browser login: the account's auth dir (a real config dir, e.g. the main one) or the
-    // Stagehand-owned browser dir that can mirror any env's config dir.
+    // Vortex-owned browser dir that can mirror any env's config dir.
     login_dir: string | null;
     chrome_capable: number | null;
     chrome_browsers: string | null;
@@ -101,7 +102,7 @@ export const accountUsableWith = (a: Pick<AccountRow, "logged_in" | "oauth_token
     a.logged_in === 1 && (hasToken(a) || a.auth_dir === configDirPath);
 
 // A Claude config dir on this host: skills, hooks, agents, commands, CLAUDE.md, MCP servers — the behaviour every agent
-// in an environment inherits. The commit/branch/PR rules Stagehand enforces are stored here too, so switching an
+// in an environment inherits. The commit/branch/PR rules Vortex enforces are stored here too, so switching an
 // environment's dir switches its rules.
 export interface ConfigDirRow {
     id: string;
@@ -178,7 +179,7 @@ export interface EnvRow {
     // Runs from the worktree after every successful rebase (plain or agent-resolved): rebuild what the rebase made stale.
     rebase_command: string | null;
     // Database migrations, apart from setup and the BE command (see migrations.ts): `migrate_command` brings the
-    // worktree's database up to its code (Stagehand runs it before every BE start); `migrate_down_command` rolls back
+    // worktree's database up to its code (Vortex runs it before every BE start); `migrate_down_command` rolls back
     // what the branch added, to the base (before a QA baseline on base code). Both run from the worktree.
     migrate_command?: string | null;
     migrate_down_command?: string | null;
@@ -193,7 +194,7 @@ export interface EnvRow {
     callback_ports?: string | null;
     // Shell text run before every command of the env (env-config.ts withPrepare).
     prepare_command?: string | null;
-    // Run by Stagehand before a QA pass; its last output line reaches the pass as $STAGEHAND_QA_SESSION.
+    // Run by Vortex before a QA pass; its last output line reaches the pass as $VORTEX_QA_SESSION.
     qa_session_command?: string | null;
     // Extra cookies the headless QA browser gets after its session (envs.qa_browser_cookies): one name=value per line.
     qa_browser_cookies?: string | null;
@@ -410,8 +411,8 @@ export interface PrStateRow {
     review_decision: string | null;
     merged_at: string | null;
     pushed_at: string | null;
-    // The commit Stagehand itself last pushed to origin for this repository (null before any push, or when the push
-    // came from elsewhere). When origin still sits on it, every remote commit is Stagehand's own and a rewritten local
+    // The commit Vortex itself last pushed to origin for this repository (null before any push, or when the push
+    // came from elsewhere). When origin still sits on it, every remote commit is Vortex's own and a rewritten local
     // history may replace them with a force-push under lease.
     pushed_sha: string | null;
     approved_at: string | null;
@@ -847,7 +848,7 @@ CREATE TABLE IF NOT EXISTS po_ticket_links (
     created_at TEXT NOT NULL,
     PRIMARY KEY (po_id, key)
 );
--- The last state Stagehand saw of every issue in a PO's project or epic (see ProductOwners.refreshIssues): its
+-- The last state Vortex saw of every issue in a PO's project or epic (see ProductOwners.refreshIssues): its
 -- normalised fields and comments as JSON, and their hash, so a refresh can tell what changed.
 CREATE TABLE IF NOT EXISTS po_issues (
     po_id TEXT NOT NULL REFERENCES product_owners(id),
@@ -1046,12 +1047,12 @@ const MIGRATIONS: Array<[string, string]> = [
     // The task's ticket id and title as of the last time the row was touched, so usage of a deleted task keeps its name.
     ["usage.ticket_id", `ALTER TABLE usage ADD COLUMN ticket_id TEXT`],
     ["usage.task_title", `ALTER TABLE usage ADD COLUMN task_title TEXT`],
-    // When Stagehand last pushed the branch: right after a push GitHub reports no checks for a moment, which must not read as "green".
+    // When Vortex last pushed the branch: right after a push GitHub reports no checks for a moment, which must not read as "green".
     ["pr_state.pushed_at", `ALTER TABLE pr_state ADD COLUMN pushed_at TEXT`],
     // Which repository's draft a PR Creation Review verdict was about (multi-repo envs review one PR per repo).
     ["reviews.repo", `ALTER TABLE reviews ADD COLUMN repo TEXT`],
     ["pr_state.state", `ALTER TABLE pr_state ADD COLUMN state TEXT`],
-    // The commit Stagehand last pushed for the repository: origin still on it means nobody else pushed since.
+    // The commit Vortex last pushed for the repository: origin still on it means nobody else pushed since.
     ["pr_state.pushed_sha", `ALTER TABLE pr_state ADD COLUMN pushed_sha TEXT`],
     ["envs.pr_templates", `ALTER TABLE envs ADD COLUMN pr_templates TEXT`],
     ["envs.pr_draft", `ALTER TABLE envs ADD COLUMN pr_draft INTEGER NOT NULL DEFAULT 0`],
@@ -1107,7 +1108,7 @@ const MIGRATIONS: Array<[string, string]> = [
     // until it is stopped or restarted, so the human sees why and can hand it to the agent.
     ["services.failed_at", `ALTER TABLE services ADD COLUMN failed_at TEXT`],
     ["services.error", `ALTER TABLE services ADD COLUMN error TEXT`],
-    // Rows Stagehand started on its own after the previous start's tmux session vanished (host/tmux restart, killed by
+    // Rows Vortex started on its own after the previous start's tmux session vanished (host/tmux restart, killed by
     // hand) — counted per task+kind to cap the automatic restarts.
     ["services.auto_restart", `ALTER TABLE services ADD COLUMN auto_restart INTEGER NOT NULL DEFAULT 0`],
     // A chat message tied to one diff line (path/side/line/snippet as JSON) — a question asked from Code changes.
@@ -1179,12 +1180,12 @@ export interface ServiceRow {
     stopped_at: string | null;
     failed_at: string | null;
     error: string | null;
-    // 1 when Stagehand started this row itself after the previous one's tmux session vanished (see Services.probe).
+    // 1 when Vortex started this row itself after the previous one's tmux session vanished (see Services.probe).
     auto_restart: number;
 }
 
 export const openDb = (dataDir: string): DB => {
-    const db = new Database(join(dataDir, "stagehand.sqlite"));
+    const db = new Database(existingOrFirst(join(dataDir, "vortex.sqlite"), join(dataDir, "stagehand.sqlite")));
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
     db.exec(SCHEMA);

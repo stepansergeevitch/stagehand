@@ -95,7 +95,7 @@ export class PoJournal {
     }
     // A restart ends every turn: what was queued or being read is left unread, for the human to send again.
     interrupted(): void {
-        this.db.prepare(`UPDATE po_events SET status = 'unread', error = 'interrupted by a Stagehand restart' WHERE status IN ('pending', 'processing')`).run();
+        this.db.prepare(`UPDATE po_events SET status = 'unread', error = 'interrupted by a Vortex restart' WHERE status IN ('pending', 'processing')`).run();
     }
 
     // ---------- questions ----------

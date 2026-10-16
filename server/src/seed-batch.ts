@@ -45,18 +45,18 @@ export const planSeedUnits = (steps: Array<{ label: string; cmd: string }>): See
     return units;
 };
 
-export const BEGIN_MARK = "@@STAGEHAND-SEED-BEGIN ";
-export const END_MARK = "@@STAGEHAND-SEED-END ";
+export const BEGIN_MARK = "@@VORTEX-SEED-BEGIN ";
+export const END_MARK = "@@VORTEX-SEED-END ";
 
-// The Python the batch runs: items come base64-encoded in STAGEHAND_SEEDS_B64, the mode ("run" | "dryrun") in
-// STAGEHAND_SEED_MODE. Each item executes in its own globals; output is captured per item between markers, so the
+// The Python the batch runs: items come base64-encoded in VORTEX_SEEDS_B64, the mode ("run" | "dryrun") in
+// VORTEX_SEED_MODE. Each item executes in its own globals; output is captured per item between markers, so the
 // orchestrator can report every step as if it had run alone. A dry run wraps the item in transaction.atomic() and
 // raises to roll it back. SystemExit(0) from a seed that ends with sys.exit() counts as success.
 export const SEED_RUNNER_PY = [
     "import base64, contextlib, io, json, os, sys, traceback",
     "from django.db import transaction",
-    "items = json.loads(base64.b64decode(os.environ['STAGEHAND_SEEDS_B64']).decode())",
-    "mode = os.environ.get('STAGEHAND_SEED_MODE', 'run')",
+    "items = json.loads(base64.b64decode(os.environ['VORTEX_SEEDS_B64']).decode())",
+    "mode = os.environ.get('VORTEX_SEED_MODE', 'run')",
     "class _Rollback(Exception):",
     "    pass",
     "for it in items:",
@@ -86,12 +86,12 @@ export const SEED_RUNNER_PY = [
 ].join("\n");
 
 // The shell command for a batch: the shared prefix with the runner passed through the environment (no quoting).
-export const djangoBatchCommand = (prefix: string): string => `${prefix} -c "$STAGEHAND_SEED_RUNNER"`;
+export const djangoBatchCommand = (prefix: string): string => `${prefix} -c "$VORTEX_SEED_RUNNER"`;
 
 export const djangoBatchEnv = (items: SeedItem[], mode: "run" | "dryrun"): Record<string, string> => ({
-    STAGEHAND_SEED_RUNNER: SEED_RUNNER_PY,
-    STAGEHAND_SEEDS_B64: Buffer.from(JSON.stringify(items.map((i) => ({ label: i.label, code: i.code }))), "utf8").toString("base64"),
-    STAGEHAND_SEED_MODE: mode,
+    VORTEX_SEED_RUNNER: SEED_RUNNER_PY,
+    VORTEX_SEEDS_B64: Buffer.from(JSON.stringify(items.map((i) => ({ label: i.label, code: i.code }))), "utf8").toString("base64"),
+    VORTEX_SEED_MODE: mode,
 });
 
 export interface SeedItemResult {
@@ -110,7 +110,7 @@ export const parseBatchOutput = (stdout: string, labels: string[]): SeedItemResu
         const begin = lines.findIndex((l) => l === `${BEGIN_MARK}${label}@@`);
         const end = lines.findIndex((l, i) => i > begin && l.startsWith(`${END_MARK}${label} `));
         if (begin < 0 || end < 0) {
-            out.push({ label, ok: false, output: "", error: `the seed process ended before this step ran: ${lines.filter((l) => l.trim() && !l.startsWith("@@STAGEHAND")).slice(-3).join(" ").slice(0, 300)}` });
+            out.push({ label, ok: false, output: "", error: `the seed process ended before this step ran: ${lines.filter((l) => l.trim() && !l.startsWith("@@VORTEX")).slice(-3).join(" ").slice(0, 300)}` });
             continue;
         }
         const status = lines[end]!.slice(END_MARK.length + label.length + 1).replace(/@@$/, "");

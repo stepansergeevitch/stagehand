@@ -4,7 +4,7 @@ import { QaScenario } from "./stages/contracts.js";
 
 // A QA runner that finds a scenario step, seed, teardown or assert broken as written proposes the correction through
 // the questions mechanism. When it is approved — by the human, or by Jev for the mechanical kinds (qa-autofix.ts) —
-// Stagehand applies it to design.json itself, so a fresh QA session runs the corrected scenario instead of
+// Vortex applies it to design.json itself, so a fresh QA session runs the corrected scenario instead of
 // re-deriving the same defect and asking again (INV-134, 2026-09-21: six identical questions, twice).
 //
 // Recognised question text: "S<k> step|seed|teardown|assert <n> …" or "S<k> scenario …" (case-insensitive, anywhere).

@@ -10,7 +10,7 @@ import { baseOf, envRepos, loginShellArgs, loginShellEnv, type RepoLayout } from
 //   migrate_down_command  rolls back what the branch added, to the base — on the branch's code, before a baseline
 //
 // Both run from the worktree, like setup. Templates: {{worktree}}, {{envPath}}, {{baseRef}} (the root repo's base
-// commit) and {{baseRef:<dir>}} (a sub-repo's); the same refs as $STAGEHAND_BASE_REF and $STAGEHAND_BASE_REF_<DIR>.
+// commit) and {{baseRef:<dir>}} (a sub-repo's); the same refs as $VORTEX_BASE_REF and $VORTEX_BASE_REF_<DIR>.
 //
 // The QA baseline runs on base code (BaseCheckout): a task branch with commits or changes is rolled back to the base
 // for the pass — migrations down, uncommitted work stashed, each repo checked out at its merge-base — and restored after.
@@ -35,14 +35,14 @@ export const renderMigration = (template: string, v: { worktree: string; envPath
         .replace(/\{\{baseRef(?::([\w.-]+))?\}\}/g, (_m, dir: string | undefined) => v.baseRefs[dir ?? ""] ?? v.baseRefs[Object.keys(v.baseRefs)[0] ?? ""] ?? "");
 
 const refVars = (baseRefs: Record<string, string>): Vars =>
-    Object.fromEntries(Object.entries(baseRefs).map(([dir, sha]) => [dir ? `STAGEHAND_BASE_REF_${envKey(dir)}` : "STAGEHAND_BASE_REF", sha]));
+    Object.fromEntries(Object.entries(baseRefs).map(([dir, sha]) => [dir ? `VORTEX_BASE_REF_${envKey(dir)}` : "VORTEX_BASE_REF", sha]));
 
 // Runs one migration command; the output goes to the log, and a failure throws with its tail.
 export const runMigration = async (template: string, opts: { worktree: string; envPath: string; vars: Vars; baseRefs?: Record<string, string>; logPath: string; label: string }): Promise<string> => {
     const baseRefs = opts.baseRefs ?? {};
     const command = renderMigration(template, { worktree: opts.worktree, envPath: opts.envPath, baseRefs });
     mkdirSync(dirname(opts.logPath), { recursive: true });
-    appendFileSync(opts.logPath, `\n[stagehand] ${opts.label} · ${new Date().toISOString()}\n$ ${command}\n`);
+    appendFileSync(opts.logPath, `\n[vortex] ${opts.label} · ${new Date().toISOString()}\n$ ${command}\n`);
     try {
         const { stdout, stderr } = await execFileAsync("bash", loginShellArgs(command), {
             cwd: opts.worktree,
@@ -56,7 +56,7 @@ export const runMigration = async (template: string, opts: { worktree: string; e
     } catch (e) {
         const err = e as { stdout?: string; stderr?: string; message?: string };
         const out = `${err.stdout ?? ""}${err.stderr ?? ""}`;
-        appendFileSync(opts.logPath, `${out}\n[stagehand] ${opts.label} FAILED: ${err.message ?? ""}\n`);
+        appendFileSync(opts.logPath, `${out}\n[vortex] ${opts.label} FAILED: ${err.message ?? ""}\n`);
         throw new Error(`${opts.label} failed: ${(out.trim() || err.message || "").split("\n").slice(-6).join(" ").slice(-500)}`);
     }
 };
@@ -77,7 +77,7 @@ export interface BaseCheckoutState {
     migratedDown: boolean;
 }
 
-const STASH_LABEL = (taskId: string, dir: string): string => `stagehand-baseline-${taskId.slice(0, 8)}${dir ? `-${dir}` : ""}`;
+const STASH_LABEL = (taskId: string, dir: string): string => `vortex-baseline-${taskId.slice(0, 8)}${dir ? `-${dir}` : ""}`;
 
 export class BaseCheckout {
     // One switch at a time per task.

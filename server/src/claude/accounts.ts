@@ -26,8 +26,8 @@ export const authDirFor = (cfg: Config, name: string): string => {
     return dir;
 };
 
-// Where this account's BROWSER login lives (Claude Code keys logins by config dir path): its auth dir when Stagehand
-// owns it, otherwise a Stagehand-owned dir the human logs into once. Browser stages run there with the env's config dir
+// Where this account's BROWSER login lives (Claude Code keys logins by config dir path): its auth dir when Vortex
+// owns it, otherwise a Vortex-owned dir the human logs into once. Browser stages run there with the env's config dir
 // content mirrored in, because the Chrome bridge only answers under a claude.ai browser login.
 export const browserDirFor = (cfg: Config, acc: Pick<AccountRow, "name" | "auth_dir">): string => {
     if (acc.auth_dir.startsWith(`${cfg.dataDir}/`)) return acc.auth_dir;
@@ -41,7 +41,7 @@ const MIRROR_SKIP = new Set([".claude.json", ".credentials.json", "setup-token.l
 
 // Makes `browserDir` behave like `configDir`: every behaviour entry of the config dir is symlinked in (existing symlinks
 // are re-pointed, real files are left alone), and .claude.json (MCP servers, onboarding flags) is copied once.
-// Never applied to a directory Stagehand does not own.
+// Never applied to a directory Vortex does not own.
 export const mirrorConfigDir = (cfg: Config, configDir: string, browserDir: string): void => {
     if (browserDir === configDir || !browserDir.startsWith(`${cfg.dataDir}/`)) return;
     for (const entry of readdirSync(configDir)) {

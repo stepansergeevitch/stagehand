@@ -63,7 +63,7 @@ type NavItem = (typeof NAV)[number]["items"][number];
 const SidebarTree = ({ page, renderItem }: { page: Page; renderItem: (n: NavItem, child: boolean) => React.ReactNode }) => {
     const [closed, setClosed] = useState<Set<string>>(() => {
         try {
-            return new Set(JSON.parse(localStorage.getItem("stagehand.sidebar.closed") ?? "[]") as string[]);
+            return new Set(JSON.parse(storage.get("vortex.sidebar.closed") ?? "[]") as string[]);
         } catch {
             return new Set();
         }
@@ -73,11 +73,7 @@ const SidebarTree = ({ page, renderItem }: { page: Page; renderItem: (n: NavItem
             const next = new Set(cur);
             if (next.has(g)) next.delete(g);
             else next.add(g);
-            try {
-                localStorage.setItem("stagehand.sidebar.closed", JSON.stringify([...next]));
-            } catch {
-                /* the tree still works, unremembered */
-            }
+            storage.set("vortex.sidebar.closed", JSON.stringify([...next]));
             return next;
         });
     return (
@@ -192,7 +188,7 @@ export const App = () => {
     const [envs, setEnvs] = useState<Env[]>([]);
     const [tasks, setTasks] = useState<Task[]>([]);
     // The environment whose tasks the list shows: the route's, else the open task's, else the one used last.
-    const [rememberedEnv, setRememberedEnv] = useState<string>(() => storage.get("stagehand.env") ?? "");
+    const [rememberedEnv, setRememberedEnv] = useState<string>(() => storage.get("vortex.env") ?? "");
     const routeEnv = route.page === "tasks" ? route.env : undefined;
     const selectedTaskEnv = selected ? tasks.find((t) => t.id === selected)?.env_id : undefined;
     const envId = routeEnv ?? selectedTaskEnv ?? rememberedEnv;
@@ -219,7 +215,7 @@ export const App = () => {
     }, [route]);
     useEffect(() => {
         if (!envId) return;
-        storage.set("stagehand.env", envId);
+        storage.set("vortex.env", envId);
         setRememberedEnv(envId);
     }, [envId]);
     // Back to the list the task was opened from.

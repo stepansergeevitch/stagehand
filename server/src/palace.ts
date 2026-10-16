@@ -5,14 +5,14 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { now } from "./db.js";
 
-// Stagehand's own MemPalace: one palace for everything Stagehand runs itself (the Prompter, the Product Owners), apart
+// Vortex's own MemPalace: one palace for everything Vortex runs itself (the Prompter, the Product Owners), apart
 // from the palaces the environments' config dirs use. Laid out like northspyre's:
 //
-//   ~/.stagehand/mempalace/                 = MEMPALACE_HOME (config.json → palace_path, knowledge_graph.sqlite3)
-//   ~/.stagehand/mempalace/palace/          = the ChromaDB drawers
-//   ~/.stagehand/mempalace/mcp.json         = the mempalace MCP server, pointed at this home (--mcp-config)
+//   ~/.vortex/mempalace/                 = MEMPALACE_HOME (config.json → palace_path, knowledge_graph.sqlite3)
+//   ~/.vortex/mempalace/palace/          = the ChromaDB drawers
+//   ~/.vortex/mempalace/mcp.json         = the mempalace MCP server, pointed at this home (--mcp-config)
 //
-// Wings: `stagehand` and `wing_prompter` (the Prompter's, migrated from its old palace), `product` (the global product
+// Wings: `vortex` and `wing_prompter` (the Prompter's, migrated from its old palace), `product` (the global product
 // context), one `po-<slug>` per Product Owner, and `wing_po-<slug>` for that PO's diary.
 
 const execFileAsync = promisify(execFile);
@@ -75,7 +75,7 @@ export class Palace {
         return r.found ? (r.content ?? "") : null;
     }
 
-    async put(id: string, wing: string, room: string, content: string, source = "stagehand"): Promise<void> {
+    async put(id: string, wing: string, room: string, content: string, source = "vortex"): Promise<void> {
         await this.run(["put", "--id", id, "--wing", wing, "--room", room, "--source", source], content);
     }
 

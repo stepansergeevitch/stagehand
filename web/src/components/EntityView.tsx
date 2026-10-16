@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Button, Input, Tab, TabList } from "@vortex/ds";
 
-// Stagehand's standard entity view — what a list row opens (the counterpart of DataTable):
+// Vortex's standard entity view — what a list row opens (the counterpart of DataTable):
 //
 //   <Entity type> / <identifier>                                   [entity actions]
 //   [Tab] [Tab] [Tab] …

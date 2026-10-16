@@ -1,6 +1,6 @@
 import type { Config } from "./config.js";
 
-// What a Product Owner reads and writes outside Stagehand, always by API key, never through an MCP server: Linear
+// What a Product Owner reads and writes outside Vortex, always by API key, never through an MCP server: Linear
 // projects and issues, ClickUp epics and tasks, Notion pages, Figma frames (as images), plain web pages. Every read comes back as markdown (the
 // PO's artifacts are markdown files); every write creates one issue/task.
 

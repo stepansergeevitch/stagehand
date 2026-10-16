@@ -43,7 +43,7 @@ export interface ConfigDirContents {
 // fingerprint of the file's change when it was marked reviewed.
 export interface FileReviewState { open?: boolean; reviewed?: string }
 export interface ChromeBrowser { deviceId: string; name: string; profile?: string; account?: string | null; profileDir?: string; browser?: string }
-// The Chrome profile name when Stagehand could match it, else the extension's own label ("Browser 1").
+// The Chrome profile name when Vortex could match it, else the extension's own label ("Browser 1").
 export const chromeBrowserLabel = (b: ChromeBrowser): string => b.profile ?? b.name;
 export interface ConfigDir {
     id: string; name: string; path: string; rules: string | null; created_at: string;
@@ -153,7 +153,7 @@ export type ModelOperation = "pr_fix_ci" | "pr_fix_comments" | "chat" | "instruc
 // An account's models (server db.ts AccountModels): its default, per stage a first-run and a rerun model, per side
 // operation a model. null = fall back (rerun → first run → default → the CLI's own default for the account).
 export interface AccountModels { default: string | null; stages: Partial<Record<string, string | null>>; reruns: Partial<Record<string, string | null>>; operations: Partial<Record<string, string | null>> }
-// The resource registry (server/src/resources.ts): one row per thing Stagehand runs on the host, with its policy verdict.
+// The resource registry (server/src/resources.ts): one row per thing Vortex runs on the host, with its policy verdict.
 export type ResourceKind = "service" | "dependency" | "run" | "terminal" | "session" | "login" | "browser" | "clone" | "worktree" | "database" | "orphan";
 export interface Resource {
     id: string; kind: ResourceKind; label: string;
@@ -171,9 +171,9 @@ export interface ResourceEvent { id: number; at: string; resource_id: string; ki
 export interface ResourceSnapshot {
     at: string;
     host: { totalMb: number; availableMb: number; usedMb: number; compressedMb: number; swapUsedMb: number; swapTotalMb: number; pressure: "ok" | "warn" | "critical"; pressureReason: string };
-    // The volume holding Stagehand's data; absent from an older server.
+    // The volume holding Vortex's data; absent from an older server.
     disk?: { totalMb: number; freeMb: number } | null;
-    stagehand: { rssMb: number; procs: number; devServerTasks: number; runs: number; browsers: number; terminals: number };
+    vortex: { rssMb: number; procs: number; devServerTasks: number; runs: number; browsers: number; terminals: number };
     policies: ResourcePolicies;
     resources: Resource[];
     events: ResourceEvent[];

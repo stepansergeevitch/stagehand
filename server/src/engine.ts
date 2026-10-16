@@ -67,12 +67,12 @@ const renderReplies = (c: PrComment, all: PrComment[]): string => {
     const replies = all.filter((r): r is Extract<PrComment, { kind: "line" }> => r.kind === "line" && r.replyTo === c.id).sort((a, b) => a.at.localeCompare(b.at));
     return replies.length ? `\n  Replies on GitHub:\n${replies.map((r) => `    - ${r.author}: ${r.body.trim().replace(/\n/g, "\n      ")}`).join("\n")}` : "";
 };
-// What the human and the agent said about a comment in Stagehand (the Ask chat under it), indented under it in a fix
+// What the human and the agent said about a comment in Vortex (the Ask chat under it), indented under it in a fix
 // brief: the human's questions there are instructions, the agent's answers are its own earlier reading of the point.
 const renderAskThread = (thread: MessageRow[]): string => {
     if (!thread.length) return "";
     const line = (m: MessageRow): string => `    - ${m.role === "user" ? "Human" : "Agent"}: ${m.text.trim().slice(0, 1500).replace(/\n/g, "\n      ")}`;
-    return `\n  Discussed in Stagehand under this comment (oldest first):\n${thread.map(line).join("\n")}`;
+    return `\n  Discussed in Vortex under this comment (oldest first):\n${thread.map(line).join("\n")}`;
 };
 export interface PrComments {
     number: number;
@@ -698,15 +698,15 @@ export class Engine extends EventEmitter {
         this.startCallbackHopWatcher();
         this.startCallbackRelay();
         // No run survives a restart, so no cloned Chrome profile should either.
-        void sweepClones(new Set()).then((n) => n && console.log(`[stagehand] ${n} leftover cloned Chrome profile(s) removed`));
+        void sweepClones(new Set()).then((n) => n && console.log(`[vortex] ${n} leftover cloned Chrome profile(s) removed`));
         void this.sweepGstackBrowsers();
         // A worktree a restart caught on the base goes back to its branch before any run resumes.
         this.recoverAutopilot();
         void this.restoreBaseCheckouts().then(() => this.recoverInterrupted());
         const n = backfillUsage(this.db, this.cfg.dataDir);
-        if (n) console.log(`[stagehand] usage backfilled for ${n} run(s)`);
+        if (n) console.log(`[vortex] usage backfilled for ${n} run(s)`);
         const c = backfillCalibration(this.db, this.cfg.dataDir);
-        if (c) console.log(`[stagehand] rate-limit windows calibrated from ${c} run(s)`);
+        if (c) console.log(`[vortex] rate-limit windows calibrated from ${c} run(s)`);
     }
 
     stopScheduler(): void {
@@ -929,7 +929,7 @@ export class Engine extends EventEmitter {
         if (ready.length === 0) return { ok: false, reason: "no AI account has a Chrome-paired browser login — AI accounts → Log in (browser), then Probe Chrome" };
         const pool = ready.filter((a) => this.browserDir(a, cd) !== null);
         if (pool.length === 0) {
-            return { ok: false, reason: `${ready.map((a) => a.name).join(", ")} can drive Chrome only from ${ready.map((a) => a.login_dir).join(", ")}, not for config dir ${cd.name} — AI accounts → Log in (browser) (into the Stagehand browser dir), then Probe Chrome` };
+            return { ok: false, reason: `${ready.map((a) => a.name).join(", ")} can drive Chrome only from ${ready.map((a) => a.login_dir).join(", ")}, not for config dir ${cd.name} — AI accounts → Log in (browser) (into the Vortex browser dir), then Probe Chrome` };
         }
         const current = task.account_id ? pool.find((a) => a.id === task.account_id) : undefined;
         const account = (current && !this.exhausted(current.id) ? current : undefined) ?? pool.find((a) => !this.exhausted(a.id));
@@ -943,7 +943,7 @@ export class Engine extends EventEmitter {
     }
 
     // The config dir a browser stage runs in for this account: the env's dir itself when the account's browser login lives
-    // there; else the account's Stagehand-owned browser dir (login required there) with the env's dir mirrored in; else null.
+    // there; else the account's Vortex-owned browser dir (login required there) with the env's dir mirrored in; else null.
     browserDir(account: AccountRow, cd: ConfigDirRow): string | null {
         if (account.login_dir === cd.path) return cd.path;
         const own = browserDirFor(this.cfg, account);
@@ -1037,7 +1037,7 @@ export class Engine extends EventEmitter {
         if (this.gstackBin()) return "gstack";
         if (!this.gstackWarned) {
             this.gstackWarned = true;
-            console.warn(`[stagehand] env ${env.name} asks for the gstack QA browser but ${join(this.cfg.gstackDir, "browse", "dist", "browse")} is not built — using Chrome`);
+            console.warn(`[vortex] env ${env.name} asks for the gstack QA browser but ${join(this.cfg.gstackDir, "browse", "dist", "browse")} is not built — using Chrome`);
         }
         return "chrome";
     }
@@ -1073,7 +1073,7 @@ export class Engine extends EventEmitter {
         }
         const run = (args: string[], timeout = 30_000) => execFileAsync(bin, args, { env: this.gstackEnv(stateFile), cwd: join(stateFile, ".."), timeout });
         // The browser is signed in with the QA Chrome profile's cookies and localStorage. The env's QA session command only
-        // signs API scenarios in ($STAGEHAND_QA_SESSION): its cookies once replaced the Chrome copy here (2026-10-05:
+        // signs API scenarios in ($VORTEX_QA_SESSION): its cookies once replaced the Chrome copy here (2026-10-05:
         // a pass logged the human out), which left the browser on a session the app's newer login no longer took (2026-10-15).
         const extra = parseCookies(env.qa_browser_cookies);
         let source: string;
@@ -1094,7 +1094,7 @@ export class Engine extends EventEmitter {
             // by cookies alone.
             const profileDir = picked.browser.profileDir;
             storage = !profileDir ? {} : await readLocalStorage(picked.browser.browser ?? "Google", profileDir, origin).catch((e: unknown) => {
-                console.warn(`[stagehand] ${task.ticket_id}: localStorage of "${chromeBrowserLabel(picked.browser)}" not read: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                console.warn(`[vortex] ${task.ticket_id}: localStorage of "${chromeBrowserLabel(picked.browser)}" not read: ${String((e as Error).message ?? e).slice(0, 200)}`);
                 return {};
             });
             const stored = Object.keys(storage).length;
@@ -1124,7 +1124,7 @@ export class Engine extends EventEmitter {
                 return `Headless QA browser started, but its localStorage could not be set: ${String((e as Error).message ?? e).split("\n").slice(-2).join(" ").slice(0, 200)}. The runner may meet the login page.`;
             }
         }
-        console.log(`[stagehand] ${task.ticket_id}: gstack browser on port ${state.port}, ${source}${extra.length ? ` + ${extra.length} extra cookie(s)` : ""}`);
+        console.log(`[vortex] ${task.ticket_id}: gstack browser on port ${state.port}, ${source}${extra.length ? ` + ${extra.length} extra cookie(s)` : ""}`);
         return null;
     }
 
@@ -1181,7 +1181,7 @@ export class Engine extends EventEmitter {
             `1. Start the app: ${kinds.map((k) => `\`curl -s -X POST ${api}/services/${k}/start\``).join(", then ")} (each returns when the service is up, with its \`url\`; a failure says why). Status: \`curl -s ${api}/services\`. Logs: \`${join(this.taskDir(task.id), "logs")}/<be|fe>.log\`.`,
             `2. Get a browser with the app's session: \`eval "$(curl -s -X POST ${api}/browser | jq -r .export)"\` — it sets \`$B\` (gstack's headless Chromium) and prints nothing else; \`curl -s -X POST ${api}/browser | jq -r .note\` explains a missing session.`,
             "3. Drive it in Bash: `$B goto <app url>/<path>`, `$B wait --networkidle`, `$B snapshot -i` (elements as @e1…), `$B click @eN`, `$B fill @eN 'text'`, `$B text`, `$B console --errors`, `$B screenshot <path>`.",
-            `4. When done: \`curl -s -X POST ${api}/browser/stop\`. Leave the services running; Stagehand stops them when they idle.`,
+            `4. When done: \`curl -s -X POST ${api}/browser/stop\`. Leave the services running; Vortex stops them when they idle.`,
         ].join("\n");
     }
 
@@ -1207,7 +1207,7 @@ export class Engine extends EventEmitter {
                 n++;
             }
         }
-        if (n) console.log(`[stagehand] ${n} leftover headless QA browser(s) stopped`);
+        if (n) console.log(`[vortex] ${n} leftover headless QA browser(s) stopped`);
     }
 
     // ---------- cloned Chrome profiles (chrome-clones.ts) ----------
@@ -1591,12 +1591,12 @@ export class Engine extends EventEmitter {
     // ---------- the login callback hop, always on ----------
     //
     // Identity providers typically accept only the app's usual port as a callback (https://localhost:<port>), so an app
-    // on a Stagehand port pins that redirect and the browser lands on whatever holds that port after logging in (an
+    // on a Vortex port pins that redirect and the browser lands on whatever holds that port after logging in (an
     // error page, or another app). Each env names its provider's fixed callback ports (envs.callback_ports, JSON
-    // [{ port, relay }]); Stagehand knows no port of its own. The QA prompt and the login helper move such a tab to the
+    // [{ port, relay }]); Vortex knows no port of its own. The QA prompt and the login helper move such a tab to the
     // right port themselves — but a human who opens the app from the App widget or a Session and logs in by hand had
     // nobody doing it, and the login failed. This watcher does it for every Chrome tab (all profiles) while an app of
-    // such an env is up. It remembers which Stagehand app origin each tab was on, and handles both ways a login can end
+    // such an env is up. It remembers which Vortex app origin each tab was on, and handles both ways a login can end
     // on a callback port:
     // - nothing (or a foreign app) holds the port → the tab sits on the callback URL (`/?code=…` for an SPA,
     //   `/auth/callback?code=…` for a server-side flow); once it has been there for two polls (an app that genuinely
@@ -1607,7 +1607,7 @@ export class Engine extends EventEmitter {
     //   to the same path on the origin it came from, where it is now logged in. Recognised by the sequence
     //   task app → identity provider → callback port, and done at most once a minute per tab so an app whose login is
     //   per-origin (an SPA with tokens in storage) cannot ping-pong between the two ports.
-    // Any browser (Safari too): for a port the env marks `relay`, Stagehand holds the port while one of its apps is up
+    // Any browser (Safari too): for a port the env marks `relay`, Vortex holds the port while one of its apps is up
     // and redirects the callback to that app — see CallbackRelay. TLS from the same locally trusted pair the dev UI uses.
 
     // The running apps of envs with callback ports: each app's origin (its FE, or its BE when the env's app URL is the
@@ -1637,7 +1637,7 @@ export class Engine extends EventEmitter {
                 for (const p of callbackPortsOf(e.callback_ports)) if (p.relay) declared.add(p.port);
             for (const port of declared) {
                 if (this.relays.has(port)) continue;
-                // Every app whose env names this port, relayed or not: once Stagehand holds the port, a login of an env that
+                // Every app whose env names this port, relayed or not: once Vortex holds the port, a login of an env that
                 // only lists it (on a fixed port) lands here too, and must not go to another env's app (2026-10-14: one env's
                 // callback went to another env's app the relay alone knew).
                 this.relays.set(port, new CallbackRelay(port, tls, () => [...new Set(this.callbackApps().filter((a) => a.ports.some((p) => p.port === port)).map((a) => a.origin))].filter((o) => !o.endsWith(`:${port}`))));
@@ -1705,7 +1705,7 @@ export class Engine extends EventEmitter {
                 if (now_ - (this.tabHoppedAt.get(key) ?? 0) < 60_000) continue;
                 this.tabHoppedAt.set(key, now_);
                 await setChromeTabUrl(t, `${from.origin}${pathAndQuery(t.url)}`, "Google");
-                console.log(`[stagehand] login landed on callback port ${portOf(t.url)} (consumed by the app there); tab moved back to ${from.origin}${pathAndQuery(t.url)}`);
+                console.log(`[vortex] login landed on callback port ${portOf(t.url)} (consumed by the app there); tab moved back to ${from.origin}${pathAndQuery(t.url)}`);
                 remember();
                 return;
             }
@@ -1725,12 +1725,12 @@ export class Engine extends EventEmitter {
             this.hopSeen = "";
             const target = this.tabOrigins.get(`${cb.window}:${cb.tab}`)?.origin ?? (origins.length === 1 ? origins[0] : undefined);
             if (!target) {
-                console.warn(`[stagehand] login callback on port ${portOf(cb.url)} in a tab never seen on a task app and ${origins.length} task apps are up — not hopping`);
+                console.warn(`[vortex] login callback on port ${portOf(cb.url)} in a tab never seen on a task app and ${origins.length} task apps are up — not hopping`);
                 remember();
                 return;
             }
             await setChromeTabUrl(cb, `${target}${pathAndQuery(cb.url)}`, "Google");
-            console.log(`[stagehand] login callback hopped from port ${portOf(cb.url)} to ${target}${pathAndQuery(cb.url)}`);
+            console.log(`[vortex] login callback hopped from port ${portOf(cb.url)} to ${target}${pathAndQuery(cb.url)}`);
             remember();
         };
         let busy = false;
@@ -1738,7 +1738,7 @@ export class Engine extends EventEmitter {
             if (busy) return;
             busy = true;
             void tick()
-                .catch((e: unknown) => console.warn(`[stagehand] callback hop watcher: ${String((e as Error).message ?? e).slice(0, 160)}`))
+                .catch((e: unknown) => console.warn(`[vortex] callback hop watcher: ${String((e as Error).message ?? e).slice(0, 160)}`))
                 .finally(() => {
                     busy = false;
                 });
@@ -2235,7 +2235,7 @@ export class Engine extends EventEmitter {
     // Pushes the task branch after integrating the remote first (the user's rule: "it should pull --rebase first"):
     // fetch; when the remote has commits this checkout lacks, the local history was rewritten and the push is forced
     // with lease when either every remote commit is already here by content (a clean rebase onto a newer base, a
-    // folded fix) or the remote still sits on the commit Stagehand itself pushed last (`lastPushed`: nobody else
+    // folded fix) or the remote still sits on the commit Vortex itself pushed last (`lastPushed`: nobody else
     // pushed since, so the remote commits are the old shape of the local ones even when a conflict resolution or a
     // merge commit changed their content); otherwise they are genuinely new and are rebased under the local commits
     // with `git pull --rebase` (aborted and reported on conflict). A plain push otherwise. Returns a one-line note of
@@ -2243,7 +2243,7 @@ export class Engine extends EventEmitter {
     // still held the 7 old commits, and the plain push was rejected as non-fast-forward. Seen on INV-133 (2026-09-23):
     // the backend fix rebased onto dev with a resolved conflict and a merge migration, so `git cherry` saw new content,
     // `pull --rebase` replayed 23 stale remote commits onto the rewritten branch and conflicted, and the task failed
-    // although nothing but Stagehand's own old push was on the remote.
+    // although nothing but Vortex's own old push was on the remote.
     private async pushBranch(cwd: string, env: EnvRow, branch: string, lastPushed: string | null = null): Promise<string> {
         await this.git(cwd, ["fetch", "origin", branch], env).catch(() => "");
         const remote = (await this.git(cwd, ["rev-parse", "-q", "--verify", `origin/${branch}`], env).catch(() => "")).trim();
@@ -2257,7 +2257,7 @@ export class Engine extends EventEmitter {
                     this.onBranchRewritten(env, branch);
                     return unique === 0
                         ? `force-pushed with lease — the ${remoteOnly} remote commit(s) were already here by content (history rewritten locally)`
-                        : `force-pushed with lease — the ${remoteOnly} remote commit(s) were Stagehand's own last push (${remote.slice(0, 7)}), replaced by the rewritten local history`;
+                        : `force-pushed with lease — the ${remoteOnly} remote commit(s) were Vortex's own last push (${remote.slice(0, 7)}), replaced by the rewritten local history`;
                 }
                 try {
                     await this.git(cwd, ["pull", "--rebase", "origin", branch], env);
@@ -2305,7 +2305,7 @@ export class Engine extends EventEmitter {
         }
     }
 
-    // The checkout's current commit, recorded as `pushed_sha` right after a push so a later push can tell Stagehand's
+    // The checkout's current commit, recorded as `pushed_sha` right after a push so a later push can tell Vortex's
     // own old push from somebody else's commits.
     private async headSha(cwd: string, env: EnvRow): Promise<string | null> {
         return (await this.git(cwd, ["rev-parse", "HEAD"], env).catch(() => "")).trim() || null;
@@ -2369,7 +2369,7 @@ export class Engine extends EventEmitter {
     }
 
     // A draft whose base is not the env's trunk is a stacked PR. Record on each draft the parent branch's open PR
-    // (so the reviewer sees "stacked on #n" in Stagehand), or a note when that branch has no PR yet — the human then
+    // (so the reviewer sees "stacked on #n" in Vortex), or a note when that branch has no PR yet — the human then
     // opens the parent's PR first or changes the base. Runs when the draft lands and whenever the base is edited.
     private async annotateStackedDrafts(taskId: string): Promise<void> {
         const task = this.getTask(taskId);
@@ -2438,7 +2438,7 @@ export class Engine extends EventEmitter {
         }
         if (repo === undefined) throw new Error("say which repository's draft you approve");
         if (!repos.includes(repo)) throw new Error(`no draft for repository ${repo || "(root)"}`);
-        void this.approvePrRepo(task.id, repo).catch((e: unknown) => console.warn(`[stagehand] approve PR ${task.ticket_id} ${repo}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+        void this.approvePrRepo(task.id, repo).catch((e: unknown) => console.warn(`[vortex] approve PR ${task.ticket_id} ${repo}: ${String((e as Error).message ?? e).slice(0, 160)}`));
     }
 
     // A task that comes back to PR Creation Review after its PR(s) already exist (returned from a later stage, a
@@ -2457,7 +2457,7 @@ export class Engine extends EventEmitter {
         if (opened.length < repos.length) return false;
         // The PRs are open from an earlier round (the task went back to an earlier stage): the approved commits still
         // have to reach them (INV-154, 2026-10-02: approved at User Review, both repositories stayed ahead of their PRs).
-        void this.pushPrFix(taskId, { approved: true }).catch((e: unknown) => console.warn(`[stagehand] push approved ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+        void this.pushPrFix(taskId, { approved: true }).catch((e: unknown) => console.warn(`[vortex] push approved ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         return true;
     }
 
@@ -2535,7 +2535,7 @@ export class Engine extends EventEmitter {
         if (!rules.allowPush) {
             return existing?.number
                 ? `push \`${task.branch}\` yourself — PR #${existing.number} picks the commits up`
-                : `this env forbids agent pushes — push \`${task.branch}\` and open the PR yourself (draft below); Stagehand picks it up by branch`;
+                : `this env forbids agent pushes — push \`${task.branch}\` and open the PR yourself (draft below); Vortex picks it up by branch`;
         }
         this.setTaskStatus(taskId, "running", `PR Creation Review · pushing ${repoLabel(repo)} (${task.branch})`);
         let pushed: string | null = null;
@@ -2554,10 +2554,10 @@ export class Engine extends EventEmitter {
         }
         if (!rules.allowPrCreate || !entry) {
             this.upsertPrRow(taskId, repo, { pushed_at: now(), pushed_sha: pushed });
-            return `pushed \`${task.branch}\` — this env forbids agent PR creation: open the PR yourself (draft below); Stagehand picks it up by branch`;
+            return `pushed \`${task.branch}\` — this env forbids agent PR creation: open the PR yourself (draft below); Vortex picks it up by branch`;
         }
         try {
-            // The body is the draft as approved: a "Stacked on #n" line Stagehand once put on top changed nothing (GitHub
+            // The body is the draft as approved: a "Stacked on #n" line Vortex once put on top changed nothing (GitHub
             // shows the base branch itself), so it is gone (2026-10-15).
             const prBase = entry.base?.trim() || this.baseBranchOf(task, env, repo);
             const url = await this.gh(cwd, ["pr", "create", "--base", prBase, "--head", task.branch, "--title", entry.title, "--body", entry.body, ...(rulesOf(this.configDirOf(env)).prDraft ? ["--draft"] : [])], env);
@@ -2581,7 +2581,7 @@ export class Engine extends EventEmitter {
     private pollPrSoon(taskId: string, delayMs = 4_000): void {
         setTimeout(() => {
             const task = this.getTask(taskId);
-            if (task) void this.pollAllPrs(task).catch((e: unknown) => console.warn(`[stagehand] PR poll ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+            if (task) void this.pollAllPrs(task).catch((e: unknown) => console.warn(`[vortex] PR poll ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
         }, delayMs).unref();
     }
 
@@ -2641,7 +2641,7 @@ export class Engine extends EventEmitter {
             this.gh(cwd, ["api", `repos/${ghRepo}/pulls/${n}/comments`, "--paginate"], env),
             this.gh(cwd, ["api", `repos/${ghRepo}/issues/${n}/comments`, "--paginate"], env),
             this.reviewThreads(cwd, ghRepo, n, env).catch((e: unknown) => {
-                console.warn(`[stagehand] review threads for #${n}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                console.warn(`[vortex] review threads for #${n}: ${String((e as Error).message ?? e).slice(0, 160)}`);
                 return new Map<number, { threadId: string; resolved: boolean }>();
             }),
         ]);
@@ -2746,7 +2746,7 @@ export class Engine extends EventEmitter {
     private pollPrs(): void {
         if (++this.pollCounter % 8 !== 0) return; // scheduler ticks every 15 s → every 2 min
         const tasks = this.db.prepare(`SELECT * FROM tasks WHERE stage IN ('pr_waiting','pr_green','pr_approved') AND status IN ('idle', 'blocked')`).all() as TaskRow[];
-        for (const task of tasks) void this.pollAllPrs(task).catch((e: unknown) => console.warn(`[stagehand] PR poll ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+        for (const task of tasks) void this.pollAllPrs(task).catch((e: unknown) => console.warn(`[vortex] PR poll ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
     }
 
     // Once a push is this recent, "no checks reported" means GitHub has not registered them yet, not that there are none.
@@ -2757,11 +2757,11 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         for (const repo of this.draftRepos(task.id, env)) {
             const note = await this.syncRemoteBranch(task, env, repo).catch((e: unknown) => {
-                console.warn(`[stagehand] pull ${task.ticket_id} ${repo || "(root)"}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                console.warn(`[vortex] pull ${task.ticket_id} ${repo || "(root)"}: ${String((e as Error).message ?? e).slice(0, 160)}`);
                 return null;
             });
             if (note) this.addAgentNote(task.id, `${repoLabel(repo)}: ${note}`);
-            await this.pollPr(task, repo).catch((e: unknown) => console.warn(`[stagehand] PR poll ${task.ticket_id} ${repo || "(root)"}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+            await this.pollPr(task, repo).catch((e: unknown) => console.warn(`[vortex] PR poll ${task.ticket_id} ${repo || "(root)"}: ${String((e as Error).message ?? e).slice(0, 160)}`));
         }
         this.syncPrTaskState(task.id, opts);
     }
@@ -2942,7 +2942,7 @@ export class Engine extends EventEmitter {
             if (cur.stage !== "done") {
                 this.onParentMerged(cur, env);
                 // Nothing needs the task's BE/FE (or components) once its PRs are merged — also the end of "keep services".
-                void this.services.stopAll(cur.id).catch((e: unknown) => console.warn(`[stagehand] stop services of merged ${cur.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+                void this.services.stopAll(cur.id).catch((e: unknown) => console.warn(`[vortex] stop services of merged ${cur.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
                 // Nor its per-task databases and caches: run the env's cleanup command now instead of waiting for "Clean up"
                 // (DualEntry, 2026-09-22: 20 test-database clones of done and parked tasks sat on the shared Postgres).
                 // The worktree stays for the human; the command runs again, harmlessly, when they clean up or delete.
@@ -3351,7 +3351,7 @@ export class Engine extends EventEmitter {
         const fixed = (round.verified ?? []).filter((v) => v.allowed).length;
         const text = `CI autopilot fixed ${fixed} failure(s) on #${round.prNumber} and pushed ${Object.values(pushed).map((x) => x.slice(0, 7)).join(", ")}`;
         this.addAgentNote(taskId, text);
-        void notify(this.cfg, { title: `${task.ticket_id} CI autopilot pushed a fix`, message: text, priority: "default", tags: ["robot"], ...(taskLink(this.cfg, task.id) ? { url: taskLink(this.cfg, task.id)! } : {}), localUrl: localTaskLink(this.cfg, task.id), group: `stagehand-${task.id}` });
+        void notify(this.cfg, { title: `${task.ticket_id} CI autopilot pushed a fix`, message: text, priority: "default", tags: ["robot"], ...(taskLink(this.cfg, task.id) ? { url: taskLink(this.cfg, task.id)! } : {}), localUrl: localTaskLink(this.cfg, task.id), group: `vortex-${task.id}` });
     }
 
     // Line comments and notes the human left on Code changes while the task sits at a PR stage (nothing posted to
@@ -3385,7 +3385,7 @@ export class Engine extends EventEmitter {
         const threads = this.prCommentThreads(taskId);
         const failureOutput =
             `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${number} picked by the human to address (this is not necessarily a CI failure). ` +
-            `Where a comment carries replies or a Stagehand discussion below it, that discussion is the brief: the human's last word there wins over the comment's original wording.\n` +
+            `Where a comment carries replies or a Vortex discussion below it, that discussion is the brief: the human's last word there wins over the comment's original wording.\n` +
             picked.map((c) => describePrComment(c).replace(/^- /, `- [comment #${c.id}] `) + renderReplies(c, all) + renderAskThread(threads.get(c.id) ?? [])).join("\n");
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         await this.recordFixComments(task, [{ repo, comments: picked }]);
@@ -3582,7 +3582,7 @@ export class Engine extends EventEmitter {
         const rules = rulesOf(this.configDirOf(env));
         if (!rules.allowPush) {
             this.setStage(taskId, "pr_waiting");
-            this.setTaskStatus(taskId, "idle", `PR Waiting · this env forbids agent pushes — push \`${task.branch}\` yourself; Stagehand resumes polling once you do`);
+            this.setTaskStatus(taskId, "idle", `PR Waiting · this env forbids agent pushes — push \`${task.branch}\` yourself; Vortex resumes polling once you do`);
             return;
         }
         this.setTaskStatus(taskId, "running", opts.approved ? "PR Waiting · pushing the approved changes to the open PRs" : "PR Fix · pushing the approved fix");
@@ -3614,7 +3614,7 @@ export class Engine extends EventEmitter {
         // A fix can land while a repository's draft is still unapproved (its PR never opened before CI on another
         // repository's PR failed): that draft still needs the human — back to PR Creation Review for it, not on to
         // PR Waiting where nothing offers to open it.
-        if (!opts.approved) await this.postFixReplies(task, env).catch((e: unknown) => console.warn(`[stagehand] fix replies ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+        if (!opts.approved) await this.postFixReplies(task, env).catch((e: unknown) => console.warn(`[vortex] fix replies ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         const repos = this.draftRepos(taskId, env);
         const rows = this.prRows(taskId);
         const missing = repos.filter((r) => !rows.find((x) => x.repo === r)?.number);
@@ -3734,7 +3734,7 @@ export class Engine extends EventEmitter {
             tags: ["white_check_mark"],
             ...(taskLink(this.cfg, task.id) ? { url: taskLink(this.cfg, task.id)! } : {}),
             localUrl: localTaskLink(this.cfg, task.id),
-            group: `stagehand-${task.id}`,
+            group: `vortex-${task.id}`,
         });
     }
 
@@ -3763,7 +3763,7 @@ export class Engine extends EventEmitter {
             tags: [asking ? "question" : task.status === "waiting_user" ? "eyes" : task.status === "failed" ? "x" : task.status === "blocked" ? "no_entry" : "hourglass"],
             ...(taskLink(this.cfg, task.id) ? { url: taskLink(this.cfg, task.id)! } : {}),
             localUrl: localTaskLink(this.cfg, task.id),
-            group: `stagehand-${task.id}`,
+            group: `vortex-${task.id}`,
         });
     }
 
@@ -4326,8 +4326,8 @@ export class Engine extends EventEmitter {
             ticketUrl: task.ticket_url ?? "",
             ticket: tickets.length
                 ? renderTicketsForPrompt(tickets, taskDir) +
-                  (tickets.length < allIds.length ? `\n\n(Stagehand could not fetch ${allIds.filter((id) => !tickets.some((t) => t.id === id)).join(", ")} server-side — fetch them yourself with the ${task.source} MCP tool.)` : "")
-                : `(Stagehand could not fetch the ticket server-side. Fetch ${task.source} ticket ${allIds.join(", ")} yourself with the ${task.source} MCP tool — for ClickUp: mcp__clickup__clickup_get_task with detail_level "detailed", and its parent if any. If that fails too, write the output file with classification "feature", title "TICKET FETCH FAILED" and the error in summary.)`,
+                  (tickets.length < allIds.length ? `\n\n(Vortex could not fetch ${allIds.filter((id) => !tickets.some((t) => t.id === id)).join(", ")} server-side — fetch them yourself with the ${task.source} MCP tool.)` : "")
+                : `(Vortex could not fetch the ticket server-side. Fetch ${task.source} ticket ${allIds.join(", ")} yourself with the ${task.source} MCP tool — for ClickUp: mcp__clickup__clickup_get_task with detail_level "detailed", and its parent if any. If that fails too, write the output file with classification "feature", title "TICKET FETCH FAILED" and the error in summary.)`,
             taskNotes: task.notes?.trim() ? `## Instructions from the human for this task (apply them throughout)\n\n${task.notes.trim()}` : "",
             poBrief: ((): string => {
                 const p = join(taskDir, "po-brief.md");
@@ -4434,7 +4434,7 @@ export class Engine extends EventEmitter {
                 ? [
                       `- **Browser mapping for this run (overrides every tool name in the bullets below):** \`browser_batch\`, \`computer\`, \`find\`, \`read_page\`, \`get_page_text\`, \`javascript_tool\`, \`tabs_context_mcp\` and \`resize_window\` do not exist here — the browser is gstack's headless Chromium, driven with the \`$B\` command in Bash: \`$B snapshot -i\` instead of find/read_page, \`$B click @eN\` / \`$B fill @eN "text"\` / \`$B press Enter\` instead of computer, \`$B text\` instead of get_page_text, \`$B js "<expr>"\` instead of javascript_tool, \`$B screenshot <path>\` for shots. One Bash call may chain several \`$B\` commands with \`&&\` (that is your "batch"). No zoom check, no tab juggling, no "hidden tab" rule: there is one headless tab.`,
                       `- **Reading a page:** after every navigation or click that loads data, \`$B wait --networkidle\` then \`$B snapshot -i\` (interactive elements as \`@e1\`…; add \`-C\` for clickable elements outside the ARIA tree, \`@c1\`…). Refs change after a navigation: re-snapshot before clicking. Dropdowns and pickers: click the trigger, snapshot, click the option ref; type-to-filter with \`$B fill\` on the search box first. Tables: \`$B text\` or \`$B html <css selector>\`. Console errors: \`$B console --errors\`; requests: \`$B network\`.`,
-                      `- **What headless cannot do:** a page that needs WebGL (a map, a 3D view), a canvas or media the headless browser cannot render — it crashes, stays blank, or throws a WebGL/context error in \`$B console --errors\` — is not an app bug and not a seed problem. Record that scenario \`blocked\` with \`"needsChrome": "<what failed, one line>"\` and go on with the others: Stagehand re-runs it in the real Chrome. Only for that; any other block is reported the normal way.`,
+                      `- **What headless cannot do:** a page that needs WebGL (a map, a 3D view), a canvas or media the headless browser cannot render — it crashes, stays blank, or throws a WebGL/context error in \`$B console --errors\` — is not an app bug and not a seed problem. Record that scenario \`blocked\` with \`"needsChrome": "<what failed, one line>"\` and go on with the others: Vortex re-runs it in the real Chrome. Only for that; any other block is reported the normal way.`,
                   ].join("\n")
                 : "";
             // The browser steps of the setup only when a scenario drives a browser; an API-only pass must not touch Chrome.
@@ -4499,7 +4499,7 @@ export class Engine extends EventEmitter {
         if (!task) return;
         // A preview instance shares the data dir with the live server; only the live one starts runs.
         if (PREVIEW) {
-            console.log(`[stagehand] preview instance: ${task.ticket_id} ${stage} not dispatched — use the live app`);
+            console.log(`[vortex] preview instance: ${task.ticket_id} ${stage} not dispatched — use the live app`);
             return;
         }
         const def = STAGE_DEFS[stage];
@@ -4508,7 +4508,7 @@ export class Engine extends EventEmitter {
         // when the task was stopped or moved to another stage meanwhile (INV-132, 2026-09-22: Stop during "starting
         // BE/FE", the human moved the task to User Review, and a Manual QA run began a minute later anyway).
         if ((opts.onBase || opts.servicesReady || opts.seedsDone || opts.chromeVerified || opts.chromeFlagsVerified) && (task.status === "stopped" || task.stage !== stage)) {
-            console.log(`[stagehand] ${task.ticket_id}: dropped a ${def.label} continuation — task is ${task.status} at ${task.stage}`);
+            console.log(`[vortex] ${task.ticket_id}: dropped a ${def.label} continuation — task is ${task.status} at ${task.stage}`);
             return;
         }
         // Nothing runs against a database the env does not allow (db-hosts.ts).
@@ -4589,7 +4589,7 @@ export class Engine extends EventEmitter {
             if (tdb?.status === "ready") {
                 const hits = forPass.filter((s) => only.has(s.id)).flatMap((s) => [...(s.teardown ?? []).map((t, i) => [`${s.id} teardown ${i + 1}`, t]), ...(s.seed ?? []).map((t, i) => [`${s.id} seed ${i + 1}`, t]), ...(s.steps ?? []).map((t, i) => [`${s.id} step ${i + 1}`, t.action])].filter(([, text]) => namesTemplate(text!, tdb.template)).map(([where]) => where!));
                 if (hits.length) {
-                    this.setTaskStatus(taskId, "blocked", `${def.label} · design.json names the template database ${tdb.template} (${hits.slice(0, 6).join(", ")}${hits.length > 6 ? ", …" : ""}) — those steps would write to the template, not this task's database ${tdb.name}; use $STAGEHAND_TASK_DB in them, then Retry`, { notify: true });
+                    this.setTaskStatus(taskId, "blocked", `${def.label} · design.json names the template database ${tdb.template} (${hits.slice(0, 6).join(", ")}${hits.length > 6 ? ", …" : ""}) — those steps would write to the template, not this task's database ${tdb.name}; use $VORTEX_TASK_DB in them, then Retry`, { notify: true });
                     return;
                 }
             }
@@ -4763,7 +4763,7 @@ export class Engine extends EventEmitter {
         // parallel QA pass are the exception: they run beside each other.
         const already = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND status = 'running' AND (group_id IS NULL OR group_id != ?)`).get(taskId, shard?.group ?? "") as { n: number };
         if (already.n > 0) {
-            console.log(`[stagehand] ${task.ticket_id}: ${def.label}${shard ? ` (shard ${shard.id})` : ""} already has a run going — duplicate dispatch dropped`);
+            console.log(`[vortex] ${task.ticket_id}: ${def.label}${shard ? ` (shard ${shard.id})` : ""} already has a run going — duplicate dispatch dropped`);
             if (shard) this.shardAbort(shard, { kind: "failed", error: `${shard.id}: another run of this task was already going` });
             return;
         }
@@ -4885,7 +4885,7 @@ export class Engine extends EventEmitter {
             // The copy served this run only; a retry or unblock makes a fresh one.
             void this.releaseClone(cloneKey);
             if (gstackState) void this.stopGstackBrowser(gstackState);
-            void (isPrShard(shard) ? this.onPrShardClosed(taskId, runId, def, account, outcome, shard, opts, stoppedBackground) : shard ? this.onShardClosed(taskId, runId, def, account, outcome, shard) : this.onRunClosed(taskId, runId, def, account, outcome, opts, stoppedBackground)).catch((e: unknown) => console.warn(`[stagehand] onRunClosed ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+            void (isPrShard(shard) ? this.onPrShardClosed(taskId, runId, def, account, outcome, shard, opts, stoppedBackground) : shard ? this.onShardClosed(taskId, runId, def, account, outcome, shard) : this.onRunClosed(taskId, runId, def, account, outcome, opts, stoppedBackground)).catch((e: unknown) => console.warn(`[vortex] onRunClosed ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         });
     }
 
@@ -4975,7 +4975,7 @@ export class Engine extends EventEmitter {
             g.starting.add(shard.id);
             this.dispatch(g.taskId, "pr_fix", { attempt: g.attempt, contractAttempt: g.contractAttempt, ...(g.operation ? { operation: g.operation } : {}), ...(g.notes ? { notes: g.notes } : {}), shard });
         }
-        if (g.running.size === 0 && g.starting.size === 0 && g.pending.length === 0) void this.completePrGroup(g).catch((e: unknown) => console.warn(`[stagehand] completePrGroup ${g.taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+        if (g.running.size === 0 && g.starting.size === 0 && g.pending.length === 0) void this.completePrGroup(g).catch((e: unknown) => console.warn(`[vortex] completePrGroup ${g.taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
     }
 
     // One repository's run ended: close its row, record what it reported, let the group move on. A run that hit the
@@ -5160,7 +5160,7 @@ export class Engine extends EventEmitter {
             g.starting.add(shard.id);
             this.dispatch(g.taskId, g.stage, { ...g.opts, shard });
         }
-        if (g.running.size === 0 && g.starting.size === 0 && g.pending.length === 0) void this.completeGroup(g).catch((e: unknown) => console.warn(`[stagehand] completeGroup ${g.taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+        if (g.running.size === 0 && g.starting.size === 0 && g.pending.length === 0) void this.completeGroup(g).catch((e: unknown) => console.warn(`[vortex] completeGroup ${g.taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
     }
 
     private shardDefer(shard: QaShard | PrShard): void {
@@ -5205,7 +5205,7 @@ export class Engine extends EventEmitter {
         if (!g) return;
         g.starting.delete(shard.id);
         g.results.set(shard.id, result);
-        console.log(`[stagehand] shard ${shard.id} of ${g.taskId} ended before its run: ${result.kind === "failed" ? result.error : result.kind}`);
+        console.log(`[vortex] shard ${shard.id} of ${g.taskId} ended before its run: ${result.kind === "failed" ? result.error : result.kind}`);
         // Never re-enter the pump from inside a dispatch it started (the loop there is still handing out shards).
         setTimeout(() => this.pumpGroup(g), 0);
     }
@@ -5428,8 +5428,8 @@ export class Engine extends EventEmitter {
     }
 
     // `opts.only`: seed only these scenarios (a QA pass resumed after questions re-seeds just the scenarios still to run).
-    // The env's QA session command (envs.qa_session_command): Stagehand runs it before a QA pass — from the worktree, after
-    // Prepare — and gives the last line it prints to the pass as $STAGEHAND_QA_SESSION (e.g. `token=<jwt>` for a Cookie
+    // The env's QA session command (envs.qa_session_command): Vortex runs it before a QA pass — from the worktree, after
+    // Prepare — and gives the last line it prints to the pass as $VORTEX_QA_SESSION (e.g. `token=<jwt>` for a Cookie
     // header), so API scenarios sign in without the agent ever handling the app's secrets.
     private readonly qaSessions = new Map<string, string>();
     private async refreshQaSession(task: TaskRow, env: EnvRow): Promise<void> {
@@ -5450,7 +5450,7 @@ export class Engine extends EventEmitter {
     }
     private qaSessionEnv(taskId: string, def: StageDef): Record<string, string> {
         const v = def.chrome ? this.qaSessions.get(taskId) : undefined;
-        return v ? { STAGEHAND_QA_SESSION: v } : {};
+        return v ? { VORTEX_QA_SESSION: v } : {};
     }
 
     private async runShellSeeds(task: TaskRow, env: EnvRow, def: StageDef, qaPass: string, opts?: { only?: Set<string> }): Promise<string> {
@@ -5542,7 +5542,7 @@ export class Engine extends EventEmitter {
         if (dep) await this.applyDependencyUrl(task, env, dep.url);
     }
 
-    // The dependency URL the task's worktree was set up with ($STAGEHAND_DEP_URL to the env's setup, which writes it into
+    // The dependency URL the task's worktree was set up with ($VORTEX_DEP_URL to the env's setup, which writes it into
     // the app's config) is kept in the task dir. Another one — the task picked or cleared a dependency branch — stops
     // the task's app and re-runs the setup with it, so the next start talks to that dependency.
     async applyDependencyUrl(task: TaskRow, env: EnvRow, url: string): Promise<void> {
@@ -5553,7 +5553,7 @@ export class Engine extends EventEmitter {
         if (env.setup_command && task.worktree_path && existsSync(task.worktree_path)) {
             await this.services.stop(task.id, "fe");
             await this.services.stop(task.id, "be");
-            const out = await runWorktreeSetup(task.worktree_path, env.path, withPrepare(env, env.setup_command), { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id), STAGEHAND_DEP_URL: url });
+            const out = await runWorktreeSetup(task.worktree_path, env.path, withPrepare(env, env.setup_command), { ...parseEnvVars(env.env_vars), ...taskDbEnv(this.db, task.id), VORTEX_DEP_URL: url });
             if (out) console.error(`[setup] ${task.ticket_id} ${task.worktree_path} (dependency ${url})\n${out.slice(-1500)}`);
             if (taskDbRow(this.db, task.id)?.status === "ready") await this.taskDbs.connect(this.getTask(task.id)!, env);
         }
@@ -5616,7 +5616,7 @@ export class Engine extends EventEmitter {
                 execFileAsync("curl", ["-sk", "-o", "/dev/null", "--max-time", "120", `${appUrl}${u.replace(/:[a-zA-Z_]+/g, "1")}`]).catch(() => undefined),
             ),
         );
-        console.log(`[stagehand] ${task.ticket_id}: warmed ${urls.length} page(s) in ${Math.round((Date.now() - started) / 1000)} s`);
+        console.log(`[vortex] ${task.ticket_id}: warmed ${urls.length} page(s) in ${Math.round((Date.now() - started) / 1000)} s`);
     }
 
     // The scenarios a pass drives: every one, in both passes. A `baseline: false` scenario still runs in the baseline —
@@ -5679,7 +5679,7 @@ export class Engine extends EventEmitter {
             const partial = QaPassResult.partial().safeParse(JSON.parse(readFileSync(p, "utf8")));
             return (partial.success ? partial.data.scenarios ?? [] : []).filter(isRecorded);
         } catch (e) {
-            console.warn(`[stagehand] partial QA results of ${taskId} ignored: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            console.warn(`[vortex] partial QA results of ${taskId} ignored: ${String((e as Error).message ?? e).slice(0, 160)}`);
             return [];
         }
     }
@@ -5822,7 +5822,7 @@ export class Engine extends EventEmitter {
     }
 
     // What every agent prompt says about the env's optional components: which exist, which run now, and how to start or
-    // stop one on demand through Stagehand's local API (the design stage learns the `services` declaration instead).
+    // stop one on demand through Vortex's local API (the design stage learns the `services` declaration instead).
     private describeComponents(task: TaskRow, env: EnvRow, stage: Stage): string {
         const comps = componentsOf(env);
         // The env's shared dependency (Deal → Core) is one more component to the agents: the BE is dead without it
@@ -5856,7 +5856,7 @@ export class Engine extends EventEmitter {
 
     // "Rebase onto latest base" (task page): the task's own agent rebases the branch onto origin/<base> in the worktree,
     // resolving conflicts and re-running the fast checks under the normal guard (no force-push, no interactive rebase);
-    // Stagehand then force-pushes with lease itself where the env allows pushes and the branch is on GitHub, resets the
+    // Vortex then force-pushes with lease itself where the env allows pushes and the branch is on GitHub, resets the
     // PR checks and re-polls. Refuses while a run is in progress or when already up to date; uncommitted changes are set aside for the plain pass.
     // Plain `git rebase` first: the task's own commits (on neither the base nor the trunk) are replayed onto the new
     // base with `--onto`, so a base that was rewritten under the branch (a stacked parent force-pushed) replays only
@@ -6027,7 +6027,7 @@ export class Engine extends EventEmitter {
                 const cwd = this.checkoutOf(task, env, repo);
                 const dirty = await dirtyPaths(cwd, parseEnvVars(env.env_vars)).catch(() => []);
                 if (dirty.length) {
-                    const label = `stagehand: set aside for the rebase of ${task.branch} at ${now()}`;
+                    const label = `vortex: set aside for the rebase of ${task.branch} at ${now()}`;
                     try {
                         await this.git(cwd, ["stash", "push", "--include-untracked", "-m", label], env);
                     } catch (e) {
@@ -6080,7 +6080,7 @@ export class Engine extends EventEmitter {
                     if (!ref) throw new Error("the stash entry is gone");
                     await this.git(st.cwd, ["stash", "pop", ref], env);
                 } catch (e) {
-                    console.warn(`[stagehand] ${task.ticket_id}: stash "${st.label}" not put back: ${gitErrorTail(e)}`);
+                    console.warn(`[vortex] ${task.ticket_id}: stash "${st.label}" not put back: ${gitErrorTail(e)}`);
                     plain.push(`⚠️ ${repoLabel(st.repo)}: the uncommitted changes set aside for the rebase did not go back cleanly (${gitErrorTail(e)}) — they are kept in \`git stash list\` as "${st.label}"`);
                 }
             }
@@ -6149,13 +6149,13 @@ export class Engine extends EventEmitter {
                 const bases = `${repoLabel(conflictedRepo)}: origin/${this.baseBranchOf(task, env, conflictedRepo)}`;
                 addJob(
                     conflictedRepo,
-                    `Rebase onto the latest base. Stagehand already tried a plain \`git rebase --onto\` of this branch's own commits: ${done.length ? `it went through in ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}; ` : ""}it CONFLICTED in ${pass.conflicted.map(repoLabel).join(", ")} and was aborted there (those checkouts are exactly as they were). In each of those repositories run \`git fetch origin <base>\` and \`git rebase origin/<base>\` (${bases}) — a checkout with uncommitted changes or untracked files: \`git stash push --include-untracked\` before the rebase and \`git stash pop\` after it, never commit or discard them — resolve the conflicts in the spirit of this task's change (keep this task's behaviour, take the base's changes for everything else; drop a commit of this branch that the base now already provides, e.g. a duplicate merge migration), \`git add\` + \`git rebase --continue\` until done — never \`--abort\` and leave it, never \`-i\`. Do the rebase BEFORE the other jobs so they are made on top of the rebased history.`,
+                    `Rebase onto the latest base. Vortex already tried a plain \`git rebase --onto\` of this branch's own commits: ${done.length ? `it went through in ${done.map((l) => l.replace(/^✅ /, "")).join("; ")}; ` : ""}it CONFLICTED in ${pass.conflicted.map(repoLabel).join(", ")} and was aborted there (those checkouts are exactly as they were). In each of those repositories run \`git fetch origin <base>\` and \`git rebase origin/<base>\` (${bases}) — a checkout with uncommitted changes or untracked files: \`git stash push --include-untracked\` before the rebase and \`git stash pop\` after it, never commit or discard them — resolve the conflicts in the spirit of this task's change (keep this task's behaviour, take the base's changes for everything else; drop a commit of this branch that the base now already provides, e.g. a duplicate merge migration), \`git add\` + \`git rebase --continue\` until done — never \`--abort\` and leave it, never \`-i\`. Do the rebase BEFORE the other jobs so they are made on top of the rebased history.`,
                 );
             }
             // A clean replay is checked like the Rebase button's (startRebase): a failing verification command is a job, never a push.
             const checkFailure = rebasedRepos.length ? await this.checkAfterRebase(task, env) : null;
             if (checkFailure) {
-                for (const repo of rebasedRepos) addJob(repo, `Fix what the rebase broke. Stagehand's plain rebase onto the latest base went through without conflicts (it is in place — do not rebase again), but the environment's verification command now fails:\n\n\`\`\`\n${env.check_command}\n\`\`\`\n\n\`\`\`\n${checkFailure}\n\`\`\`\n\nSomething the base changed broke this branch's own work — typically a migration of this branch that depends on a migration the base renamed or renumbered. Fix it in this branch's commits, keeping this task's behaviour, until the command passes.`);
+                for (const repo of rebasedRepos) addJob(repo, `Fix what the rebase broke. Vortex's plain rebase onto the latest base went through without conflicts (it is in place — do not rebase again), but the environment's verification command now fails:\n\n\`\`\`\n${env.check_command}\n\`\`\`\n\n\`\`\`\n${checkFailure}\n\`\`\`\n\nSomething the base changed broke this branch's own work — typically a migration of this branch that depends on a migration the base renamed or renumbered. Fix it in this branch's commits, keeping this task's behaviour, until the command passes.`);
                 summary.push("fix what the rebase broke");
             }
             if (pass.conflicted.length) summary.push(`rebase (conflicts in ${pass.conflicted.map(repoLabel).join(", ")})`);
@@ -6445,7 +6445,7 @@ export class Engine extends EventEmitter {
     }
 
     // "Fix with agent" on a BE/FE that failed to start: the task's own agent (its session, full context of the branch)
-    // reads the service log and the command, repairs the cause in the worktree, and Stagehand restarts the service once
+    // reads the service log and the command, repairs the cause in the worktree, and Vortex restarts the service once
     // the run is over — so the result is a real second start, not the agent's opinion that it should work now. Runs
     // without the guard hook like Chat and the git edits (an explicit human request, not a pipeline stage); the task's
     // stage/status are restored afterward. Starts synchronously (bad requests surface to the button) and reports in Chat.
@@ -6467,8 +6467,8 @@ export class Engine extends EventEmitter {
         const serviceEnv: Record<string, string> = {
             ...parseEnvVars(env.env_vars),
             PORT: String(row.port),
-            STAGEHAND_PORT: String(row.port),
-            ...(be ? { STAGEHAND_BE_URL: be.url, STAGEHAND_BE_PORT: String(be.port) } : {}),
+            VORTEX_PORT: String(row.port),
+            ...(be ? { VORTEX_BE_URL: be.url, VORTEX_BE_PORT: String(be.port) } : {}),
         };
         const prevStatus = task.status;
         const prevLine = task.status_line;
@@ -6773,7 +6773,7 @@ export class Engine extends EventEmitter {
             if (applied.skipped.length) this.addAgentNote(taskId, `⚠️ Not applied to design.json from your answers — the runner still sees the old scenario:\n${applied.skipped.map((a) => `- ${a}`).join("\n")}`);
             if (applied.changes.length) this.onQaChanges(taskId, row.stage, applied.changes);
         } catch (e) {
-            console.warn(`[stagehand] applying approved step fixes for ${task.ticket_id}: ${String((e as Error).message ?? e)}`);
+            console.warn(`[vortex] applying approved step fixes for ${task.ticket_id}: ${String((e as Error).message ?? e)}`);
         }
         this.resumeAfterAnswers(taskId, row.stage, renderAnswers(stored.questions, answers) + renderSharedFiles(files, this.taskDir(taskId)), stored.resume);
     }
@@ -6817,7 +6817,7 @@ export class Engine extends EventEmitter {
         try {
             outcome = await this.autoApproveQaFixes(taskId, def, asked);
         } catch (e) {
-            console.warn(`[stagehand] qa auto-fix ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`);
+            console.warn(`[vortex] qa auto-fix ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`);
             this.parkOnQuestions(taskId, runId, def, asked, opts);
             return;
         }
@@ -6833,7 +6833,7 @@ export class Engine extends EventEmitter {
             .run(randomUUID(), taskId, runId, def.stage, JSON.stringify({ questions: auto }), JSON.stringify(outcome.answers), now(), now());
         const p = join(this.taskDir(taskId), "questions.json");
         if (existsSync(p)) renameSync(p, join(this.taskDir(taskId), `questions-${Date.now()}.json`));
-        const answerNotes = `## Corrections applied by Stagehand (approved by Jev, no human involved) — continue from where you stopped\n\n${auto.map((q) => `- **${q.id}** ${q.text}\n  → applied: ${outcome.answers[q.id]!.slice(0, 300)}`).join("\n")}`;
+        const answerNotes = `## Corrections applied by Vortex (approved by Jev, no human involved) — continue from where you stopped\n\n${auto.map((q) => `- **${q.id}** ${q.text}\n  → applied: ${outcome.answers[q.id]!.slice(0, 300)}`).join("\n")}`;
         this.resumeAfterAnswers(taskId, def.stage, answerNotes, { notes: opts.notes ?? null, attempt: opts.attempt ?? 1, contractAttempt: opts.contractAttempt ?? 1, extraVars: opts.extraVars ?? {}, ...(opts.operation ? { operation: opts.operation } : {}) });
     }
 
@@ -6873,7 +6873,7 @@ export class Engine extends EventEmitter {
             }
             const guard = guardQaFix(scenario as Parameters<typeof guardQaFix>[0], dry.after, fix.kind);
             if (!guard.ok) {
-                remaining.push({ ...q, context: `${q.context ? `${q.context} ` : ""}[Stagehand: not auto-approved — ${guard.reason}]` });
+                remaining.push({ ...q, context: `${q.context ? `${q.context} ` : ""}[Vortex: not auto-approved — ${guard.reason}]` });
                 notes.push(`🧭 ${label}: left for you — ${guard.reason}`);
                 continue;
             }
@@ -7095,7 +7095,7 @@ export class Engine extends EventEmitter {
                     const text = String(err.stderr ?? err.stdout ?? err.message ?? e);
                     const sqlErr = /ERROR:\s+(.+)/.exec(text);
                     if (sqlErr) problems.push(`${label}: the database rejects this SQL — ${sqlErr[1]!.trim().slice(0, 200)}`);
-                    else console.warn(`[stagehand] seed dry-run skipped for ${task.ticket_id} ${label}: ${text.trim().split("\n").slice(-1)[0]?.slice(0, 160)}`);
+                    else console.warn(`[vortex] seed dry-run skipped for ${task.ticket_id} ${label}: ${text.trim().split("\n").slice(-1)[0]?.slice(0, 160)}`);
                 }
             }
         }
@@ -7109,7 +7109,7 @@ export class Engine extends EventEmitter {
             for (const r of results) {
                 if (r.ok) continue;
                 if (/did not start/.test(r.error)) {
-                    console.warn(`[stagehand] Django seed dry-run skipped for ${task.ticket_id}: ${r.error.slice(0, 200)}`);
+                    console.warn(`[vortex] Django seed dry-run skipped for ${task.ticket_id}: ${r.error.slice(0, 200)}`);
                     break;
                 }
                 problems.push(`${r.label}: ${r.error.slice(0, 240)}`);
@@ -7141,11 +7141,11 @@ export class Engine extends EventEmitter {
             const parsedQa = QaPassResult.parse(data);
             void (def.stage === "manual_qa" ? this.gradeQaWithJev(taskId, env, parsedQa) : Promise.resolve(parsedQa))
                 .catch((e: unknown) => {
-                    console.warn(`[stagehand] jev grading ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                    console.warn(`[vortex] jev grading ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`);
                     return parsedQa;
                 })
                 .then(async (qa) => {
-                    await this.classifyQaBlockers(taskId, env, qa).catch((e: unknown) => console.warn(`[stagehand] jev blocker sorting ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+                    await this.classifyQaBlockers(taskId, env, qa).catch((e: unknown) => console.warn(`[vortex] jev blocker sorting ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 200)}`));
                     this.archiveQaPass(taskId, def.stage === "qa_baseline" ? "before" : "after");
                     this.afterStageChecked(taskId, def, qa);
                 });
@@ -7165,7 +7165,7 @@ export class Engine extends EventEmitter {
             for (const f of [`${pass}.json`, `seed-${pass}.log`]) if (existsSync(join(qaDir, f))) copyFileSync(join(qaDir, f), join(dest, f));
             if (existsSync(join(qaDir, pass))) cpSync(join(qaDir, pass), join(dest, pass), { recursive: true });
         } catch (e) {
-            console.warn(`[stagehand] qa history ${taskId}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            console.warn(`[vortex] qa history ${taskId}: ${String((e as Error).message ?? e).slice(0, 160)}`);
         }
     }
 
@@ -7207,7 +7207,7 @@ export class Engine extends EventEmitter {
                 verdicts[s.id] = kind;
                 lines.push(`${s.id} ${kind} (${Math.round((a.probabilities[a.choice] ?? 0) * 100)}%)`);
             } catch (e) {
-                console.warn(`[stagehand] jev blocker ${taskId} ${s.id}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                console.warn(`[vortex] jev blocker ${taskId} ${s.id}: ${String((e as Error).message ?? e).slice(0, 160)}`);
             }
         }
         if (Object.keys(verdicts).length) {
@@ -7274,7 +7274,7 @@ export class Engine extends EventEmitter {
                     }
                     return s;
                 } catch (e) {
-                    console.warn(`[stagehand] jev grade ${taskId} ${s.id}: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                    console.warn(`[vortex] jev grade ${taskId} ${s.id}: ${String((e as Error).message ?? e).slice(0, 200)}`);
                     return s;
                 }
             }),
@@ -7295,7 +7295,7 @@ export class Engine extends EventEmitter {
             }
             writeFileSync(path, JSON.stringify(raw, null, 2));
         } catch (e) {
-            console.warn(`[stagehand] jev grades not written to ${path}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            console.warn(`[vortex] jev grades not written to ${path}: ${String((e as Error).message ?? e).slice(0, 160)}`);
         }
         this.addMessage(
             taskId,
@@ -7336,7 +7336,7 @@ export class Engine extends EventEmitter {
         if (n <= Engine.MAX_CHECK_ATTEMPTS) {
             this.dispatch(taskId, def.stage, {
                 notes:
-                    `## The environment's verification command failed (attempt ${n} of ${Engine.MAX_CHECK_ATTEMPTS})\n\nStagehand ran this from the worktree after your run:\n\n\`\`\`\n${env.check_command}\n\`\`\`\n\nIt exited non-zero:\n\n\`\`\`\n${tail}\n\`\`\`\n\n` +
+                    `## The environment's verification command failed (attempt ${n} of ${Engine.MAX_CHECK_ATTEMPTS})\n\nVortex ran this from the worktree after your run:\n\n\`\`\`\n${env.check_command}\n\`\`\`\n\nIt exited non-zero:\n\n\`\`\`\n${tail}\n\`\`\`\n\n` +
                     `Fix the cause at the source (a model or migration problem, a failing system check, a missing dependency), run the command yourself until it passes, commit, then rewrite your output file and reply DONE.`,
             });
             return;
@@ -7378,11 +7378,11 @@ export class Engine extends EventEmitter {
                         this.setTaskStatus(taskId, "running", "starting the dependency service this env needs");
                         const dep = await this.services.ensureDependency(env, this.getTask(taskId));
                         if (dep) {
-                            envVars.STAGEHAND_DEP_URL = dep.url;
+                            envVars.VORTEX_DEP_URL = dep.url;
                             writeFileSync(join(this.taskDir(taskId), "dependency-url"), `${dep.url}\n`);
                         }
                     }
-                    // The task's own database first (docs/db-isolation.md): setup then sees $STAGEHAND_TASK_DB, and
+                    // The task's own database first (docs/db-isolation.md): setup then sees $VORTEX_TASK_DB, and
                     // connect points the worktree's config at it once setup has written that config.
                     if (taskDbActive(taskDbOf(env))) {
                         const cur = this.getTask(taskId)!;
@@ -7411,7 +7411,7 @@ export class Engine extends EventEmitter {
             this.afterDesign(taskId);
             return;
         }
-        if (def.stage === "pr_fix") void this.fillFixReplies(taskId).catch((e: unknown) => console.warn(`[stagehand] fix replies ${taskId}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+        if (def.stage === "pr_fix") void this.fillFixReplies(taskId).catch((e: unknown) => console.warn(`[vortex] fix replies ${taskId}: ${String((e as Error).message ?? e).slice(0, 160)}`));
         if (def.stage === "pr_fix" && this.autopilotAfterFix(taskId)) return;
         if (def.kind === "wait") {
             this.setTaskStatus(taskId, "waiting_user", `${def.label} · needs you`);
@@ -7452,7 +7452,7 @@ export class Engine extends EventEmitter {
                 }
                 this.setTaskStatus(taskId, "blocked", `${def.label} · log in at ${this.appUrlFor(task, env)} in ${where} — opening it for you`);
                 // Start the login helper right away: it opens the app in the QA Chrome profile, waits for the human, and re-runs the stage.
-                void this.qaLogin(taskId).catch((e: unknown) => console.warn(`[stagehand] auto login helper ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+                void this.qaLogin(taskId).catch((e: unknown) => console.warn(`[vortex] auto login helper ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
                 return;
             }
             this.helperReruns.delete(taskId);
@@ -7535,7 +7535,7 @@ export class Engine extends EventEmitter {
         if (def.stage === "qa_baseline" || def.stage === "manual_qa") {
             const marker = this.readArtifactJson<BaselineRerun>(taskId, "qa/baseline-rerun.json");
             if (def.stage === "qa_baseline" && marker?.active) {
-                void this.finishBaselineRerun(taskId, marker).catch((e: unknown) => console.warn(`[stagehand] baseline re-run finish ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
+                void this.finishBaselineRerun(taskId, marker).catch((e: unknown) => console.warn(`[vortex] baseline re-run finish ${taskId}: ${String((e as Error).message ?? e).slice(0, 200)}`));
                 return;
             }
         }
@@ -7578,6 +7578,6 @@ export class Engine extends EventEmitter {
     private stopServicesAfterQa(task: TaskRow): void {
         // The env may prefer warm servers across the stages (envs.keep_services): then only done / cleanup stop them.
         if (this.env(task.env_id).keep_services) return;
-        void this.services.stopAll(task.id).catch((e: unknown) => console.warn(`[stagehand] stop BE/FE after QA ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
+        void this.services.stopAll(task.id).catch((e: unknown) => console.warn(`[vortex] stop BE/FE after QA ${task.ticket_id}: ${String((e as Error).message ?? e).slice(0, 160)}`));
     }
 }

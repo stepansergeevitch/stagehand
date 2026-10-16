@@ -1,4 +1,4 @@
-// Every resource Stagehand starts on the host — a task's BE/FE/component panes, an env's shared dependency, the
+// Every resource Vortex starts on the host — a task's BE/FE/component panes, an env's shared dependency, the
 // claude runs, task terminals, free-form sessions, login helpers, headless QA browsers, cloned Chrome profiles,
 // worktrees — joined with what the OS shows (processes, memory, ports, tmux), judged by a policy, and reaped when the
 // policy says so. The Resources page shows the same snapshot. The host has 52 GB; a Next dev server left on a task
@@ -6,6 +6,7 @@
 import { killSessionTree } from "./services.js";
 import { existsSync, readdirSync, readFileSync, rmSync, statfsSync } from "node:fs";
 import { join } from "node:path";
+import { userDataDir } from "./home.js";
 import type { Config } from "./config.js";
 import { now, type DB, type EnvRow, type EnvServiceRow, type ServiceRow, type SessionRow, type TaskRow } from "./db.js";
 import { dirSizeMb, hostMemory, killPid, listeners, processTable, subtree, tmuxSessions, type HostMemory, type Proc, type TmuxSession } from "./host.js";
@@ -70,9 +71,9 @@ export interface ResourceEvent {
 export interface ResourceSnapshot {
     at: string;
     host: HostMemory & { pressure: "ok" | "warn" | "critical"; pressureReason: string };
-    // The volume that holds Stagehand's data (and, on this Mac, the worktrees): total and free space.
+    // The volume that holds Vortex's data (and, on this Mac, the worktrees): total and free space.
     disk: { totalMb: number; freeMb: number } | null;
-    stagehand: { rssMb: number; procs: number; devServerTasks: number; runs: number; browsers: number; terminals: number };
+    vortex: { rssMb: number; procs: number; devServerTasks: number; runs: number; browsers: number; terminals: number };
     policies: ResourcePolicies;
     resources: Resource[];
     events: ResourceEvent[];
@@ -87,7 +88,7 @@ export interface ResourcePolicies {
     terminalIdleHours: number;
     sessionIdleHours: number;
     loginMinutes: number;
-    // A tmux session or a listener in Stagehand's port ranges that no row explains.
+    // A tmux session or a listener in Vortex's port ranges that no row explains.
     orphanMinutes: number;
     // A service younger than this is never stopped by policy (not even under memory pressure): the human or a stage
     // just started it and a Next dev server needs minutes to come up. Starts by the human are pinned on top of this.
@@ -118,7 +119,7 @@ export interface ResourceHooks {
 const BROWSER_STAGES = new Set(["qa_baseline", "manual_qa"]);
 const AFTER_QA_STAGES = new Set(["pr_creation_review", "pr_waiting", "pr_fix", "pr_green", "pr_approved", "done"]);
 const BUSY = new Set(["running", "queued"]);
-const CLONES_ROOT = join(process.env["HOME"] ?? "", ".stagehand", "chrome-clones");
+const CLONES_ROOT = join(userDataDir(), "chrome-clones");
 const MIN = 60_000;
 const HOUR = 3_600_000;
 const WORKTREE_SAMPLE_MS = 10 * MIN;
@@ -418,7 +419,7 @@ export class Resources {
         }
         void this.sampleWorktreeSizes([...tasks.values()].map((t) => t.worktree_path).filter((p): p is string => !!p && existsSync(p)));
 
-        // 9. Orphans: Stagehand-named tmux sessions and listeners in Stagehand's port ranges that no row explains.
+        // 9. Orphans: Vortex-named tmux sessions and listeners in Vortex's port ranges that no row explains.
         for (const s of tmux) {
             if (claimTmux.has(s.name) || !s.name.startsWith("sh-") || s.name.startsWith("sh-dep-")) continue;
             const t = treeOfTmux(s.name);
@@ -431,7 +432,7 @@ export class Resources {
             push({ id: `port:${l.port}`, kind: "orphan", label: `listener :${l.port} (no service row)`, owner: { type: "none", id: null, name: null }, tmux: null, pid: l.pid, port: l.port, path: null, rssMb: t.rssMb, cpuPct: t.cpuPct, procs: t.procs, top: t.top, startedAt: null, ageMs: root ? root.ageS * 1000 : 0, idleMs: null, diskMb: null }, t.pids);
         }
 
-        const stagehandPids = new Set(out.flatMap((r) => (r.pid ? [r.pid] : [])));
+        const vortexPids = new Set(out.flatMap((r) => (r.pid ? [r.pid] : [])));
         const allTree = [...claimed].map((pid) => procs.find((p) => p.pid === pid)).filter((p): p is Proc => !!p);
         const devServerTasks = new Set(out.filter((r) => r.kind === "service" && r.owner.type === "task").map((r) => r.owner.id)).size;
         return {
@@ -445,13 +446,13 @@ export class Resources {
                     return null;
                 }
             })(),
-            stagehand: {
+            vortex: {
                 rssMb: allTree.reduce((s, p) => s + p.rssMb, 0),
                 procs: allTree.length,
                 devServerTasks,
                 runs: out.filter((r) => r.kind === "run" && r.procs > 0).length,
                 browsers: out.filter((r) => (r.kind === "browser" || r.kind === "clone") && r.procs > 0).length,
-                terminals: out.filter((r) => r.kind === "terminal" || r.kind === "session").length + (stagehandPids.size ? 0 : 0),
+                terminals: out.filter((r) => r.kind === "terminal" || r.kind === "session").length + (vortexPids.size ? 0 : 0),
             },
             policies,
             resources: out.sort((a, b) => b.rssMb - a.rssMb),
@@ -544,7 +545,7 @@ export class Resources {
             case "database":
                 return keep(r.owner.type === "task" ? "dropped by Clean up / Delete" : r.owner.type === "session" ? "dropped when the session is deleted with its worktree" : r.owner.status === "orphan" ? "no task owns it — Drop drops it" : "the template task databases are copied from");
             case "orphan":
-                return stopAfter("nothing in Stagehand owns it", Date.now() - r.ageMs, p.orphanMinutes * MIN);
+                return stopAfter("nothing in Vortex owns it", Date.now() - r.ageMs, p.orphanMinutes * MIN);
         }
     }
 

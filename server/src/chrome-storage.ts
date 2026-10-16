@@ -46,7 +46,7 @@ export const pickLocalStorage = (rows: { origin: string; key: string; value: str
 
 export const readLocalStorage = async (browser: string, profileDir: string, origin: string): Promise<Record<string, string>> => {
     const src = join(userDataDirFor(browser), profileDir, "Local Storage", "leveldb");
-    const dir = mkdtempSync(join(tmpdir(), "stagehand-ls-"));
+    const dir = mkdtempSync(join(tmpdir(), "vortex-ls-"));
     try {
         cpSync(src, dir, { recursive: true, filter: (p) => !p.endsWith("LOCK") });
         const db = new ClassicLevel<Buffer, Buffer>(dir, { keyEncoding: "buffer", valueEncoding: "buffer", createIfMissing: false });

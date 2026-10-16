@@ -4,10 +4,10 @@ import { createServer, type Server, type Socket } from "node:net";
 import { Duplex } from "node:stream";
 
 // A login-callback relay on an identity provider's fixed callback port (an env's `callback_ports` entry with `relay`).
-// An app on a Stagehand port pins that redirect_uri, so after logging in the browser lands on the fixed port — where
+// An app on a Vortex port pins that redirect_uri, so after logging in the browser lands on the fixed port — where
 // nothing listens, in any browser (the Chrome-only hop watcher never saw Safari tabs, 2026-09-28). While at least one
 // such app is up, this listens on the port and redirects the request, path and query unchanged, to the app it came
-// from: the origin in the `stagehand_app_origin` cookie the patched login page sets (cookies are per host, not per
+// from: the origin in the `vortex_app_origin` cookie the patched login page sets (cookies are per host, not per
 // port, so the fixed port receives it), else the only app that is up; with several and no cookie it lists them. It
 // binds loopback only, and gives the port back as soon as no such app runs — a port someone else already holds (the
 // human's own dev server) is left alone and retried a minute later. It speaks whichever scheme the app's callback uses:
@@ -73,17 +73,17 @@ export class CallbackRelay {
         for (const host of ["127.0.0.1", "::1"]) {
             const srv = createServer(route);
             srv.once("error", (e: NodeJS.ErrnoException) => {
-                console.warn(`[stagehand] callback relay on ${host}:${this.port}: ${e.code ?? e.message} — not relaying there`);
+                console.warn(`[vortex] callback relay on ${host}:${this.port}: ${e.code ?? e.message} — not relaying there`);
                 this.stop();
             });
-            srv.listen(this.port, host, () => console.log(`[stagehand] login callback relay listening on ${host.includes(":") ? `[${host}]` : host}:${this.port} (http and https)`));
+            srv.listen(this.port, host, () => console.log(`[vortex] login callback relay listening on ${host.includes(":") ? `[${host}]` : host}:${this.port} (http and https)`));
             this.servers.push(srv);
         }
     }
 
     private stop(): void {
         for (const s of this.servers) s.close();
-        if (this.servers.length) console.log(`[stagehand] login callback relay on :${this.port} stopped`);
+        if (this.servers.length) console.log(`[vortex] login callback relay on :${this.port} stopped`);
         this.servers = [];
     }
 
@@ -129,7 +129,7 @@ export class CallbackRelay {
         const apps = this.apps();
         if ((req.url ?? "").startsWith("/__auth0/")) {
             void this.proxyAuth0(req, res, apps).catch((e: unknown) => {
-                console.warn(`[stagehand] callback relay: Auth0 proxy failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
+                console.warn(`[vortex] callback relay: Auth0 proxy failed: ${String((e as Error).message ?? e).slice(0, 200)}`);
                 if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
                 res.end("Auth0 proxy failed");
             });
@@ -138,13 +138,13 @@ export class CallbackRelay {
         // A pick on the list below: remembered for two minutes (host-wide, so the later hops of that one login through this
         // port — the provider's callback, then the app's redirect to its own fixed origin — go to that app by themselves),
         // and no longer: a lasting pick sent the next login of another env's app to it (2026-10-14: one env's login landed in another env's app).
-        const pick = /^\/__stagehand\/pick\?(.*)$/.exec(req.url ?? "");
+        const pick = /^\/__(?:vortex|stagehand)\/pick\?(.*)$/.exec(req.url ?? "");
         if (pick) {
             const q = new URLSearchParams(pick[1]);
             const to = q.get("to") ?? "";
             const path = q.get("path") ?? "/";
             if (apps.includes(to) && path.startsWith("/")) {
-                res.writeHead(302, { Location: `${to}${path}`, "Set-Cookie": `stagehand_relay_pick=${encodeURIComponent(to)}; Path=/; Max-Age=120; SameSite=Lax`, "Cache-Control": "no-store" });
+                res.writeHead(302, { Location: `${to}${path}`, "Set-Cookie": `vortex_relay_pick=${encodeURIComponent(to)}; Path=/; Max-Age=120; SameSite=Lax`, "Cache-Control": "no-store" });
                 res.end();
                 return;
             }
@@ -154,19 +154,19 @@ export class CallbackRelay {
             return v ? decodeURIComponent(v) : null;
         };
         // The fresh pick first, then the origin a patched login page put in its cookie, then the only app that is up.
-        const target = [cookieOf("stagehand_relay_pick"), cookieOf("stagehand_app_origin")].find((o): o is string => !!o && apps.includes(o)) ?? (apps.length === 1 ? apps[0] : null);
+        const target = [cookieOf("vortex_relay_pick"), cookieOf("vortex_app_origin"), cookieOf("stagehand_app_origin")].find((o): o is string => !!o && apps.includes(o)) ?? (apps.length === 1 ? apps[0] : null);
         const path = req.url ?? "/";
         if (target) {
-            console.log(`[stagehand] login callback relayed from :${this.port} to ${target}${path.split("?")[0]}`);
+            console.log(`[vortex] login callback relayed from :${this.port} to ${target}${path.split("?")[0]}`);
             res.writeHead(302, { Location: `${target}${path}`, "Cache-Control": "no-store" });
             res.end();
             return;
         }
         const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => `&#${ch.charCodeAt(0)};`);
-        const links = apps.map((o) => `<li><a href="/__stagehand/pick?${esc(new URLSearchParams({ to: o, path }).toString())}">${esc(o)}</a></li>`).join("");
+        const links = apps.map((o) => `<li><a href="/__vortex/pick?${esc(new URLSearchParams({ to: o, path }).toString())}">${esc(o)}</a></li>`).join("");
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-        res.end(`<!doctype html><meta charset="utf-8"><title>Stagehand login relay</title><body style="font-family:system-ui;padding:40px">
-<h2>Stagehand: which app did you log in to?</h2>
+        res.end(`<!doctype html><meta charset="utf-8"><title>Vortex login relay</title><body style="font-family:system-ui;padding:40px">
+<h2>Vortex: which app did you log in to?</h2>
 <p>This is the login callback for port ${this.port}. ${apps.length ? "Open it on the task's app:" : "No task app is running any more."}</p><ul>${links}</ul></body>`);
     }
 }

@@ -3,7 +3,7 @@
 // (INV-149 / INV-155, 2026-10: one task's migration dropped a column the other's code still used). Design:
 // docs/db-isolation.md.
 //
-// Stagehand owns the lifecycle, the names, the variables and the guard; every statement that touches a database is an
+// Vortex owns the lifecycle, the names, the variables and the guard; every statement that touches a database is an
 // inline command in the env's config (envs.task_db): create, drop, connect (points a worktree's config at a database),
 // list (prints the env's task databases and its template, with sizes). Nothing here knows a database engine.
 //
@@ -64,7 +64,9 @@ export interface DbOwner {
     kind: "task" | "session";
 }
 
-export const TEMPLATE_BRANCH = "stagehand-template";
+export const TEMPLATE_BRANCH = "vortex-template";
+// Template worktrees made before the rename keep their branch and folder.
+const LEGACY_TEMPLATE_BRANCH = "stagehand-template";
 const LIST_FRESH_MS = 10 * 60_000;
 const BUSY_RETRIES = 3;
 const BUSY_WAIT_MS = 20_000;
@@ -127,7 +129,7 @@ export const taskDbRow = (db: DB, taskId: string): TaskDbRow | undefined => db.p
 // The variables every command of a task gets once its database exists.
 export const taskDbEnv = (db: DB, taskId: string): Record<string, string> => {
     const row = taskDbRow(db, taskId);
-    return row && row.status === "ready" ? { STAGEHAND_TASK_DB: row.name, STAGEHAND_TASK_DB_TEMPLATE: row.template } : {};
+    return row && row.status === "ready" ? { VORTEX_TASK_DB: row.name, VORTEX_TASK_DB_TEMPLATE: row.template } : {};
 };
 
 // The database names a task's worktree may use (its own plus the shared ones); undefined = the task is not on its own
@@ -142,7 +144,7 @@ export const taskDbExpect = (db: DB, task: Pick<TaskRow, "id">, env: EnvRow): st
 // Database names a QA step addresses explicitly (`-d x`, `--dbname=x`, `dbname=x`, `…/x` in a URL): a step naming the
 // template would write to it instead of the task's database. Only a URL's path counts — a file path segment of the
 // same name (`~/code/<template>/…`, `backend/<template>/manage.py`) is not a database (2026-10-13). A shell
-// fallback to it (`${STAGEHAND_TASK_DB:-<template>}`) counts too: whenever the variable is unset the step quietly
+// fallback to it (`${VORTEX_TASK_DB:-<template>}`) counts too: whenever the variable is unset the step quietly
 // writes to the template, and every task database copied from it afterwards inherits the rows.
 export const namesTemplate = (text: string, template: string): boolean => {
     const t = template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -162,7 +164,7 @@ export class TaskDbs {
     ) {}
 
     // One template refresh / copy / drop at a time per env: the template is migrated and copied by one task at a time,
-    // and nothing of Stagehand's is connected to it while it is copied.
+    // and nothing of Vortex's is connected to it while it is copied.
     private withLock<T>(envId: string, fn: () => Promise<T>): Promise<T> {
         const prev = this.locks.get(envId) ?? Promise.resolve();
         const next = prev.then(fn, fn);
@@ -170,8 +172,12 @@ export class TaskDbs {
         return next;
     }
 
+    templateBranch(env: EnvRow): string {
+        return existsSync(worktreePathFor(env.path, LEGACY_TEMPLATE_BRANCH)) ? LEGACY_TEMPLATE_BRANCH : TEMPLATE_BRANCH;
+    }
+
     templateWorktree(env: EnvRow): string {
-        return worktreePathFor(env.path, TEMPLATE_BRANCH);
+        return worktreePathFor(env.path, this.templateBranch(env));
     }
 
     private logPath(env: EnvRow): string {
@@ -188,23 +194,23 @@ export class TaskDbs {
     async refreshTemplate(env: EnvRow, note: (line: string) => void = () => undefined): Promise<void> {
         const c = taskDbOf(env);
         if (!taskDbActive(c)) throw new Error("this environment has no task databases configured");
-        const vars = { ...parseEnvVars(env.env_vars), STAGEHAND_TASK_DB: c.template, STAGEHAND_TASK_DB_TEMPLATE: c.template };
+        const vars = { ...parseEnvVars(env.env_vars), VORTEX_TASK_DB: c.template, VORTEX_TASK_DB_TEMPLATE: c.template };
         const wt = this.templateWorktree(env);
         if (!existsSync(wt)) {
             note("creating the template worktree");
-            await createWorktree({ ...env, base_branches: {} } as EnvRow & { base_branches: Record<string, string> }, TEMPLATE_BRANCH, vars);
+            await createWorktree({ ...env, base_branches: {} } as EnvRow & { base_branches: Record<string, string> }, this.templateBranch(env), vars);
             if (env.setup_command) {
                 note("running the env's setup in the template worktree");
                 await this.run(env, wt, env.setup_command, vars);
             }
         }
         const subs = envRepos(env);
-        for (const dir of subs.length ? subs : [""]) await pointBranchAt(dir ? join(wt, dir) : wt, TEMPLATE_BRANCH, env.base_branch, vars);
+        for (const dir of subs.length ? subs : [""]) await pointBranchAt(dir ? join(wt, dir) : wt, this.templateBranch(env), env.base_branch, vars);
         // Each template in turn: the worktree is pointed at it and migrated. One that fails does not stop the others.
         const errors: string[] = [];
         const extras = c.extraTemplates.filter((t) => t.refresh).map((t) => t.template);
         for (const name of [c.template, ...extras]) {
-            const v = { ...vars, STAGEHAND_TASK_DB: name, STAGEHAND_TASK_DB_TEMPLATE: name };
+            const v = { ...vars, VORTEX_TASK_DB: name, VORTEX_TASK_DB_TEMPLATE: name };
             try {
                 await this.run(env, wt, c.connect, v);
                 await assertDbHosts(env, wt, [name, ...c.sharedNames]);
@@ -268,7 +274,7 @@ export class TaskDbs {
 
     // Replaces `name` with a copy of `template`; a template someone else holds open is retried.
     private async copy(env: EnvRow, c: TaskDbConfig, name: string, template: string, note: (line: string) => void): Promise<void> {
-        const vars = { STAGEHAND_TASK_DB: name, STAGEHAND_TASK_DB_TEMPLATE: template };
+        const vars = { VORTEX_TASK_DB: name, VORTEX_TASK_DB_TEMPLATE: template };
         await this.run(env, env.path, c.drop, vars);
         note(`copying ${template} into ${name}`);
         for (let attempt = 1; ; attempt++) {
@@ -290,7 +296,7 @@ export class TaskDbs {
         const c = taskDbOf(env);
         const row = taskDbRow(this.db, task.id);
         if (!c || !row || row.status !== "ready" || !task.worktree_path) return;
-        await this.run(env, task.worktree_path, c.connect, { STAGEHAND_TASK_DB: row.name, STAGEHAND_TASK_DB_TEMPLATE: row.template });
+        await this.run(env, task.worktree_path, c.connect, { VORTEX_TASK_DB: row.name, VORTEX_TASK_DB_TEMPLATE: row.template });
     }
 
     // Drops the task's database and every database derived from it (see ownedDbNames); returns the names dropped.
@@ -305,7 +311,7 @@ export class TaskDbs {
             const templates = templatesOf(c);
             names = [...new Set([...ownedDbNames(row.name, listed, others), ...copyNames(c, row.name).map(([n]) => n)])].filter((n) => !templates.includes(n) && n !== row.template);
             await this.withLock(env.id, async () => {
-                for (const n of names) await this.run(env, env.path, c.drop, { STAGEHAND_TASK_DB: n, STAGEHAND_TASK_DB_TEMPLATE: row.template });
+                for (const n of names) await this.run(env, env.path, c.drop, { VORTEX_TASK_DB: n, VORTEX_TASK_DB_TEMPLATE: row.template });
             });
         }
         this.db.prepare(`DELETE FROM task_dbs WHERE task_id = ?`).run(task.id);
@@ -321,7 +327,7 @@ export class TaskDbs {
         if (this.rows(env.id).some((r) => r.name === name || name.startsWith(`${r.name}_`))) throw new Error("a task owns that database");
         const listed = (await this.list(env, true)).dbs;
         if (!listed.some((d) => d.name === name)) throw new Error(`${name} is not among the env's listed databases`);
-        await this.withLock(env.id, () => this.run(env, env.path, c.drop, { STAGEHAND_TASK_DB: name, STAGEHAND_TASK_DB_TEMPLATE: c.template }));
+        await this.withLock(env.id, () => this.run(env, env.path, c.drop, { VORTEX_TASK_DB: name, VORTEX_TASK_DB_TEMPLATE: c.template }));
         this.listed.delete(env.id);
     }
 
@@ -333,7 +339,7 @@ export class TaskDbs {
         if (!force && cur && Date.now() - cur.at < LIST_FRESH_MS) return cur;
         let res: { at: number; dbs: ListedDb[]; error: string | null };
         try {
-            res = { at: Date.now(), dbs: parseDbList(await this.run(env, env.path, c.list, { STAGEHAND_TASK_DB_TEMPLATE: c.template })), error: null };
+            res = { at: Date.now(), dbs: parseDbList(await this.run(env, env.path, c.list, { VORTEX_TASK_DB_TEMPLATE: c.template })), error: null };
         } catch (e) {
             res = { at: Date.now(), dbs: cur?.dbs ?? [], error: String((e as Error).message ?? e).split("\n").slice(-2).join(" ").slice(0, 300) };
         }

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 // CI autopilot (docs/ci-autopilot.md): when a PR's checks finish red, a read-only triage run names each failure and
-// says whether it is the branch's own; Stagehand verifies every "allow" against git and CI facts (this file), and only
+// says whether it is the branch's own; Vortex verifies every "allow" against git and CI facts (this file), and only
 // the verified failures go to a PR Fix round, an AI review of the fix, and a push.
 //
 //   own_migration  a migration conflict or failure, the migration added by the branch

@@ -16,15 +16,15 @@ import { STAGE_DEFS } from "./stages/registry.js";
 import type { Palace } from "./palace.js";
 
 // Prompter — the assistant in the bottom-right corner of the web app. A theatre prompter feeds lines from the prompt
-// box; this one knows how Stagehand works (its own MemPalace), sees where the human is (the URL hash, described per
+// box; this one knows how Vortex works (its own MemPalace), sees where the human is (the URL hash, described per
 // turn), and acts through the local API. It lives in its own data folder:
 //
-//   ~/.stagehand/mempalace/           = MEMPALACE_HOME: Stagehand's own palace (palace.ts), shared with the Product
+//   ~/.vortex/mempalace/           = MEMPALACE_HOME: Vortex's own palace (palace.ts), shared with the Product
 //                                       Owners; it started as a copy of the palace that used to live in this folder
-//   ~/.stagehand/prompter/claude/     = CLAUDE_CONFIG_DIR (CLAUDE.md, settings.json, skills/ — synced from the repo's
+//   ~/.vortex/prompter/claude/     = CLAUDE_CONFIG_DIR (CLAUDE.md, settings.json, skills/ — synced from the repo's
 //                                       prompter/ folder at every start; .claude.json copied once from the main dir)
-//   ~/.stagehand/prompter/.mcp.json   = the mempalace MCP server, pointed at Stagehand's palace
-//   ~/.stagehand/prompter/logs/       = one stream-json event log per turn
+//   ~/.vortex/prompter/.mcp.json   = the mempalace MCP server, pointed at Vortex's palace
+//   ~/.vortex/prompter/logs/       = one stream-json event log per turn
 //
 // Every chat is a claude session of its own (first turn --session-id, later turns --resume); the palace is the only
 // memory between chats. Several chats can be open at once (the widget's session strip); a chat ends when the human
@@ -90,7 +90,7 @@ export class Prompter {
 
     // ---------- the data folder ----------
 
-    // Creates the folder and refreshes the Stagehand-owned parts (identity, settings, skills, MCP) from the repo.
+    // Creates the folder and refreshes the Vortex-owned parts (identity, settings, skills, MCP) from the repo.
     ensureHome(): void {
         mkdirSync(join(this.configDir, "skills"), { recursive: true });
         mkdirSync(join(this.home, "logs"), { recursive: true });
@@ -147,11 +147,11 @@ export class Prompter {
         }
     }
 
-    // Copies the Stagehand knowledge out of another palace (see scripts/seed-prompter-palace.py). Re-runnable.
+    // Copies the Vortex knowledge out of another palace (see scripts/seed-prompter-palace.py). Re-runnable.
     async seed(): Promise<{ ok: boolean; detail: string; result?: unknown }> {
         if (!this.cfg.prompter.seedFrom.trim()) return { ok: false, detail: "no palace to seed from — set Prompter → Seed from first" };
         const script = join(REPO_ROOT, "scripts", "seed-prompter-palace.py");
-        const args = [script, "--src", this.cfg.prompter.seedFrom, "--dst", this.palace.home, "--diary", "wing_claude", "--mention", "stagehand"];
+        const args = [script, "--src", this.cfg.prompter.seedFrom, "--dst", this.palace.home, "--diary", "wing_claude", "--mention", "vortex"];
         for (const w of this.cfg.prompter.seedWings) args.push("--wing", w);
         try {
             const { stdout, stderr } = await execFileAsync("python3", args, { timeout: 600_000, maxBuffer: 16 * 1024 * 1024 });
@@ -287,7 +287,7 @@ export class Prompter {
             messages.length === 1
                 ? last.text
                 : `The human sent ${messages.length} messages while you were answering; read them all before you act:\n\n${messages.map((m, i) => `${i + 1}. ${m.text}`).join("\n\n")}`;
-        const prompt = `${context ? `<stagehand-context>\nLocation: ${path}\n${context.context}\nLocal API: http://127.0.0.1:${this.cfg.port} (skill stagehand-api). Now: ${new Date().toLocaleString()}.\n</stagehand-context>\n\n` : ""}${body}`;
+        const prompt = `${context ? `<vortex-context>\nLocation: ${path}\n${context.context}\nLocal API: http://127.0.0.1:${this.cfg.port} (skill vortex-api). Now: ${new Date().toLocaleString()}.\n</vortex-context>\n\n` : ""}${body}`;
         const turn = s.turns + 1;
         const run = startClaude({
             prompt,
@@ -456,7 +456,7 @@ export class Prompter {
                 const po = this.db.prepare(`SELECT title, phase, source, scope_url FROM product_owners WHERE id = ?`).get(r.po) as { title: string; phase: string; source: string; scope_url: string | null } | undefined;
                 return {
                     summary: `Product Owner ${po?.title ?? r.po}`,
-                    context: `Page: Product Owner "${po?.title ?? r.po}" (id ${r.po}), ${po ? `${po.source} ${po.scope_url ?? ""}, phase ${po.phase}` : "not found"}; tab ${r.tab ?? "context"}. Detail: GET /api/product-owners/${r.po}. Its folder: ~/.stagehand/product-owners/${r.po}/ (context.md, design.md, tickets.json, artifacts/).`,
+                    context: `Page: Product Owner "${po?.title ?? r.po}" (id ${r.po}), ${po ? `${po.source} ${po.scope_url ?? ""}, phase ${po.phase}` : "not found"}; tab ${r.tab ?? "context"}. Detail: GET /api/product-owners/${r.po}. Its folder: ~/.vortex/product-owners/${r.po}/ (context.md, design.md, tickets.json, artifacts/).`,
                 };
             }
             default:

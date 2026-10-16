@@ -2,13 +2,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { dataHome, env, userDataDir } from "./home.js";
 
 const ConfigSchema = z.object({
     port: z.number().int().default(4747),
     mainConfigDir: z.string(),
     accountsDir: z.string(),
     dataDir: z.string(),
-    tmuxSession: z.string().default("stagehand"),
+    tmuxSession: z.string().default("vortex"),
     maxConcurrentRunsPerAccount: z.number().int().default(2),
     // Accounts that clone their QA Chrome profile per run (accounts.chrome_clone_qa): how many cloned Chrome windows may run at once.
     maxChromeClonesPerAccount: z.number().int().default(3),
@@ -16,10 +17,10 @@ const ConfigSchema = z.object({
     // QA passes run their scenarios in parallel shards (qa-shards.ts): at most this many runs per pass; 0 = one run.
     qaShards: z.number().int().default(4),
     // A checkout of github.com/garrytan/gstack: its review/checklist.md is read by the Code Review prompt at run time.
-    gstackDir: z.string().default(join(homedir(), ".stagehand", "gstack")),
-    // The headless browsers Stagehand drives (Playwright's PLAYWRIGHT_BROWSERS_PATH for gstack and every run): owned
+    gstackDir: z.string().default(join(userDataDir(), "gstack")),
+    // The headless browsers Vortex drives (Playwright's PLAYWRIGHT_BROWSERS_PATH for gstack and every run): owned
     // here, never the shared ~/Library/Caches/ms-playwright a cache cleanup wipes (ENG-24845, 2026-10-08).
-    browsersDir: z.string().default(join(homedir(), ".stagehand", "browsers")),
+    browsersDir: z.string().default(join(userDataDir(), "browsers")),
     clickupToken: z.string().nullable().default(null),
     clickupTeamId: z.string().nullable().default(null),
     // Resolved once from GET /user with the token above and cached here.
@@ -101,7 +102,7 @@ const ConfigSchema = z.object({
             farewell: z.boolean().default(true),
             maxTurns: z.number().int().default(40),
             seedFrom: z.string().default(""),
-            seedWings: z.array(z.string()).default(["task-orchestrator=stagehand", "stagehand"]),
+            seedWings: z.array(z.string()).default(["task-orchestrator=vortex", "vortex"]),
         })
         .default({}),
     // Resource policies (resources.ts): when a parked task's BE/FE, an idle terminal, a leftover browser or an orphan
@@ -127,7 +128,7 @@ const ConfigSchema = z.object({
     // that starts it (null = the repository's own `npx tsx src/index.ts | tee <dataDir>/server.log`).
     server: z
         .object({
-            tmuxSession: z.string().default("stagehand-server"),
+            tmuxSession: z.string().default("vortex-server"),
             startCommand: z.string().nullable().default(null),
         })
         .default({}),
@@ -152,21 +153,22 @@ const ConfigSchema = z.object({
 
 export type Config = z.infer<typeof ConfigSchema>;
 
-const STAGEHAND_HOME = process.env.STAGEHAND_HOME ?? join(homedir(), ".stagehand");
-const CONFIG_PATH = join(STAGEHAND_HOME, "config.json");
+const VORTEX_HOME = dataHome();
+console.log(`[vortex] data dir: ${VORTEX_HOME}`);
+const CONFIG_PATH = join(VORTEX_HOME, "config.json");
 
 const defaults = (): Config => ({
     port: 4747,
     mainConfigDir: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
-    accountsDir: join(STAGEHAND_HOME, "accounts"),
-    dataDir: STAGEHAND_HOME,
-    tmuxSession: "stagehand",
+    accountsDir: join(VORTEX_HOME, "accounts"),
+    dataDir: VORTEX_HOME,
+    tmuxSession: "vortex",
     maxConcurrentRunsPerAccount: 2,
     maxChromeClonesPerAccount: 3,
     preflightUtilizationLimit: 0.9,
     qaShards: 4,
-    gstackDir: join(homedir(), ".stagehand", "gstack"),
-    browsersDir: join(homedir(), ".stagehand", "browsers"),
+    gstackDir: join(userDataDir(), "gstack"),
+    browsersDir: join(userDataDir(), "browsers"),
     clickupToken: null,
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
     clickupUserId: null,
@@ -179,21 +181,21 @@ const defaults = (): Config => ({
     stageModels: { research: "sonnet", design_proposal: null, qa_baseline: "sonnet", implementation: null, code_review: null, manual_qa: "sonnet", pr_creation_review: "sonnet", pr_fix: null, helper: "sonnet" },
     stageRerunModels: { research: null, design_proposal: null, qa_baseline: null, implementation: null, code_review: null, manual_qa: null, pr_creation_review: null, pr_fix: null },
     operationModels: { pr_fix_ci: null, pr_fix_comments: null, chat: null, instruct: null, rebase: null, fix_service: null, git_edit: null },
-    prompter: { accountId: null, model: "fable", idleHours: 24, purgeDays: 7, farewell: true, maxTurns: 40, seedFrom: "", seedWings: ["task-orchestrator=stagehand", "stagehand"] },
+    prompter: { accountId: null, model: "fable", idleHours: 24, purgeDays: 7, farewell: true, maxTurns: 40, seedFrom: "", seedWings: ["task-orchestrator=vortex", "vortex"] },
     resources: { enabled: true, idleServiceMinutes: 30, doneServiceMinutes: 5, settleMinutes: 20, maxSessionMb: 12, terminalIdleHours: 6, sessionIdleHours: 12, loginMinutes: 30, orphanMinutes: 10, maxDevServerTasks: 3, minAvailableMb: 6144, maxSwapMb: 8192 },
-    server: { tmuxSession: "stagehand-server", startCommand: null },
+    server: { tmuxSession: "vortex-server", startCommand: null },
     publicAccess: { enabled: false, host: "0.0.0.0", port: 4748, certPath: null, keyPath: null, user: null, passwordHash: null, sessionSecret: null, sessionDays: 30, natPmpGateway: null },
 });
 
 // A preview instance (scripts/preview.sh): a second server started from a worktree branch on its own port, sharing
 // the data dir with the live server, for testing a change before it lands. It runs no scheduler, pollers, reaper or
 // public listener, starts no runs, and never writes config.json.
-export const PREVIEW = process.env["STAGEHAND_PREVIEW"] === "1";
-const PREVIEW_PORT = Number(process.env["STAGEHAND_PORT"] ?? 4757);
+export const PREVIEW = env("VORTEX_PREVIEW") === "1";
+const PREVIEW_PORT = Number(env("VORTEX_PORT") ?? 4757);
 
 export const saveConfig = (cfg: Config): void => {
     if (PREVIEW) {
-        console.warn("[stagehand] preview instance: config.json not written");
+        console.warn("[vortex] preview instance: config.json not written");
         return;
     }
     writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 4));
@@ -202,7 +204,7 @@ export const saveConfig = (cfg: Config): void => {
 const previewOverrides = (cfg: Config): Config => (PREVIEW ? { ...cfg, port: PREVIEW_PORT, publicAccess: { ...cfg.publicAccess, enabled: false } } : cfg);
 
 export const loadConfig = (): Config => {
-    mkdirSync(STAGEHAND_HOME, { recursive: true });
+    mkdirSync(VORTEX_HOME, { recursive: true });
     if (!existsSync(CONFIG_PATH)) {
         const cfg = defaults();
         if (!PREVIEW) writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 4));

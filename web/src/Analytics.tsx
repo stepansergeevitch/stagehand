@@ -59,11 +59,11 @@ const Breakdown = ({ title, rows, total, labelOf, limit, windows }: { title: str
 
 // The period is routed (#/analytics?days=<n>); without one, the period used last.
 export const Analytics = ({ days: routedDays, onDays, onError }: { days?: number; onDays: (days: number) => void; onError: (m: string) => void }) => {
-    const days = routedDays ?? Number(storage.get("stagehand.usageDays") ?? "7");
+    const days = routedDays ?? Number(storage.get("vortex.usageDays") ?? "7");
     const setDays = onDays;
     const [report, setReport] = useState<UsageReport | null>(null);
     useEffect(() => {
-        storage.set("stagehand.usageDays", String(days));
+        storage.set("vortex.usageDays", String(days));
         setReport(null);
         void api.usage(days).then(setReport).catch((e: Error) => onError(e.message));
     }, [days, onError]);

@@ -1,5 +1,5 @@
 {
-  "name": "stagehand",
+  "name": "vortex",
   "private": true,
   "version": "0.1.0",
   "description": "Local orchestrator that walks tickets through research, design, QA, implementation and PR stages with headless Claude Code, pausing where a human must look.",

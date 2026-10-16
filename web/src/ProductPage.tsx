@@ -506,7 +506,7 @@ const LiveIssue = ({ issue }: { issue: PoIssue }) => (
 );
 
 // The Product Owner's tickets: one list (components/DataTable) — a row opens the ticket's view (components/EntityView).
-// A ticket becomes a tracker issue with Create in Linear/ClickUp, and an issue becomes a Stagehand task with Create task;
+// A ticket becomes a tracker issue with Create in Linear/ClickUp, and an issue becomes a Vortex task with Create task;
 // both work on one ticket or on the checked ones.
 const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail; sel: string | null; ticketTab: string | undefined; onError: (m: string) => void; reload: () => void; send: (t: string) => void }) => {
     const tickets = d.tickets?.tickets ?? [];

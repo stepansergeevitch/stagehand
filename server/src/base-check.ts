@@ -13,7 +13,7 @@ const execFileAsync = promisify(execFile);
 // migration numbered like one the trunk had just added only showed up when CI failed). Per repository: git merges the
 // branch with its base in memory (`merge-tree`, the worktree is never touched); a clean merge then runs the env's base
 // check command for that repository (envs.base_check — e.g. "no conflicting migration leaves") on a temporary checkout of
-// the merged tree. Generic: what to check is the env's config; Stagehand only merges, runs and records.
+// the merged tree. Generic: what to check is the env's config; Vortex only merges, runs and records.
 
 // envs.base_check: JSON {repoDir: command}, "" for a single-repo env. A repository without an entry is only merged.
 export const baseChecksOf = (json: string | null | undefined): Record<string, string> => {
@@ -129,7 +129,7 @@ export class BaseChecks {
         if (merged.code !== 0) return save({ base_sha: baseSha, head_sha: head, state: "error", detail: `git merge-tree failed: ${tail(merged.stderr, 10, 600)}` });
         if (!command.trim()) return save({ base_sha: baseSha, head_sha: head, state: "clean", detail: `merges cleanly with ${ref}` });
         const tree = merged.stdout.trim().split("\n")[0]!;
-        const commit = (await git(cwd, ["commit-tree", tree, "-p", head, "-p", baseSha, "-m", "stagehand base check"], { GIT_AUTHOR_NAME: "stagehand", GIT_AUTHOR_EMAIL: "stagehand@localhost", GIT_COMMITTER_NAME: "stagehand", GIT_COMMITTER_EMAIL: "stagehand@localhost", ...vars })).stdout.trim();
+        const commit = (await git(cwd, ["commit-tree", tree, "-p", head, "-p", baseSha, "-m", "vortex base check"], { GIT_AUTHOR_NAME: "vortex", GIT_AUTHOR_EMAIL: "vortex@localhost", GIT_COMMITTER_NAME: "vortex", GIT_COMMITTER_EMAIL: "vortex@localhost", ...vars })).stdout.trim();
         if (!commit) return save({ base_sha: baseSha, head_sha: head, state: "error", detail: "could not write the merged commit" });
         const r = await runCheck(commit);
         if (r && "error" in r) return save({ base_sha: baseSha, head_sha: head, state: "error", detail: r.error });

@@ -1,4 +1,4 @@
-// How Stagehand files long text in the palace: verbatim chunks that follow the text's structure, each opening with a
+// How Vortex files long text in the palace: verbatim chunks that follow the text's structure, each opening with a
 // locator line, so a search hit says where it comes from and the agent opens the original only for that span.
 //
 // The palace embeds with all-MiniLM-L6-v2, which reads the first 256 tokens of a drawer and ignores the rest. One

@@ -1,3 +1,4 @@
+import { withLegacyEnv } from "./home.js";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -72,9 +73,10 @@ export const baseRefFor = async (cwd: string, baseBranch: string, vars: Vars = {
     return `origin/${baseBranch}`;
 };
 
-// The base commit a task branch sits on, pinned when the branch is created and after every rebase Stagehand finishes:
-// `refs/stagehand/base/<branch>` in the repository (shared by every worktree of it, so no table to keep in sync).
-const pinRef = (branch: string): string => `refs/stagehand/base/${branch}`;
+// The base commit a task branch sits on, pinned when the branch is created and after every rebase Vortex finishes:
+// `refs/vortex/base/<branch>` in the repository (shared by every worktree of it, so no table to keep in sync).
+const pinRef = (branch: string): string => `refs/vortex/base/${branch}`;
+const legacyPinRef = (branch: string): string => `refs/stagehand/base/${branch}`;
 
 export const pinBase = async (cwd: string, sha: string, vars: Vars = {}): Promise<void> => {
     const branch = (await git(cwd, ["symbolic-ref", "--short", "-q", "HEAD"], vars).catch(() => "")).trim();
@@ -87,7 +89,7 @@ export const pinBase = async (cwd: string, sha: string, vars: Vars = {}): Promis
 // tip falls back to the trunk and the parent's old commits show up as this task's own (2026-10-11: the parent's
 // rebase put its 36 commits into the child's Commits list). Of the candidates that are ancestors of HEAD — the live base
 // tip, the pinned base, git's reflog fork point of the base, the plain merge-base — the newest one (fewest commits
-// to HEAD) wins: a stale pin never hides a later rebase done outside Stagehand.
+// to HEAD) wins: a stale pin never hides a later rebase done outside Vortex.
 export const forkPointFor = async (cwd: string, baseBranch: string, vars: Vars = {}): Promise<string> => {
     const ref = await baseRefFor(cwd, baseBranch, vars);
     const out = (args: string[]): Promise<string> => git(cwd, args, vars).then((s) => s.trim(), () => "");
@@ -95,6 +97,7 @@ export const forkPointFor = async (cwd: string, baseBranch: string, vars: Vars =
     const candidates = [
         await out(["rev-parse", "-q", "--verify", `${ref}^{commit}`]),
         branch ? await out(["rev-parse", "-q", "--verify", `${pinRef(branch)}^{commit}`]) : "",
+        branch ? await out(["rev-parse", "-q", "--verify", `${legacyPinRef(branch)}^{commit}`]) : "",
         await out(["merge-base", "--fork-point", ref, "HEAD"]),
         await out(["merge-base", ref, "HEAD"]),
     ];
@@ -126,7 +129,7 @@ const addWorktree = async (repoPath: string, args: string[], target: string, var
     } catch (e) {
         const made = existsSync(join(target, ".git")) && (await git(target, ["rev-parse", "-q", "--verify", "HEAD"], vars).then(() => true, () => false));
         if (!made) throw e;
-        console.warn(`[stagehand] worktree ${target} created, but git reported an error (a failing checkout hook?): ${String((e as Error).message ?? e).split("\n").slice(-2).join(" ").slice(0, 300)}`);
+        console.warn(`[vortex] worktree ${target} created, but git reported an error (a failing checkout hook?): ${String((e as Error).message ?? e).split("\n").slice(-2).join(" ").slice(0, 300)}`);
     }
 };
 
@@ -178,8 +181,8 @@ export const createWorktree = async (env: RepoLayout, branch: string, vars: Vars
 // npm 10.5) shadowed Homebrew's node 25 / npm 11, and `npm ci` silently skipped the optional native bindings whose
 // engines field excludes that node (oxfmt, oxlint on DualEntry, 2026-09-17). The server's own PATH is re-prepended
 // after the profile so the tools it was started with win again.
-export const loginShellArgs = (command: string): string[] => ["-lc", `export PATH="$STAGEHAND_PATH:$PATH"; ${command}`];
-export const loginShellEnv = (vars: Vars = {}): NodeJS.ProcessEnv => ({ ...process.env, ...vars, STAGEHAND_PATH: process.env.PATH ?? "" });
+export const loginShellArgs = (command: string): string[] => ["-lc", `export PATH="$VORTEX_PATH:$PATH"; ${command}`];
+export const loginShellEnv = (vars: Vars = {}): NodeJS.ProcessEnv => withLegacyEnv({ ...process.env, ...vars, VORTEX_PATH: process.env.PATH ?? "" });
 
 // Gitignored runtime files (certs, .env, node_modules) don't come with a worktree; the env's setup command creates them.
 export const runWorktreeSetup = async (worktree: string, envPath: string, command: string, vars: Vars = {}): Promise<string> => {
