@@ -228,3 +228,14 @@ details.sub > .sub-body { margin-top: var(--sp-2); }
 label.inline { display: inline-flex; align-items: center; gap: 4px; }
 .table-scroll { overflow-x: auto; max-width: 100%; }
 .table-scroll > table { min-width: 560px; }
+
+/* The app's primary controls: a status dot and one button (header: compact; App panel: full). Details stay behind a disclosure. */
+.app-quick { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); }
+.app-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3, #999); flex: none; }
+.app-dot.ok { background: var(--ok); }
+.app-dot.bad { background: var(--bad); }
+.app-dot.warn { background: var(--warn, #d9a400); }
+.app-quick-label { color: var(--ink-2); }
+.app-details { margin-top: var(--sp-3); }
+.app-details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm); margin-bottom: var(--sp-2); }
+.app-details .open-app { margin-top: var(--sp-2); }

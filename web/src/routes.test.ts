@@ -21,9 +21,15 @@ const routes: Route[] = [
     { page: "tasks", task: "t1", view: { tab: "work", step: "design_proposal", section: "qa" } },
     { page: "tasks", task: "t1", view: { tab: "pr", repo: "backend" } },
     { page: "tasks", task: "t1", view: { tab: "conversation" } },
-    { page: "dashboard", task: "t1", view: { tab: "conversation", sub: "automation", repo: "backend" } },
+    { page: "tasks", task: "t1", view: { tab: "conversation", sub: "automation", repo: "backend" } },
+    { page: "tasks" },
+    { page: "tasks", env: "e1" },
+    { page: "tasks", list: "completed" },
+    { page: "tasks", list: "completed", env: "e1" },
+    { page: "tasks", create: true, env: "e1" },
     { page: "tasks", task: "t1", view: { tab: "details", part: "runs", run: "r9" } },
     { page: "tasks", task: "t1", view: { tab: "details", part: "cost" } },
+    { page: "tasks", task: "t1", view: { tab: "settings" } },
 ];
 
 // Links of before the workspace rework still open the right place and are rewritten to the current shape.
@@ -32,8 +38,12 @@ const legacy: Array<[string, Route]> = [
     ["#/tasks/t1/design/qa", { page: "tasks", task: "t1", view: { tab: "work", step: "design_proposal", section: "qa" } }],
     ["#/tasks/t1/comments/pr?repo=api", { page: "tasks", task: "t1", view: { tab: "conversation", sub: "pr", repo: "api" } }],
     ["#/tasks/t1/chat", { page: "tasks", task: "t1", view: { tab: "conversation" } }],
+    ["#/tasks/t1/details/setup", { page: "tasks", task: "t1", view: { tab: "settings" } }],
     ["#/tasks/t1/ticket", { page: "tasks", task: "t1", view: { tab: "details" } }],
-    ["#/dashboard/t1/cost", { page: "dashboard", task: "t1", view: { tab: "details", part: "cost" } }],
+    ["#/dashboard/t1/cost", { page: "tasks", task: "t1", view: { tab: "details", part: "cost" } }],
+    ["#/dashboard", { page: "tasks" }],
+    ["#/tasks/active?env=e1", { page: "tasks", env: "e1" }],
+    ["", { page: "tasks" }],
 ];
 
 describe("routes", () => {

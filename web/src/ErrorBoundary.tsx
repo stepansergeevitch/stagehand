@@ -19,7 +19,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; label?: stri
                 <pre>{this.state.error.stack?.split("\n").slice(0, 6).join("\n")}</pre>
                 <div className="actions" style={{ marginBottom: 0 }}>
                     <Button variant="primary" onClick={() => this.setState({ error: null })}>Try again</Button>
-                    <Button onClick={() => { location.hash = "#/dashboard"; location.reload(); }}>Reload to the dashboard</Button>
+                    <Button onClick={() => { location.hash = "#/tasks"; location.reload(); }}>Reload to Tasks</Button>
                 </div>
             </div>
         );

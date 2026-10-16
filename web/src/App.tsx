@@ -8,7 +8,6 @@ import { EnvPage } from "./EnvPage";
 import { AccountPage, IntegrationPage } from "./ConfigEntities";
 import { ConfigDirPage } from "./ConfigDirPage";
 import { ManagePage, type ManageTab } from "./ManagePage";
-import { Dashboard, needsAttention } from "./Dashboard";
 import { Analytics } from "./Analytics";
 import { ResourcesPage } from "./ResourcesPage";
 import { Timing } from "./Timing";
@@ -39,8 +38,7 @@ const NAV: { group: string; items: { id: Page; label: string; icon: NavItem["ico
     {
         group: "Work",
         items: [
-            { id: "dashboard", label: "Overview", icon: "home", hint: "What needs you now, across every environment" },
-            { id: "tasks", label: "Tasks", icon: "tasks", hint: "The tasks of one environment" },
+            { id: "tasks", label: "Tasks", icon: "tasks", hint: "What needs you now, and the active and completed tasks of one environment" },
             { id: "product", label: "Product", icon: "layers", hint: "The product context and the Product Owners: plan it, design it, split it into tickets" },
             { id: "sessions", label: "Sessions", icon: "terminal", hint: "Free-form claude sessions in an environment, with the account and worktree of your choice" },
         ],
@@ -77,9 +75,9 @@ const accountsFor = (env: Env | undefined, accounts: Account[], dirs: ConfigDir[
 export const App = () => {
     const route = useRoute();
     const page = route.page;
-    // The open task and its view come from the route: the Dashboard keeps a task in place, Tasks opens it beside the list.
-    const selected = (route.page === "tasks" || route.page === "dashboard") && route.task ? route.task : null;
-    const taskView: TaskView = ((route.page === "tasks" || route.page === "dashboard") && route.view) || { tab: "work" };
+    // The open task and its view come from the route: Tasks opens it in place of the list.
+    const selected = (route.page === "tasks") && route.task ? route.task : null;
+    const taskView: TaskView = ((route.page === "tasks") && route.view) || { tab: "work" };
     const creating = route.page === "tasks" && !!route.create;
     const [accounts, setAccounts] = useState<Account[]>([]);
     const [configDirs, setConfigDirs] = useState<ConfigDir[]>([]);
@@ -118,7 +116,7 @@ export const App = () => {
         setRememberedEnv(envId);
     }, [envId]);
     // Back to the list the task was opened from.
-    const closeTask = useCallback(() => navigate(route.page === "dashboard" ? { page: "dashboard" } : { page: "tasks", ...(envId ? { env: envId } : {}) }), [route.page, envId]);
+    const closeTask = useCallback(() => navigate({ page: "tasks", ...(route.page === "tasks" && route.list ? { list: route.list } : {}), ...(envId ? { env: envId } : {}) }), [route, envId]);
     const listRoute = useCallback((env?: string) => ({ page: "tasks" as const, ...(env ?? envId ? { env: env ?? envId } : {}) }), [envId]);
 
     const reload = useCallback(async () => {
@@ -213,7 +211,7 @@ export const App = () => {
     }, [selected, loadDetail]);
 
     const visible = useMemo(() => tasks.filter((t) => !envId || t.env_id === envId), [tasks, envId]);
-    const attention = useMemo(() => tasks.filter(needsAttention).length, [tasks]);
+    const attention = useMemo(() => tasks.filter((t) => taskState(t).group === "attention").length, [tasks]);
     const working = useMemo(() => tasks.filter((t) => taskState(t).group === "working").length, [tasks]);
 
     const run = async (fn: () => Promise<unknown>) => {
@@ -234,7 +232,7 @@ export const App = () => {
     const accountPage = route.page === "accounts" && route.account ? accounts.find((a) => a.id === route.account) : undefined;
     const integrationId = route.page === "integrations" ? route.integration : undefined;
 
-    // The selected task's detail view — the same on the Tasks page and when a task is opened from the Dashboard.
+    // The selected task's detail view — the same on the Tasks page.
     const taskDetailView = detail && detail.task.id === selected && (
         <ErrorBoundary key={detail.task.id} label="Task view">
             <TaskDetailView
@@ -253,7 +251,7 @@ export const App = () => {
                 }}
                 onCloseTerminal={() => setTerminal(null)}
                 onClose={closeTask}
-                listLabel={route.page === "dashboard" ? "Overview" : "Tasks"}
+                listLabel="Tasks"
             />
         </ErrorBoundary>
     );
@@ -305,12 +303,12 @@ export const App = () => {
             icon: n.icon,
             hint: n.hint,
             href: formatRoute(pageRoute(n.id)),
-            ...(n.id === "dashboard" && attention > 0 ? { badge: { count: attention, tone: "warn" as const } } : {}),
-            ...(n.id === "tasks" && working > 0 ? { badge: { count: working, tone: "info" as const } } : {}),
+            ...(n.id === "tasks" && attention > 0 ? { badge: { count: attention, tone: "warn" as const } } : n.id === "tasks" && working > 0 ? { badge: { count: working, tone: "info" as const } } : {}),
         })),
     }));
     const commands = useMemo<Command[]>(() => [
         ...NAV.flatMap((g) => g.items.map((n) => ({ id: `page-${n.id}`, label: n.label, group: "Pages", icon: n.icon, keywords: `${g.group} ${n.hint}`, run: () => navigate(n.id === "tasks" ? { page: "tasks" } : ({ page: n.id } as Route)) }))),
+        { id: "page-tasks-completed", label: "Completed tasks", group: "Pages", icon: "tasks" as const, keywords: "finished stopped done", run: () => navigate({ page: "tasks", list: "completed" }) },
         ...envs.map((e) => ({ id: `env-${e.id}`, label: `${e.name} tasks`, group: "Environments", icon: "server" as const, note: e.base_branch, run: () => navigate({ page: "tasks", env: e.id }) })),
         ...[...tasks].sort((a, b) => taskState(a).rank - taskState(b).rank || b.updated_at.localeCompare(a.updated_at)).map((t) => ({
             id: `task-${t.id}`, label: `${t.ticket_id}${t.title ? ` ${t.title}` : ""}`, group: "Tasks", icon: "tasks" as const, note: taskState(t).label,
@@ -380,14 +378,6 @@ export const App = () => {
                     </Notice>
                 </div>
             )}
-            {page === "dashboard" && frame(
-                selected ? (
-                    taskDetailView || <div className="empty">Loading…</div>
-                ) : (
-                    <ErrorBoundary label="Overview"><Dashboard envs={envs} tasks={tasks} readiness={readiness} onOpen={(t) => navigate({ page: "dashboard", task: t.id })} onOpenEnv={(id) => navigate({ page: "envs", env: id })} /></ErrorBoundary>
-                ),
-                selected ? "wide" : "default",
-            )}
             {page === "analytics" && frame(<ErrorBoundary label="Usage"><Analytics days={route.page === "analytics" ? route.days : undefined} onDays={(d) => navigate({ page: "analytics", days: d })} onError={setError} /></ErrorBoundary>)}
             {page === "product" && frame(
                 <ErrorBoundary label="Product">
@@ -445,7 +435,10 @@ export const App = () => {
                     envs={envs}
                     envId={envId}
                     env={env}
+                    tasks={tasks}
                     visible={visible}
+                    list={route.page === "tasks" ? route.list : undefined}
+                    onList={(list) => navigate({ page: "tasks", ...(list ? { list } : {}), ...(envId ? { env: envId } : {}) })}
                     selected={selected}
                     detailPane={tasksDetailPane}
                     onDeleteTasks={(ids) => void deletePicked(ids)}

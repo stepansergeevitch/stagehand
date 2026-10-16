@@ -1,0 +1,5 @@
+.expand-chip { all: unset; cursor: pointer; display: inline-flex; border-radius: var(--radius-sm, 6px); }
+.expand-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.expand-chip-detail { display: inline-block; max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; vertical-align: bottom; transition: max-width 0.2s ease, opacity 0.2s ease, margin-left 0.2s ease; }
+.expand-chip:hover .expand-chip-detail, .expand-chip:focus-visible .expand-chip-detail { max-width: 24ch; opacity: 1; margin-left: 0.4em; }
+@media (prefers-reduced-motion: reduce) { .expand-chip-detail { transition: none; } }

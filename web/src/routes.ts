@@ -5,11 +5,10 @@ import { STAGE_ORDER, type Stage } from "./api";
 // reload, back/forward, a pasted link, or an assistant reading the path all land on the same screen. Components take
 // their view from the route and change it through `navigate`; nothing view-affecting lives in component state.
 //
-//   #/dashboard                                    #/dashboard/<taskId>/<tab>…   (a task opened from the Dashboard stays there)
-//   #/tasks[?env=<envId>]                          #/tasks/new[?env=<envId>]
+//   #/tasks[/completed][?env=<envId>]              #/tasks/new[?env=<envId>]      (the list: Active by default, Completed tab)
 //   #/tasks/<taskId>/work[/<stage>[/<proposal|qa|po>]]       #/tasks/<taskId>/code[?repo=<dir>&scope=all|uncommitted|<sha>,<sha>&kind=tests]
 //   #/tasks/<taskId>/pr[/<repo>]                             #/tasks/<taskId>/conversation[/<user|pr|automation>][?repo=<dir>]
-//   #/tasks/<taskId>/details[/<runs[/<runId>]|cost|setup>]
+//   #/tasks/<taskId>/details[/<runs[/<runId>]|cost>]     #/tasks/<taskId>/settings   (the task's ⋯ menu; old …/details/setup still parses)
 //   #/sessions[/new | /<sessionId>/<terminal|changes>[?repo&scope&kind]]           #/analytics[?days=<n>]   #/timing[?days=<n>]
 //   #/envs[/new | /<envId>[/<tab>]]                #/config-dirs[/new | /<dirId>[/<tab>]]
 //   #/accounts[/new | /<accountId>[/<tab>]]        #/integrations[/<id>[/<tab>]]  #/resources[/<tab>]
@@ -22,10 +21,11 @@ import { STAGE_ORDER, type Stage } from "./api";
 // still parse and are rewritten to the current one.
 
 export const TASK_TABS = ["work", "code", "pr", "conversation", "details"] as const;
-export type TaskTab = (typeof TASK_TABS)[number];
-// The Conversation tab: the agent chat (default) or the comment lists; the Details tab: the ticket (default), the runs, the cost, the setup.
+// `settings` is a routed view of the workspace but no tab of the tab bar: it opens from the task's ⋯ menu.
+export type TaskTab = (typeof TASK_TABS)[number] | "settings";
+// The Conversation tab: the agent chat (default) or the comment lists; the Details tab: the ticket (default), the runs, the cost.
 export type ConversationSub = "user" | "pr" | "automation";
-export type DetailsPart = "runs" | "cost" | "setup";
+export type DetailsPart = "runs" | "cost";
 export type DesignSection = "proposal" | "qa" | "po";
 export type CodeScope = { kind: "all" } | { kind: "uncommitted" } | { kind: "commits"; shas: string[] };
 // The diff view's own location (task Code tab, session Changes): repository, which changes, files or tests.
@@ -54,8 +54,8 @@ export interface TaskView {
 }
 
 export type Route =
-    | { page: "dashboard"; task?: string; view?: TaskView }
-    | { page: "tasks"; env?: string; task?: string; view?: TaskView; create?: boolean }
+    // The Tasks page: `list` is its Active (default, absent) / Completed tab.
+    | { page: "tasks"; env?: string; list?: TaskList; task?: string; view?: TaskView; create?: boolean }
     | { page: "sessions"; session?: string; view?: "terminal" | "changes"; diff?: DiffRoute; create?: boolean }
     | { page: "analytics"; days?: number }
     | { page: "timing"; days?: number }
@@ -73,11 +73,13 @@ export type ProductHomeTab = "context" | "memory";
 export type PoTab = "context" | "design" | "questions" | "tickets" | "events" | "corrections";
 export const PO_TABS: readonly PoTab[] = ["design", "questions", "corrections", "context", "tickets", "events"];
 
+export type TaskList = "completed";
+
 export type Page = Route["page"];
 
 const isStage = (s: string | undefined): s is Stage => !!s && (STAGE_ORDER as readonly string[]).includes(s);
 const isSub = (s: string | undefined): s is ConversationSub => s === "user" || s === "pr" || s === "automation";
-const isPart = (s: string | undefined): s is DetailsPart => s === "runs" || s === "cost" || s === "setup";
+const isPart = (s: string | undefined): s is DetailsPart => s === "runs" || s === "cost";
 const isSection = (s: string | undefined): s is DesignSection => s === "proposal" || s === "qa" || s === "po";
 
 const parseScope = (s: string | null): CodeScope | undefined => {
@@ -103,7 +105,8 @@ const parseTaskView = (tab: string | undefined, x: string | undefined, y: string
         case "code": return { tab: "code", ...parseDiff(q) };
         case "pr": return { tab: "pr", ...(x ? { repo: x } : {}) };
         case "conversation": return { tab: "conversation", ...(isSub(x) ? { sub: x } : {}), ...(repo !== undefined ? { repo } : {}) };
-        case "details": return { tab: "details", ...(isPart(x) ? { part: x } : {}), ...(x === "runs" && y ? { run: y } : {}) };
+        case "settings": return { tab: "settings" };
+        case "details": if (x === "setup") return { tab: "settings" }; return { tab: "details", ...(isPart(x) ? { part: x } : {}), ...(x === "runs" && y ? { run: y } : {}) };
         case "design": return { tab: "work", step: "design_proposal", ...(isSection(x) ? { section: x } : {}) };
         case "comments": return { tab: "conversation", sub: isSub(x) ? x : "user", ...(repo !== undefined ? { repo } : {}) };
         case "chat": return { tab: "conversation" };
@@ -119,12 +122,13 @@ export const parseRoute = (hash: string): Route => {
     const qi = raw.indexOf("?");
     const path = qi >= 0 ? raw.slice(0, qi) : raw;
     const q = new URLSearchParams(qi >= 0 ? raw.slice(qi + 1) : "");
-    const [head = "dashboard", a, b, c, d] = path.split("/").filter(Boolean).map((s) => decodeURIComponent(s));
+    const [head = "tasks", a, b, c, d] = path.split("/").filter(Boolean).map((s) => decodeURIComponent(s));
     const env = q.get("env") ?? undefined;
     switch (head) {
         case "dashboard":
-            return a ? { page: "dashboard", task: a, ...(parseTaskView(b, c, d, q) ? { view: parseTaskView(b, c, d, q) } : {}) } : { page: "dashboard" };
         case "tasks":
+            if (a === "completed") return { page: "tasks", list: "completed", ...(env ? { env } : {}) };
+            if (a === "active") return { page: "tasks", ...(env ? { env } : {}) };
             if (a === "new") return { page: "tasks", create: true, ...(env ? { env } : {}) };
             if (a) return { page: "tasks", task: a, ...(parseTaskView(b, c, d, q) ? { view: parseTaskView(b, c, d, q) } : {}) };
             return { page: "tasks", ...(env ? { env } : {}) };
@@ -169,7 +173,7 @@ export const parseRoute = (hash: string): Route => {
                 ...(b === "tickets" && c && d ? { ticketTab: d } : {}),
             };
         default:
-            return { page: "dashboard" };
+            return { page: "tasks" };
     }
 };
 
@@ -188,6 +192,7 @@ const formatTaskView = (base: string, view: TaskView | undefined): string => {
         case "code": return withQuery(`${base}/code`, diffQuery(v));
         case "pr": return `${base}/pr${v.repo ? `/${enc(v.repo)}` : ""}`;
         case "conversation": return withQuery(`${base}/conversation${v.sub ? `/${v.sub}` : ""}`, { repo: v.repo });
+        case "settings": return `${base}/settings`;
         case "details": return `${base}/details${v.part ? `/${v.part}${v.part === "runs" && v.run ? `/${enc(v.run)}` : ""}` : ""}`;
     }
 };
@@ -197,10 +202,9 @@ const entityPath = (list: string, id: string | undefined, tab: string | undefine
 
 export const formatRoute = (r: Route): string => {
     switch (r.page) {
-        case "dashboard": return r.task ? formatTaskView(`#/dashboard/${enc(r.task)}`, r.view) : "#/dashboard";
         case "tasks":
             if (r.task) return formatTaskView(`#/tasks/${enc(r.task)}`, r.view);
-            return withQuery(r.create ? "#/tasks/new" : "#/tasks", { env: r.env });
+            return withQuery(r.create ? "#/tasks/new" : r.list === "completed" ? "#/tasks/completed" : "#/tasks", { env: r.env });
         case "sessions":
             if (r.create) return "#/sessions/new";
             if (!r.session) return "#/sessions";
@@ -247,6 +251,5 @@ export const navigate = (to: Route | ((current: Route) => Route), opts: { replac
     window.dispatchEvent(new HashChangeEvent("hashchange"));
 };
 
-// The task route the page is on (Dashboard keeps a task in place; everything else opens it on the Tasks page).
-export const taskRoute = (current: Route, taskId: string, view?: TaskView): Route =>
-    current.page === "dashboard" ? { page: "dashboard", task: taskId, ...(view ? { view } : {}) } : { page: "tasks", task: taskId, ...(view ? { view } : {}) };
+// The route of a task opened from anywhere: always the Tasks page.
+export const taskRoute = (_current: Route, taskId: string, view?: TaskView): Route => ({ page: "tasks", task: taskId, ...(view ? { view } : {}) });

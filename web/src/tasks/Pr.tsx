@@ -1,3 +1,4 @@
+import { ExpandChip } from "../components/ExpandChip";
 import { useEffect, useState } from "react";
 import { Button, Checkbox, Chip, EmptyState, Hint, Icon, Input, Notice, Select, Tab, TabList, Textarea, type Tone } from "@vortex/ds";
 import { api, checkOutcome, isApprovalGateCheck, parseBaseBranch, parseChecks, prRepos, prStateOf, repoColorClass, repoName, type CiAutopilot, type MergeMethod, type PrCheck, type PrComments, type PrDraftEntry, type PrFixReplies as PrFixRepliesData, type PrState, type TaskDbInfo, type TaskDetail } from "../api";
@@ -484,11 +485,9 @@ export const PrSummaryChips = ({ detail, onOpen }: { detail: TaskDetail; onOpen:
                 const row = prStateOf(detail, repo);
                 const o = prOutcome(row);
                 if (o.kind === "none") return null;
-                return (
-                    <Button key={repo} variant="ghost" size="sm" className="pr-summary" onClick={() => onOpen(repo)} title={`Open the ${repoName(repo)} pull request`}>
-                        <Chip tone={o.tone}>{repos.length > 1 ? `${repoName(repo)} ` : "PR "}{row?.number ? `#${row.number} ` : ""}{o.text}</Chip>
-                    </Button>
-                );
+                const name = repos.length > 1 ? repoName(repo) : "PR";
+                const detailText = `${row?.number ? `#${row.number} ` : ""}${o.text}`;
+                return <ExpandChip key={repo} label={name} detail={detailText} tone={o.tone} onClick={() => onOpen(repo)} title={`${name} ${detailText} (open the pull request)`} />;
             })}
         </>
     );

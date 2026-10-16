@@ -1,6 +1,6 @@
 # Vortex UX redesign
 
-> Status: phase 1 (foundation) is implemented on branch `ux-redesign`: shell, shared layout components, DataTable, EntityView, Modal, Overview. Phase 2 pages are built on top of it (section 9). Rules in `CLAUDE.md` (DataTable lists, EntityView tabs, hints on hover, every view in the URL, no env-specific logic) and `docs/brand-guidelines.md` still apply; this file decides how they look and are assembled.
+> Status: phase 1 (foundation) is implemented on branch `ux-redesign`: shell, shared layout components, DataTable, EntityView, Modal, Tasks. Phase 2 pages are built on top of it (section 9). Rules in `CLAUDE.md` (DataTable lists, EntityView tabs, hints on hover, every view in the URL, no env-specific logic) and `docs/brand-guidelines.md` still apply; this file decides how they look and are assembled.
 
 ## 1. Audit
 
@@ -19,7 +19,7 @@ Problems found in the old app:
 | No global "needs me" signal beyond one count | shell | Status tones on nav badges, a live-connection dot, usage as one control |
 | Account gauges (two bars per account) fill the top bar and push the page on phones | top bar | One usage button with a popover (section 3) |
 | Every page invents its header (h1, `.sub`, back link, card h2) | all pages | `PageHeader` with breadcrumbs, meta, actions; entity pages use `EntityView` |
-| Dashboard is a wall of cards, one per environment, status only as a coloured word | Overview | Stat tiles, then one table sorted by urgency (section 6.1) |
+| Dashboard is a wall of cards, one per environment, status only as a coloured word | Tasks (Active tab) | Stat tiles, then one table sorted by urgency (section 6.1) |
 | Status is conveyed differently on every list (glyphs, chips, text) | lists | One status language (section 5) |
 | Task view: 9 tabs, widgets above them, chips for stages, actions as a row of 6 buttons | task | Task workspace template (section 4.3) |
 | Forms are one narrow column with labels above, Save at the bottom of a long tab | entity | Label-left fields, sticky Save bar while dirty |
@@ -29,14 +29,14 @@ Problems found in the old app:
 ## 2. Information architecture
 
 ```
-Work        Overview · Tasks · Product · Sessions
+Work        Tasks · Product · Sessions
 Insights    Usage · Timing · Resources
 Settings    Environments · Config dirs · AI accounts · Integrations · Prompter
 ```
 
-- **Overview** (route `dashboard`): triage across all environments. **Tasks**: one environment's tasks (the environment picker is the route's `?env=`). Both open the same task workspace.
+- **Tasks**: the four triage tiles (all environments), then one environment's tasks in two tabs, Active and Completed (the tab is the path, `#/tasks` / `#/tasks/completed`; the environment picker is the route's `?env=`). A row opens the task workspace. The old `#/dashboard[/<id>/…]` paths parse and are rewritten to `#/tasks`.
 - Labels are nouns in sentence case, no hints in the label; the hint is the link's `title` (the rail's label when collapsed).
-- Badges in the nav: Overview = tasks that need you (warn); Tasks = agents running (info). No other badges.
+- Badge in the nav: Tasks = tasks that need you (warn), else agents running (info). No other badges.
 - Route page ids and URLs are unchanged (`routes.ts` is the contract; only labels moved).
 - **Search / command palette** (`Cmd/Ctrl+K`, `CommandPalette`): jump to a page, an environment's tasks, or a task by id or title. Navigation only; every result is a `navigate`.
 
@@ -46,7 +46,7 @@ Settings    Environments · Config dirs · AI accounts · Integrations · Prompt
 ┌ sidebar 232px ┬ topbar 52px: [search ⌘K]                    [● Live] [● 13% used ▾] ┐
 │ Wordmark      ├────────────────────────────────────────────────────────────────────┤
 │ WORK          │ <main id="main">  PageFrame(width) → PageHeader → page content      │
-│  Overview (2) │                                                                    │
+│  Tasks (2)    │                                                                    │
 │ …             │                                                                    │
 │ [‹ collapse]  │                                                                    │
 └───────────────┴────────────────────────────────────────────────────────────────────┘
@@ -106,11 +106,11 @@ One mapping, `components/status.tsx` (`taskState`, `TaskStatusChip`, `StageProgr
 
 ## 6. Pages
 
-### 6.1 Overview (done)
-`StatRow` (Needs you, Running, Waiting on others, Environments), a `Panel tone="warn"` listing environment readiness problems, then `DataTable embedded` "Tasks in flight": every non-finished task sorted by rank then recency, columns Status, Task, Title, Environment, Stage (+ progress), Updated; Latest and Labels hidden by default. A row opens the task in place (`#/dashboard/<id>`).
+### 6.1 Tasks (done)
+`StatRow` (Needs you, Running, Waiting on others, Environments; no readiness panel), `Tabs` Active / Completed, then the `DataTable`. Active: every non-finished task of the environment, pinned first, then rank, then recency. Completed: finished and stopped tasks. Columns Status, Task, Title, Stage (+ progress), Updated; Latest, Base and Labels hidden by default. A row opens the task in place (`#/tasks/<id>`).
 
 ### 6.2 Others
-Tasks (4.3 plus `TasksPage` list), Product (list + PO entity), Sessions (list + terminal/changes workspace, `full` width), Resources (tabs, tables), Prompter (singleton entity) and Settings (4.4) follow their templates.
+Product (list + PO entity), Sessions (list + terminal/changes workspace, `full` width), Resources (tabs, tables), Prompter (singleton entity) and Settings (4.4) follow their templates.
 
 ## 7. Density, spacing, motion
 
@@ -138,7 +138,7 @@ Tasks (4.3 plus `TasksPage` list), Product (list + PO entity), Sessions (list + 
 | `Toolbar` | children, end | lists, panels, analytics ranges |
 | `Panel` / `Section` | title, hint, badge, actions, footer, flush, tone / title, hint, actions | any grouped content (replaces ad-hoc `.card` and `h2`) |
 | `KeyValue` | items [{label, value, hint, mono}], columns | read-only facts (replaces `.kv`) |
-| `StatTile` / `StatRow` | label, value, sub, tone, icon, onClick | Overview, Usage, Timing, Resources |
+| `StatTile` / `StatRow` | label, value, sub, tone, icon, onClick | Tasks, Usage, Timing, Resources |
 | `DataTable` | unchanged props + `embedded` | every list |
 | `EntityView` | unchanged props + `meta` | every entity page |
 | `Field`, `CheckField`, `ReadField`, `EntityForm`, `useDraft`, `useSaver` | unchanged | entity tabs |
@@ -159,7 +159,7 @@ Each area moves its own rules out of `web/src/styles.css` into a co-located `.cs
 | D. Sessions and Resources | `SessionsPage.tsx`, `ResourcesPage.tsx`, `FilePicker.tsx`, `AgentInput.tsx` |
 | E. Insights | `Analytics.tsx`, `Timing.tsx` |
 | F. Prompter | `Prompter.tsx`, `prompterBus.ts` |
-| Foundation (done; change on request) | `App.tsx`, `Dashboard.tsx`, `main.tsx`, `styles.css`, `components/{AppShell,Sidebar,Topbar,PageHeader,Toolbar,Panel,KeyValue,StatTile,UsageGauges,CommandPalette,DataTable,EntityView,Modal,status}.tsx` + their `.css` |
+| Foundation (done; change on request) | `App.tsx`, `main.tsx`, `styles.css`, `components/{AppShell,Sidebar,Topbar,PageHeader,Toolbar,Panel,KeyValue,StatTile,UsageGauges,CommandPalette,DataTable,EntityView,Modal,status}.tsx` + their `.css` |
 
 Per-area first moves: **A** make Tasks a `DataTable` (default sort by rank, filters Environment/Status/Stage) and build the workspace of 4.3; **B** drop `.card`/`.env-page` wrappers for `Panel`/`Section`, use `meta` chips for state, move Delete/Verify into header actions; **C** `embedded` on the PO tabs' tables, PO workspace as 4.2; **D** terminal workspace `full` width with the session list as `DataTable`; **E** 4.6; **F** the Prompter's floating button must sit below the drawer scrim and avoid covering table footers on phones.
 

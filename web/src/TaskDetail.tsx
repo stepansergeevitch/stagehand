@@ -8,7 +8,7 @@ import { LazyTerminal } from "./LazyTerminal";
 import type { ConversationSub, DetailsPart, DesignSection, TaskTab, TaskView } from "./routes";
 import { Chat } from "./Chat";
 import { DiffView, type PriorComment } from "./DiffView";
-import { ServicesPanel } from "./Services";
+import { AppQuick, ServicesPanel } from "./Services";
 import { TaskCost } from "./TaskCost";
 import { AgentInput } from "./AgentInput";
 import { DataTable, type DataColumn } from "./components/DataTable";
@@ -50,7 +50,7 @@ const CONVERSATION_SUBS: Array<{ key: "chat" | ConversationSub; label: string }>
     { key: "chat", label: "Agent chat" },
     { key: "user", label: "Your comments" },
     { key: "pr", label: "PR comments" },
-    { key: "automation", label: "Automation" },
+    { key: "automation", label: "Automation comments" },
 ];
 
 type Run = TaskDetail["runs"][number];
@@ -70,7 +70,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const { comments, pending } = rv;
     const [returning, setReturning] = useState(false);
     const [localNotes, setLocalNotes] = useState("");
-    // Product Owners, for the Setup part and the Product owner review.
+    // Product Owners, for Settings and the Product owner review.
     const [owners, setOwners] = useState<ProductOwner[]>([]);
     useEffect(() => { void api.productOwners().then(setOwners).catch(() => setOwners([])); }, [task.id]);
     const currentIdx = STAGE_ORDER.indexOf(stageOf(task.stage));
@@ -212,6 +212,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {idle && currentIdx > 0 && <MenuItem title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)" onClick={() => setReturning(true)}>Return to a stage…</MenuItem>}
             {idle && task.branch && task.worktree_path && <MenuItem title="A plain git rebase of this task's own commits onto the latest base first; the agent takes over only where that conflicts. If the branch is on GitHub and this environment allows pushes, Vortex force-pushes it with lease and tasks stacked on it are rebased in turn." onClick={() => startRebase()}>Rebase onto the latest base</MenuItem>}
             {idle && task.branch && task.worktree_path && envRepoList.length > 1 && envRepoList.map((r) => <MenuItem key={r} onClick={() => startRebase([r])}>Rebase {repoName(r)} only</MenuItem>)}
+            <MenuItem title="Labels, AI account, product owner, session, database" onClick={() => onView({ tab: "settings" })}>Settings</MenuItem>
             {terminal ? <MenuItem onClick={onCloseTerminal}>Close the terminal</MenuItem> : <MenuItem disabled={!idle} onClick={() => void onOpenTerminal()}>Open a terminal</MenuItem>}
             <MenuItem onClick={() => onAction(() => api.pin(task.id))}>{task.pinned ? "Unpin" : "Pin to the top"}</MenuItem>
             {idle && (task.worktree_path || true) && <hr />}
@@ -229,8 +230,6 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
         return ms > 0 ? `Resumes by itself at ${local} (in ${Math.ceil(ms / 60000)} min).` : "Resuming…";
     })();
     const failingPrs = (detail.prStates ?? []).filter((r) => r.number && parseChecks(r.checks_json).some((c) => !isApprovalGateCheck(c) && checkOutcome(c) === "fail"));
-    // The status line often opens with the stage the strip already names.
-    const statusText = (task.status_line ?? "").replace(new RegExp(`^${STAGE_LABEL[task.stage]}\\s*(·|:|-|—)?\\s*`, "i"), "");
 
     const header = (
         <PageHeader
@@ -242,7 +241,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     <LabelChips labels={labelsOf(task)} />
                 </>
             }
-            actions={<>{primary}{menu}</>}
+            actions={<>{task.worktree_path && <AppQuick taskId={task.id} env={env} onError={onError} compact />}{primary}{menu}</>}
         >
             <div className="task-strip">
                 <span className="task-strip-stage">
@@ -253,7 +252,6 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 <PrSummaryChips detail={detail} onOpen={openPrTab} />
                 {task.ticket_url && <a href={task.ticket_url} target="_blank" rel="noreferrer">{task.ticket_id} on {task.source}<Icon name="external" /></a>}
             </div>
-            {statusText && statusText.toLowerCase() !== state.label.toLowerCase() && <p className="task-status-line" title={statusText}><Linkified text={statusText} /></p>}
             <Tabs
                 className="ev-tabs"
                 active={tab}
@@ -311,7 +309,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 </Panel>
             )}
             {task.worktree_path && (
-                <Panel title="App" hint="This task's BE and FE, started in its worktree.">
+                <Panel title="App" hint="This task's BE and FE, started in its worktree. Ports, logs and commands are under Details; Run / Open are also in the task header.">
                     <ServicesPanel taskId={task.id} env={env} dependencyBranch={task.dependency_branch ?? null} busy={task.status === "running"} onError={onError} onFixStarted={() => void onAction(async () => undefined)} />
                 </Panel>
             )}
@@ -471,14 +469,13 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     { key: "ticket", label: "Ticket and instructions" },
                     { key: "runs", label: <>Runs<Badge>{runs.length}</Badge></> },
                     { key: "cost", label: "Cost" },
-                    { key: "setup", label: "Setup" },
                 ]}
             />
             {part === "ticket" && (
                 <>
-                    <NotesCard detail={detail} onSave={(text, files) => onAction(async () => api.patchTask(task.id, { notes: text.trim() || null, files: await api.uploadFiles(task.id, files) }))} />
-                    {task.product_owner_id && <PoBriefCard task={task} onError={(m) => void onAction(async () => { throw new Error(m); })} />}
                     <TicketView detail={detail} onFetch={async () => { await api.fetchTicket(task.id); await onAction(async () => undefined); }} />
+                    {task.product_owner_id && <PoBriefCard task={task} onError={(m) => void onAction(async () => { throw new Error(m); })} />}
+                    <NotesCard detail={detail} onSave={(text, files) => onAction(async () => api.patchTask(task.id, { notes: text.trim() || null, files: await api.uploadFiles(task.id, files) }))} />
                 </>
             )}
             {part === "runs" && (
@@ -494,7 +491,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 />
             )}
             {part === "cost" && <TaskCost taskId={task.id} refreshKey={task.updated_at} />}
-            {part === "setup" && (
+        </>
+    );
+
+    // ---- Settings (the task's ⋯ menu) ----
+    const settings = (
                 <>
                     <Panel title="Task settings">
                         <div className="setup-fields">
@@ -522,8 +523,6 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     </Panel>
                     {task.worktree_path && <TaskDbPanel task={task} onAction={onAction} />}
                 </>
-            )}
-        </>
     );
 
     return (
@@ -567,6 +566,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {tab === "pr" && prTab}
                 {tab === "conversation" && conversation}
                 {tab === "details" && details}
+                {tab === "settings" && settings}
             </div>
             {returning && (
                 <ReturnDialog

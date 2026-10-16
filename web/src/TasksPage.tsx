@@ -2,20 +2,27 @@ import { useMemo, type ReactNode } from "react";
 import { BaseCheckChip } from "./components/BaseCheckChip";
 import { LabelChips } from "./Labels";
 import { labelsOf, STAGE_LABEL, taskLabel, type Env, type Task } from "./api";
-import { Button, EmptyState, Icon, Select } from "@vortex/ds";
+import { Button, EmptyState, Icon, Select, Tabs } from "@vortex/ds";
+import type { TaskList } from "./routes";
+import { StatRow, StatTile } from "./components/StatTile";
 import { PageFrame } from "./components/AppShell";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { age, StageCell, TaskStatusChip, taskState } from "./components/status";
 import "./tasks.css";
 
-// The Tasks page (docs/ux-redesign.md §4.1 and §4.3): one environment's tasks as a table, pinned and urgent first; a row
-// opens the task workspace in place of the list. The environment picker is the route's `?env=`.
-export const TasksPage = ({ envs, envId, env, visible, selected, detailPane, onDeleteTasks, onSelectEnv, onNewTask, onOpen }: {
+// The Tasks page (docs/ux-redesign.md §4.1, §4.3 and §6.1): the four triage tiles (all environments), then one
+// environment's tasks as a table in two tabs, Active (not finished, most urgent first) and Completed (finished and
+// stopped); a row opens the task workspace in place of the list. The environment picker is the route's `?env=`, the
+// tab its path (`#/tasks/completed`).
+export const TasksPage = ({ envs, envId, env, tasks, visible, list, onList, selected, detailPane, onDeleteTasks, onSelectEnv, onNewTask, onOpen }: {
     envs: Env[];
     envId: string;
     env: Env | undefined;
-    // The environment's tasks.
+    // Every task (the tiles) and the environment's tasks (the table).
+    tasks: Task[];
     visible: Task[];
+    list: TaskList | undefined;
+    onList: (list: TaskList | undefined) => void;
     selected: string | null;
     // What the workspace shows: the task view or a loading line.
     detailPane: ReactNode;
@@ -25,9 +32,14 @@ export const TasksPage = ({ envs, envId, env, visible, selected, detailPane, onD
     onOpen: (id: string) => void;
 }) => {
     // Pinned first, then by what needs you, then the latest.
+    const completed = list === "completed";
+    const count = (g: ReturnType<typeof taskState>["group"]) => tasks.filter((t) => taskState(t).group === g).length;
+    const attention = count("attention");
+    const working = count("working");
+    const waiting = count("waiting");
     const rows = useMemo(
-        () => [...visible].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || taskState(a).rank - taskState(b).rank || b.updated_at.localeCompare(a.updated_at)),
-        [visible],
+        () => visible.filter((t) => (taskState(t).group === "finished") === completed).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || taskState(a).rank - taskState(b).rank || b.updated_at.localeCompare(a.updated_at)),
+        [visible, completed],
     );
     const columns: DataColumn<Task>[] = [
         { key: "status", label: "Status", value: (t) => taskState(t).label, filter: "auto", render: (t) => <TaskStatusChip task={t} /> },
@@ -42,6 +54,17 @@ export const TasksPage = ({ envs, envId, env, visible, selected, detailPane, onD
     if (selected) return <PageFrame width="wide">{detailPane}</PageFrame>;
     return (
         <PageFrame width="wide">
+            <StatRow>
+                <StatTile label="Needs you" tone={attention ? "warn" : "neutral"} value={attention} sub={attention ? "Waiting on a decision, blocked or failed" : "Nothing is waiting on you"} />
+                <StatTile label="Running" tone={working ? "info" : "neutral"} value={working} sub="Agents working or queued" />
+                <StatTile label="Waiting on others" tone={waiting ? "wait" : "neutral"} value={waiting} sub="GitHub checks, reviewers, rate limits" />
+                <StatTile label="Environments" icon="server" value={envs.length} />
+            </StatRow>
+            <Tabs
+                items={[{ key: "active", label: "Active" }, { key: "completed", label: "Completed" }]}
+                active={completed ? "completed" : "active"}
+                onChange={(k) => onList(k === "completed" ? "completed" : undefined)}
+            />
             <DataTable
                 title="Tasks"
                 entity="task"
@@ -56,11 +79,13 @@ export const TasksPage = ({ envs, envId, env, visible, selected, detailPane, onD
                 rows={rows}
                 rowKey={(t) => t.id}
                 onRowClick={(t) => onOpen(t.id)}
-                storageKey="tasks"
+                storageKey={completed ? "tasks-completed" : "tasks"}
                 bulkActions={(sel, clear) => (
                     <Button size="sm" variant="danger" onClick={() => { onDeleteTasks(sel.map((t) => t.id)); clear(); }}>Delete</Button>
                 )}
-                empty={<EmptyState icon="tasks" title="No tasks in this environment yet" action={env ? <Button variant="primary" onClick={onNewTask}><Icon name="plus" />Create new task</Button> : undefined}>Paste a ticket id or link to start one.</EmptyState>}
+                empty={completed
+                    ? <EmptyState icon="checkCircle" title="No completed tasks in this environment yet">Finished and stopped tasks appear here.</EmptyState>
+                    : <EmptyState icon="tasks" title="No active tasks in this environment" action={env ? <Button variant="primary" onClick={onNewTask}><Icon name="plus" />Create new task</Button> : undefined}>Paste a ticket id or link to start one.</EmptyState>}
             />
         </PageFrame>
     );

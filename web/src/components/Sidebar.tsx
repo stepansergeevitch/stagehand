@@ -29,7 +29,7 @@ export const Sidebar = ({ groups, current, onNavigate, collapsed, onToggleCollap
 }) => (
     <aside className="sidebar" aria-label="Primary">
         <div className="sb-head">
-            <a href="#/dashboard" className="sb-brand" aria-label="Vortex home"><Wordmark size="md" markOnly={collapsed} /></a>
+            <a href="#/tasks" className="sb-brand" aria-label="Vortex home"><Wordmark size="md" markOnly={collapsed} /></a>
         </div>
         <nav className="sb-nav" aria-label="Sections">
             {groups.map((g, gi) => (

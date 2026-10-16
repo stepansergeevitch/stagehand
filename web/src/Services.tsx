@@ -25,11 +25,61 @@ const DependencyBranch = ({ depEnvId, value, disabled, onSave }: { taskId: strin
     );
 };
 
+const appUrlOf = (env: Env | undefined, be?: Service, fe?: Service) => (env?.app_url ?? "{{feUrl}}").replace("{{feUrl}}", fe?.url ?? "").replace("{{beUrl}}", be?.url ?? "");
+
+// The 95% case of the app: Run it, Open it, see whether it is up. `compact` is the task header's form (a status dot and
+// one button); the full form sits at the top of the App panel. Ports, logs, commands and the rest are in the panel's Details.
+export const AppQuick = ({ taskId, env, onError, compact = false }: { taskId: string; env: Env | undefined; onError: (m: string) => void; compact?: boolean }) => {
+    const [rows, setRows] = useState<Service[]>([]);
+    const [busy, setBusy] = useState(false);
+    const refresh = useCallback(() => api.services(taskId).then(setRows).catch(() => undefined), [taskId]);
+    useEffect(() => {
+        void refresh();
+        const t = setInterval(() => void refresh(), 5000);
+        return () => clearInterval(t);
+    }, [refresh]);
+    const be = rows.find((r) => r.kind === "be");
+    const fe = rows.find((r) => r.kind === "fe");
+    const configured = { be: !!env?.be_command, fe: !!env?.fe_command };
+    if (!configured.be && !configured.fe) return null;
+    const mine = [configured.be ? be : undefined, configured.fe ? fe : undefined].filter((x): x is Service => !!x);
+    const failed = mine.some((r) => r.state === "failed");
+    const up = (configured.be ? be?.state === "running" : true) && (configured.fe ? fe?.state === "running" : true);
+    const starting = !failed && !up && mine.length > 0;
+    const state: "ok" | "bad" | "warn" | "off" = failed ? "bad" : up ? "ok" : starting ? "warn" : "off";
+    const label = failed ? "failed" : up ? "running" : starting ? "starting…" : "stopped";
+    const run = async () => {
+        setBusy(true);
+        try {
+            if (configured.be && be?.state !== "running") await api.startService(taskId, "be");
+            if (configured.fe && fe?.state !== "running") await api.startService(taskId, "fe");
+            await refresh();
+        } catch (e) {
+            onError(String((e as Error).message ?? e));
+        } finally {
+            setBusy(false);
+        }
+    };
+    const openable = (fe?.running || (be?.running && !configured.fe)) && up;
+    return (
+        <div className={`app-quick${compact ? " compact" : ""}`} role="group" aria-label={`App: ${label}`}>
+            <span className={`app-dot ${state}`} title={`App ${label}`} aria-hidden="true" />
+            {!compact && <span className="app-quick-label">{label}</span>}
+            {openable ? (
+                <a className="btn btn-primary btn-sm" href={appUrlOf(env, be, fe)} target="_blank" rel="noreferrer">{compact ? "Open app" : "Open the app"}</a>
+            ) : (
+                <Button size="sm" variant="primary" disabled={busy || starting} onClick={() => void run()} title="Start this task's backend and frontend in its worktree">{busy || starting ? "Starting…" : failed ? "Retry app" : "Run app"}</Button>
+            )}
+        </div>
+    );
+};
+
 // `busy`: a stage/agent run owns the task right now — Fix with agent needs the task's session, so it waits.
 export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = false, onError, onFixStarted }: { taskId: string; env: Env | undefined; dependencyBranch?: string | null; busy?: boolean; onError: (m: string) => void; onFixStarted?: () => void }) => {
     const [rows, setRows] = useState<Service[]>([]);
     const [busy, setBusy] = useState<string | null>(null);
     const [log, setLog] = useState<{ kind: string; text: string } | null>(null);
+    const [detailsOpen, setDetailsOpen] = useState(false);
     const [fixing, setFixing] = useState<Set<string>>(new Set());
 
     // The last start of each service that failed (until one succeeds): kept here so it never vanishes with the button's spinner.
@@ -178,6 +228,7 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
         </div>
     );
 
+    const anyFailed = failures.length > 0 || rows.some((r) => r.state === "failed");
     return (
         <>
             {failures.map((f) => (
@@ -185,22 +236,25 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
                     <b>The {f.kind.toUpperCase()} did not start</b> ({new Date(f.at).toLocaleTimeString()}): {f.error}
                 </Notice>
             ))}
-            {dep && depRow(dep)}
-            {configured.be && row("be", be)}
-            {configured.fe && row("fe", fe)}
-            {comps.map(compRow)}
-            {(fe?.running || (be?.running && !configured.fe)) && (
-                <div className="open-app">
-                    <a className="btn btn-primary" href={(env?.app_url ?? "{{feUrl}}").replace("{{feUrl}}", fe?.url ?? "").replace("{{beUrl}}", be?.url ?? "")} target="_blank" rel="noreferrer">Open the app</a>
-                    <span className="mono field-hint">{[fe ? `FE ${fe.port}` : null, be ? `BE ${be.port}` : null].filter(Boolean).join(" → ")}</span>
-                </div>
-            )}
-            {log && (
-                <div className="feed svc-log">
-                    <div className="k">{log.kind.toUpperCase()} log (tail, refreshes every 3 s) <Button size="sm" variant="ghost" onClick={() => setLog(null)}>Close</Button></div>
-                    {log.text.split("\n").map((l, i) => <div key={i}>{l}</div>)}
-                </div>
-            )}
+            <AppQuick taskId={taskId} env={env} onError={onError} />
+            <details className="app-details" open={detailsOpen || anyFailed} onToggle={(e) => setDetailsOpen((e.currentTarget as HTMLDetailsElement).open)}>
+                <summary>Details</summary>
+                {dep && depRow(dep)}
+                {configured.be && row("be", be)}
+                {configured.fe && row("fe", fe)}
+                {comps.map(compRow)}
+                {(fe?.running || (be?.running && !configured.fe)) && (
+                    <div className="open-app">
+                        <span className="mono field-hint">{[fe ? `FE ${fe.port}` : null, be ? `BE ${be.port}` : null].filter(Boolean).join(" → ")}</span>
+                    </div>
+                )}
+                {log && (
+                    <div className="feed svc-log">
+                        <div className="k">{log.kind.toUpperCase()} log (tail, refreshes every 3 s) <Button size="sm" variant="ghost" onClick={() => setLog(null)}>Close</Button></div>
+                        {log.text.split("\n").map((l, i) => <div key={i}>{l}</div>)}
+                    </div>
+                )}
+            </details>
         </>
     );
 };
