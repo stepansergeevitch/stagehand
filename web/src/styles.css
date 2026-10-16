@@ -3,179 +3,19 @@ html, body, #root { height: 100%; margin: 0; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; } /* no Safari font boosting when a block is wider than the viewport */
 body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: var(--fs-md); line-height: 1.5; -webkit-font-smoothing: antialiased; }
 h1, h2, h3 { letter-spacing: -.01em; }
-code, .mono { font-family: var(--mono); font-size: 12.5px; }
+code, .mono { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
 a { color: var(--accent); text-underline-offset: 2px; }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-
+@media (max-width: 760px) { body { font-size: 15px; } }
 
 /* uncaught errors (outside React's render path) — one line at the bottom, tap to dismiss */
 .fatal { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 80; padding: 8px 12px; background: var(--bad-soft); color: var(--bad); border: 1px solid var(--bad); border-radius: var(--r-md); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; cursor: pointer; }
-.render-error pre { font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; color: var(--ink-2); }
-/* new-task form: tick tickets from the current sprint in a dropdown; several = batch or one task each */
-/* design proposal: the plain-words section shown on the step card */
-.proposed { margin: 0 0 10px; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: var(--r-sm); }
-.proposed > b { display: block; font-size: 12px; color: var(--accent); margin-bottom: 2px; }
-.proposed .markdown { max-width: none; }
-.proposed.explanation { border-left-color: var(--wait); background: var(--wait-soft); }
-.proposed.explanation > b { color: var(--wait); }
-
-/* left navigation: tasks / environments / AI accounts / task managers */
-/* dashboard: tasks needing attention, grouped by environment */
-
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 16px; }
-.widget h2 .btn-sm, .gh-head .btn-sm, .btn-sm { padding: 1px 8px; min-height: 0; font-size: 11.5px; font-weight: 400; }
-
-details.card > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; user-select: none; }
-details.card > summary::-webkit-details-marker { display: none; }
-details.card > summary::before { content: "▸"; color: var(--ink-3); font-size: 12px; width: 12px; }
-details.card[open] > summary::before { content: "▾"; }
-details.card > .card-body { margin-top: 10px; }
-.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13px; }
-.kv > * { min-width: 0; overflow-wrap: anywhere; } /* grid items otherwise refuse to shrink below a long path or commit line */
-.kv code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
-.kv b { color: var(--ink-3); font-weight: 500; }
-code, .mono { overflow-wrap: anywhere; }
-ul.plain { margin: 4px 0; padding-left: 18px; }
-table { border-collapse: collapse; width: 100%; font-size: 13px; }
-th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); font-weight: 500; }
-/* screenshot lightbox */
-/* collapsible sub-headings inside cards, and folded markdown sections */
-.review-box { border-left: 3px solid var(--wait); padding: 10px 14px; background: var(--wait-soft); border-radius: var(--r-sm); margin-bottom: 14px; }
-.review-box .actions { margin: 8px 0 0; }
+/* a render error (ErrorBoundary) and a failed diff share one box */
 .blocked-box { border-left: 3px solid var(--warn); padding: 10px 14px; background: var(--warn-soft); border-radius: var(--r-sm); margin-bottom: 14px; }
-/* the agent's mid-stage questions */
-.term { height: 480px; background: var(--terminal-bg); border-radius: var(--r-md); padding: 6px; }
+.render-error pre { font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; color: var(--ink-2); }
+
+/* small utilities used across pages */
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 16px; }
+ul.plain { margin: 4px 0; padding-left: 18px; }
 .empty { color: var(--ink-3); padding: 30px; text-align: center; }
-/* a BE/FE that failed to start: the reason on its own line under the buttons */
-.feed { font-family: var(--mono); font-size: 12px; max-height: 220px; overflow: auto; background: var(--code); border-radius: var(--r-sm); padding: 8px 10px; }
-.feed div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.feed .k { color: var(--ink-3); margin-right: 6px; }
-.two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
-
-/* ---------- review diff ---------- */
-/* commit picker: a dropdown over the branch's commits */
-/* Code changes: manage this repo's own commits (change message / remove / force-push) */
-/* earlier review rounds: muted, not editable */
-/* Q&A with the agent attached to a diff line */
-.line-thread { margin: 2px 8px 6px 6.4em; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: var(--r-sm); font-size: 13px; display: grid; gap: 6px; }
-.line-thread .thread-msg { padding: 4px 8px; border-radius: var(--r-sm); background: var(--panel); }
-.line-thread .thread-msg.user { background: transparent; padding: 0 0 2px; }
-.line-thread .thread-msg.pending { color: var(--ink-3); font-style: italic; animation: pulse 1.6s ease-in-out infinite; }
-.line-thread .thread-msg .markdown { max-width: none; font-size: 13px; }
-.line-thread > .btn-sm { justify-self: start; font-family: var(--sans); }
-@media (max-width: 760px) { .line-thread { margin-left: 8px; } }
-/* environment configuration page */
-.env-page { max-width: 960px; }
-.env-page h1 { margin-bottom: 2px; }
-.env-page .back-link { border: 0; background: transparent; color: var(--accent); padding: 0; margin-bottom: 8px; cursor: pointer; }
-.env-section h2 { margin-bottom: 6px; }
-.env-section h3 { font-size: 13px; margin: 14px 0 4px; color: var(--ink-2); }
-.env-fields { display: grid; gap: 8px; }
-.env-fields label { display: block; font-size: 13px; color: var(--ink-2); }
-.env-fields label input[type="text"], .env-fields label input:not([type]), .env-fields label select, .env-fields label textarea { display: block; width: 100%; margin-top: 3px; }
-.env-fields label input[type="checkbox"] { margin-right: 6px; }
-.env-fields textarea.tall { min-height: 160px; }
-.env-fields details > summary { cursor: pointer; color: var(--accent); font-size: 13px; }
-.env-section .actions { margin: 12px 0 0; }
-/* analytics */
-.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 4px 0 14px; }
-.tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 14px; }
-.tile-label { font-family: var(--mono); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
-.tile-value { font-size: 22px; font-weight: 600; margin: 2px 0; }
-.tile-sub { font-size: 12px; color: var(--ink-3); }
-.tile-warn { border-color: var(--warn); }
-.tile-bad { border-color: var(--bad); background: var(--bad-soft); }
-.usage-table td .chip { white-space: normal; }
-.usage-table { overflow-x: auto; }
-.usage-table table { font-size: 12.5px; width: max-content; min-width: 100%; table-layout: auto; }
-.usage-table td.usage-label { min-width: 160px; max-width: 320px; }
-.usage-table td.usage-label small { display: block; color: var(--ink-3); font-weight: 400; overflow-wrap: anywhere; }
-.usage-table td, .usage-table th { white-space: nowrap; overflow-wrap: normal; }
-.usage-table td.usage-label { white-space: normal; }
-.share { display: inline-flex; align-items: center; gap: 6px; min-width: 90px; }
-.share i { display: inline-block; height: 6px; max-width: 60px; flex: 0 0 auto; background: var(--accent); border-radius: 3px; }
-.share > span { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
-@media (max-width: 760px) { .tiles { grid-template-columns: 1fr 1fr; } .usage-table td:first-child, .usage-table th:first-child { width: auto; } }
-.inline-edit { display: inline-flex; gap: 4px; align-items: center; }
-.inline-edit input { width: 140px; padding: 2px 6px; }
-label.inline { display: inline-flex; align-items: center; gap: 4px; }
-
-/* ---------- phones / narrow windows ---------- */
-@media (max-width: 760px) {
-    body { font-size: 15px; }
-    .chip, .stage, button { white-space: nowrap; }
-    section.card, details.card { min-width: 0; max-width: 100%; overflow: hidden; }
-    details.card > summary { flex-wrap: wrap; }
-    .two { grid-template-columns: 1fr; }
-    .kv { grid-template-columns: 1fr; gap: 2px 0; }
-    .kv b { margin-top: 6px; }
-    .term { height: 60vh; }
-    .modal { place-items: end center; }
-    .modal .box { min-width: 0; width: 100%; max-height: 92vh; overflow: auto; border-radius: 12px 12px 0 0; padding: 14px 14px max(14px, env(safe-area-inset-bottom)); }
-    /* two-column plan tables wrap instead of scrolling; markdown tables keep their own scroll box */
-    table { table-layout: fixed; width: 100%; }
-    td, th { overflow-wrap: anywhere; padding: 6px 4px; }
-    td:first-child, th:first-child { width: 34%; }
-    .feed div { white-space: normal; word-break: break-word; }
-}
-
-/* Manual QA: before/after observations — one fragment per line, readable size */
-/* API scenarios: the runner's commands and trimmed output, shown where a browser step would show its screenshot. */
-
-/* task labels: coloured text chips the human puts on a task */
-/* one chip per row, full text (a label that does not fit wraps instead of being cut) */
-
-/* design proposal sections: scannable structure */
-.proposed .markdown li > strong:first-child { color: inherit; }
-
-/* one PR per repository: coloured repo chips, one row per PR in the widget, repo tabs above drafts/comments */
-
-/* PR draft editor: markdown source beside the rendered preview */
-
-/* ticket attachments: images and videos inline, other files as tiles */
-
-/* chat: agent notes + Q&A timeline */
-.chat-msg { border-radius: var(--r-md); padding: 8px 12px; max-width: 85%; }
-.chat-msg.agent { background: var(--code); align-self: flex-start; }
-.chat-msg.user { background: var(--accent-soft); align-self: flex-end; }
-.chat-msg-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 2px; }
-.chat-msg .markdown { max-width: none; font-size: 13px; }
-/* base-branch picker (input + datalist) */
-/* Batched PR jobs card */
-/* Rebase button + repository picker (multi-repo envs) */
-/* task list: multi-select for bulk delete */
-.chat-msg.instruction { border-left: 3px solid var(--accent); }
-.chat-msg.instruction_result { border-left: 3px solid var(--ok); }
-/* AgentInput: chips above (or below) the text box; the wrapper is what flex rows and grids size */
-@media (max-width: 760px) { .chat-msg { max-width: 100%; } }
-
-/* Prompter — the assistant window, bottom-right */
-.models-table { width: 100%; max-width: 760px; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
-.models-table th { text-align: left; font-weight: 600; color: var(--ink-3); padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line); }
-.models-table td { padding: 4px 8px 4px 0; vertical-align: middle; }
-.models-table select { width: 100%; max-width: 300px; font-size: 12.5px; min-height: 0; padding: 3px 4px; }
-.models-table td.quiet { font-size: 12px; color: var(--ink-3); }
-
-/* Files attached to a Chat message / instruction / answer: pending chips above the input, sent ones under the text. */
-
-/* ---------- Product and Product Owners ---------- */
-
-.env-picker { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
-.fix-reply-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 0; border-top: 1px solid var(--line); }
-.fix-reply-row .fix-reply-body { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; max-width: 520px; white-space: nowrap; }
-
-/* ---------- DataTable (components/DataTable.tsx): the standard list of entities ---------- */
-
-/* ---------- EntityView (components/EntityView.tsx): the standard entity view ---------- */
-
-/* Code changes: one commit list (DiffView CommitList) and per-file Reviewed marks */
-
-/* a document that can be commented on / asked about (components/AnnotatedMarkdown) */
-
-details.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--sp-4); margin-bottom: var(--sp-3); box-shadow: var(--shadow-sm); }
-details.card h2 { font-size: var(--fs-md); font-weight: 600; margin: 0; display: inline-flex; align-items: center; gap: 10px; }
-details.card h3 { font-size: 13px; font-weight: 600; margin: 12px 0 6px; }
-
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
-a.button { display: inline-flex; align-items: center; padding: 5px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel); color: var(--ink); text-decoration: none; } a.button:hover { border-color: var(--accent); }
+.quiet { color: var(--ink-3); font-size: var(--fs-sm); }

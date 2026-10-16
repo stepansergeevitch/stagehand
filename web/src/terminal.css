@@ -1,0 +1,2 @@
+.term { height: 480px; background: var(--terminal-bg); border-radius: var(--r-md); padding: 6px; }
+@media (max-width: 760px) { .term { height: 60vh; } }

@@ -36,7 +36,7 @@ const TicketPicker = ({ groups, selected, onToggle }: { groups: Array<[string, M
             </Button>
             {picked.length > 0 && (
                 <span className="ticket-chips">
-                    {picked.map((t) => <Chip key={t.id} tone="accent" title={t.title}>{t.id} <Button variant="ghost" type="button" className="chip-x" onClick={() => onToggle(t.id)} aria-label={`remove ${t.id}`}>×</Button></Chip>)}
+                    {picked.map((t) => <Chip key={t.id} tone="accent" mono title={t.title}>{t.id} <Button variant="ghost" type="button" className="chip-x" onClick={() => onToggle(t.id)} aria-label={`remove ${t.id}`}>×</Button></Chip>)}
                 </span>
             )}
             {open && (

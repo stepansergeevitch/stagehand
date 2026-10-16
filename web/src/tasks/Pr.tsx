@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Checkbox, Chip, EmptyState, Icon, Input, Notice, Select, Tab, TabList, Textarea, type Tone } from "@vortex/ds";
+import { Button, Checkbox, Chip, EmptyState, Hint, Icon, Input, Notice, Select, Tab, TabList, Textarea, type Tone } from "@vortex/ds";
 import { api, checkOutcome, isApprovalGateCheck, parseBaseBranch, parseChecks, prRepos, prStateOf, repoColorClass, repoName, type CiAutopilot, type MergeMethod, type PrCheck, type PrComments, type PrDraftEntry, type PrFixReplies as PrFixRepliesData, type PrState, type TaskDbInfo, type TaskDetail } from "../api";
 import { AgentInput, usePendingFiles } from "../AgentInput";
 import { BranchPicker } from "../BranchPicker";
@@ -533,7 +533,7 @@ export const PrPanel = ({ detail, onAction, focusRepo, onFocusRepo }: { detail: 
                 actions={
                     <>
                         {open && <Button size="sm" disabled={refreshing} title="Re-read checks, review decisions and comments from GitHub now" onClick={() => { setRefreshing(true); void onAction(() => api.refreshPr(task.id)).finally(() => setRefreshing(false)); }}><Icon name="refresh" />{refreshing ? "Refreshing…" : "Refresh"}</Button>}
-                        {row?.url && <a className="button-link" href={row.url} target="_blank" rel="noreferrer">Open on GitHub</a>}
+                        {row?.url && <a className="btn btn-primary" href={row.url} target="_blank" rel="noreferrer">Open on GitHub</a>}
                     </>
                 }
             >
@@ -610,7 +610,7 @@ export const CiAutopilotCard = ({ task, onAction }: { task: TaskDetail["task"]; 
                 return (
                     <details key={r.id} className="po-comment-card" open={r === d.rounds[d.rounds.length - 1]}>
                         <summary className="po-comment-top">
-                            <b>#{r.prNumber}</b>{r.repo && <Chip>{r.repo}</Chip>} <code>{r.headSha.slice(0, 7)}</code>
+                            <b>#{r.prNumber}</b>{r.repo && <Chip mono>{r.repo}</Chip>} <code>{r.headSha.slice(0, 7)}</code>
                             <Chip tone={chip}>{label}</Chip>
                             {r.verified && <span className="field-hint">{r.verified.filter((v) => v.allowed).length} to fix · {r.verified.filter((v) => !v.allowed).length} yours</span>}
                             <span className="field-hint">{new Date(r.at).toLocaleString()}</span>
@@ -618,7 +618,7 @@ export const CiAutopilotCard = ({ task, onAction }: { task: TaskDetail["task"]; 
                         {r.error && <Notice tone="bad">{r.error}</Notice>}
                         {r.triage?.summary && <p>{r.triage.summary}</p>}
                         {r.verified && r.verified.length > 0 && (
-                            <table className="checks-table">
+                            <div className="table-scroll"><table className="checks-table">
                                 <thead><tr><th>Check</th><th>Kind</th><th>Failure</th><th>Verdict</th><th>Why</th></tr></thead>
                                 <tbody>
                                     {r.verified.map((v, i) => (
@@ -631,7 +631,7 @@ export const CiAutopilotCard = ({ task, onAction }: { task: TaskDetail["task"]; 
                                         </tr>
                                     ))}
                                 </tbody>
-                            </table>
+                            </table></div>
                         )}
                         {r.review && (
                             <div className="po-human-note">
@@ -662,7 +662,7 @@ export const PrFixReplies = ({ taskId, updatedAt }: { taskId: string; updatedAt:
     const current = () => d.replies.map(({ repo, commentId, sha }) => ({ repo, commentId, sha }));
     return (
         <Panel title={`Reply to the addressed comments (${d.replies.length}/${d.outcomes ? d.outcomes.filter((o) => o.addressed).length : rows.length})`}>
-            <p className="quiet">After <b>Approve and push</b>, each ticked comment gets "Addressed in &lt;commit link&gt;" on GitHub from your account. A line comment gets it in its thread; a review or general comment gets a PR comment quoting it.</p>
+            <Hint text="After Approve and push, each ticked comment gets &quot;Addressed in <commit link>&quot; on GitHub from your account. A line comment gets it in its thread; a review or general comment gets a PR comment quoting it." />
             {err && <Notice tone="bad">{err}</Notice>}
             {rows.map(({ repo, r, c }) => {
                 const p = picked(repo, c.id);

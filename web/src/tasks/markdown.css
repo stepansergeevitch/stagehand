@@ -35,3 +35,8 @@
     .markdown, .md { max-width: none; }
     .markdown table { display: block; overflow-x: auto; table-layout: auto; }
 }
+
+/* tables in rendered markdown and the PR checks table */
+.markdown table, .checks-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.markdown th, .markdown td, .checks-table th, .checks-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.markdown th, .checks-table th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); font-weight: 500; }

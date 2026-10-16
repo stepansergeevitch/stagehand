@@ -414,7 +414,7 @@ export const App = () => {
                         onError={setError}
                     />
                 </ErrorBoundary>,
-                "wide",
+                "full",
             )}
             {page === "envs" && envPage && frame(<EnvPage key={envPage.id} env={envPage} tab={route.page === "envs" ? route.tab : undefined} onTab={(t) => navigate({ page: "envs", env: envPage.id, tab: t })} envs={envs} accounts={accounts} configDirs={configDirs} tasks={tasks} onBack={() => navigate({ page: "envs" })} onOpenDir={(id) => navigate({ page: "config-dirs", dir: id })} onChanged={reload} onError={setError} />)}
             {page === "config-dirs" && dir && frame(<ConfigDirPage key={dir.id} dir={dir} tab={route.page === "config-dirs" ? route.tab : undefined} onTab={(t) => navigate({ page: "config-dirs", dir: dir.id, tab: t })} onBack={() => navigate({ page: "config-dirs" })} onChanged={reload} onError={setError} />)}

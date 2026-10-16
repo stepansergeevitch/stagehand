@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, STAGE_LABEL, type Stage, type TaskTiming, type TimingBucket, type TimingReport } from "./api";
-import { hours } from "./Analytics";
+import { hours } from "./format";
 import { storage } from "./storage";
 import { Button, Chip, EmptyState, Hint, Skeleton } from "@vortex/ds";
 import { DataTable, type DataColumn } from "./components/DataTable";

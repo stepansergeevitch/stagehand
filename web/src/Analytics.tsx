@@ -7,12 +7,10 @@ import { PageHeader } from "./components/PageHeader";
 import { Panel } from "./components/Panel";
 import { StatRow, StatTile } from "./components/StatTile";
 import { BarChart, PeriodTabs, ShareBar } from "./InsightParts";
+import { hours, money, tokens } from "./format";
 
 // Usage: token and cost as reported by claude's result events, sliced by environment, account, task, stage, model and day.
 
-export const money = (n: number): string => (n >= 100 ? `$${n.toFixed(0)}` : n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`);
-export const tokens = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
-export const hours = (ms: number): string => (ms >= 3_600_000 ? `${(ms / 3_600_000).toFixed(1)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
 
 const NOT_CALIBRATED = "Enterprise accounts have no windows, and a new account shows nothing until a run has moved its limit.";
 

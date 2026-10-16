@@ -5,7 +5,7 @@ import { labelsOf, STAGE_LABEL, taskLabel, type Env, type Task } from "./api";
 import { Button, EmptyState, Icon, Select } from "@vortex/ds";
 import { PageFrame } from "./components/AppShell";
 import { DataTable, type DataColumn } from "./components/DataTable";
-import { age, StageProgress, TaskStatusChip, taskState } from "./components/status";
+import { age, StageCell, TaskStatusChip, taskState } from "./components/status";
 import "./tasks.css";
 
 // The Tasks page (docs/ux-redesign.md §4.1 and §4.3): one environment's tasks as a table, pinned and urgent first; a row
@@ -33,7 +33,7 @@ export const TasksPage = ({ envs, envId, env, visible, selected, detailPane, onD
         { key: "status", label: "Status", value: (t) => taskState(t).label, filter: "auto", render: (t) => <TaskStatusChip task={t} /> },
         { key: "task", label: "Task", value: (t) => taskLabel(t), filter: false, render: (t) => <b className="task-id">{t.pinned ? <Icon name="pin" aria-label="Pinned" /> : null}{taskLabel(t)}</b> },
         { key: "title", label: "Title", kind: "label", value: (t) => t.title ?? "", filter: false },
-        { key: "stage", label: "Stage", value: (t) => STAGE_LABEL[t.stage], filter: "auto", render: (t) => <span className="stage-cell">{STAGE_LABEL[t.stage]}<StageProgress task={t} /></span> },
+        { key: "stage", label: "Stage", value: (t) => STAGE_LABEL[t.stage], filter: "auto", render: (t) => <StageCell task={t} /> },
         { key: "latest", label: "Latest", value: (t) => t.status_line ?? "", filter: false, defaultHidden: true },
         { key: "base", label: "Base", value: (t) => t.base_check_state ?? "", filter: false, defaultHidden: true, render: (t) => <BaseCheckChip state={t.base_check_state} detail={t.base_check_detail} /> },
         { key: "labels", label: "Labels", value: (t) => labelsOf(t).map((l) => l.text).join(", "), filter: false, defaultHidden: true, render: (t) => <LabelChips labels={labelsOf(t)} /> },

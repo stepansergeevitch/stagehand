@@ -22,8 +22,6 @@ export const RunStatusChip = ({ status }: { status: Task["status"] | string }) =
     <Chip tone={status === "failed" ? "bad" : status === "done" ? "ok" : status === "running" ? "info" : status === "waiting_user" || status === "blocked" ? "warn" : status === "rate_limited" ? "wait" : "neutral"}>{status.replace("_", " ")}</Chip>
 );
 
-export const fmtBytes = (n: number | null): string => (n == null ? "" : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} kB` : `${n} B`);
-
 export const elapsed = (fromIso: string | undefined, toIso?: string | undefined): string => {
     if (!fromIso) return "";
     const ms = (toIso ? new Date(toIso).getTime() : Date.now()) - new Date(fromIso).getTime();
@@ -31,8 +29,6 @@ export const elapsed = (fromIso: string | undefined, toIso?: string | undefined)
     const m = Math.floor(ms / 60_000);
     return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : m >= 1 ? `${m}m ${Math.floor((ms % 60_000) / 1000)}s` : `${Math.floor(ms / 1000)}s`;
 };
-
-export const whenOf = (iso: string): string => new Date(iso).toLocaleString();
 
 // The text of one artifact of the task (design.md, research.md), once it exists.
 export const useArtifactText = (taskId: string, rel: string, exists: boolean): string | null => {
@@ -54,7 +50,7 @@ export const Linkified = ({ text }: { text: string }) => {
 // comments of one repository are recognisable at a glance.
 export const RepoChip = ({ repo, repos }: { repo: string; repos: string[] }) => {
     if (repos.length <= 1 && !repo) return null;
-    return <Chip className={`repo-chip ${repoColorClass(repo, repos)}`} title={repo ? `repository ${repo}/` : "repository"}>{repoName(repo)}</Chip>;
+    return <Chip mono className={`repo-chip ${repoColorClass(repo, repos)}`} title={repo ? `repository ${repo}/` : "repository"}>{repoName(repo)}</Chip>;
 };
 
 // Full-size view of one screenshot: first click fits it to the viewport width, a second click shows it 1:1 (scrollable).

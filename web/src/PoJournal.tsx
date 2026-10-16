@@ -3,7 +3,8 @@ import { api, type PoCorrection, type PoDetail, type PoJournalEvent, type PoQues
 import { AgentInput } from "./AgentInput";
 import { Markdown } from "./Markdown";
 import { Section } from "./components/Panel";
-import { Nothing, errText, when } from "./product/parts";
+import { Nothing } from "./product/parts";
+import { errText, when } from "./format";
 import { Badge, Button, Checkbox, Chip, Select, type Tone } from "@vortex/ds";
 
 // A Product owner's journal on its page: the outstanding questions it keeps, the events that reached it (and what
@@ -55,7 +56,7 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
     return (
         <article className={`po-card ${q.status}`}>
             <div className="po-card-head">
-                <Chip>{q.key}</Chip>
+                <Chip mono>{q.key}</Chip>
                 <b className="po-card-title">{q.question}</b>
                 <Chip tone={tone}>{label}</Chip>
                 <time className="po-muted">{when(q.created_at)}</time>

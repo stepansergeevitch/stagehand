@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
+import { Loading } from "./components/Loading";
+import { money } from "./format";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { Modal } from "./Modal";
 import { navigate, type Route } from "./routes";
 import { authLabel, authTone, PrompterPage, type IntegrationType } from "./ConfigEntities";
 import { accountBrowserReady, accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
 import { Field } from "./components/EntityView";
-import { limitTone, Loading } from "./SettingsParts";
+import { limitTone } from "./SettingsParts";
 import { Button, Chip, Input } from "@vortex/ds";
 
 // List / create / read / update / delete for the things Vortex is configured with.
@@ -85,7 +87,7 @@ const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }
     const columns: DataColumn<Env>[] = [
         { key: "name", label: "Name", kind: "label", value: (e) => e.name, filter: false },
         { key: "source", label: "Tickets", value: (e) => e.ticket_source, filter: "auto", render: (e) => (e.ticket_source === "linear" ? "Linear" : "ClickUp") },
-        { key: "base", label: "Base branch", value: (e) => e.base_branch, filter: "auto", render: (e) => <Chip>{e.base_branch}</Chip> },
+        { key: "base", label: "Base branch", value: (e) => e.base_branch, filter: "auto", render: (e) => <Chip mono>{e.base_branch}</Chip> },
         { key: "repos", label: "Repos", value: (e) => repoList(e.repos), filter: false },
         { key: "dir", label: "Config dir", value: dirName, filter: "auto" },
         { key: "accounts", label: "AI accounts", value: accountList, filter: false, defaultHidden: true },
@@ -197,8 +199,8 @@ const AccountTable = ({ accounts, envs, tasks, settings, onAdd, onOpen, act }: {
         { key: "model", label: "Default model", value: (a) => modelLabel(a.models?.default ?? a.default_model, settings?.models) ?? "", filter: "auto", defaultHidden: true },
         { key: "five", label: "5 h", kind: "num", value: (a) => pctOf(a, "five_hour"), filter: false, render: (a) => { const v = pctOf(a, "five_hour"); return v === null ? "—" : <Chip tone={limitTone(v)}>{v}%</Chip>; } },
         { key: "week", label: "7 d", kind: "num", value: (a) => pctOf(a, "seven_day"), filter: false, render: (a) => { const v = pctOf(a, "seven_day"); return v === null ? "—" : <Chip tone={limitTone(v)}>{v}%</Chip>; } },
-        { key: "today", label: "Today", kind: "num", value: (a) => a.usage?.today.cost ?? 0, filter: false, render: (a) => `$${(a.usage?.today.cost ?? 0).toFixed(2)}` },
-        { key: "weekCost", label: "This week", kind: "num", value: (a) => a.usage?.week.cost ?? 0, filter: false, render: (a) => `$${(a.usage?.week.cost ?? 0).toFixed(2)}` },
+        { key: "today", label: "Today", kind: "num", value: (a) => a.usage?.today.cost ?? 0, filter: false, render: (a) => money(a.usage?.today.cost ?? 0) },
+        { key: "weekCost", label: "This week", kind: "num", value: (a) => a.usage?.week.cost ?? 0, filter: false, render: (a) => money(a.usage?.week.cost ?? 0) },
         { key: "used", label: "Used by", value: usedBy, filter: false, defaultHidden: true },
     ];
     return (
@@ -232,14 +234,14 @@ type IntegrationRow = { id: string; name: string; type: IntegrationType; status:
 
 const IntegrationTable = ({ settings, onOpen, onError }: { settings: Settings | null; onOpen: (id: string) => void; onError: (m: string) => void }) => {
     const [managers, setManagers] = useState<TaskManager[] | null>(null);
-    const [tokens, setTokens] = useState<TokenIntegration[] | null>(null);
+    const [tokenStates, setTokenStates] = useState<TokenIntegration[] | null>(null);
     const load = async (): Promise<void> => {
-        await Promise.all([api.taskManagers().then(setManagers), Promise.all(TOKEN_INTEGRATIONS.map((t) => api.tokenIntegration(t.id))).then(setTokens)]).catch((e: Error) => onError(e.message));
+        await Promise.all([api.taskManagers().then(setManagers), Promise.all(TOKEN_INTEGRATIONS.map((t) => api.tokenIntegration(t.id))).then(setTokenStates)]).catch((e: Error) => onError(e.message));
     };
     useEffect(() => { void load(); }, []);
     const rows: IntegrationRow[] = [
         ...(managers ?? []).map((m) => ({ id: `tm:${m.source}`, name: m.label, type: "task manager" as const, status: m.configured ? "configured" : "no token", ok: m.configured, usedBy: m.envs.join(", ") })),
-        ...(tokens ?? []).map((t) => ({ id: t.id, name: TOKEN_INTEGRATIONS.find((x) => x.id === t.id)!.name, type: "documents" as const, status: t.configured ? "configured" : "no token", ok: t.configured, usedBy: "" })),
+        ...(tokenStates ?? []).map((t) => ({ id: t.id, name: TOKEN_INTEGRATIONS.find((x) => x.id === t.id)!.name, type: "documents" as const, status: t.configured ? "configured" : "no token", ok: t.configured, usedBy: "" })),
         ...(settings
             ? [
                   { id: "notifications", name: "Notifications", type: "notifications" as const, status: settings.notifications.ntfyTopic ? "phone via ntfy" : "desktop only", ok: true, usedBy: "" },

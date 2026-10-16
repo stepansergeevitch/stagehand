@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
+import { errText } from "../format";
 import { api, type PoDetail } from "../api";
 import { Markdown } from "../Markdown";
 import { Button, Notice, Select } from "@vortex/ds";
-import { Nothing, errText } from "./parts";
+import { Nothing } from "./parts";
 
 type Props = { d: PoDetail; onError: (m: string) => void; send: (t: string) => void };
 

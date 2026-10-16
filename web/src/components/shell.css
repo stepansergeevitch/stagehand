@@ -59,7 +59,7 @@
 .page-header.sticky { position: sticky; top: 0; z-index: var(--z-sticky); background: var(--bg); padding-block: var(--sp-2); }
 .ph-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--ink-3); }
 .ph-crumb { display: inline-flex; align-items: center; gap: var(--sp-1); }
-.ph-crumb a { color: var(--ink-3); text-decoration: none; border-radius: var(--r-sm); }
+.ph-crumb a { display: inline-flex; align-items: center; color: var(--ink-3); text-decoration: none; border-radius: var(--r-sm); }
 .ph-crumb a:hover { color: var(--accent); text-decoration: underline; }
 .ph-crumb .icon { width: 12px; height: 12px; }
 .ph-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); min-height: var(--ctl-h); }
@@ -80,6 +80,7 @@
 .card.panel.tone-warn { --tone: var(--warn); } .card.panel.tone-bad { --tone: var(--bad); } .card.panel.tone-info { --tone: var(--info); }
 .card.panel.tone-wait { --tone: var(--wait); } .card.panel.tone-ok { --tone: var(--ok); }
 .card h2 .hint-tip, .section h2 .hint-tip { margin-left: var(--sp-1); }
+.page-header h1 .hint-tip { margin-left: var(--sp-2); vertical-align: middle; }
 
 .section { display: flex; flex-direction: column; gap: var(--sp-3); }
 .section-head { display: flex; align-items: center; gap: var(--sp-3); }
@@ -151,9 +152,8 @@ button.stat-tile:hover { border-color: var(--control-border); background: var(--
 }
 /* Touch targets: 44px on coarse pointers and phones (WCAG 2.5.5). Scoped to the app so the DS keeps its desktop density. */
 @media (max-width: 760px), (pointer: coarse) {
-    .shell .btn, .shell .tab, .shell .menu-item, .shell .sb-item, .shell .tb-search, .shell .usage-btn { min-height: var(--touch); }
+    .shell .btn, .shell .ph-crumb a, .shell .tab, .shell .menu-item, .shell .sb-item, .shell .tb-search, .shell .usage-btn { min-height: var(--touch); }
     .shell .btn-icon, .shell .btn-icon.btn-sm { width: var(--touch); }
-    .shell .btn-sm { min-height: 36px; }
     .shell input:not([type="checkbox"]):not([type="radio"]), .shell select, .shell textarea { min-height: var(--touch); font-size: 16px; }
     .shell input[type="checkbox"], .shell input[type="radio"] { width: 20px; height: 20px; }
 }

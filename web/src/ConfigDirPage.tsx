@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
+import { Loading } from "./components/Loading";
 import { api, type ClaudeMdFile, type ConfigDir, type ConfigDirRules, type Rules } from "./api";
 import { CheckField, EntityForm, EntityView, Field, ReadField, useDraft, useSaver } from "./components/EntityView";
 import { Section } from "./components/Panel";
-import { CodeArea, Loading } from "./SettingsParts";
-import { Button, Chip, Input } from "@vortex/ds";
+
+import { Button, Chip, CodeArea, Input } from "@vortex/ds";
 
 // One Claude config dir's entity view: what it contributes to every agent run (skills, hooks, agents, MCP servers) and
 // the commit/branch/PR rules Vortex enforces for environments using it.

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { errText } from "../format";
 import { api, poEnvIds, type Env, type PoDetail, type PoIssue, type PoTicket } from "../api";
 import { Markdown } from "../Markdown";
 import { DataTable, type DataColumn } from "../components/DataTable";
@@ -6,7 +7,8 @@ import { EntityForm, Field, ReadField, useDraft } from "../components/EntityView
 import { Section } from "../components/Panel";
 import { navigate } from "../routes";
 import { Button, Chip, Icon, Input, Notice, Select, Tabs, Textarea } from "@vortex/ds";
-import { Nothing, errText, since, when } from "./parts";
+import { Nothing, since } from "./parts";
+import { when } from "../format";
 
 type Props = { d: PoDetail; sel: string | null; ticketTab: string | undefined; onError: (m: string) => void; reload: () => void; send: (t: string) => void };
 

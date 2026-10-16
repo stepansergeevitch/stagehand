@@ -194,9 +194,10 @@ a.btn { text-decoration: none; }
 .icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ---------- Chip: a small status or label pill; a toned chip leads with a dot, so colour is never alone ---------- */
-.chip { display: inline-flex; align-items: center; gap: 6px; padding: 1px 9px; border-radius: var(--r-pill); font-family: var(--mono); font-size: var(--fs-xs); line-height: 1.5; background: var(--code); color: var(--ink-2); vertical-align: baseline; box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 14%, transparent); }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 1px 9px; border-radius: var(--r-pill); font-family: var(--sans); font-size: var(--fs-xs); line-height: 1.5; background: var(--code); color: var(--ink-2); vertical-align: baseline; box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 14%, transparent); }
 .chip.ok, .chip.warn, .chip.bad, .chip.wait, .chip.accent, .chip.info { color: var(--tone); background: var(--tone-soft); }
 .chip.ok::before, .chip.warn::before, .chip.bad::before, .chip.wait::before, .chip.accent::before, .chip.info::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.chip.chip-mono { font-family: var(--mono); }
 .ok { --tone: var(--ok); --tone-soft: var(--ok-soft); }
 .warn { --tone: var(--warn); --tone-soft: var(--warn-soft); }
 .bad { --tone: var(--bad); --tone-soft: var(--bad-soft); }
@@ -232,6 +233,7 @@ input.invalid:focus-visible, select.invalid:focus-visible, textarea.invalid:focu
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 0 0 var(--sp-4); overflow-x: auto; }
 .tab { position: relative; white-space: nowrap; border: 0; border-radius: var(--r-sm) var(--r-sm) 0 0; background: transparent; padding: 8px 14px; margin-bottom: -1px; color: var(--ink-3); font: inherit; font-weight: 500; cursor: pointer; transition: color var(--dur) var(--ease), background-color var(--dur) var(--ease); }
 .tab::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 2px; background: var(--brand-grad); transform: scaleX(0); transition: transform 180ms var(--ease); }
+.tab .badge { margin-left: var(--sp-2); }
 .tab:hover { color: var(--ink); background: var(--code); }
 .tab.active { color: var(--ink); }
 .tab.active::after { transform: scaleX(1); }
@@ -309,6 +311,8 @@ input.invalid:focus-visible, select.invalid:focus-visible, textarea.invalid:focu
 .menu-item.danger { color: var(--bad); }
 .menu-item:disabled { opacity: .5; cursor: not-allowed; }
 .menu-item .kbd { margin-left: auto; }
+.more-menu { position: relative; display: inline-flex; }
+.more-menu-list { position: absolute; right: 0; top: calc(100% + var(--sp-1)); z-index: 30; }
 .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
 /* ---------- Avatar ---------- */
@@ -323,3 +327,7 @@ input.invalid:focus-visible, select.invalid:focus-visible, textarea.invalid:focu
 .fnd-swatch i { display: block; height: 36px; border-radius: var(--r-md); border: 1px solid var(--line-strong); }
 .fnd-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-4); }
 .fnd-box { width: 64px; height: 44px; background: var(--raised); border: 1px solid var(--line-strong); display: grid; place-items: center; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+
+/* ---------- CodeArea: commands and machine text ---------- */
+textarea.code-area { min-height: 0; padding: var(--sp-2) var(--sp-3); font-family: var(--mono); font-size: var(--fs-sm); line-height: 1.55; tab-size: 4; white-space: pre; overflow: auto; background: var(--field-bg); }
+textarea.code-area.prose { white-space: pre-wrap; overflow-wrap: anywhere; }

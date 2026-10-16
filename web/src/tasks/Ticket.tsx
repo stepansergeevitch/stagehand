@@ -4,7 +4,8 @@ import { api, type PoReview, type TaskDetail, type Ticket, type TicketAttachment
 import { AgentInput, usePendingFiles } from "../AgentInput";
 import { Markdown } from "../Markdown";
 import { Panel } from "../components/Panel";
-import { fmtBytes, Lightbox, Sub } from "./common";
+import { Lightbox, Sub } from "./common";
+import { bytes as fmtBytes } from "../format";
 
 // The Details tab's ticket part: your instructions for the agents, the Product Owner's brief, and the ticket as fetched.
 

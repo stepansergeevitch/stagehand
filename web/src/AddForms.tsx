@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { splitCsv } from "./format";
 import { api, type Account, type ConfigDir } from "./api";
 import { Field } from "./components/EntityView";
 import { Button, Input, Notice, Select } from "@vortex/ds";
@@ -6,7 +7,6 @@ import "./settings.css";
 
 // The create dialogs' forms (rendered inside a Modal): label above each input, the submit pinned at the bottom.
 
-const splitRepos = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
 
 export const EnvForm = ({
     accounts,
@@ -26,7 +26,7 @@ export const EnvForm = ({
     const [repos, setRepos] = useState("");
     const [ticketSource, setTicketSource] = useState<"clickup" | "linear">("clickup");
     const [busy, setBusy] = useState(false);
-    const repoList = splitRepos(repos);
+    const repoList = splitCsv(repos);
     const submit = async (): Promise<void> => {
         setBusy(true);
         try {

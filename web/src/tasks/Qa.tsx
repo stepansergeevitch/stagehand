@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Badge, Button, Chip, Notice } from "@vortex/ds";
+import { Badge, Button, Chip, Hint, Notice } from "@vortex/ds";
 import { api, stageOf, STAGE_ORDER, type QaChange, type QaPass, type TaskDetail } from "../api";
 import { KeyValue } from "../components/KeyValue";
 import { Panel } from "../components/Panel";
@@ -28,7 +28,7 @@ export const QaTests = ({ taskId, design, before }: { taskId: string; design: No
                     <details className="scenario" key={s.id} open>
                         <summary>
                             <h3>
-                                <Chip tone="accent">{s.id}</Chip>{s.kind === "api" && <Chip>API</Chip>}<b className="scenario-title">{s.title}</b> <code>{s.url}</code> <Chip className="persona">{s.persona}</Chip>{" "}
+                                <Chip tone="accent" mono>{s.id}</Chip>{s.kind === "api" && <Chip>API</Chip>}<b className="scenario-title">{s.title}</b> <code>{s.url}</code> <Chip className="persona">{s.persona}</Chip>{" "}
                                 {s.baseline === false ? <Chip title="The journey does not exist before the change: the baseline records it as a failure by construction">new surface — no baseline</Chip> : chip(b?.outcome)}
                             </h3>
                         </summary>
@@ -129,7 +129,7 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                 <details className="scenario" key={s.id} open>
                     <summary>
                         <h3>
-                            <Chip tone="accent">{s.id}</Chip>{s.kind === "api" && <Chip>API</Chip>}<span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}{b?.superseded && <Chip tone="warn" title={`The scenario changed after the baseline pass (change ${b.superseded}); this before result no longer pairs with the after pass (the baseline runs only in the design stage)`}>baseline superseded</Chip>}</span> <span>after {chip(a?.outcome)}</span>
+                            <Chip tone="accent" mono>{s.id}</Chip>{s.kind === "api" && <Chip>API</Chip>}<span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}{b?.superseded && <Chip tone="warn" title={`The scenario changed after the baseline pass (change ${b.superseded}); this before result no longer pairs with the after pass (the baseline runs only in the design stage)`}>baseline superseded</Chip>}</span> <span>after {chip(a?.outcome)}</span>
                             {a?.jev && <Chip tone={a.jev.verdict === "pass" ? "ok" : "warn"} title={`Jev's grade of the runner's observation against the asserts (pass needs 85); the runner said ${a.jev.runner}`}>Jev {a.jev.grade}/100</Chip>}
                             {(suspicious(b) || suspicious(a)) && <Chip tone="warn" title="The runner marked this pass but its observation mentions an error — check the screenshots">Observation mentions an error</Chip>}
                         </h3>
@@ -189,7 +189,7 @@ export const QaEvidence = ({ task, design, before, after, history, currentIdx, o
     >
         {history.length > 0 && (
             <Sub title={`Earlier automatic fix attempts (${history.length})`} open={false}>
-                <p className="quiet">Manual QA failed and was sent straight back to Implementation these times before the current result; the agent saw this same trail.</p>
+                <Hint text="Manual QA failed and was sent straight back to Implementation these times before the current result; the agent saw this same trail." />
                 <KeyValue
                     items={history.map(({ attempt, data }) => ({
                         label: `Attempt ${attempt}`,

@@ -1,4 +1,3 @@
-.stage-name { font-size: var(--fs-sm); color: var(--ink-2); white-space: nowrap; }
 .stage-progress { display: inline-flex; gap: 2px; align-items: center; vertical-align: middle; }
 .stage-progress i { width: 10px; height: 4px; border-radius: 2px; background: var(--line-strong); }
 .stage-progress i.past { background: var(--ink-3); }

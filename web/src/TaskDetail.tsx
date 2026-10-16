@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Badge, Button, Chip, EmptyState, Icon, MenuItem, Notice, Select, Tab, TabList, Tabs } from "@vortex/ds";
+import { money } from "./format";
+import { Badge, Button, Chip, EmptyState, Hint, Icon, MenuItem, MoreMenu, Notice, Select, Tab, TabList, Tabs } from "@vortex/ds";
 import { api, baseLabel, checkOutcome, envRepos, isApprovalGateCheck, labelsOf, parseChecks, pendingQuestions, poEnvIds, prRepos, prStateOf, repoColorClass, repoName, STAGE_LABEL, STAGE_ORDER, stageOf, taskLabel, type Account, type Env, type PrComment, type PrComments, type ProductOwner, type Stage, type TaskDetail } from "./api";
 import { anchorOf } from "./api";
 import { LabelChips, LabelEditor } from "./Labels";
@@ -12,7 +13,6 @@ import { TaskCost } from "./TaskCost";
 import { AgentInput } from "./AgentInput";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { Field, ReadField } from "./components/EntityView";
-import { MoreMenu } from "./components/MoreMenu";
 import { PageHeader } from "./components/PageHeader";
 import { Panel } from "./components/Panel";
 import { StageProgress, TaskStatusChip, taskState } from "./components/status";
@@ -459,7 +459,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
         { key: "last", label: "Last event", kind: "label", value: (r) => r.error ?? r.last_event ?? "", filter: false, render: (r) => <span className={r.error ? "run-error" : undefined}>{r.error ?? r.last_event ?? ""}</span> },
         { key: "model", label: "Model", value: (r) => r.model ?? "", filter: "auto", defaultHidden: true },
         { key: "turns", label: "Turns", kind: "num", value: (r) => r.num_turns ?? 0 },
-        { key: "cost", label: "Cost", kind: "num", value: (r) => r.cost_usd ?? 0, render: (r) => (r.cost_usd ? `$${r.cost_usd.toFixed(2)}` : "") },
+        { key: "cost", label: "Cost", kind: "num", value: (r) => r.cost_usd ?? 0, render: (r) => (r.cost_usd ? money(r.cost_usd) : "") },
     ];
     const details = (
         <>
@@ -540,19 +540,19 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     {failingPrs.length > 0 && (
                         <div className="actions tight">
                             {failingPrs.map((r) => <Button variant="primary" key={r.repo} onClick={() => onAction(() => api.fixCi(task.id, r.repo))}>Fix CI{failingPrs.length > 1 || r.repo ? ` on ${repoName(r.repo)}` : ""}</Button>)}
-                            <span className="quiet">The agent proposes a fix and commits it locally. Nothing is pushed until you review the diff and approve.</span>
+                            <Hint text="The agent proposes a fix and commits it locally. Nothing is pushed until you review the diff and approve." />
                         </div>
                     )}
                     {/log ?in/i.test(task.status_line ?? "") && !/waiting for you/.test(task.status_line ?? "") && (
                         <div className="actions tight">
                             <Button variant="primary" onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA</Button>
-                            <span className="quiet">Opens the app in the QA Chrome profile. You log in there, Vortex watches the tab, then re-runs the stage. No agent, no cost.</span>
+                            <Hint text="Opens the app in the QA Chrome profile. You log in there, Vortex watches the tab, then re-runs the stage. No agent, no cost." />
                         </div>
                     )}
                     {/Relaunch Chrome for QA/.test(task.status_line ?? "") && (
                         <div className="actions tight">
                             <Button variant="primary" onClick={() => onAction(() => api.relaunchChrome(task.id))}>Relaunch Chrome for QA</Button>
-                            <span className="quiet">Quits Chrome and reopens it with the switches that keep a covered window rendering (your tabs restore), then retries this stage. Needed once per Chrome start.</span>
+                            <Hint text="Quits Chrome and reopens it with the switches that keep a covered window rendering (your tabs restore), then retries this stage. Needed once per Chrome start." />
                         </div>
                     )}
                 </Notice>

@@ -1,24 +1,14 @@
 import { useState, type ReactNode } from "react";
+import { errText } from "../format";
 import { api, type Env, type PalaceHit } from "../api";
 import { Markdown } from "../Markdown";
 import { CheckboxSelect } from "../components/CheckboxSelect";
 import { Section } from "../components/Panel";
-import { Button, Chip, EmptyState, Icon, Input, Skeleton, Textarea } from "@vortex/ds";
+import { Button, Chip, EmptyState, Icon, Input, Textarea } from "@vortex/ds";
 
 // Small pieces the Product pages share.
 
 export const PHASE_LABEL = { context: "Context", design: "Design", tickets: "Tickets", approved: "Approved", live: "Live" } as const;
-
-export const errText = (e: unknown): string => String((e as Error).message ?? e);
-
-// Placeholder lines while a page loads.
-export const Loading = () => (
-    <div className="po-loading" role="status" aria-label="Loading">
-        <Skeleton height={16} width="40%" />
-        <Skeleton height={14} width="90%" />
-        <Skeleton height={14} width="75%" />
-    </div>
-);
 
 // A short "nothing here" line inside a tab.
 export const Nothing = ({ title, children, action }: { title: ReactNode; children?: ReactNode; action?: ReactNode }) => (
@@ -110,4 +100,3 @@ export const since = (iso: string): string => {
     return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
 };
 
-export const when = (iso: string): string => new Date(iso).toLocaleString();

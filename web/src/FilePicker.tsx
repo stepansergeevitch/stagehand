@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 import { api, type SharedFile } from "./api";
+import { bytes as fmtBytes } from "./format";
 import { Button, Chip, Icon, IconButton, Input } from "@vortex/ds";
 import "./agent-input.css";
 
@@ -36,7 +37,6 @@ export const usePendingFiles = () => {
 
 export type PendingFiles = ReturnType<typeof usePendingFiles>;
 
-const fmtBytes = (n: number): string => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} kB` : `${n} B`);
 
 // A thumbnail for an image still in memory; the object URL is released when the chip goes.
 const Thumb = ({ file }: { file: File }) => {

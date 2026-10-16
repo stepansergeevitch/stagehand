@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import "./terminal.css";
 
 export const Terminal = ({ session }: { session: string }) => {
     const ref = useRef<HTMLDivElement>(null);

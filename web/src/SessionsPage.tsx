@@ -3,12 +3,11 @@ import { accountUsableWith, api, envRepos, modelLabel, type Account, type Config
 import { DiffView, sessionSource } from "./DiffView";
 import { LazyTerminal } from "./LazyTerminal";
 import type { DiffRoute } from "./routes";
-import { Button, Checkbox, Chip, EmptyState, Hint, Icon, Input, MenuItem, Select, Skeleton } from "@vortex/ds";
+import { Button, Checkbox, Chip, EmptyState, Hint, Icon, Input, MenuItem, MoreMenu, Select, Skeleton } from "@vortex/ds";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { EntityView } from "./components/EntityView";
 import { KeyValue } from "./components/KeyValue";
 import { Modal } from "./components/Modal";
-import { MoreMenu } from "./components/MoreMenu";
 import { Panel } from "./components/Panel";
 import { Toolbar } from "./components/Toolbar";
 import { age } from "./components/status";
@@ -228,7 +227,7 @@ const SessionView = ({ s, env, settings, view, diff, busy, onNavigate, onDiff, o
                 <>
                     <Chip tone={s.alive ? "info" : "neutral"}>{s.alive ? "Open" : "Closed"}</Chip>
                     <Chip>{s.env_name}</Chip>
-                    {s.branch && <Chip>{s.branch}</Chip>}
+                    {s.branch && <Chip mono>{s.branch}</Chip>}
                 </>
             }
             actions={

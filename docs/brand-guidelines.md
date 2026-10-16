@@ -101,7 +101,9 @@ Rules:
 - Radii: `--r-sm` 4, `--r-md` 6 (controls), `--r-lg` 10 (cards), `--r-pill` (chips, pill tabs).
 - Depth: `--shadow-sm` on cards, `--shadow-md` on menus and dialogs. Controls are 30px tall (`--ctl-h`), 24px small.
 - Icons: the `Icon` set only, 16px stroke icons in `currentColor`.
-- Pages are built from `@vortex/ds` (Button, Chip, Card, Input, Select, Textarea, Tabs, Notice, Icon, Wordmark) and the shared components in `web/src/components/`; a page never restyles them.
+- Pages are built from `@vortex/ds` (Button, IconButton, Chip, Badge, Card, Input, Select, Textarea, CodeArea, Tabs, Menu, MoreMenu, Notice, Icon, Wordmark) and the shared components in `web/src/components/`; a page never restyles them.
+
+- DS conventions: a generic primitive goes into `packages/vortex-ds/src`, is exported from `index.ts`, styled with tokens in `styles.css`, and appears on the DS preview (Claude Design) with its variants. `Button` takes `leadingIcon` for a glyph before the label (`icon` / `IconButton` is the icon-only square). `Chip` renders sans for plain labels; `mono` marks ids, branches and other machine text. `Tab` labels may hold a `Badge` (spaced by the DS). `MoreMenu` is the one `⋯` menu (rare and destructive actions; items close it). `CodeArea` is the one text area for commands and machine text. `money` and counts group thousands ($68,779).
 
 ## Changelog
 

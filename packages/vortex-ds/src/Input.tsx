@@ -17,3 +17,21 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
     <textarea ref={ref} className={cls(invalid, className)} aria-invalid={invalid || undefined} {...rest} />
 ));
 Textarea.displayName = "Textarea";
+
+const CODE_ROWS = { sm: 3, md: 6, lg: 12 } as const;
+
+// A text area for commands and other code or machine text: monospace, no wrapping, no autocorrect. `size` is how many
+// lines it shows before it scrolls; `prose` wraps long lines (markdown, rules written in sentences).
+export const CodeArea = forwardRef<HTMLTextAreaElement, { size?: keyof typeof CODE_ROWS; prose?: boolean } & TextareaHTMLAttributes<HTMLTextAreaElement> & { invalid?: boolean }>(({ size = "sm", prose, className, ...rest }, ref) => (
+    <Textarea
+        ref={ref}
+        className={["code-area", prose && "prose", className].filter(Boolean).join(" ")}
+        rows={CODE_ROWS[size]}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        {...(prose ? {} : { wrap: "off" })}
+        {...rest}
+    />
+));
+CodeArea.displayName = "CodeArea";

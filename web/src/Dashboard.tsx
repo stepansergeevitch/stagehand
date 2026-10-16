@@ -7,7 +7,7 @@ import { PageHeader } from "./components/PageHeader";
 import { Panel } from "./components/Panel";
 import { StatRow, StatTile } from "./components/StatTile";
 import { KeyValue } from "./components/KeyValue";
-import { age, StageProgress, TaskStatusChip, taskState } from "./components/status";
+import { age, StageCell, TaskStatusChip, taskState } from "./components/status";
 
 // Overview: what needs me now, then what is moving. Every task that is not finished, in one table sorted by urgency
 // (needs you, blocked, failed, rate limited, running, waiting on GitHub, idle); finished and stopped tasks live on the
@@ -33,7 +33,7 @@ export const Dashboard = ({ envs, tasks, readiness, onOpen, onOpenEnv }: { envs:
         { key: "task", label: "Task", value: (t) => taskLabel(t), filter: false, render: (t) => <b>{taskLabel(t)}</b> },
         { key: "title", label: "Title", kind: "label", value: (t) => t.title ?? "", filter: false },
         { key: "env", label: "Environment", value: (t) => envName.get(t.env_id) ?? "", filter: "auto" },
-        { key: "stage", label: "Stage", value: (t) => STAGE_LABEL[t.stage], filter: "auto", render: (t) => <StageProgressCell t={t} /> },
+        { key: "stage", label: "Stage", value: (t) => STAGE_LABEL[t.stage], filter: "auto", render: (t) => <StageCell task={t} /> },
         { key: "latest", label: "Latest", value: (t) => t.status_line ?? "", filter: false, defaultHidden: true },
         { key: "labels", label: "Labels", value: (t) => labelsOf(t).map((l) => l.text).join(", "), filter: false, defaultHidden: true, render: (t) => <LabelChips labels={labelsOf(t)} /> },
         { key: "age", label: "Updated", kind: "num", value: (t) => Date.now() - new Date(t.updated_at).getTime(), sortable: true, render: (t) => age(t.updated_at) },
@@ -72,9 +72,3 @@ export const Dashboard = ({ envs, tasks, readiness, onOpen, onOpenEnv }: { envs:
     );
 };
 
-const StageProgressCell = ({ t }: { t: Task }) => (
-    <span className="stage-cell">
-        {STAGE_LABEL[t.stage]}
-        <StageProgress task={t} />
-    </span>
-);

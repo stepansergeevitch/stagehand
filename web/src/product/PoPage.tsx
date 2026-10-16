@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Loading } from "../components/Loading";
+import { errText } from "../format";
 import { api, type PoDetail, type PoPhase } from "../api";
 import { Markdown } from "../Markdown";
 import { CorrectionsTab, EventsTab, QuestionsTab } from "../PoJournal";
 import { EntityView } from "../components/EntityView";
-import { MoreMenu } from "../components/MoreMenu";
 import { Panel } from "../components/Panel";
 import { poBus } from "../poBus";
 import type { PoTab } from "../routes";
-import { Badge, Button, Chip, Icon, MenuItem, Textarea } from "@vortex/ds";
+import { Badge, Button, Chip, Icon, MenuItem, MoreMenu, Textarea } from "@vortex/ds";
 import { ContextTab } from "./ContextTab";
 import { DesignTab } from "./DesignTab";
 import { TicketsTab } from "./TicketsTab";
-import { Loading, PHASE_LABEL, errText } from "./parts";
+import { PHASE_LABEL } from "./parts";
 
 const PHASES: PoPhase[] = ["context", "design", "tickets", "approved", "live"];
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import "./terminal.css";
 
 // xterm (and its fit addon) is loaded only when a terminal is actually shown: it is heavy and it is the one dependency
 // with browser-specific requirements, so a phone that never opens a terminal never pays for it or trips over it.

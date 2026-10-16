@@ -1,17 +1,19 @@
 import { Fragment, useEffect, useState } from "react";
+import { Loading } from "./components/Loading";
+import { errText } from "./format";
+import { money, tokens } from "./format";
 import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type AccountModels, type Env, type ModelOperation, type ModelStage, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
 import { CheckField, EntityForm, EntityView, Field, Hint, ReadField, useDraft, useSaver } from "./components/EntityView";
 import { Section } from "./components/Panel";
 import { StatRow, StatTile } from "./components/StatTile";
-import { ActionMenu, limitTone, Loading, MenuItem } from "./SettingsParts";
-import { Button, Chip, EmptyState, Input, Select, type Tone } from "@vortex/ds";
+import { limitTone } from "./SettingsParts";
+import { Button, Chip, EmptyState, Input, MenuItem, MoreMenu, Select, type Tone } from "@vortex/ds";
 
 // The entity views of the Configuration pages that are not big enough for a file of their own: an AI account, an
 // integration, the Prompter (components/EntityView.tsx).
 
 // The outcome of the last action on the page (Verify, Test, …); `pending` while it runs.
 type Outcome = { ok: boolean; text: string; pending?: boolean } | null;
-const errText = (e: unknown): string => String((e as Error).message ?? e);
 
 // ---------- AI account ----------
 
@@ -35,7 +37,6 @@ const MODEL_OPERATIONS: Array<{ key: ModelOperation; label: string; hint: string
     { key: "git_edit", label: "Remove a commit", hint: "History edits from Code changes." },
 ];
 
-const fmtTokens = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : String(n));
 export const authLabel = (a: Account): string => (a.setting_up ? "token setup in progress" : a.has_token ? "token" : a.logged_in ? "legacy login" : "no auth");
 // Working = ok, legacy login = warn (it only runs in its own config dir), nothing = bad.
 export const authTone = (a: Account): Tone => (a.setting_up ? "wait" : a.has_token ? "ok" : a.logged_in ? "warn" : "bad");
@@ -73,8 +74,8 @@ const AccountStatusTab = ({ a, envs }: { a: Account; envs: Env[] }) => {
             <StatRow>
                 <StatTile label="5-hour window" value={pct(five)} tone={limitTone(pctNum(five))} sub="used" />
                 <StatTile label="7-day window" value={pct(week)} tone={limitTone(pctNum(week))} sub="used" />
-                <StatTile label="Today" value={`$${(a.usage?.today.cost ?? 0).toFixed(2)}`} sub={`${fmtTokens(a.usage?.today.tokens ?? 0)} tokens`} />
-                <StatTile label="This week" value={`$${(a.usage?.week.cost ?? 0).toFixed(2)}`} sub={`${fmtTokens(a.usage?.week.tokens ?? 0)} tokens`} />
+                <StatTile label="Today" value={money(a.usage?.today.cost ?? 0)} sub={`${tokens(a.usage?.today.tokens ?? 0)} tokens`} />
+                <StatTile label="This week" value={money(a.usage?.week.cost ?? 0)} sub={`${tokens(a.usage?.week.tokens ?? 0)} tokens`} />
             </StatRow>
             <Section title="Access">
                 <ReadField label="Auth"><Chip tone={authTone(a)}>{authLabel(a)}</Chip></ReadField>
@@ -177,7 +178,7 @@ export const AccountPage = ({ a, envs, tasks, settings, tab, onTab, onBack, onCh
             actions={
                 <>
                     {noAuth ? <Button variant="primary" onClick={setupToken}>Set up token</Button> : <Button variant="primary" disabled={busy !== null} onClick={verify}>{busy === "verify" ? "Checking…" : "Verify"}</Button>}
-                    <ActionMenu>
+                    <MoreMenu>
                         {(close) => (
                             <>
                                 {!noAuth && <MenuItem onClick={() => { close(); setupToken(); }}>{a.has_token ? "Renew token" : "Set up token"}</MenuItem>}
@@ -189,7 +190,7 @@ export const AccountPage = ({ a, envs, tasks, settings, tab, onTab, onBack, onCh
                                 {a.plan !== "enterprise" && a.logged_in === 1 && <MenuItem disabled={busy !== null || a.refreshing_limits} onClick={() => { close(); void check("limits", "Refreshing the rate-limit windows (one tiny Sonnet turn)…", () => api.refreshLimits(a.id)); }}>{a.refreshing_limits ? "Refreshing limits…" : "Refresh limits"}</MenuItem>}
                             </>
                         )}
-                    </ActionMenu>
+                    </MoreMenu>
                     <Button variant="danger" disabled={used > 0} title={used > 0 ? "An environment or task still uses it" : undefined} onClick={() => { if (confirm(`Forget account ${a.name} and its stored token?`)) void run("delete", async () => { await api.deleteAccount(a.id); await onChanged(); onBack(); }); }}>Delete</Button>
                 </>
             }
@@ -266,11 +267,11 @@ const JevForm = ({ settings, onChanged, onError }: { settings: Settings; onChang
 
 export const IntegrationPage = ({ id, settings, tab, onTab, onBack, onChanged, onError }: { tab: string | undefined; onTab: (t: string) => void; id: string; settings: Settings | null; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
     const [managers, setManagers] = useState<TaskManager[] | null>(null);
-    const [tokens, setTokens] = useState<TokenIntegration[] | null>(null);
+    const [tokenStates, setTokenStates] = useState<TokenIntegration[] | null>(null);
     const [notice, setNotice] = useState<Outcome>(null);
     const [busy, setBusy] = useState(false);
     const load = async (): Promise<void> => {
-        await Promise.all([api.taskManagers().then(setManagers), Promise.all(TOKEN_INTEGRATIONS.map((t) => api.tokenIntegration(t.id))).then(setTokens)]).catch((e: Error) => onError(e.message));
+        await Promise.all([api.taskManagers().then(setManagers), Promise.all(TOKEN_INTEGRATIONS.map((t) => api.tokenIntegration(t.id))).then(setTokenStates)]).catch((e: Error) => onError(e.message));
     };
     useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
     const attempt = async (start: string, fn: () => Promise<Outcome>) => {
@@ -299,7 +300,7 @@ export const IntegrationPage = ({ id, settings, tab, onTab, onBack, onChanged, o
     }
     const tokenDef = TOKEN_INTEGRATIONS.find((t) => t.id === id);
     if (tokenDef) {
-        const token = tokens?.find((t) => t.id === tokenDef.id);
+        const token = tokenStates?.find((t) => t.id === tokenDef.id);
         if (!token) return <Loading />;
         return (
             <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id={tokenDef.name} meta={state(token.configured)}

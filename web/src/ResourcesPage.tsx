@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, type Resource, type ResourceEvent, type ResourceKind, type ResourcePolicies, type ResourceSnapshot } from "./api";
-import { hours } from "./Analytics";
+import { hours, megabytes } from "./format";
 import { Badge, Button, Chip, EmptyState, Icon, Input, Notice, Skeleton, Tabs, type Tone } from "@vortex/ds";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { CheckField, EntityForm, Field, useDraft } from "./components/EntityView";
@@ -13,7 +13,6 @@ import "./resources.css";
 // each costs (RSS, CPU, disk), who owns it, what the policy will do with it and when. Three tabs: the running
 // resources (tiles and one table, stop and pin per row), the Policies, and the Recent actions of the reaper.
 
-const gb = (mb: number): string => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`);
 const ago = (ms: number | null): string => (ms == null ? "—" : ms < 60_000 ? "now" : hours(ms));
 const since = (ms: number): string => (ms < 60_000 ? "just now" : `${hours(ms)} ago`);
 const KIND_LABEL: Record<ResourceKind, string> = {
@@ -91,9 +90,9 @@ const Running = ({ rows, busy, act }: { rows: Resource[]; busy: string | null; a
         { key: "ownerStatus", label: "Owner status", value: ownerStatus, render: (r) => ownerStatus(r) || <span className="res-quiet">—</span>, defaultHidden: true },
         { key: "what", label: "What", kind: "label", value: (r) => r.label, render: (r) => <b title={r.top ?? undefined}>{r.label}</b>, filter: false },
         { key: "where", label: "Where", value: (r) => [r.tmux, r.pid != null ? `pid ${r.pid}` : "", r.port != null ? `:${r.port}` : "", r.path ?? ""].filter(Boolean).join(" "), render: (r) => <Where r={r} />, filter: false, defaultHidden: true },
-        { key: "memory", label: "Memory", kind: "num", value: (r) => (r.procs ? r.rssMb : null), render: (r) => (r.procs ? gb(r.rssMb) : "—") },
+        { key: "memory", label: "Memory", kind: "num", value: (r) => (r.procs ? r.rssMb : null), render: (r) => (r.procs ? megabytes(r.rssMb) : "—") },
         { key: "cpu", label: "CPU", kind: "num", value: (r) => (r.procs ? r.cpuPct : null), render: (r) => (r.procs ? `${r.cpuPct}%` : "—") },
-        { key: "disk", label: "Disk", kind: "num", value: (r) => r.diskMb, render: (r) => (r.diskMb != null ? gb(r.diskMb) : r.kind === "worktree" || r.kind === "database" ? <span className="res-quiet">measuring…</span> : "—") },
+        { key: "disk", label: "Disk", kind: "num", value: (r) => r.diskMb, render: (r) => (r.diskMb != null ? megabytes(r.diskMb) : r.kind === "worktree" || r.kind === "database" ? <span className="res-quiet">measuring…</span> : "—") },
         { key: "age", label: "Age", kind: "num", value: (r) => r.ageMs, render: (r) => ago(r.ageMs), defaultHidden: true },
         { key: "idle", label: "Idle", kind: "num", value: (r) => r.idleMs, render: (r) => ago(r.idleMs), hint: WORKTREE_IDLE_HINT },
         { key: "policy", label: "Policy", value: verdictOf, render: (r) => <Verdict r={r} /> },
@@ -131,7 +130,7 @@ const Events = ({ events }: { events: ResourceEvent[] }) => {
         { key: "task", label: "Task", value: (e) => (e.task_id ? e.task_id.slice(0, 8) : ""), render: (e) => (e.task_id ? <code>{e.task_id.slice(0, 8)}</code> : "—"), filter: false },
         { key: "action", label: "Action", value: (e) => e.action },
         { key: "why", label: "Why", value: (e) => e.reason, filter: false },
-        { key: "rss", label: "Memory", kind: "num", value: (e) => e.rss_mb, render: (e) => (e.rss_mb != null ? gb(e.rss_mb) : "—") },
+        { key: "rss", label: "Memory", kind: "num", value: (e) => e.rss_mb, render: (e) => (e.rss_mb != null ? megabytes(e.rss_mb) : "—") },
     ], []);
     return (
         <DataTable
@@ -281,10 +280,10 @@ export const ResourcesPage = ({ tab: tabArg, onTab: setTab, onError }: { tab: st
                         </Notice>
                     )}
                     <StatRow>
-                        <StatTile icon="cpu" tone={ramTone} label="Host memory" value={`${gb(h.usedMb)} used`} sub={`${gb(h.availableMb)} available of ${gb(h.totalMb)} · ${gb(h.compressedMb)} compressed`} />
-                        <StatTile icon="layers" tone={swapTone} label="Swap" value={gb(h.swapUsedMb)} sub={`of ${gb(h.swapTotalMb)}`} />
-                        <StatTile icon="server" label="Vortex processes" value={gb(snap.vortex.rssMb)} sub={`${snap.vortex.procs} processes · ${snap.vortex.runs} agent run${snap.vortex.runs === 1 ? "" : "s"} · ${snap.vortex.browsers} browser${snap.vortex.browsers === 1 ? "" : "s"} · dev servers for ${snap.vortex.devServerTasks} of ${snap.policies.maxDevServerTasks} tasks`} />
-                        <StatTile icon="folder" tone={diskTone} label="Host storage" value={d ? `${gb(d.freeMb)} free` : "—"} sub={d ? `of ${gb(d.totalMb)} (${Math.round((1 - d.freeMb / d.totalMb) * 100)}% used) · worktrees ${gb(worktreeDisk)}` : "Not reported by this server"} />
+                        <StatTile icon="cpu" tone={ramTone} label="Host memory" value={`${megabytes(h.usedMb)} used`} sub={`${megabytes(h.availableMb)} available of ${megabytes(h.totalMb)} · ${megabytes(h.compressedMb)} compressed`} />
+                        <StatTile icon="layers" tone={swapTone} label="Swap" value={megabytes(h.swapUsedMb)} sub={`of ${megabytes(h.swapTotalMb)}`} />
+                        <StatTile icon="server" label="Vortex processes" value={megabytes(snap.vortex.rssMb)} sub={`${snap.vortex.procs} processes · ${snap.vortex.runs} agent run${snap.vortex.runs === 1 ? "" : "s"} · ${snap.vortex.browsers} browser${snap.vortex.browsers === 1 ? "" : "s"} · dev servers for ${snap.vortex.devServerTasks} of ${snap.policies.maxDevServerTasks} tasks`} />
+                        <StatTile icon="folder" tone={diskTone} label="Host storage" value={d ? `${megabytes(d.freeMb)} free` : "—"} sub={d ? `of ${megabytes(d.totalMb)} (${Math.round((1 - d.freeMb / d.totalMb) * 100)}% used) · worktrees ${megabytes(worktreeDisk)}` : "Not reported by this server"} />
                     </StatRow>
                     <Running rows={snap.resources} busy={busy} act={act} />
                 </>

@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
+import { Loading } from "./components/Loading";
+import { splitCsv } from "./format";
 import { accountOrderOf, accountUsableWith, api, envRepos, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, taskDbConfigOf, type Account, type AutopilotRules, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type Task, type TaskDbConfig } from "./api";
 import { CheckField, EntityForm, EntityView, Field, Hint, ReadField, useDraft, useSaver } from "./components/EntityView";
 import { Section } from "./components/Panel";
-import { AddRow, CodeArea, Loading, RowEditor } from "./SettingsParts";
-import { Button, Checkbox, Chip, IconButton, Input, Notice, Select } from "@vortex/ds";
+import { AddRow, RowEditor } from "./SettingsParts";
+import { Button, Checkbox, Chip, CodeArea, IconButton, Input, Notice, Select } from "@vortex/ds";
 
 // An environment's entity view: one tab per area of its configuration (components/EntityView.tsx).
 
-const splitRepos = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
 const joinRepos = (json: string | null): string => {
     try {
         const v: unknown = json ? JSON.parse(json) : [];
@@ -36,7 +37,7 @@ const GeneralTab = ({ env, envs, save, saving }: Common & { envs: Env[] }) => {
     const d = useDraft(() => ({ name: env.name, repos: joinRepos(env.repos), baseBranch: env.base_branch, ticketSource: env.ticket_source as "clickup" | "linear", dependsOn: env.depends_on_env_id ?? "" }), [env]);
     const v = d.value;
     return (
-        <EntityForm dirty={d.dirty} saving={saving === "general"} onDiscard={d.reset} onSave={() => save("general", { name: v.name, baseBranch: v.baseBranch, repos: splitRepos(v.repos).length ? splitRepos(v.repos) : null, ticketSource: v.ticketSource, dependsOnEnvId: v.dependsOn || null })}>
+        <EntityForm dirty={d.dirty} saving={saving === "general"} onDiscard={d.reset} onSave={() => save("general", { name: v.name, baseBranch: v.baseBranch, repos: splitCsv(v.repos).length ? splitCsv(v.repos) : null, ticketSource: v.ticketSource, dependsOnEnvId: v.dependsOn || null })}>
             <ReadField label="Path" hint="Where the environment's checkout lives; set when it was added."><code>{env.path}</code></ReadField>
             <Field label="Name"><Input value={v.name} onChange={(e) => d.patch({ name: e.target.value })} /></Field>
             <Field label="Sub-repositories" hint="Comma-separated directories of the path that are git repositories. Empty: the path itself is the git repository."><Input value={v.repos} onChange={(e) => d.patch({ repos: e.target.value })} placeholder="backend, frontend" /></Field>
@@ -462,7 +463,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, tasks = [], tab, onTa
             type="Environments"
             onType={onBack}
             id={env.name}
-            meta={<><Chip>{env.base_branch}</Chip><Chip>{env.ticket_source === "linear" ? "Linear" : "ClickUp"}</Chip></>}
+            meta={<><Chip mono>{env.base_branch}</Chip><Chip>{env.ticket_source === "linear" ? "Linear" : "ClickUp"}</Chip></>}
             actions={<Button variant="danger" disabled={taskCount > 0} title={taskCount ? `Delete the ${taskCount} task(s) of ${env.name} first` : "Remove from Vortex; files on disk are not touched"} onClick={() => { if (confirm(`Remove environment ${env.name} from Vortex? Files on disk are not touched.`)) void run("delete", async () => { await api.deleteEnv(env.id); await onChanged(); onBack(); }); }}>Delete</Button>}
             tabs={[
                 { key: "general", label: "General", content: <GeneralTab {...common} envs={envs} /> },

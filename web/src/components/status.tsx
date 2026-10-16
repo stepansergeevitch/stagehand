@@ -37,7 +37,10 @@ export const TaskStatusChip = ({ task, label }: { task: Pick<Task, "status" | "s
 };
 
 // The stage as plain text: it is a place in the workflow, not a state, so it never takes a tone.
-export const StageName = ({ stage }: { stage: Stage }) => <span className="stage-name">{STAGE_LABEL[stage]}</span>;
+// The stage cell of a task list: the stage as text, then its progress strip.
+export const StageCell = ({ task }: { task: Pick<Task, "status" | "stage"> }) => (
+    <span className="stage-cell">{STAGE_LABEL[task.stage]}<StageProgress task={task} /></span>
+);
 
 // Where a task is in the workflow: one segment per stage, past ones filled, the current one in the status tone.
 export const StageProgress = ({ task }: { task: Pick<Task, "status" | "stage"> }) => {

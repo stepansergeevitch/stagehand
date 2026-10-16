@@ -191,7 +191,7 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
             {comps.map(compRow)}
             {(fe?.running || (be?.running && !configured.fe)) && (
                 <div className="open-app">
-                    <a className="button-link" href={(env?.app_url ?? "{{feUrl}}").replace("{{feUrl}}", fe?.url ?? "").replace("{{beUrl}}", be?.url ?? "")} target="_blank" rel="noreferrer">Open the app</a>
+                    <a className="btn btn-primary" href={(env?.app_url ?? "{{feUrl}}").replace("{{feUrl}}", fe?.url ?? "").replace("{{beUrl}}", be?.url ?? "")} target="_blank" rel="noreferrer">Open the app</a>
                     <span className="mono field-hint">{[fe ? `FE ${fe.port}` : null, be ? `BE ${be.port}` : null].filter(Boolean).join(" → ")}</span>
                 </div>
             )}

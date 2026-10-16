@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { errText } from "../format";
 import { api, poEnvIds, type Env, type PoArtifact, type PoDetail } from "../api";
 import { Markdown } from "../Markdown";
 import { Section } from "../components/Panel";
 import { Badge, Button, Checkbox, Chip, Input, Notice, Textarea } from "@vortex/ds";
-import { EditableMarkdown, EnvsSelect, Nothing, PalaceSearch, errText } from "./parts";
+import { EditableMarkdown, EnvsSelect, Nothing, PalaceSearch } from "./parts";
 
 type Props = { d: PoDetail; onError: (m: string) => void; reload: () => void };
 

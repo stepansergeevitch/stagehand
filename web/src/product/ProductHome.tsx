@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Loading } from "../components/Loading";
+import { errText } from "../format";
 import { api, poEnvIds, type Env, type ProductOwner } from "../api";
 import { Modal } from "../Modal";
 import { DataTable, type DataColumn } from "../components/DataTable";
@@ -8,7 +10,7 @@ import { Panel } from "../components/Panel";
 import { navigate, type Route } from "../routes";
 import { poBus } from "../poBus";
 import { Badge, Button, Chip, Input, Radio, Select, Tabs, Textarea } from "@vortex/ds";
-import { EditableMarkdown, EnvsSelect, Loading, PHASE_LABEL, PalaceSearch, errText } from "./parts";
+import { EditableMarkdown, EnvsSelect, PHASE_LABEL, PalaceSearch } from "./parts";
 import "./product.css";
 
 type ProductRoute = Extract<Route, { page: "product" }>;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, pct, STAGE_LABEL, windowPct, type Stage, type TaskUsage } from "./api";
-import { hours, money, tokens } from "./Analytics";
+import { hours, money, tokens } from "./format";
 import { Button, Chip, EmptyState, Notice, Skeleton } from "@vortex/ds";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { Panel } from "./components/Panel";

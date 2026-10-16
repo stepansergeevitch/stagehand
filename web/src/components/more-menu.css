@@ -1,3 +1,0 @@
-/* MoreMenu: the ⋯ button and its dropdown */
-.more-menu { position: relative; display: inline-flex; }
-.more-menu-list { position: absolute; right: 0; top: calc(100% + var(--sp-1)); z-index: var(--z-pop); }

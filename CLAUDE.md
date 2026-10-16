@@ -18,16 +18,16 @@ When a fix seems to need an environment's specifics, add a **generic mechanism**
 
 ## Web UI standards
 
-Pages are built from the shared components in `web/src/components/`; extend them, never write a one-off variant.
+Pages are built from the design system (`packages/vortex-ds`, imported as `@vortex/ds`: Button, Chip, Tabs, Menu, MoreMenu, CodeArea, …) and the shared app components in `web/src/components/` (DataTable, EntityView, Modal, Panel, StatTile, status, Loading, …); extend them, never write a one-off variant. A generic primitive (a menu, an input) belongs in the design system, an app-level composite in `components/`. Shared formatters (money, tokens, durations, dates) live in `web/src/format.ts`; `web/src/styles.css` holds only true globals, every other rule sits in the css next to its component.
 
 - **A list is a `DataTable`** that fills the page and nothing else: header row (entity name, "Create new <entity>"),
   tools row (filters, search, column picker), real columns with one value per cell on one line, a checkbox column for
   bulk actions. No description under the title, no detail line under a value — information gets its own column.
 - **A row opens an `EntityView`**: title `<Entity type> / <identifier>`, entity actions on the right, one tab per
-  section (never one long page), each tab a set of `Field`s followed by Save / Discard (`EntityForm`).
+  section (never one long page; a task has five: Work, Code, Pull request, Conversation, Details), each tab a set of `Field`s followed by Save / Discard (`EntityForm`).
 - **No free-floating explanatory text.** A field's explanation is its hint, shown on hover of the hint icon.
 - **Every view is in the URL path** (`web/src/routes.ts`): the page, the opened entity, its tab, an item opened inside
-  it, a create dialog (`/new`) and a view selector (environment picker, Files/Tests, diff scope). Components read it from
+  it, a create dialog (`/new`, environments included: `/envs/new`) and a view selector (environment picker, Files/Tests, diff scope). Components read it from
   the route and change it with `navigate` — never `useState` or localStorage, or a reload lands somewhere else. Only
   transient UI (hover, expanded rows, menus, an inline edit) stays in component state.
 - **A setting lives on the entity it describes** (models on the AI account, pipeline behaviour on the environment);
