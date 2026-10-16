@@ -1,8 +1,9 @@
 import { Input } from '@vortex/ds';
+import { Both } from "./_Both";
 
 const col = { display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 } as const;
 
-export const States = () => (
+const States_ = () => (
   <div style={col}>
     <Input placeholder="Environment name" />
     <Input defaultValue="staging-eu" />
@@ -10,3 +11,5 @@ export const States = () => (
     <Input disabled defaultValue="read-only value" />
   </div>
 );
+
+export const States = () => <Both><States_ /></Both>;

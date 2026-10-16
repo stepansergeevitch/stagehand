@@ -14,9 +14,42 @@
     "Tab": "active?: boolean; disabled?: boolean; onClick?: React.MouseEventHandler<HTMLButtonElement>; className?: string; style?: React.CSSProperties; children?: React.ReactNode",
     "Icon": "name: \"close\" | \"plus\" | \"search\" | \"columns\" | \"filter\" | \"chevronDown\" | \"chevronRight\" | \"check\" | \"info\" | \"refresh\" | \"arrowLeft\" | \"external\"; width?: number | string; height?: number | string; className?: string; style?: React.CSSProperties",
     "Mark": "size?: number | string; className?: string; style?: React.CSSProperties",
-    "Wordmark": "size?: \"sm\" | \"md\" | \"lg\"; markOnly?: boolean; className?: string; style?: React.CSSProperties"
+    "Wordmark": "size?: \"sm\" | \"md\" | \"lg\"; markOnly?: boolean; className?: string; style?: React.CSSProperties",
+    "Notice": "tone?: \"accent\" | \"info\" | \"ok\" | \"warn\" | \"bad\" | \"wait\"; className?: string; style?: React.CSSProperties; children?: React.ReactNode",
+    "Card": "title?: React.ReactNode; badge?: React.ReactNode; actions?: React.ReactNode; footer?: React.ReactNode; className?: string; style?: React.CSSProperties; children?: React.ReactNode",
+    "Chip": "tone?: \"neutral\" | \"ok\" | \"warn\" | \"bad\" | \"wait\" | \"accent\" | \"info\"; className?: string; style?: React.CSSProperties; title?: string; children?: React.ReactNode",
+    "StatusDot": "tone?: \"neutral\" | \"ok\" | \"warn\" | \"bad\" | \"wait\" | \"accent\" | \"info\"; pulse?: boolean; title?: string; className?: string",
+    "Badge": "tone?: \"neutral\" | \"ok\" | \"warn\" | \"bad\" | \"wait\" | \"accent\" | \"info\"; className?: string; children?: React.ReactNode",
+    "Tooltip": "text: React.ReactNode; children: React.ReactNode; className?: string",
+    "Hint": "text: React.ReactNode",
+    "Kbd": "className?: string; children?: React.ReactNode",
+    "Divider": "vertical?: boolean; className?: string",
+    "Skeleton": "circle?: boolean; width?: number | string; height?: number | string; className?: string; style?: React.CSSProperties",
+    "Spinner": "label?: string; className?: string",
+    "EmptyState": "icon?: string; title: React.ReactNode; children?: React.ReactNode; action?: React.ReactNode; className?: string",
+    "Checkbox": "label?: React.ReactNode; checked?: boolean; defaultChecked?: boolean; disabled?: boolean; onChange?: React.ChangeEventHandler<HTMLInputElement>; name?: string; className?: string",
+    "Radio": "label?: React.ReactNode; checked?: boolean; defaultChecked?: boolean; disabled?: boolean; onChange?: React.ChangeEventHandler<HTMLInputElement>; name?: string; value?: string; className?: string",
+    "Switch": "label?: React.ReactNode; checked?: boolean; defaultChecked?: boolean; disabled?: boolean; onChange?: React.ChangeEventHandler<HTMLInputElement>; name?: string; className?: string",
+    "IconButton": "icon: string; label: string; variant?: \"default\" | \"primary\" | \"danger\" | \"ghost\"; size?: \"md\" | \"sm\"; on?: boolean; disabled?: boolean; onClick?: React.MouseEventHandler<HTMLButtonElement>; className?: string",
+    "Menu": "className?: string; style?: React.CSSProperties; children?: React.ReactNode",
+    "MenuItem": "danger?: boolean; disabled?: boolean; onClick?: React.MouseEventHandler<HTMLButtonElement>; className?: string; children?: React.ReactNode",
+    "Popover": "className?: string; style?: React.CSSProperties; children?: React.ReactNode",
+    "Avatar": "name: string; size?: number; tone?: \"ok\" | \"warn\" | \"bad\" | \"wait\" | \"info\"; className?: string",
+    "Foundations": ""
   },
   "extraFonts": [
     "src/fonts.css"
-  ]
+  ],
+  "overrides": {
+    "Icon": {
+      "cardMode": "column"
+    },
+    "Foundations": {
+      "cardMode": "single",
+      "viewport": "1000x1500"
+    },
+    "Tooltip": {
+      "cardMode": "column"
+    }
+  }
 }

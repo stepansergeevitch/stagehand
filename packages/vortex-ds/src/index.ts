@@ -11,3 +11,4 @@ export { Input, Select, Textarea } from "./Input";
 export { Notice } from "./Notice";
 export { Tab, TabList, Tabs } from "./Tabs";
 export type { TabItem } from "./Tabs";
+export { Avatar, Badge, Checkbox, Divider, EmptyState, Foundations, Hint, IconButton, Kbd, Menu, MenuItem, Popover, Radio, Skeleton, Spinner, StatusDot, Switch, Tooltip } from "./Primitives";

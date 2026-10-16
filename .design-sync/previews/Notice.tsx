@@ -1,8 +1,9 @@
 import { Notice } from '@vortex/ds';
+import { Both } from "./_Both";
 
 const col = { display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 480 } as const;
 
-export const Tones = () => (
+const Tones_ = () => (
   <div style={col}>
     <Notice>The environment is using the default rebase command.</Notice>
     <Notice tone="ok">Migration applied: 4 changes.</Notice>
@@ -11,3 +12,5 @@ export const Tones = () => (
     <Notice tone="wait">Waiting for the review round to finish.</Notice>
   </div>
 );
+
+export const Tones = () => <Both><Tones_ /></Both>;
