@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { accountOrderOf, accountUsableWith, api, envRepos, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, taskDbConfigOf, type Account, type AutopilotRules, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type TaskDbConfig } from "./api";
 import { CheckField, EntityForm, EntityView, Field, Hint, ReadField, useDraft, useSaver } from "./components/EntityView";
+import { Button, Chip, Input, Select, Textarea } from "./components/ui";
 
 // An environment's entity view: one tab per area of its configuration (components/EntityView.tsx).
 
@@ -35,17 +36,17 @@ const GeneralTab = ({ env, envs, save, saving }: Common & { envs: Env[] }) => {
     return (
         <EntityForm dirty={d.dirty} saving={saving === "general"} onDiscard={d.reset} onSave={() => save("general", { name: v.name, baseBranch: v.baseBranch, repos: splitRepos(v.repos).length ? splitRepos(v.repos) : null, ticketSource: v.ticketSource, dependsOnEnvId: v.dependsOn || null })}>
             <ReadField label="Path">{<code>{env.path}</code>}</ReadField>
-            <Field label="Name"><input value={v.name} onChange={(e) => d.patch({ name: e.target.value })} /></Field>
-            <Field label="Sub-repositories" hint="Comma-separated directories of the path that are git repositories. Empty: the path itself is the git repository."><input value={v.repos} onChange={(e) => d.patch({ repos: e.target.value })} placeholder="backend, frontend" /></Field>
-            <Field label="Base branch"><input value={v.baseBranch} onChange={(e) => d.patch({ baseBranch: e.target.value })} /></Field>
+            <Field label="Name"><Input value={v.name} onChange={(e) => d.patch({ name: e.target.value })} /></Field>
+            <Field label="Sub-repositories" hint="Comma-separated directories of the path that are git repositories. Empty: the path itself is the git repository."><Input value={v.repos} onChange={(e) => d.patch({ repos: e.target.value })} placeholder="backend, frontend" /></Field>
+            <Field label="Base branch"><Input value={v.baseBranch} onChange={(e) => d.patch({ baseBranch: e.target.value })} /></Field>
             <Field label="Task system" hint="How bare ticket ids like ABC-123 are resolved.">
-                <select value={v.ticketSource} onChange={(e) => d.patch({ ticketSource: e.target.value as "clickup" | "linear" })}><option value="clickup">ClickUp</option><option value="linear">Linear</option></select>
+                <Select value={v.ticketSource} onChange={(e) => d.patch({ ticketSource: e.target.value as "clickup" | "linear" })}><option value="clickup">ClickUp</option><option value="linear">Linear</option></Select>
             </Field>
             <Field label="Depends on" hint="Another environment whose backend this app calls out to and cannot work without (e.g. Deal needs Core for auth). Started once — by the first task that needs it — and shared by every task of this environment; it keeps its own checkout and branch. Its configured port is tried first.">
-                <select value={v.dependsOn} onChange={(e) => d.patch({ dependsOn: e.target.value })}>
+                <Select value={v.dependsOn} onChange={(e) => d.patch({ dependsOn: e.target.value })}>
                     <option value="">— none —</option>
                     {envs.filter((e) => e.id !== env.id).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-                </select>
+                </Select>
             </Field>
         </EntityForm>
     );
@@ -70,11 +71,11 @@ const AgentsTab = ({ env, save, saving, accounts, configDirs, info, onOpenDir }:
     return (
         <EntityForm dirty={d.dirty} saving={saving === "agents"} onDiscard={d.reset} onSave={() => save("agents", { configDirId: nul(v.dirId), accountOrder: v.order })}>
             <Field label="Config dir" hint="Every agent run of this environment (research, design, QA, implementation, helpers, the terminal) uses it: its skills, hooks, subagents, MCP servers, CLAUDE.md and the commit, branch and PR rules.">
-                <select value={v.dirId} onChange={(e) => d.patch({ dirId: e.target.value })}>
+                <Select value={v.dirId} onChange={(e) => d.patch({ dirId: e.target.value })}>
                     <option value="">— server default —</option>
                     {configDirs.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.path}</option>)}
-                </select>
-                {v.dirId && <button className="tiny" style={{ marginTop: 6 }} onClick={() => onOpenDir(v.dirId)}>Open config dir</button>}
+                </Select>
+                {v.dirId && <Button size="sm" style={{ marginTop: 6 }} onClick={() => onOpenDir(v.dirId)}>Open config dir</Button>}
             </Field>
             <Field label="AI accounts" hint="In priority order: tick to include, arrows to reorder. Runs go to the first listed account that is not exhausted; when it hits its rate limit the next one takes over. Empty: any account that can run in the config dir.">
                 <div className="field-rows">
@@ -83,13 +84,13 @@ const AgentsTab = ({ env, save, saving, accounts, configDirs, info, onOpenDir }:
                         const ok = dirPath ? accountUsableWith(a, dirPath) : a.logged_in === 1;
                         return (
                             <div key={a.id} className={`account-row ${i >= 0 ? "on" : ""}`}>
-                                <label className="inline"><input type="checkbox" checked={i >= 0} onChange={() => toggle(a.id)} /> {i >= 0 ? <b>{i + 1}.</b> : null} {a.name}</label>
-                                {a.plan && <span className="chip">{a.plan}</span>}
-                                {!ok && <span className="chip warn">{a.logged_in ? "needs a token" : "no auth"}</span>}
+                                <label className="inline"><Input type="checkbox" checked={i >= 0} onChange={() => toggle(a.id)} /> {i >= 0 ? <b>{i + 1}.</b> : null} {a.name}</label>
+                                {a.plan && <Chip>{a.plan}</Chip>}
+                                {!ok && <Chip tone="warn">{a.logged_in ? "needs a token" : "no auth"}</Chip>}
                                 {i >= 0 && (
                                     <span className="order-buttons">
-                                        <button disabled={i === 0} onClick={() => move(a.id, -1)} aria-label="higher priority">▲</button>
-                                        <button disabled={i === v.order.length - 1} onClick={() => move(a.id, 1)} aria-label="lower priority">▼</button>
+                                        <Button disabled={i === 0} onClick={() => move(a.id, -1)} aria-label="higher priority">▲</Button>
+                                        <Button disabled={i === v.order.length - 1} onClick={() => move(a.id, 1)} aria-label="lower priority">▼</Button>
                                     </span>
                                 )}
                             </div>
@@ -97,7 +98,7 @@ const AgentsTab = ({ env, save, saving, accounts, configDirs, info, onOpenDir }:
                     })}
                 </div>
             </Field>
-            {info && runnable.length === 0 && <ReadField label="Warning"><span className="chip bad">no {listed.length ? "listed " : ""}account can run in this config dir — set up a token on the account</span></ReadField>}
+            {info && runnable.length === 0 && <ReadField label="Warning"><Chip tone="bad">no {listed.length ? "listed " : ""}account can run in this config dir — set up a token on the account</Chip></ReadField>}
         </EntityForm>
     );
 };
@@ -123,8 +124,8 @@ const ClaudeMdTab = ({ env, onError }: { env: Env; onError: (m: string) => void 
             setDrafts({});
         })}>
             {files.map((f) => (
-                <Field key={f.id} label={<>{f.label} <code>{f.path}</code>{!f.exists && <span className="chip warn">none yet — saving creates it</span>}</>} hint="Committed in git: a task sees an edit once it is on the base branch, and saving here changes the main checkout's working tree. The config dir's own CLAUDE.md is on the config dir.">
-                    <textarea className="tall" spellCheck={false} value={drafts[f.id] ?? f.content} onChange={(e) => setDrafts((x) => ({ ...x, [f.id]: e.target.value }))} />
+                <Field key={f.id} label={<>{f.label} <code>{f.path}</code>{!f.exists && <Chip tone="warn">none yet — saving creates it</Chip>}</>} hint="Committed in git: a task sees an edit once it is on the base branch, and saving here changes the main checkout's working tree. The config dir's own CLAUDE.md is on the config dir.">
+                    <Textarea className="tall" spellCheck={false} value={drafts[f.id] ?? f.content} onChange={(e) => setDrafts((x) => ({ ...x, [f.id]: e.target.value }))} />
                 </Field>
             ))}
         </EntityForm>
@@ -147,27 +148,27 @@ const AppTab = ({ env, save, saving }: Common) => {
             components: v.comps.filter((c) => c.key.trim() && c.command.trim()).map((c) => ({ ...c, key: c.key.trim(), label: c.label.trim() || c.key.trim() })),
             callbackPorts: v.callbackPorts.split(",").map((x) => x.trim()).filter((x) => /^\d+\*?$/.test(x)).map((x) => ({ port: Number(x.replace("*", "")), relay: x.endsWith("*") })),
         })}>
-            <Field label="BE command" hint={PLACEHOLDERS}><textarea spellCheck={false} value={v.beCommand} onChange={(e) => d.patch({ beCommand: e.target.value })} /></Field>
-            <Field label="FE command" hint={PLACEHOLDERS}><textarea spellCheck={false} value={v.feCommand} onChange={(e) => d.patch({ feCommand: e.target.value })} /></Field>
-            <Field label="BE fixed port" hint="Empty: a free port is picked per task."><input value={v.bePort} onChange={(e) => d.patch({ bePort: e.target.value })} /></Field>
-            <Field label="FE fixed port" hint="Empty: a free port is picked per task."><input value={v.fePort} onChange={(e) => d.patch({ fePort: e.target.value })} /></Field>
-            <Field label="BE URL template"><input value={v.beUrlTemplate} onChange={(e) => d.patch({ beUrlTemplate: e.target.value })} placeholder="http://localhost:{{port}}" /></Field>
-            <Field label="FE URL template"><input value={v.feUrlTemplate} onChange={(e) => d.patch({ feUrlTemplate: e.target.value })} placeholder="http://localhost:{{port}}" /></Field>
-            <Field label="App URL override" hint="The URL QA and the login helper open. Empty: the FE's URL, else the BE's. Otherwise {{feUrl}}, {{beUrl}} or a fixed URL."><input value={v.appUrl} onChange={(e) => d.patch({ appUrl: e.target.value })} /></Field>
-            <Field label="Login callback ports" hint="The identity provider accepts only these as its callback, e.g. 3000; after a login on a task's port, Stagehand moves the tab back to the task's app. Add * to have Stagehand hold the port and redirect for any browser, e.g. 7777*. Comma-separated."><input value={v.callbackPorts} onChange={(e) => d.patch({ callbackPorts: e.target.value })} /></Field>
+            <Field label="BE command" hint={PLACEHOLDERS}><Textarea spellCheck={false} value={v.beCommand} onChange={(e) => d.patch({ beCommand: e.target.value })} /></Field>
+            <Field label="FE command" hint={PLACEHOLDERS}><Textarea spellCheck={false} value={v.feCommand} onChange={(e) => d.patch({ feCommand: e.target.value })} /></Field>
+            <Field label="BE fixed port" hint="Empty: a free port is picked per task."><Input value={v.bePort} onChange={(e) => d.patch({ bePort: e.target.value })} /></Field>
+            <Field label="FE fixed port" hint="Empty: a free port is picked per task."><Input value={v.fePort} onChange={(e) => d.patch({ fePort: e.target.value })} /></Field>
+            <Field label="BE URL template"><Input value={v.beUrlTemplate} onChange={(e) => d.patch({ beUrlTemplate: e.target.value })} placeholder="http://localhost:{{port}}" /></Field>
+            <Field label="FE URL template"><Input value={v.feUrlTemplate} onChange={(e) => d.patch({ feUrlTemplate: e.target.value })} placeholder="http://localhost:{{port}}" /></Field>
+            <Field label="App URL override" hint="The URL QA and the login helper open. Empty: the FE's URL, else the BE's. Otherwise {{feUrl}}, {{beUrl}} or a fixed URL."><Input value={v.appUrl} onChange={(e) => d.patch({ appUrl: e.target.value })} /></Field>
+            <Field label="Login callback ports" hint="The identity provider accepts only these as its callback, e.g. 3000; after a login on a task's port, Stagehand moves the tab back to the task's app. Add * to have Stagehand hold the port and redirect for any browser, e.g. 7777*. Comma-separated."><Input value={v.callbackPorts} onChange={(e) => d.patch({ callbackPorts: e.target.value })} /></Field>
             <CheckField label="Keep a task's BE/FE running between stages" hint="Overrides the Resources page's policies for this environment: instead of stopping them after every QA pass, they keep running until the task is done or cleaned up. Saves the cold start at the cost of RAM." checked={v.keepServices} onChange={(on) => d.patch({ keepServices: on })} />
             <Field label="Optional components" hint="Extra services beside the BE/FE — a queue worker, a scheduler, a relay. Each runs in its own tmux session from the task's worktree, without a port. Started from the App widget, by agents on demand, by a QA scenario that declares it, or with the app when auto-start is on. Placeholders: {{worktree}}, {{beUrl}}, {{bePort}}, {{taskDir}}.">
                 <div className="field-rows">
                     {v.comps.map((c, i) => (
                         <div className="component-row" key={i}>
-                            <input value={c.key} placeholder="key — e.g. worker" onChange={(e) => setComp(i, { key: e.target.value })} />
-                            <input value={c.label} placeholder="label — e.g. Celery worker" onChange={(e) => setComp(i, { label: e.target.value })} />
-                            <label className="inline"><input type="checkbox" checked={c.autoStart} onChange={(e) => setComp(i, { autoStart: e.target.checked })} /> auto-start</label>
-                            <button className="tiny danger" onClick={() => d.patch({ comps: v.comps.filter((_, j) => j !== i) })}>remove</button>
-                            <textarea value={c.command} placeholder="command (runs from the worktree)" onChange={(e) => setComp(i, { command: e.target.value })} />
+                            <Input value={c.key} placeholder="key — e.g. worker" onChange={(e) => setComp(i, { key: e.target.value })} />
+                            <Input value={c.label} placeholder="label — e.g. Celery worker" onChange={(e) => setComp(i, { label: e.target.value })} />
+                            <label className="inline"><Input type="checkbox" checked={c.autoStart} onChange={(e) => setComp(i, { autoStart: e.target.checked })} /> auto-start</label>
+                            <Button size="sm" variant="danger" onClick={() => d.patch({ comps: v.comps.filter((_, j) => j !== i) })}>remove</Button>
+                            <Textarea value={c.command} placeholder="command (runs from the worktree)" onChange={(e) => setComp(i, { command: e.target.value })} />
                         </div>
                     ))}
-                    <button className="tiny" style={{ justifySelf: "start" }} onClick={() => d.patch({ comps: [...v.comps, { key: "", label: "", command: "", autoStart: false }] })}>+ component</button>
+                    <Button size="sm" style={{ justifySelf: "start" }} onClick={() => d.patch({ comps: [...v.comps, { key: "", label: "", command: "", autoStart: false }] })}>+ component</Button>
                 </div>
             </Field>
         </EntityForm>
@@ -192,7 +193,7 @@ const LifecycleTab = ({ env, save, saving }: Common) => {
         baseCheck: baseCheckOf(env),
     }), [env]);
     const v = d.value;
-    const area = (k: Exclude<keyof typeof v, "baseCheck">, tall = false) => <textarea className={tall ? "tall" : undefined} spellCheck={false} value={v[k]} onChange={(e) => d.patch({ [k]: e.target.value } as Partial<typeof v>)} />;
+    const area = (k: Exclude<keyof typeof v, "baseCheck">, tall = false) => <Textarea className={tall ? "tall" : undefined} spellCheck={false} value={v[k]} onChange={(e) => d.patch({ [k]: e.target.value } as Partial<typeof v>)} />;
     return (
         <EntityForm dirty={d.dirty} saving={saving === "lifecycle"} onDiscard={d.reset} onSave={() => save("lifecycle", {
             envVars: nul(v.envVars), prepareCommand: nul(v.prepareCommand), setupCommand: nul(v.setupCommand), migrateCommand: nul(v.migrateCommand), migrateDownCommand: nul(v.migrateDownCommand),
@@ -210,7 +211,7 @@ const LifecycleTab = ({ env, save, saving }: Common) => {
             <Field label="Test command" hint="Runs named tests. {{tests}} = the test ids, {{envPath}}. The CI autopilot runs it on a checkout of the base to prove an untouched failing test passes there when CI has no green run on the base.">{area("testCommand")}</Field>
             {baseCheckRepos(env).map((repo) => (
                 <Field key={repo} label={repo ? `Base check · ${repo}` : "Base check"} hint="Runs in the background on every open task: the branch is merged with its latest base in memory and, when that merges cleanly, this runs on a temporary checkout of the result — e.g. a check that no migration conflicts with the base's. The task shows the outcome (merge conflicts, a failing check). Empty: only the merge is checked. {{envPath}} = the env's checkout of this repository, {{worktree}} = the task's (for an env file, a virtualenv).">
-                    <textarea spellCheck={false} value={v.baseCheck[repo] ?? ""} onChange={(e) => d.patch({ baseCheck: { ...v.baseCheck, [repo]: e.target.value } })} />
+                    <Textarea spellCheck={false} value={v.baseCheck[repo] ?? ""} onChange={(e) => d.patch({ baseCheck: { ...v.baseCheck, [repo]: e.target.value } })} />
                 </Field>
             ))}
         </EntityForm>
@@ -226,7 +227,7 @@ const DatabaseTab = ({ env, save, saving }: Common) => {
     const v = d.value;
     const setC = (p: Partial<TaskDbConfig>) => d.patch({ c: { ...v.c, ...p } });
     const setTpl = (i: number, p: Partial<TaskDbConfig["extraTemplates"][number]>) => setC({ extraTemplates: v.c.extraTemplates.map((t, j) => (j === i ? { ...t, ...p } : t)) });
-    const area = (k: "create" | "drop" | "connect" | "list", tall = false) => <textarea className={tall ? "tall" : undefined} spellCheck={false} value={v.c[k]} onChange={(e) => setC({ [k]: e.target.value })} />;
+    const area = (k: "create" | "drop" | "connect" | "list", tall = false) => <Textarea className={tall ? "tall" : undefined} spellCheck={false} value={v.c[k]} onChange={(e) => setC({ [k]: e.target.value })} />;
     return (
         <EntityForm dirty={d.dirty} saving={saving === "database"} onDiscard={d.reset} onSave={() => {
             const c = v.c;
@@ -237,28 +238,28 @@ const DatabaseTab = ({ env, save, saving }: Common) => {
                 taskDb: empty ? null : { ...c, template: c.template.trim(), namePattern: c.namePattern.trim(), sharedNames: csv(v.shared), extraTemplates },
             });
         }}>
-            <Field label="DB host check" hint="Prints the databases the worktree's app would connect to, as host/name pairs. Stagehand runs it before agent runs, BE/FE/component starts and migrations, and blocks the task when a host is not allowed, or — with task databases on — a name is not the task's own or shared."><textarea className="tall" spellCheck={false} value={v.dbHostsCommand} onChange={(e) => d.patch({ dbHostsCommand: e.target.value })} /></Field>
-            <Field label="Allowed DB hosts" hint="Comma-separated. Empty: localhost, 127.0.0.1, ::1."><input value={v.allowedDbHosts} onChange={(e) => d.patch({ allowedDbHosts: e.target.value })} /></Field>
+            <Field label="DB host check" hint="Prints the databases the worktree's app would connect to, as host/name pairs. Stagehand runs it before agent runs, BE/FE/component starts and migrations, and blocks the task when a host is not allowed, or — with task databases on — a name is not the task's own or shared."><Textarea className="tall" spellCheck={false} value={v.dbHostsCommand} onChange={(e) => d.patch({ dbHostsCommand: e.target.value })} /></Field>
+            <Field label="Allowed DB hosts" hint="Comma-separated. Empty: localhost, 127.0.0.1, ::1."><Input value={v.allowedDbHosts} onChange={(e) => d.patch({ allowedDbHosts: e.target.value })} /></Field>
             <CheckField label="New tasks get their own database" hint="Every task gets a database copied from the template when it starts, so one task's migrations, seeds and baseline never reach another. The template is first migrated to the base branch in a template worktree. Existing tasks keep the shared database until adopted (the task's Database widget). Commands get $STAGEHAND_TASK_DB and $STAGEHAND_TASK_DB_TEMPLATE." checked={v.c.enabled} onChange={(on) => setC({ enabled: on })} />
-            <Field label="Template database" hint="Copied for every task; nothing may be connected to it while a copy runs."><input value={v.c.template} onChange={(e) => setC({ template: e.target.value })} placeholder="e.g. app or app_template" /></Field>
-            <Field label="Name pattern" hint="{{template}}, {{slug}} = the ticket id. Default {{template}}_{{slug}}."><input value={v.c.namePattern} onChange={(e) => setC({ namePattern: e.target.value })} placeholder="{{template}}_{{slug}}" /></Field>
+            <Field label="Template database" hint="Copied for every task; nothing may be connected to it while a copy runs."><Input value={v.c.template} onChange={(e) => setC({ template: e.target.value })} placeholder="e.g. app or app_template" /></Field>
+            <Field label="Name pattern" hint="{{template}}, {{slug}} = the ticket id. Default {{template}}_{{slug}}."><Input value={v.c.namePattern} onChange={(e) => setC({ namePattern: e.target.value })} placeholder="{{template}}_{{slug}}" /></Field>
             <Field label="Create" hint="Copies $STAGEHAND_TASK_DB_TEMPLATE into $STAGEHAND_TASK_DB — e.g. CREATE DATABASE … TEMPLATE ….">{area("create", true)}</Field>
             <Field label="Drop" hint="Drops $STAGEHAND_TASK_DB; must succeed when it does not exist. On Clean up / Delete it runs for the task's database and for every listed database derived from it (<name>_…).">{area("drop")}</Field>
             <Field label="Connect" hint="Runs in a worktree: points the app's config at $STAGEHAND_TASK_DB — e.g. the database name in its .env.">{area("connect")}</Field>
             <Field label="List" hint="Prints the template and the task databases, one per line: name, then size in MB. Sizes and databases no task owns show on Resources.">{area("list")}</Field>
-            <Field label="Shared databases" hint="A worktree may still use these besides its own. Comma-separated."><input value={v.shared} onChange={(e) => d.patch({ shared: e.target.value })} /></Field>
+            <Field label="Shared databases" hint="A worktree may still use these besides its own. Comma-separated."><Input value={v.shared} onChange={(e) => d.patch({ shared: e.target.value })} /></Field>
             <Field label="More templates" hint="Each is copied for every task and session into the copies listed, one per line ({{db}} = the owner's main database) — e.g. a test-database template copied into the test runner's per-worker databases. Copies named {{db}}_… are dropped with the owner's database.">
                 <div className="field-rows">
                     {v.c.extraTemplates.map((t, i) => (
                         <div key={i} className="component-row">
-                            <input value={t.template} placeholder="template database" onChange={(e) => setTpl(i, { template: e.target.value })} />
+                            <Input value={t.template} placeholder="template database" onChange={(e) => setTpl(i, { template: e.target.value })} />
                             <span />
-                            <label className="inline"><input type="checkbox" checked={t.refresh} onChange={(e) => setTpl(i, { refresh: e.target.checked })} /> migrate at refresh</label>
-                            <button className="tiny danger" onClick={() => setC({ extraTemplates: v.c.extraTemplates.filter((_, j) => j !== i) })}>remove</button>
-                            <textarea spellCheck={false} value={t.copies.join("\n")} placeholder={"{{db}}_test\n{{db}}_test_gw0"} onChange={(e) => setTpl(i, { copies: e.target.value.split("\n") })} />
+                            <label className="inline"><Input type="checkbox" checked={t.refresh} onChange={(e) => setTpl(i, { refresh: e.target.checked })} /> migrate at refresh</label>
+                            <Button size="sm" variant="danger" onClick={() => setC({ extraTemplates: v.c.extraTemplates.filter((_, j) => j !== i) })}>remove</Button>
+                            <Textarea spellCheck={false} value={t.copies.join("\n")} placeholder={"{{db}}_test\n{{db}}_test_gw0"} onChange={(e) => setTpl(i, { copies: e.target.value.split("\n") })} />
                         </div>
                     ))}
-                    <button className="tiny" style={{ justifySelf: "start" }} onClick={() => setC({ extraTemplates: [...v.c.extraTemplates, { template: "", copies: [], refresh: true }] })}>+ template</button>
+                    <Button size="sm" style={{ justifySelf: "start" }} onClick={() => setC({ extraTemplates: [...v.c.extraTemplates, { template: "", copies: [], refresh: true }] })}>+ template</Button>
                 </div>
             </Field>
         </EntityForm>
@@ -277,23 +278,23 @@ const QaTab = ({ env, save, saving }: Common) => {
             qaBrowser: v.qaBrowser, qaAutoFix: v.qaAutoFix, qaSeedHints: nul(v.qaSeedHints), qaMockHints: nul(v.qaMockHints), qaSessionCommand: nul(v.qaSessionCommand), qaBrowserCookies: nul(v.qaBrowserCookies),
         })}>
             <Field label="QA browser" hint="Chrome profile: the QA account's Chrome via claude-in-chrome (windows, profile copies per run, browser login). gstack: a headless Chromium with no windows; its session comes from that Chrome profile's cookies and localStorage; runs on a token account.">
-                <select value={v.qaBrowser} onChange={(e) => d.patch({ qaBrowser: e.target.value as "chrome" | "gstack" })}>
+                <Select value={v.qaBrowser} onChange={(e) => d.patch({ qaBrowser: e.target.value as "chrome" | "gstack" })}>
                     <option value="chrome">Chrome profile of the QA account</option>
                     <option value="gstack">gstack headless Chromium</option>
-                </select>
+                </Select>
             </Field>
             <Field label="Corrections Jev may approve" hint="A runner that finds a seed, step or assert wrong as written proposes a correction; Jev judges it against the ticket's acceptance criteria (legit ≥ 85 %, weakens ≤ 15 %), and the kinds in this scope are applied at once. The rest, and every removal, wait for you.">
-                <select value={v.qaAutoFix} onChange={(e) => d.patch({ qaAutoFix: e.target.value as QaAutoFixScope })}>
+                <Select value={v.qaAutoFix} onChange={(e) => d.patch({ qaAutoFix: e.target.value as QaAutoFixScope })}>
                     <option value="off">off — every correction waits for you</option>
                     <option value="seeds">seeds — seed and teardown commands</option>
                     <option value="seeds+steps">seeds + steps — also a step's action</option>
                     <option value="seeds+steps+asserts">seeds + steps + asserts — also asserts and scenario rewrites</option>
-                </select>
+                </Select>
             </Field>
-            <Field label="Seeding hints" hint="How agents create test data here: database connection and key tables, API auth, seed recipes. Given to the Design and QA prompts verbatim."><textarea className="tall" spellCheck={false} value={v.qaSeedHints} onChange={(e) => d.patch({ qaSeedHints: e.target.value })} /></Field>
-            <Field label="Third-party stubs" hint="How QA keeps external services (email, payments, SMS, webhooks, …) from being reached for real: environment variables, a local stub server command, sandbox keys, where captured calls can be read. Given to the Design and QA prompts verbatim; agents stub every third party a scenario can trigger."><textarea className="tall" spellCheck={false} value={v.qaMockHints} onChange={(e) => d.patch({ qaMockHints: e.target.value })} /></Field>
-            <Field label="QA session command" hint="Runs from the worktree before every QA pass; the last line it prints reaches the QA run and its seeds as $STAGEHAND_QA_SESSION — e.g. a signed session cookie for API scenarios, so the agent never handles the app's secrets. The headless browser does not use it."><textarea className="tall" spellCheck={false} value={v.qaSessionCommand} onChange={(e) => d.patch({ qaSessionCommand: e.target.value })} /></Field>
-            <Field label="QA browser cookies" hint="One name=value per line; the headless QA browser gets them on the app's host after its session — e.g. a cookie that tells the app a tab is a fresh sign-in."><textarea spellCheck={false} value={v.qaBrowserCookies} onChange={(e) => d.patch({ qaBrowserCookies: e.target.value })} /></Field>
+            <Field label="Seeding hints" hint="How agents create test data here: database connection and key tables, API auth, seed recipes. Given to the Design and QA prompts verbatim."><Textarea className="tall" spellCheck={false} value={v.qaSeedHints} onChange={(e) => d.patch({ qaSeedHints: e.target.value })} /></Field>
+            <Field label="Third-party stubs" hint="How QA keeps external services (email, payments, SMS, webhooks, …) from being reached for real: environment variables, a local stub server command, sandbox keys, where captured calls can be read. Given to the Design and QA prompts verbatim; agents stub every third party a scenario can trigger."><Textarea className="tall" spellCheck={false} value={v.qaMockHints} onChange={(e) => d.patch({ qaMockHints: e.target.value })} /></Field>
+            <Field label="QA session command" hint="Runs from the worktree before every QA pass; the last line it prints reaches the QA run and its seeds as $STAGEHAND_QA_SESSION — e.g. a signed session cookie for API scenarios, so the agent never handles the app's secrets. The headless browser does not use it."><Textarea className="tall" spellCheck={false} value={v.qaSessionCommand} onChange={(e) => d.patch({ qaSessionCommand: e.target.value })} /></Field>
+            <Field label="QA browser cookies" hint="One name=value per line; the headless QA browser gets them on the app's host after its session — e.g. a cookie that tells the app a tab is a fresh sign-in."><Textarea spellCheck={false} value={v.qaBrowserCookies} onChange={(e) => d.patch({ qaBrowserCookies: e.target.value })} /></Field>
         </EntityForm>
     );
 };
@@ -310,10 +311,10 @@ const PrTab = ({ env, save, saving, info, reloadInfo }: Common & { info: EnvRule
             {info?.prTemplates.map((t) => (
                 <Field
                     key={t.dir}
-                    label={<>PR template{t.dir === "." ? "" : <> · <code>{t.dir}/</code></>}{t.missing && <span className="chip bad">override not found</span>}</>}
+                    label={<>PR template{t.dir === "." ? "" : <> · <code>{t.dir}/</code></>}{t.missing && <Chip tone="bad">override not found</Chip>}</>}
                     hint={`Template path relative to the repository; the PR-draft agent writes this repository's description on it. Empty: the template auto-detected in the repository. In effect: ${t.path ?? "none (description only)"}${t.source === "env" ? " — this override" : t.source === "dir" ? " — the config dir's override" : t.source === "detected" ? " — auto-detected" : ""}.`}
                 >
-                    <input value={v.tpl[t.dir] ?? ""} onChange={(e) => d.patch({ tpl: { ...v.tpl, [t.dir]: e.target.value } })} placeholder={t.detected ? `auto-detected: ${t.detected}` : "none detected"} />
+                    <Input value={v.tpl[t.dir] ?? ""} onChange={(e) => d.patch({ tpl: { ...v.tpl, [t.dir]: e.target.value } })} placeholder={t.detected ? `auto-detected: ${t.detected}` : "none detected"} />
                 </Field>
             ))}
         </EntityForm>
@@ -335,7 +336,7 @@ const AutopilotTab = ({ env, save, saving }: Common) => {
                 <div className="field-rows">
                     {AUTOPILOT_KINDS.map((k) => (
                         <label className="inline" key={k.key}>
-                            <input type="checkbox" checked={!v.rules.disabled.includes(k.key)} onChange={() => d.patch({ rules: { ...v.rules, disabled: v.rules.disabled.includes(k.key) ? v.rules.disabled.filter((x) => x !== k.key) : [...v.rules.disabled, k.key] } })} /> {k.title} <Hint text={k.detail} />
+                            <Input type="checkbox" checked={!v.rules.disabled.includes(k.key)} onChange={() => d.patch({ rules: { ...v.rules, disabled: v.rules.disabled.includes(k.key) ? v.rules.disabled.filter((x) => x !== k.key) : [...v.rules.disabled, k.key] } })} /> {k.title} <Hint text={k.detail} />
                         </label>
                     ))}
                 </div>
@@ -344,17 +345,17 @@ const AutopilotTab = ({ env, save, saving }: Common) => {
                 <div className="field-rows">
                     {v.rules.custom.map((r, i) => (
                         <div className="component-row" key={r.key || i}>
-                            <input value={r.title} placeholder="title" onChange={(e) => setRule(i, { title: e.target.value })} />
-                            <select value={r.verdict} onChange={(e) => setRule(i, { verdict: e.target.value as "allow" | "deny" })}>
+                            <Input value={r.title} placeholder="title" onChange={(e) => setRule(i, { title: e.target.value })} />
+                            <Select value={r.verdict} onChange={(e) => setRule(i, { verdict: e.target.value as "allow" | "deny" })}>
                                 <option value="deny">Deny — leave it red</option>
                                 <option value="allow">Allow — may fix</option>
-                            </select>
+                            </Select>
                             <span />
-                            <button className="tiny danger" onClick={() => d.patch({ rules: { ...v.rules, custom: v.rules.custom.filter((_, j) => j !== i) } })}>remove</button>
-                            <textarea value={r.detail} placeholder="how to recognise it, and what to do instead" onChange={(e) => setRule(i, { detail: e.target.value })} />
+                            <Button size="sm" variant="danger" onClick={() => d.patch({ rules: { ...v.rules, custom: v.rules.custom.filter((_, j) => j !== i) } })}>remove</Button>
+                            <Textarea value={r.detail} placeholder="how to recognise it, and what to do instead" onChange={(e) => setRule(i, { detail: e.target.value })} />
                         </div>
                     ))}
-                    <button className="tiny" style={{ justifySelf: "start" }} onClick={() => d.patch({ rules: { ...v.rules, custom: [...v.rules.custom, { key: `r${Date.now().toString(36)}`, title: "", verdict: "deny", detail: "" }] } })}>+ rule</button>
+                    <Button size="sm" style={{ justifySelf: "start" }} onClick={() => d.patch({ rules: { ...v.rules, custom: [...v.rules.custom, { key: `r${Date.now().toString(36)}`, title: "", verdict: "deny", detail: "" }] } })}>+ rule</Button>
                 </div>
             </Field>
         </EntityForm>
@@ -383,7 +384,7 @@ const ReviewTab = ({ env, save, saving, onError }: Common & { onError: (m: strin
                     <div className="field-rows">
                         {cats.filter((c) => c.pass === pass).map((c) => (
                             <label className="inline" key={c.key}>
-                                <input type="checkbox" checked={!v.disabled.includes(c.key)} onChange={() => d.patch({ disabled: v.disabled.includes(c.key) ? v.disabled.filter((k) => k !== c.key) : [...v.disabled, c.key] })} /> {c.title} <Hint text={c.detail} />
+                                <Input type="checkbox" checked={!v.disabled.includes(c.key)} onChange={() => d.patch({ disabled: v.disabled.includes(c.key) ? v.disabled.filter((k) => k !== c.key) : [...v.disabled, c.key] })} /> {c.title} <Hint text={c.detail} />
                             </label>
                         ))}
                         {cats.length === 0 && <span className="quiet">loading…</span>}
@@ -394,20 +395,20 @@ const ReviewTab = ({ env, save, saving, onError }: Common & { onError: (m: strin
                 <div className="field-rows">
                     {v.custom.map((p, i) => (
                         <div className="component-row" key={p.key || i}>
-                            <input value={p.title} placeholder="title" onChange={(e) => setPoint(i, { title: e.target.value })} />
-                            <select value={p.pass} onChange={(e) => setPoint(i, { pass: e.target.value as ReviewPass })}>
+                            <Input value={p.title} placeholder="title" onChange={(e) => setPoint(i, { title: e.target.value })} />
+                            <Select value={p.pass} onChange={(e) => setPoint(i, { pass: e.target.value as ReviewPass })}>
                                 <option value="critical">Pass 1 — critical</option>
                                 <option value="informational">Pass 2 — informational</option>
-                            </select>
+                            </Select>
                             <span />
-                            <button className="tiny danger" onClick={() => d.patch({ custom: v.custom.filter((_, j) => j !== i) })}>remove</button>
-                            <textarea value={p.detail} placeholder="what to look for" onChange={(e) => setPoint(i, { detail: e.target.value })} />
+                            <Button size="sm" variant="danger" onClick={() => d.patch({ custom: v.custom.filter((_, j) => j !== i) })}>remove</Button>
+                            <Textarea value={p.detail} placeholder="what to look for" onChange={(e) => setPoint(i, { detail: e.target.value })} />
                         </div>
                     ))}
-                    <button className="tiny" style={{ justifySelf: "start" }} onClick={() => d.patch({ custom: [...v.custom, { key: `p${Date.now().toString(36)}`, title: "", pass: "informational", detail: "" }] })}>+ point</button>
+                    <Button size="sm" style={{ justifySelf: "start" }} onClick={() => d.patch({ custom: [...v.custom, { key: `p${Date.now().toString(36)}`, title: "", pass: "informational", detail: "" }] })}>+ point</Button>
                 </div>
             </Field>
-            <Field label="Do not flag" hint="One rule per line, added to the checklist's own list."><textarea value={v.doNotFlag} onChange={(e) => d.patch({ doNotFlag: e.target.value })} /></Field>
+            <Field label="Do not flag" hint="One rule per line, added to the checklist's own list."><Textarea value={v.doNotFlag} onChange={(e) => d.patch({ doNotFlag: e.target.value })} /></Field>
         </EntityForm>
     );
 };

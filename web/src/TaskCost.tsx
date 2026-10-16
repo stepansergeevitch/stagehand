@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, pct, STAGE_LABEL, windowPct, type Stage, type TaskUsage } from "./api";
 import { hours, money, tokens } from "./Analytics";
+import { Button, Card, Chip } from "./components/ui";
 
 // Cost tab of a task: what every claude invocation for this task consumed, in order, plus totals and a per-stage split.
 const when = (iso: string): string => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -31,7 +32,7 @@ export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: s
     if (!data) return <div className="empty">loading…</div>;
     const t = data.totals;
     return (
-        <section className="card usage-table">
+        <Card className="usage-table">
             <h2>Cost</h2>
             <p className="field-hint">Claude's own estimate at API list prices, per invocation, from the result event of each run. On a subscription it is a proxy for how much of the rate-limit windows this task used.</p>
             <div className="tiles">
@@ -43,7 +44,7 @@ export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: s
                     <div className={`tile${session.transcriptMb != null && session.maxMb > 0 && session.transcriptMb > session.maxMb ? " tile-bad" : session.transcriptMb != null && session.transcriptMb > session.maxMb / 2 ? " tile-warn" : ""}`} title="The task session's transcript on disk. Every Chat, Do, fix, Implementation and PR Fix run resumes it and pays for all of it; above the limit the next run starts a fresh session by itself.">
                         <div className="tile-label">Task session</div>
                         <div className="tile-value">{session.transcriptMb == null ? "—" : `${session.transcriptMb} MB`}</div>
-                        <div className="tile-sub">limit {session.maxMb} MB · <button className="tiny" disabled={rotating} onClick={() => void rotate()}>{rotating ? "…" : "New session"}</button></div>
+                        <div className="tile-sub">limit {session.maxMb} MB · <Button size="sm" disabled={rotating} onClick={() => void rotate()}>{rotating ? "…" : "New session"}</Button></div>
                     </div>
                 )}
                 {data.byAccount.filter((a) => a.fiveHour != null || a.sevenDay != null).map((a) => (
@@ -65,7 +66,7 @@ export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: s
                                 <tr key={r.key}>
                                     <td className="mono">{when(r.at)}</td>
                                     <td className="usage-label"><b>{stageLabel(r.stage, r.kind)}</b>{r.attempt && r.attempt > 1 ? <small>attempt {r.attempt}</small> : null}</td>
-                                    <td>{r.status ? <span className={`chip ${r.status === "done" ? "ok" : r.status === "failed" ? "bad" : r.status === "running" ? "accent" : ""}`}>{r.status}</span> : <span className="chip">helper</span>}</td>
+                                    <td>{r.status ? <Chip className={`${r.status === "done" ? "ok" : r.status === "failed" ? "bad" : r.status === "running" ? "accent" : ""}`}>{r.status}</Chip> : <Chip>helper</Chip>}</td>
                                     <td className="mono">{r.models.map((m) => m.replace(/^claude-/, "")).join(", ") || "—"}</td>
                                     <td className="mono">{r.turns ?? "—"}</td>
                                     <td className="mono">{r.durationMs != null ? hours(r.durationMs) : "—"}</td>
@@ -100,6 +101,6 @@ export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: s
                     </table>
                 </>
             )}
-        </section>
+        </Card>
     );
 };

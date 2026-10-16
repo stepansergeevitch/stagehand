@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { storage } from "../storage";
 import { useDismiss } from "./useDismiss";
+import { Button, Input } from "./ui";
 
 // Stagehand's standard list of entities. Every page that lists things uses it, so lists look and behave alike:
 //
@@ -58,7 +59,7 @@ const Check = ({ checked, indeterminate, onChange, label }: { checked: boolean; 
     useEffect(() => {
         if (ref.current) ref.current.indeterminate = !!indeterminate && !checked;
     }, [indeterminate, checked]);
-    return <input ref={ref} type="checkbox" aria-label={label} checked={checked} onChange={(e) => onChange(e.target.checked)} onClick={(e) => e.stopPropagation()} />;
+    return <Input ref={ref} type="checkbox" aria-label={label} checked={checked} onChange={(e) => onChange(e.target.checked)} onClick={(e) => e.stopPropagation()} />;
 };
 
 export const DataTable = <T,>({
@@ -208,41 +209,41 @@ export const DataTable = <T,>({
                     <h2 className="dt-title">{title}</h2>
                     {actions && <span className="dt-actions">{actions}</span>}
                     {onCreate && (
-                        <button className="primary" disabled={!!createDisabled} title={createDisabled} onClick={onCreate}>
+                        <Button variant="primary" disabled={!!createDisabled} title={createDisabled} onClick={onCreate}>
                             + Create new {entity ?? "item"}
-                        </button>
+                        </Button>
                     )}
                 </div>
             )}
             <div className="dt-tools">
-                <button
-                    className={`dt-icon${filtersOpen || activeFilters ? " on" : ""}`}
-                    disabled={!facets.length}
-                    title={facets.length ? "Filter by column values" : "No column to filter by"}
-                    aria-label="Filters"
-                    onClick={() => setFiltersOpen((o) => !o)}
-                >
+                <Button
+ className={`dt-icon${filtersOpen || activeFilters ? " on" : ""}`}
+ disabled={!facets.length}
+ title={facets.length ? "Filter by column values" : "No column to filter by"}
+ aria-label="Filters"
+ onClick={() => setFiltersOpen((o) => !o)}
+>
                     <FilterIcon />
                     {activeFilters > 0 && <span className="dt-badge">{activeFilters}</span>}
-                </button>
-                <input className="dt-search" type="search" placeholder="Search…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search" />
+                </Button>
+                <Input className="dt-search" type="search" placeholder="Search…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search" />
                 <span className="dt-spacer" />
                 {selectable && selected.length > 0 && (
                     <span className="dt-bulk">
                         <b>{selected.length} selected</b>
                         {bulkActions?.(selected, clear)}
-                        <button className="tiny" onClick={clear}>Clear</button>
+                        <Button size="sm" onClick={clear}>Clear</Button>
                     </span>
                 )}
                 <div className="dt-picker" ref={pickerRef}>
-                    <button className={`dt-icon${pickerOpen ? " on" : ""}`} title="Choose columns" aria-label="Columns" onClick={() => setPickerOpen((o) => !o)}>
+                    <Button className={`dt-icon${pickerOpen ? " on" : ""}`} title="Choose columns" aria-label="Columns" onClick={() => setPickerOpen((o) => !o)}>
                         <ColumnsIcon />
-                    </button>
+                    </Button>
                     {pickerOpen && (
                         <div className="dt-menu" role="menu">
                             {columns.map((c) => (
                                 <label key={c.key} className="dt-menu-item">
-                                    <input type="checkbox" checked={!hidden.has(c.key)} disabled={!hidden.has(c.key) && visibleCols.length === 1} onChange={() => toggleHidden(c.key)} />
+                                    <Input type="checkbox" checked={!hidden.has(c.key)} disabled={!hidden.has(c.key) && visibleCols.length === 1} onChange={() => toggleHidden(c.key)} />
                                     {c.label}
                                 </label>
                             ))}
@@ -256,16 +257,16 @@ export const DataTable = <T,>({
                         <div key={col.key} className="dt-facet">
                             <span className="dt-facet-label">{col.label}</span>
                             {values.map((v) => (
-                                <button key={v} className={`dt-chip${filters[col.key]?.includes(v) ? " on" : ""}`} onClick={() => toggleFilter(col.key, v)}>
+                                <Button key={v} className={`dt-chip${filters[col.key]?.includes(v) ? " on" : ""}`} onClick={() => toggleFilter(col.key, v)}>
                                     {v || "—"}
-                                </button>
+                                </Button>
                             ))}
                         </div>
                     ))}
                     {activeFilters > 0 && (
-                        <button className="tiny" onClick={() => setFilters({})}>
+                        <Button size="sm" onClick={() => setFilters({})}>
                             Reset filters
-                        </button>
+                        </Button>
                     )}
                 </div>
             )}

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { labelsOf, STAGE_LABEL, taskLabel, type Env, type Readiness, type Task, type TaskStatus } from "./api";
 import { LabelChips } from "./Labels";
+import { Card, Chip } from "./components/ui";
 
 // Every task across all environments, grouped by what it is doing: waiting on the human, working, or waiting on others
 // (GitHub checks / reviewers). Finished and stopped tasks stay on the Tasks page.
@@ -29,7 +30,7 @@ const Row = ({ t, onOpen }: { t: Task; onOpen: (t: Task) => void }) => {
     const [label, cls] = CHIP[t.status] ?? [t.status, ""];
     return (
         <div className="attn" onClick={() => onOpen(t)}>
-            <span className={`chip ${cls}`}>{label}</span>
+            <Chip className={`${cls}`}>{label}</Chip>
             <span className="name">{taskLabel(t)}<small>{t.title ?? ""}</small><LabelChips labels={labelsOf(t)} /></span>
             <span className="stage-name">{STAGE_LABEL[t.stage]}</span>
             <span className="age">{age(t.updated_at)}</span>
@@ -64,8 +65,8 @@ export const Dashboard = ({ envs, tasks, readiness, onOpen }: { envs: Env[]; tas
                 {` across ${envs.length} environment${envs.length === 1 ? "" : "s"}.`}
             </p>
             {warnings.length > 0 && (
-                <section className="card">
-                    <h2>Not ready <span className="chip warn">{warnings.length}</span></h2>
+                <Card>
+                    <h2>Not ready <Chip tone="warn">{warnings.length}</Chip></h2>
                     <p className="field-hint">Found now, not when a stage blocks. Fix these on the AI accounts / Integrations pages.</p>
                     {warnings.map((r) => (
                         <div key={r.envId} className="kv" style={{ marginBottom: 6 }}>
@@ -73,18 +74,18 @@ export const Dashboard = ({ envs, tasks, readiness, onOpen }: { envs: Env[]; tas
                             <span><ul className="plain" style={{ margin: 0 }}>{r.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></span>
                         </div>
                     ))}
-                </section>
+                </Card>
             )}
             {byEnv.map(({ env: e, attention, working, others }) => (
-                <section className="card" key={e.id}>
-                    <h2>{e.name} <span className="chip">{attention.length}</span>{working.length > 0 && <span className="chip accent">{working.length} running</span>}</h2>
+                <Card key={e.id}>
+                    <h2>{e.name} <Chip>{attention.length}</Chip>{working.length > 0 && <Chip tone="accent">{working.length} running</Chip>}</h2>
                     {attention.length === 0 && working.length === 0 && others.length === 0 && <div className="quiet">all clear</div>}
                     {attention.map((t) => <Row key={t.id} t={t} onOpen={onOpen} />)}
                     {working.length > 0 && <div className="group">Running</div>}
                     {working.map((t) => <Row key={t.id} t={t} onOpen={onOpen} />)}
                     {others.length > 0 && <div className="group">Waiting on GitHub / reviewers</div>}
                     {others.map((t) => <Row key={t.id} t={t} onOpen={onOpen} />)}
-                </section>
+                </Card>
             ))}
         </div>
     );

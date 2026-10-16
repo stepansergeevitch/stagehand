@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { api, type PoCorrection, type PoDetail, type PoJournalEvent, type PoQuestion } from "./api";
 import { AgentInput } from "./AgentInput";
 import { Markdown } from "./Markdown";
+import { Button, Card, Chip, Input, Select } from "./components/ui";
 
 // A Product Owner's journal on its page: the outstanding questions it keeps, the events that reached it (and what
 // each changed), and the corrections it suggests for existing tickets and task designs.
@@ -53,9 +54,9 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
     return (
         <div className={`po-comment-card po-question ${q.status}`}>
             <div className="po-comment-top">
-                <span className="chip">{q.key}</span>
+                <Chip>{q.key}</Chip>
                 <b>{q.question}</b>
-                <span className={`chip ${chip}`}>{label}</span>
+                <Chip className={`${chip}`}>{label}</Chip>
                 <span className="field-hint">{when(q.created_at)}</span>
             </div>
             {q.detail && <div className="quiet"><Markdown source={q.detail} /></div>}
@@ -66,14 +67,14 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
                     <div className="actions" style={{ marginBottom: 0 }}>
                         {edit === null ? (
                             <>
-                                <button className="primary" disabled={asking} onClick={() => void onConfirm()} title="The Product Owner records it in its context and design">Confirm</button>
-                                <button disabled={asking} onClick={() => setEdit(q.resolution ?? "")}>Edit, then confirm</button>
+                                <Button variant="primary" disabled={asking} onClick={() => void onConfirm()} title="The Product Owner records it in its context and design">Confirm</Button>
+                                <Button disabled={asking} onClick={() => setEdit(q.resolution ?? "")}>Edit, then confirm</Button>
                                 <span className="field-hint">or keep discussing below</span>
                             </>
                         ) : (
                             <>
-                                <button className="primary" disabled={!edit.trim()} onClick={() => void onConfirm(edit.trim()).then(() => setEdit(null))}>Confirm this resolution</button>
-                                <button onClick={() => setEdit(null)}>Cancel</button>
+                                <Button variant="primary" disabled={!edit.trim()} onClick={() => void onConfirm(edit.trim()).then(() => setEdit(null))}>Confirm this resolution</Button>
+                                <Button onClick={() => setEdit(null)}>Cancel</Button>
                             </>
                         )}
                     </div>
@@ -90,14 +91,14 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
                 <div className="po-resolution">
                     <AgentInput placeholder="The answer, as a decision — the Product Owner records it" value={own} onChange={setOwn} rows={3} />
                     <div className="actions" style={{ marginBottom: 0 }}>
-                        <button className="primary" disabled={!own.trim()} onClick={() => void onConfirm(own.trim()).then(() => setOwn(null))}>Resolve</button>
-                        <button onClick={() => setOwn(null)}>Cancel</button>
+                        <Button variant="primary" disabled={!own.trim()} onClick={() => void onConfirm(own.trim()).then(() => setOwn(null))}>Resolve</Button>
+                        <Button onClick={() => setOwn(null)}>Cancel</Button>
                     </div>
                 </div>
             )}
             <div>
-                {(q.status !== "resolved" || q.thread.length > 0) && <button className="tiny" onClick={() => setOpen((o) => !o)}>{open ? "▾" : "▸"} {q.status === "resolved" ? "Discussion" : "Discuss with Product owner"}{q.thread.length ? ` (${q.thread.length})` : ""}</button>}{" "}
-                {q.status === "open" && own === null && <button className="tiny" onClick={() => setOwn("")}>I know the answer</button>}
+                {(q.status !== "resolved" || q.thread.length > 0) && <Button size="sm" onClick={() => setOpen((o) => !o)}>{open ? "▾" : "▸"} {q.status === "resolved" ? "Discussion" : "Discuss with Product owner"}{q.thread.length ? ` (${q.thread.length})` : ""}</Button>}{" "}
+                {q.status === "open" && own === null && <Button size="sm" onClick={() => setOwn("")}>I know the answer</Button>}
             </div>
             {open && (
                 <div className="line-thread" style={{ marginLeft: 0 }}>
@@ -116,7 +117,7 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
                                     }
                                 }}
                             />
-                            <div className="actions" style={{ marginBottom: 0 }}><button className="primary" disabled={!text.trim()} onClick={() => void send()}>Send</button></div>
+                            <div className="actions" style={{ marginBottom: 0 }}><Button variant="primary" disabled={!text.trim()} onClick={() => void send()}>Send</Button></div>
                         </>
                     )}
                 </div>
@@ -163,21 +164,21 @@ const EventCard = ({ e, d, onRead }: { e: PoJournalEvent; d: PoDetail; onRead: (
     return (
         <div className={`po-event ${e.kind}`}>
             <div className="po-comment-top">
-                <span className="chip">{KIND_LABEL[e.kind] ?? e.kind}</span>
+                <Chip>{KIND_LABEL[e.kind] ?? e.kind}</Chip>
                 <b>{e.title}</b>
-                {status && <span className={`chip ${status[1]}`} title={e.error ?? undefined}>{status[0]}</span>}
+                {status && <Chip className={`${status[1]}`} title={e.error ?? undefined}>{status[0]}</Chip>}
                 <span className="spacer" />
                 <span className="field-hint">{when(e.created_at)}</span>
             </div>
             {e.brief ? <div className="po-brief"><Markdown source={e.brief} /></div> : e.status === "done" && <div className="quiet">No brief.</div>}
             {e.error && e.status !== "done" && <div className="field-hint bad">{e.error}</div>}
-            {(e.status === "unread" || e.status === "failed") && e.retryable && <div className="actions" style={{ margin: "4px 0" }}><button className="tiny primary" disabled={d.running} onClick={onRead}>Have the Product Owner read it</button></div>}
+            {(e.status === "unread" || e.status === "failed") && e.retryable && <div className="actions" style={{ margin: "4px 0" }}><Button size="sm" variant="primary" disabled={d.running} onClick={onRead}>Have the Product Owner read it</Button></div>}
             <div className="po-event-links">
-                {files.map((f) => <span key={f} className="chip accent">{FILE_OF[f]} changed</span>)}
-                {e.memory.length > 0 && <span className="chip">{e.memory.length} memory write(s)</span>}
-                {e.linked.questions.length > 0 && <span className="chip warn">questions: {e.linked.questions.join(", ")}</span>}
-                {e.linked.corrections > 0 && <span className="chip warn">{e.linked.corrections} correction(s)</span>}
-                {arts.map((a) => <span key={a!.id} className="chip">{a!.title}</span>)}
+                {files.map((f) => <Chip key={f} tone="accent">{FILE_OF[f]} changed</Chip>)}
+                {e.memory.length > 0 && <Chip>{e.memory.length} memory write(s)</Chip>}
+                {e.linked.questions.length > 0 && <Chip tone="warn">questions: {e.linked.questions.join(", ")}</Chip>}
+                {e.linked.corrections > 0 && <Chip tone="warn">{e.linked.corrections} correction(s)</Chip>}
+                {arts.map((a) => <Chip key={a!.id}>{a!.title}</Chip>)}
             </div>
             {e.body && <details><summary>What reached the Product Owner</summary><div className="po-event-body"><Markdown source={e.body} /></div></details>}
             {files.map((f) => (
@@ -204,10 +205,10 @@ export const EventsTab = ({ d, onError, reload }: Props) => {
         <>
             <div className="po-issues-bar">
                 <span className="field-hint">Everything that reached the Product Owner, newest first, with its brief and what it changed in its context, design and memory.</span>
-                <select value={kind} onChange={(e) => setKind(e.target.value)}>
+                <Select value={kind} onChange={(e) => setKind(e.target.value)}>
                     <option value="">All events ({d.events.length})</option>
                     {kinds.map((k) => <option key={k} value={k}>{KIND_LABEL[k] ?? k}</option>)}
-                </select>
+                </Select>
             </div>
             {list.length === 0 ? <div className="empty">No events yet.</div> : list.map((e) => <EventCard key={e.id} e={e} d={d} onRead={() => void api.poReadEvent(d.po.id, e.id).then(reload).catch((err: Error) => onError(err.message))} />)}
         </>
@@ -223,7 +224,7 @@ const TicketCorrection = ({ c, d, busy, onApply, onDiscard }: { c: PoCorrection;
     return (
         <div className="po-comment-card">
             <div className="po-comment-top">
-                {issue ? <a className="chip accent" href={issue.url} target="_blank" rel="noreferrer">{c.target} ↗</a> : <span className="chip accent">{c.target}</span>}
+                {issue ? <a className="chip accent" href={issue.url} target="_blank" rel="noreferrer">{c.target} ↗</a> : <Chip tone="accent">{c.target}</Chip>}
                 <b>{c.title}</b>
                 <span className="spacer" />
                 <span className="field-hint">{when(c.created_at)}</span>
@@ -236,8 +237,8 @@ const TicketCorrection = ({ c, d, busy, onApply, onDiscard }: { c: PoCorrection;
                 <DiffLines lines={c.diff ?? []} />
             </details>
             <div className="actions" style={{ marginBottom: 0 }}>
-                <button className="primary" disabled={busy} title={`Write the new description to ${c.target} in ${manager}`} onClick={() => { if (confirm(`Replace the description of ${c.target} in ${manager} with the new one?`)) onApply(); }}>Apply</button>
-                <button className="danger" disabled={busy} onClick={onDiscard}>Discard</button>
+                <Button variant="primary" disabled={busy} title={`Write the new description to ${c.target} in ${manager}`} onClick={() => { if (confirm(`Replace the description of ${c.target} in ${manager} with the new one?`)) onApply(); }}>Apply</Button>
+                <Button variant="danger" disabled={busy} onClick={onDiscard}>Discard</Button>
             </div>
         </div>
     );
@@ -250,18 +251,18 @@ const TaskGroup = ({ taskId, items, d, busy, onSend, onDiscard }: { taskId: stri
     const pastDesign = task && task.stage !== "design_proposal";
     const waiting = task?.stage === "design_proposal" && task.status === "waiting_user";
     return (
-        <section className="card po-task-group">
+        <Card className="po-task-group">
             <div className="po-comment-top">
                 <b>Task</b>
                 {task ? <a href={`#/tasks/${encodeURIComponent(task.id)}`}>{task.ticket_id}{task.title ? ` — ${task.title}` : ""}</a> : <span className="quiet">(task gone)</span>}
-                {task && <><span className="chip">{task.stage.replace(/_/g, " ")}</span> <span className="chip">{task.status.replace(/_/g, " ")}</span></>}
+                {task && <><Chip>{task.stage.replace(/_/g, " ")}</Chip> <Chip>{task.status.replace(/_/g, " ")}</Chip></>}
             </div>
             {items.map((c) => {
                 const ev = d.events.find((e) => e.id === c.event_id);
                 return (
                     <div key={c.id} className={`po-comment-card${picked.has(c.id) ? " picked" : ""}`}>
                         <div className="po-comment-top">
-                            <label className="inline"><input type="checkbox" checked={picked.has(c.id)} onChange={(e) => setPicked((s) => { const n = new Set(s); if (e.target.checked) n.add(c.id); else n.delete(c.id); return n; })} /></label>
+                            <label className="inline"><Input type="checkbox" checked={picked.has(c.id)} onChange={(e) => setPicked((s) => { const n = new Set(s); if (e.target.checked) n.add(c.id); else n.delete(c.id); return n; })} /></label>
                             <b>{c.title}</b>
                             <span className="spacer" />
                             <span className="field-hint">{when(c.created_at)}</span>
@@ -272,21 +273,21 @@ const TaskGroup = ({ taskId, items, d, busy, onSend, onDiscard }: { taskId: stri
                 );
             })}
             <div className="actions" style={{ marginBottom: 0 }}>
-                <button
-                    className="primary"
-                    disabled={busy || !ids.length || !task || task.status === "running"}
-                    title={task?.status === "running" ? "The task is running — send when its run ends" : waiting ? "Another design round with these as the notes" : "The task goes back to Design proposal with these as the notes"}
-                    onClick={() => {
-                        if (pastDesign && !confirm(`${task!.ticket_id} is at ${task!.stage.replace(/_/g, " ")}. It goes back to Design proposal with ${ids.length} correction(s); the later stages run again. Send?`)) return;
-                        onSend(ids);
-                    }}
-                >
+                <Button variant="primary"
+ 
+ disabled={busy || !ids.length || !task || task.status === "running"}
+ title={task?.status === "running" ? "The task is running — send when its run ends" : waiting ? "Another design round with these as the notes" : "The task goes back to Design proposal with these as the notes"}
+ onClick={() => {
+ if (pastDesign && !confirm(`${task!.ticket_id} is at ${task!.stage.replace(/_/g, " ")}. It goes back to Design proposal with ${ids.length} correction(s); the later stages run again. Send?`)) return;
+ onSend(ids);
+ }}
+>
                     Send {ids.length} to agent
-                </button>
-                <button className="danger" disabled={busy || !ids.length} onClick={() => onDiscard(ids)}>Discard {ids.length}</button>
+                </Button>
+                <Button variant="danger" disabled={busy || !ids.length} onClick={() => onDiscard(ids)}>Discard {ids.length}</Button>
                 {pastDesign && <span className="field-hint">The task goes back to Design proposal; later stages run again.</span>}
             </div>
-        </section>
+        </Card>
     );
 };
 
@@ -316,7 +317,7 @@ export const CorrectionsTab = ({ d, onError, reload }: Props) => {
                     <summary>Done ({done.length})</summary>
                     {done.map((c) => (
                         <details key={c.id} className="po-comment-card closed">
-                            <summary><span className="chip">{c.kind}</span> <span className="chip">{label(c)}</span> <b>{c.title}</b> <span className="chip">{STATUS_LABEL[c.status]}</span> <span className="field-hint">{when(c.updated_at)}</span></summary>
+                            <summary><Chip>{c.kind}</Chip> <Chip>{label(c)}</Chip> <b>{c.title}</b> <Chip>{STATUS_LABEL[c.status]}</Chip> <span className="field-hint">{when(c.updated_at)}</span></summary>
                             {c.body && <Markdown source={c.body} />}
                             {c.kind === "ticket" && c.diff && <DiffLines lines={c.diff} />}
                         </details>

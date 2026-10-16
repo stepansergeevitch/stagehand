@@ -4,12 +4,13 @@ import { Modal } from "./Modal";
 import { navigate, type Route } from "./routes";
 import { authLabel, PrompterPage, type IntegrationType } from "./ConfigEntities";
 import { accountBrowserReady, accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
+import { Button, Chip, Input } from "./components/ui";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
 export type ManageTab = "envs" | "dirs" | "accounts" | "integrations" | "prompter";
 
 // Every card on the Integrations page carries one of these, so a new kind of integration announces what it is.
-const TypeChip = ({ type }: { type: IntegrationType }) => <span className="chip type" title="integration type">{type}</span>;
+const TypeChip = ({ type }: { type: IntegrationType }) => <Chip className="type" title="integration type">{type}</Chip>;
 
 const repoList = (json: string | null): string => {
     try {
@@ -81,7 +82,7 @@ const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }
     const columns: DataColumn<Env>[] = [
         { key: "name", label: "Name", kind: "label", value: (e) => e.name, filter: false },
         { key: "source", label: "Tickets", value: (e) => e.ticket_source, filter: "auto" },
-        { key: "base", label: "Base branch", value: (e) => e.base_branch, filter: "auto", render: (e) => <span className="chip accent">{e.base_branch}</span> },
+        { key: "base", label: "Base branch", value: (e) => e.base_branch, filter: "auto", render: (e) => <Chip tone="accent">{e.base_branch}</Chip> },
         { key: "repos", label: "Repos", value: (e) => repoList(e.repos), filter: false },
         { key: "dir", label: "Config dir", value: dirName, filter: "auto" },
         { key: "accounts", label: "AI accounts", value: accountList, filter: false, defaultHidden: true },
@@ -103,9 +104,9 @@ const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }
             bulkActions={(sel, clear) => {
                 const busy = sel.filter((e) => taskCount(e) > 0);
                 return (
-                    <button className="danger tiny" disabled={busy.length > 0} title={busy.length ? `delete the tasks of ${busy.map((e) => e.name).join(", ")} first` : "remove from Stagehand (files untouched)"} onClick={() => { if (confirm(`Remove ${sel.length} environment(s) from Stagehand? Files on disk are not touched.`)) void act(async () => { for (const e of sel) await api.deleteEnv(e.id); clear(); }); }}>
+                    <Button variant="danger" size="sm" disabled={busy.length> 0} title={busy.length ? `delete the tasks of ${busy.map((e) => e.name).join(", ")} first` : "remove from Stagehand (files untouched)"} onClick={() => { if (confirm(`Remove ${sel.length} environment(s) from Stagehand? Files on disk are not touched.`)) void act(async () => { for (const e of sel) await api.deleteEnv(e.id); clear(); }); }}>
                         Delete
-                    </button>
+                    </Button>
                 );
             }}
         />
@@ -117,7 +118,7 @@ const ConfigDirTable = ({ dirs, adding, onOpen, act }: { dirs: ConfigDir[]; addi
     const [add, setAdd] = useState({ name: "", path: "" });
     const columns: DataColumn<ConfigDir>[] = [
         { key: "name", label: "Name", kind: "label", value: (d) => d.name, filter: false },
-        { key: "disk", label: "On disk", value: (d) => (d.contents.exists ? "present" : "missing"), filter: "auto", render: (d) => (d.contents.exists ? <span className="chip ok">present</span> : <span className="chip bad">missing</span>) },
+        { key: "disk", label: "On disk", value: (d) => (d.contents.exists ? "present" : "missing"), filter: "auto", render: (d) => (d.contents.exists ? <Chip tone="ok">present</Chip> : <Chip tone="bad">missing</Chip>) },
         { key: "skills", label: "Skills", kind: "num", value: (d) => d.contents.skills.length, filter: false },
         { key: "agents", label: "Subagents", kind: "num", value: (d) => d.contents.agents.length, filter: false },
         { key: "mcp", label: "MCP servers", kind: "num", value: (d) => d.contents.mcpServers.length, filter: false },
@@ -143,18 +144,18 @@ const ConfigDirTable = ({ dirs, adding, onOpen, act }: { dirs: ConfigDir[]; addi
                 bulkActions={(sel, clear) => {
                     const used = sel.filter((d) => d.envs.length > 0);
                     return (
-                        <button className="danger tiny" disabled={used.length > 0} title={used.length ? `still used: ${used.map((d) => d.name).join(", ")}` : "forget (nothing on disk changes)"} onClick={() => { if (confirm(`Forget ${sel.length} config dir(s)? Nothing on disk is touched.`)) void act(async () => { for (const d of sel) await api.deleteConfigDir(d.id); clear(); }); }}>
+                        <Button variant="danger" size="sm" disabled={used.length> 0} title={used.length ? `still used: ${used.map((d) => d.name).join(", ")}` : "forget (nothing on disk changes)"} onClick={() => { if (confirm(`Forget ${sel.length} config dir(s)? Nothing on disk is touched.`)) void act(async () => { for (const d of sel) await api.deleteConfigDir(d.id); clear(); }); }}>
                             Delete
-                        </button>
+                        </Button>
                     );
                 }}
             />
             {adding && (
                 <Modal title="Register a config dir" onClose={() => setAdding(false)}>
                     <div className="env-fields" style={{ maxWidth: 560 }}>
-                        <label>Name <input value={add.name} onChange={(e) => setAdd({ ...add, name: e.target.value })} placeholder="personal" /></label>
-                        <label>Directory <input value={add.path} onChange={(e) => setAdd({ ...add, path: e.target.value })} placeholder="/Users/you/code/project/.claude" /></label>
-                        <button className="primary" disabled={!add.name.trim() || !add.path.trim()} onClick={async () => { await act(() => api.addConfigDir(add.name.trim(), add.path.trim())); setAdd({ name: "", path: "" }); setAdding(false); }}>Register</button>
+                        <label>Name <Input value={add.name} onChange={(e) => setAdd({ ...add, name: e.target.value })} placeholder="personal" /></label>
+                        <label>Directory <Input value={add.path} onChange={(e) => setAdd({ ...add, path: e.target.value })} placeholder="/Users/you/code/project/.claude" /></label>
+                        <Button variant="primary" disabled={!add.name.trim() || !add.path.trim()} onClick={async () => { await act(() => api.addConfigDir(add.name.trim(), add.path.trim())); setAdd({ name: "", path: "" }); setAdding(false); }}>Register</Button>
                     </div>
                 </Modal>
             )}
@@ -173,7 +174,7 @@ const AccountTable = ({ accounts, envs, tasks, settings, onAdd, onOpen, act }: {
     const columns: DataColumn<Account>[] = [
         { key: "name", label: "Name", kind: "label", value: (a) => a.name, filter: false },
         { key: "provider", label: "Provider", value: (a) => a.provider, filter: "auto" },
-        { key: "auth", label: "Auth", value: authLabel, filter: "auto", render: (a) => <span className={`chip ${a.setting_up ? "wait" : a.has_token ? "ok" : a.logged_in ? "warn" : "bad"}`}>{authLabel(a)}</span> },
+        { key: "auth", label: "Auth", value: authLabel, filter: "auto", render: (a) => <Chip className={`${a.setting_up ? "wait" : a.has_token ? "ok" : a.logged_in ? "warn" : "bad"}`}>{authLabel(a)}</Chip> },
         { key: "chrome", label: "Chrome", value: (a) => (accountBrowserReady(a) ? a.chrome_browser_name ?? "ready" : "none"), filter: "auto" },
         { key: "plan", label: "Plan", value: (a) => a.plan ?? "", filter: "auto" },
         { key: "email", label: "Email", value: (a) => a.email ?? "", filter: false },
@@ -200,9 +201,9 @@ const AccountTable = ({ accounts, envs, tasks, settings, onAdd, onOpen, act }: {
                 bulkActions={(sel, clear) => {
                     const used = sel.filter((a) => usedCount(a) > 0);
                     return (
-                        <button className="danger tiny" disabled={used.length > 0} title={used.length ? `still used: ${used.map((a) => a.name).join(", ")}` : "forget the accounts and their tokens"} onClick={() => { if (confirm(`Forget ${sel.length} account(s) and their stored tokens?`)) void act(async () => { for (const a of sel) await api.deleteAccount(a.id); clear(); }); }}>
+                        <Button variant="danger" size="sm" disabled={used.length> 0} title={used.length ? `still used: ${used.map((a) => a.name).join(", ")}` : "forget the accounts and their tokens"} onClick={() => { if (confirm(`Forget ${sel.length} account(s) and their stored tokens?`)) void act(async () => { for (const a of sel) await api.deleteAccount(a.id); clear(); }); }}>
                             Delete
-                        </button>
+                        </Button>
                     );
                 }}
             />
@@ -233,7 +234,7 @@ const IntegrationTable = ({ settings, onOpen, onError }: { settings: Settings | 
     const columns: DataColumn<IntegrationRow>[] = [
         { key: "name", label: "Name", kind: "label", value: (r) => r.name, filter: false },
         { key: "type", label: "Type", value: (r) => r.type, filter: "auto", render: (r) => <TypeChip type={r.type} /> },
-        { key: "status", label: "Status", value: (r) => r.status, filter: "auto", render: (r) => <span className={`chip ${r.ok ? "ok" : ""}`}>{r.status}</span> },
+        { key: "status", label: "Status", value: (r) => r.status, filter: "auto", render: (r) => <Chip className={`${r.ok ? "ok" : ""}`}>{r.status}</Chip> },
         { key: "used", label: "Used by", value: (r) => r.usedBy, filter: false, render: (r) => r.usedBy || <span className="quiet">—</span> },
     ];
     return (

@@ -23,6 +23,7 @@ import { LazyTerminal } from "./LazyTerminal";
 import { AgentInput } from "./AgentInput";
 import { Modal } from "./Modal";
 import { BaseCheckChip } from "./components/BaseCheckChip";
+import { Button, Chip, Input, Select, Textarea } from "./components/ui";
 
 // Where the user is lives in the URL hash only (see routes.ts): reloads, back/forward, pasted links and anything that
 // reads the path see the same screen.
@@ -86,10 +87,10 @@ const SidebarTree = ({ page, renderItem }: { page: Page; renderItem: (n: NavItem
                 const open = !closed.has(g.group);
                 const within = g.items.some((n) => n.id === page);
                 return [
-                    <button key={`group-${g.group}`} className={`sidebar-node${!open && within ? " active" : ""}`} aria-expanded={open} onClick={() => toggle(g.group!)}>
+                    <Button key={`group-${g.group}`} className={`sidebar-node${!open && within ? " active" : ""}`} aria-expanded={open} onClick={() => toggle(g.group!)}>
                         {g.group}
                         <span className="caret">{open ? "▾" : "▸"}</span>
-                    </button>,
+                    </Button>,
                     ...(open ? g.items.map((n) => renderItem(n, true)) : []),
                 ];
             })}
@@ -161,8 +162,8 @@ const Gauge = ({ a, onRefresh }: { a: Account; onRefresh: () => void }) => {
     return (
         <span className={`gauge ${enterprise ? "enterprise" : ""} ${stale ? "stale" : ""}`} title={title}>
             <span className="gauge-name">
-                {a.name}{!a.logged_in && <span className="chip bad">no auth</span>}{a.logged_in === 1 && !a.has_token && <span className="chip warn">legacy</span>}
-                {!enterprise && a.logged_in === 1 && <button className="refresh" disabled={a.refreshing_limits} onClick={onRefresh} title="Refresh the windows now (one tiny Sonnet turn)">{a.refreshing_limits ? "…" : "↻"}</button>}
+                {a.name}{!a.logged_in && <Chip tone="bad">no auth</Chip>}{a.logged_in === 1 && !a.has_token && <Chip tone="warn">legacy</Chip>}
+                {!enterprise && a.logged_in === 1 && <Button variant="ghost" className="refresh" disabled={a.refreshing_limits} onClick={onRefresh} title="Refresh the windows now (one tiny Sonnet turn)">{a.refreshing_limits ? "…" : "↻"}</Button>}
             </span>
             {enterprise ? (
                 <span className="gauge-usage">
@@ -392,25 +393,25 @@ export const App = () => {
             <header className={`topbar ${moreOpen ? "more-open" : ""}`}>
                 <span className="brand">Stagehand</span>
                 <span className="spacer" />
-                <button className="more" onClick={() => setMoreOpen((v) => !v)} title="Account usage">⋯</button>
+                <Button variant="ghost" className="more" onClick={() => setMoreOpen((v) => !v)} title="Account usage">⋯</Button>
                 <span className="extra gauges">{accounts.map((a) => <Gauge key={a.id} a={a} onRefresh={() => void api.refreshLimits(a.id).then((r) => { if (!r.ok) setError(`limits refresh (${a.name}): ${r.detail}`); }).then(reload).catch((e: Error) => setError(e.message))} />)}</span>
             </header>
             <div className="body">
                 <nav className="sidebar" aria-label="Sections">
                     <SidebarTree page={page} renderItem={(n, child) => (
-                        <button key={n.id} className={`${page === n.id ? "active" : ""}${child ? " child" : ""}`} title={n.hint} onClick={() => navigate(n.id === "tasks" ? listRoute() : { page: n.id })}>
+                        <Button variant="ghost" key={n.id} className={`${page === n.id ? "active" : ""}${child ? " child" : ""}`} title={n.hint} onClick={() => navigate(n.id === "tasks" ? listRoute() : { page: n.id })}>
                             {n.label}
                             {n.id === "dashboard" && attention > 0 && <span className="count alert">{attention}</span>}
                             {n.id === "tasks" && visible.length > 0 && <span className="count">{visible.length}</span>}
                             {n.id === "envs" && envs.length > 0 && <span className="count">{envs.length}</span>}
                             {n.id === "accounts" && accounts.length > 0 && <span className="count">{accounts.length}</span>}
-                        </button>
+                        </Button>
                     )} />
                 </nav>
                 {page === "dashboard" && (
                     <div className="main page">
                         <main className="detail">
-                            {selected && <button className="back" onClick={closeTask}>← dashboard</button>}
+                            {selected && <Button variant="ghost" className="back" onClick={closeTask}>← dashboard</Button>}
                             {error && <div className="blocked-box">{error}</div>}
                             {/* A task opened from the Dashboard shows here, in place; back returns to the cards. */}
                             {selected ? (taskDetailView ?? <div className="empty">Loading…</div>) : <ErrorBoundary label="Dashboard"><Dashboard envs={envs} tasks={tasks} readiness={readiness} onOpen={(t) => navigate({ page: "dashboard", task: t.id })} /></ErrorBoundary>}
@@ -533,20 +534,20 @@ export const App = () => {
                 {page === "tasks" && <div className={`main ${selected ? "has-selection" : ""}`}>
                     <aside className="list">
                         <div className="list-head">
-                            <select value={envId} onChange={(e) => navigate(listRoute(e.target.value))} title="Environment">
+                            <Select value={envId} onChange={(e) => navigate(listRoute(e.target.value))} title="Environment">
                                 {envs.map((e) => (
                                     <option key={e.id} value={e.id}>{e.name} ({e.base_branch})</option>
                                 ))}
-                            </select>
-                            <button className="new-task" disabled={!env} onClick={() => navigate({ ...listRoute(), create: true })}>
+                            </Select>
+                            <Button className="new-task" disabled={!env} onClick={() => navigate({ ...listRoute(), create: true })}>
                                 <span className="icon">+</span>
                                 <span className="name">New task</span>
-                            </button>
+                            </Button>
                             {picked.size > 0 && (
                                 <div className="bulk-bar">
                                     <span>{picked.size} selected</span>
-                                    <button className="tiny danger" onClick={() => void deletePicked()}>Delete selected</button>
-                                    <button className="tiny" onClick={() => setPicked(new Set())}>Clear</button>
+                                    <Button size="sm" variant="danger" onClick={() => void deletePicked()}>Delete selected</Button>
+                                    <Button size="sm" onClick={() => setPicked(new Set())}>Clear</Button>
                                 </div>
                             )}
                         </div>
@@ -558,7 +559,7 @@ export const App = () => {
                                     const [glyph, cls] = ICON[g];
                                     return (
                                         <div key={t.id} className={`row ${selected === t.id ? "selected" : ""} ${picked.has(t.id) ? "picked" : ""}`} onClick={() => navigate(taskRoute(route, t.id))}>
-                                            <input
+                                            <Input
                                                 type="checkbox"
                                                 className="pick"
                                                 title="Select for bulk delete"
@@ -578,7 +579,7 @@ export const App = () => {
                         ))}
                     </aside>
                     <main className="detail">
-                        {selected && <button className="back" onClick={closeTask}>← tasks</button>}
+                        {selected && <Button variant="ghost" className="back" onClick={closeTask}>← tasks</Button>}
                         {error && <div className="blocked-box">{error}</div>}
                         {!detail && <div className="empty">Select a task, or add one.</div>}
                         {taskDetailView}
@@ -646,17 +647,17 @@ const TicketPicker = ({ groups, selected, onToggle }: { groups: Array<[string, M
     const match = (t: MyTicket) => !needle || t.id.toLowerCase().includes(needle) || t.title.toLowerCase().includes(needle);
     return (
         <div className="ticket-dropdown" ref={ref}>
-            <button type="button" className="ticket-dropdown-toggle" onClick={() => setOpen((v) => !v)}>
+            <Button type="button" className="ticket-dropdown-toggle" onClick={() => setOpen((v) => !v)}>
                 {picked.length ? `${picked.length} picked` : "Pick from my tickets"} <span className="caret">{open ? "▴" : "▾"}</span>
-            </button>
+            </Button>
             {picked.length > 0 && (
                 <span className="ticket-chips">
-                    {picked.map((t) => <span key={t.id} className="chip accent" title={t.title}>{t.id} <button type="button" className="chip-x" onClick={() => onToggle(t.id)} aria-label={`remove ${t.id}`}>×</button></span>)}
+                    {picked.map((t) => <Chip key={t.id} tone="accent" title={t.title}>{t.id} <Button variant="ghost" type="button" className="chip-x" onClick={() => onToggle(t.id)} aria-label={`remove ${t.id}`}>×</Button></Chip>)}
                 </span>
             )}
             {open && (
                 <div className="ticket-menu">
-                    <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by id or title…" />
+                    <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by id or title…" />
                     <div className="ticket-menu-list">
                         {groups.map(([g, tl]) => {
                             const shown = tl.filter(match);
@@ -666,8 +667,8 @@ const TicketPicker = ({ groups, selected, onToggle }: { groups: Array<[string, M
                                     <div className="group">{g}</div>
                                     {shown.map((t) => (
                                         <label key={t.id} className={`inline ticket-option ${selected.includes(t.id) ? "picked" : ""}`}>
-                                            <input type="checkbox" checked={selected.includes(t.id)} onChange={() => onToggle(t.id)} />
-                                            <span>{PRIORITY_MARK[t.priority ?? 0] ?? "·"} <b>{t.id}</b> {t.title.length > 70 ? `${t.title.slice(0, 70)}…` : t.title} <span className="chip">{t.status}</span></span>
+                                            <Input type="checkbox" checked={selected.includes(t.id)} onChange={() => onToggle(t.id)} />
+                                            <span>{PRIORITY_MARK[t.priority ?? 0] ?? "·"} <b>{t.id}</b> {t.title.length > 70 ? `${t.title.slice(0, 70)}…` : t.title} <Chip>{t.status}</Chip></span>
                                         </label>
                                     ))}
                                 </div>
@@ -675,7 +676,7 @@ const TicketPicker = ({ groups, selected, onToggle }: { groups: Array<[string, M
                         })}
                         {all.filter(match).length === 0 && <div className="quiet">nothing matches</div>}
                     </div>
-                    <div className="actions" style={{ margin: "6px 0 0" }}><button type="button" className="primary" onClick={() => setOpen(false)}>Done{picked.length ? ` (${picked.length})` : ""}</button></div>
+                    <div className="actions" style={{ margin: "6px 0 0" }}><Button variant="primary" type="button" onClick={() => setOpen(false)}>Done{picked.length ? ` (${picked.length})` : ""}</Button></div>
                 </div>
             )}
         </div>
@@ -728,28 +729,28 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
             {readiness && readiness.warnings.length === 0 && <span className="field-hint">Ready: agents run as {readiness.run.join(" → ")}; browser QA as {readiness.browser.join(" → ")}.</span>}
             <div className="ticket-field">
                 <span className="ticket-field-label">My tickets{" "}
-                    {mine === null ? <span className="chip">loading…</span> : mine.error ? <span className="chip bad" title={mine.error}>unavailable</span> : <span className="chip">{mine.tickets.length}{env.ticket_source === "clickup" ? " in current sprint" : " assigned"}</span>}
+                    {mine === null ? <Chip>loading…</Chip> : mine.error ? <Chip tone="bad" title={mine.error}>unavailable</Chip> : <Chip>{mine.tickets.length}{env.ticket_source === "clickup" ? " in current sprint" : " assigned"}</Chip>}
                 </span>
                 {mine && mine.tickets.length > 0 && <TicketPicker groups={groups} selected={list} onToggle={toggle} />}
                 {mine?.error && <span className="hint-line">{mine.error}</span>}
             </div>
-            <label>Ticket ids or links (one per line for several) <textarea autoFocus value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder={"PRODUCT-8704\nhttps://app.clickup.com/t/…\nhttps://linear.app/…/issue/…"} style={{ minHeight: 60 }} /></label>
-            {list.length > 0 && <span className={`chip ${bad.length ? "bad" : "accent"}`}>{bad.length ? `unrecognised: ${bad.join(", ")}` : `${list.length} ticket${list.length === 1 ? "" : "s"}`}</span>}
+            <label>Ticket ids or links (one per line for several) <Textarea autoFocus value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder={"PRODUCT-8704\nhttps://app.clickup.com/t/…\nhttps://linear.app/…/issue/…"} style={{ minHeight: 60 }} /></label>
+            {list.length > 0 && <Chip className={`${bad.length ? "bad" : "accent"}`}>{bad.length ? `unrecognised: ${bad.join(", ")}` : `${list.length} ticket${list.length === 1 ? "" : "s"}`}</Chip>}
             {list.length > 1 && (
                 <label>Dispatch
-                    <select value={mode} onChange={(e) => setMode(e.target.value as "each" | "batch")}>
+                    <Select value={mode} onChange={(e) => setMode(e.target.value as "each" | "batch")}>
                         <option value="each">One task per ticket — each gets its own branch and PR ({list.length} tasks)</option>
                         <option value="batch">One task for all — one branch, one PR per repository</option>
-                    </select>
+                    </Select>
                 </label>
             )}
             {owners.length > 0 && (
                 <label>Product owner
-                    <select value={owner} onChange={(e) => setOwner(e.target.value)}>
+                    <Select value={owner} onChange={(e) => setOwner(e.target.value)}>
                         <option value="">automatic — the one whose project the ticket belongs to</option>
                         <option value="none">none</option>
                         {owners.filter((o) => poEnvIds(o).includes(env.id)).map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
-                    </select>
+                    </Select>
                 </label>
             )}
             <label>Extra instructions for the agents (optional; every stage sees them) <AgentInput value={notes} onChange={setNotes} placeholder="Constraints, where the code lives, what to skip, how to test…" style={{ minHeight: 60 }} /></label>
@@ -760,24 +761,24 @@ const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
             ))}
             <span className="field-hint">The branch the work starts from and the PR targets — default {env.base_branch}. For a stacked PR, another task's branch{repoKeys.length > 1 ? " (per repository: a parent that touched only one repo leaves the other on the default)" : ""}; when that branch's PR merges, the task is rebased onto the new base automatically.</span>
             <label>AI account
-                <select value={acc} onChange={(e) => setAcc(e.target.value)}>
+                <Select value={acc} onChange={(e) => setAcc(e.target.value)}>
                     {accounts.length === 0 && <option value="">— no account can run in this environment's config dir —</option>}
                     {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.email ? ` · ${a.email}` : ""}</option>)}
-                </select>
+                </Select>
             </label>
             <label>Claude model
-                <select value={model} onChange={(e) => setModel(e.target.value)}>
+                <Select value={model} onChange={(e) => setModel(e.target.value)}>
                     {(settings?.models ?? [{ value: "", label: "Account default" }]).map((m) => (
                         <option key={m.value} value={m.value}>
                             {m.value === "" ? `Account default${(() => { const d = modelLabel(accounts.find((a) => a.id === acc)?.default_model, settings?.models); return d ? ` · ${d}` : " · not resolved yet (refresh the account)"; })()}` : m.label}
                         </option>
                     ))}
-                </select>
+                </Select>
                 <span className="field-hint">Applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet.</span>
             </label>
-            <button className="primary" disabled={list.length === 0 || bad.length > 0 || accounts.length === 0} onClick={() => onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}), ...(baseBranch ? { baseBranch } : {}), ...(owner ? { productOwnerId: owner === "none" ? null : owner } : {}) })}>
+            <Button variant="primary" disabled={list.length === 0 || bad.length> 0 || accounts.length === 0} onClick={() => onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}), ...(baseBranch ? { baseBranch } : {}), ...(owner ? { productOwnerId: owner === "none" ? null : owner } : {}) })}>
                 {list.length > 1 ? (mode === "each" ? `Start ${list.length} tasks` : `Start 1 task for ${list.length} tickets`) : "Start task"}
-            </button>
+            </Button>
         </>
     );
 };
@@ -804,46 +805,46 @@ const EnvForm = ({
     const repoList = splitRepos(repos);
     return (
         <>
-            <label>Name <input autoFocus value={name} onChange={(e) => setName(e.target.value)} /></label>
-            <label>Path <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="/Users/you/code/repo — or a workspace folder holding several repos" /></label>
-            <label>Sub-repositories (comma-separated; empty = the path itself is the git repo) <input value={repos} onChange={(e) => setRepos(e.target.value)} placeholder="backend, frontend" /></label>
-            <label>Base branch <input value={base} onChange={(e) => setBase(e.target.value)} /></label>
+            <label>Name <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} /></label>
+            <label>Path <Input value={path} onChange={(e) => setPath(e.target.value)} placeholder="/Users/you/code/repo — or a workspace folder holding several repos" /></label>
+            <label>Sub-repositories (comma-separated; empty = the path itself is the git repo) <Input value={repos} onChange={(e) => setRepos(e.target.value)} placeholder="backend, frontend" /></label>
+            <label>Base branch <Input value={base} onChange={(e) => setBase(e.target.value)} /></label>
             <label>Task system (how bare ids like ABC-123 are resolved)
-                <select value={ticketSource} onChange={(e) => setTicketSource(e.target.value as "clickup" | "linear")}>
+                <Select value={ticketSource} onChange={(e) => setTicketSource(e.target.value as "clickup" | "linear")}>
                     <option value="clickup">ClickUp</option><option value="linear">Linear</option>
-                </select>
+                </Select>
             </label>
-            <label>App URL for QA <input value={appUrl} onChange={(e) => setAppUrl(e.target.value)} placeholder="https://localhost:3000" /></label>
+            <label>App URL for QA <Input value={appUrl} onChange={(e) => setAppUrl(e.target.value)} placeholder="https://localhost:3000" /></label>
             <label>Claude config dir
-                <select value={dirId} onChange={(e) => setDirId(e.target.value)}>
+                <Select value={dirId} onChange={(e) => setDirId(e.target.value)}>
                     <option value="">— auto: {"<path>"}/.claude if registered, else the first dir —</option>
                     {configDirs.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.path}</option>)}
-                </select>
+                </Select>
             </label>
             <label>First AI account (the environment page lets you list more, in priority order)
-                <select value={acc} onChange={(e) => setAcc(e.target.value)}>
+                <Select value={acc} onChange={(e) => setAcc(e.target.value)}>
                     <option value="">— any account that can run in the dir —</option>
                     {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
+                </Select>
             </label>
-            <button
-                className="primary"
-                disabled={!name || !path}
-                onClick={() =>
-                    onSubmit({
-                        name,
-                        path,
-                        baseBranch: base,
-                        ticketSource,
-                        ...(acc ? { defaultAccountId: acc } : {}),
-                        ...(dirId ? { configDirId: dirId } : {}),
-                        ...(appUrl ? { appUrl } : {}),
-                        ...(repoList.length ? { repos: repoList } : {}),
-                    })
-                }
-            >
+            <Button variant="primary"
+ 
+ disabled={!name || !path}
+ onClick={() =>
+ onSubmit({
+ name,
+ path,
+ baseBranch: base,
+ ticketSource,
+ ...(acc ? { defaultAccountId: acc } : {}),
+ ...(dirId ? { configDirId: dirId } : {}),
+ ...(appUrl ? { appUrl } : {}),
+ ...(repoList.length ? { repos: repoList } : {}),
+ })
+ }
+>
                 Add
-            </button>
+            </Button>
         </>
     );
 };
@@ -854,9 +855,9 @@ const AccountForm = ({ onSubmit }: { onSubmit: (name: string, email?: string) =>
     return (
         <>
             <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 13 }}>Opens a terminal running <code>claude setup-token</code>: finish the claude.ai login in the browser (pick the right account there — the email below is only a label), paste the code back if asked. Stagehand stores the resulting long-lived token and closes the terminal; the account then works in any config dir.</p>
-            <label>Name <input autoFocus value={name} onChange={(e) => setName(e.target.value.toLowerCase())} placeholder="work" /></label>
-            <label>Email (label) <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" /></label>
-            <button className="primary" disabled={!/^[a-z0-9-]+$/.test(name)} onClick={() => onSubmit(name, email || undefined)}>Set up token</button>
+            <label>Name <Input autoFocus value={name} onChange={(e) => setName(e.target.value.toLowerCase())} placeholder="work" /></label>
+            <label>Email (label) <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" /></label>
+            <Button variant="primary" disabled={!/^[a-z0-9-]+$/.test(name)} onClick={() => onSubmit(name, email || undefined)}>Set up token</Button>
         </>
     );
 };

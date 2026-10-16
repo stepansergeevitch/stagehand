@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, STAGE_LABEL, type Stage, type TaskTiming, type TimingBucket, type TimingReport } from "./api";
 import { hours } from "./Analytics";
 import { storage } from "./storage";
+import { Button, Card, Chip, Tab, TabList } from "./components/ui";
 
 // Time the way Analytics shows cost: how long the agents ran per stage, side operation, task and day, and how long
 // each task sat working, waiting for the human, waiting for GitHub or rate-limited (from the task event log).
@@ -39,7 +40,7 @@ const Breakdown = ({ title, rows, total, labelOf, subOf, limit, unit = "runs" }:
     const [all, setAll] = useState(false);
     const shown = limit && !all ? rows.slice(0, limit) : rows;
     return (
-        <section className="card usage-table">
+        <Card className="usage-table">
             <h2>{title}</h2>
             {rows.length === 0 && <div className="quiet">nothing in this period</div>}
             {rows.length > 0 && (
@@ -64,8 +65,8 @@ const Breakdown = ({ title, rows, total, labelOf, subOf, limit, unit = "runs" }:
                     </tbody>
                 </table>
             )}
-            {limit && rows.length > limit && <div className="actions"><button onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${rows.length}`}</button></div>}
-        </section>
+            {limit && rows.length > limit && <div className="actions"><Button onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${rows.length}`}</Button></div>}
+        </Card>
     );
 };
 
@@ -77,7 +78,7 @@ const TaskRows = ({ rows }: { rows: TaskTiming[] }) => {
     const shown = all ? rows : rows.slice(0, 12);
     const maxLead = Math.max(1, ...rows.map((t) => t.leadMs));
     return (
-        <section className="card usage-table">
+        <Card className="usage-table">
             <h2>By task</h2>
             <p className="field-hint">Lead time is creation → done (or now). The split into working / waiting comes from the task's state changes and is tracked from the moment this version started recording them; older time shows as untracked. Click a row for its stages.</p>
             {rows.length === 0 && <div className="quiet">nothing in this period</div>}
@@ -101,7 +102,7 @@ const TaskRows = ({ rows }: { rows: TaskTiming[] }) => {
                                         <td className="mono">{t.tracked ? hours(t.rateLimitedMs) : "—"}</td>
                                         <td className="mono">{hours(t.agentMs)}</td>
                                         <td className="mono">{t.runs}</td>
-                                        <td>{t.status ? <span className={`chip ${t.done ? "ok" : ""}`}>{t.done ? "done" : `${stageLabel(t.stage ?? "")} · ${t.status}`}</span> : <span className="chip">deleted</span>}</td>
+                                        <td>{t.status ? <Chip className={`${t.done ? "ok" : ""}`}>{t.done ? "done" : `${stageLabel(t.stage ?? "")} · ${t.status}`}</Chip> : <Chip>deleted</Chip>}</td>
                                     </tr>
                                     {open && (
                                         <tr key={`${t.key}-stages`} className="timing-stages">
@@ -109,7 +110,7 @@ const TaskRows = ({ rows }: { rows: TaskTiming[] }) => {
                                                 {Object.keys(t.stagesMs).length === 0 && <span className="quiet">no tracked state changes in this period</span>}
                                                 {Object.entries(t.stagesMs)
                                                     .sort((a, b) => b[1] - a[1])
-                                                    .map(([stage, ms]) => <span key={stage} className="chip" title={`time spent at ${stageLabel(stage)}`}>{stageLabel(stage)} · {hours(ms)}</span>)}
+                                                    .map(([stage, ms]) => <Chip key={stage} title={`time spent at ${stageLabel(stage)}`}>{stageLabel(stage)} · {hours(ms)}</Chip>)}
                                             </td>
                                         </tr>
                                     )}
@@ -119,8 +120,8 @@ const TaskRows = ({ rows }: { rows: TaskTiming[] }) => {
                     </tbody>
                 </table>
             )}
-            {rows.length > 12 && <div className="actions"><button onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${rows.length}`}</button></div>}
-        </section>
+            {rows.length > 12 && <div className="actions"><Button onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${rows.length}`}</Button></div>}
+        </Card>
     );
 };
 
@@ -140,9 +141,9 @@ export const Timing = ({ days: routedDays, onDays, onError }: { days?: number; o
         <div className="env-page analytics">
             <h1>Timing</h1>
             <p className="field-hint">How long things take: the wall time of every agent run by stage, operation and day, and per task the calendar time from creation to done, split into working, waiting for you, waiting for GitHub and rate-limited (from the task's state changes).</p>
-            <div className="subtabs">
-                {PERIODS.map((p) => <button key={p.days} className={days === p.days ? "active" : ""} onClick={() => onDays(p.days)}>{p.label}</button>)}
-            </div>
+            <TabList variant="pill">
+                {PERIODS.map((p) => <Tab key={p.days} active={days === p.days} onClick={() => onDays(p.days)}>{p.label}</Tab>)}
+            </TabList>
             {!report && <div className="empty">loading…</div>}
             {report && t && (
                 <>

@@ -5,6 +5,7 @@ import { storage } from "./storage";
 import { prompterBus } from "./prompterBus";
 import { formatRoute, type Route } from "./routes";
 import { AgentInput, usePendingFiles } from "./AgentInput";
+import { Button, Chip, Select } from "./components/ui";
 
 // Prompter — the assistant in the bottom-right corner. Every chat is a claude session on the server; several can be
 // open at once and the strip under the header switches between them (the list is the server's, so a reload or a
@@ -231,9 +232,9 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
     if (!open) {
         const unread = Object.values(chats).filter((c) => c.unread).length;
         return (
-            <button className="prompter-fab" title="Prompter — the assistant that knows this app and sees what you see" onClick={() => setOpen(true)}>
-                <span className="prompter-fab-mark">P</span> Prompter{unread > 0 && <span className="chip accent" title="chats with an answer you have not seen">{unread}</span>}
-            </button>
+            <Button className="prompter-fab" title="Prompter — the assistant that knows this app and sees what you see" onClick={() => setOpen(true)}>
+                <span className="prompter-fab-mark">P</span> Prompter{unread > 0 && <Chip tone="accent" title="chats with an answer you have not seen">{unread}</Chip>}
+            </Button>
         );
     }
     const placeholder = chat.busy
@@ -243,32 +244,32 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
         <aside className={`prompter ${wide ? "wide" : ""}`} aria-label="Prompter">
             <header className="prompter-head">
                 <b>Prompter</b>
-                {status?.account && <span className="chip" title="the AI account that runs the assistant">{status.account}</span>}
-                <select className="prompter-model" value={model} title="Model for the next new chat" onChange={(e) => setModel(e.target.value)}>
+                {status?.account && <Chip title="the AI account that runs the assistant">{status.account}</Chip>}
+                <Select className="prompter-model" value={model} title="Model for the next new chat" onChange={(e) => setModel(e.target.value)}>
                     {(settings?.models ?? []).filter((m) => m.value).map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-                </select>
+                </Select>
                 <span className="spacer" />
-                <button className="tiny" title="Start another chat (this one stays open in the strip)" onClick={() => void create().catch((e: Error) => setError(e.message))}>+ New</button>
-                <button className="tiny" title={wide ? "Smaller" : "Larger"} onClick={() => setWide((v) => !v)}>{wide ? "⇲" : "⇱"}</button>
-                <button className="tiny" title="Hide the window; the chats stay open" onClick={() => setOpen(false)}>–</button>
-                <button className="tiny" title="End this chat" disabled={!session} onClick={() => session && end(session.id, sessions.length <= 1)}>×</button>
+                <Button size="sm" title="Start another chat (this one stays open in the strip)" onClick={() => void create().catch((e: Error) => setError(e.message))}>+ New</Button>
+                <Button size="sm" title={wide ? "Smaller" : "Larger"} onClick={() => setWide((v) => !v)}>{wide ? "⇲" : "⇱"}</Button>
+                <Button size="sm" title="Hide the window; the chats stay open" onClick={() => setOpen(false)}>–</Button>
+                <Button size="sm" title="End this chat" disabled={!session} onClick={() => session && end(session.id, sessions.length <= 1)}>×</Button>
             </header>
             {sessions.length > 1 && (
                 <div className="prompter-strip" role="tablist">
                     {sessions.map((s) => {
                         const c = chats[s.id] ?? EMPTY;
                         return (
-                            <button
-                                key={s.id}
-                                role="tab"
-                                className={`prompter-tab ${s.id === activeId ? "active" : ""} ${c.unread ? "unread" : ""}`}
-                                title={`${s.title ?? "new chat"} · ${s.turns} turn${s.turns === 1 ? "" : "s"} · last ${ago(s.last_at)} ago${s.model ? ` · ${s.model}` : ""}`}
-                                onClick={() => setActiveId(s.id)}
-                            >
+                            <Button
+ key={s.id}
+ role="tab"
+ className={`prompter-tab ${s.id === activeId ? "active" : ""} ${c.unread ? "unread" : ""}`}
+ title={`${s.title ?? "new chat"} · ${s.turns} turn${s.turns === 1 ? "" : "s"} · last ${ago(s.last_at)} ago${s.model ? ` · ${s.model}` : ""}`}
+ onClick={() => setActiveId(s.id)}
+>
                                 {c.busy && <span className="prompter-tab-busy" aria-label="answering" />}
                                 <span className="prompter-tab-title">{s.title ?? "new chat"}</span>
                                 <span className="prompter-tab-close" title="End this chat" onClick={(e) => { e.stopPropagation(); end(s.id, false); }}>×</span>
-                            </button>
+                            </Button>
                         );
                     })}
                 </div>
@@ -283,7 +284,7 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
                         {m.state === "queued" && (
                             <div className="prompter-queued-row">
                                 <span>waits for the next turn</span>
-                                <button title="Take it back into the input to edit (ArrowUp does the same for the last one)" onClick={() => void takeBack(m)}>edit</button>
+                                <Button title="Take it back into the input to edit (ArrowUp does the same for the last one)" onClick={() => void takeBack(m)}>edit</Button>
                             </div>
                         )}
                     </div>
@@ -315,8 +316,8 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
                     disabled={!session || (status !== null && !status.ready)}
                     rows={2}
                 />
-                {chat.busy && <button className="prompter-stop" title={`Stop this turn (Esc)${queued.length ? `; the ${queued.length} stacked message${queued.length === 1 ? "" : "s"} go out next` : ""}`} onClick={() => void stop()}>■ Stop</button>}
-                <button className="primary" disabled={!session || (!text.trim() && attach.files.length === 0)} title={chat.busy ? "Stacks behind the running turn" : "Send"} onClick={() => void send()}>{chat.busy ? "Stack" : "Send"}</button>
+                {chat.busy && <Button className="prompter-stop" title={`Stop this turn (Esc)${queued.length ? `; the ${queued.length} stacked message${queued.length === 1 ? "" : "s"} go out next` : ""}`} onClick={() => void stop()}>■ Stop</Button>}
+                <Button variant="primary" disabled={!session || (!text.trim() && attach.files.length === 0)} title={chat.busy ? "Stacks behind the running turn" : "Send"} onClick={() => void send()}>{chat.busy ? "Stack" : "Send"}</Button>
             </div>
         </aside>
     );

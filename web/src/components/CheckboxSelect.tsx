@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { useDismiss } from "./useDismiss";
+import { Button, Input } from "./ui";
 
 export interface CheckboxOption {
     value: string;
@@ -18,9 +19,9 @@ export const CheckboxSelect = ({ options, value, onChange, placeholder = "None",
     const toggle = (v: string) => onChange(value.includes(v) ? value.filter((x) => x !== v) : [...value, v]);
     return (
         <div className="dt-picker checkbox-select" ref={ref}>
-            <button type="button" className={open ? "on" : ""} disabled={disabled} onClick={() => setOpen((o) => !o)}>
+            <Button type="button" className={open ? "on" : ""} disabled={disabled} onClick={() => setOpen((o) => !o)}>
                 {value.length ? value.map(label).join(", ") : placeholder} ▾
-            </button>
+            </Button>
             {open && (
                 <div className="dt-menu left" role="menu">
                     {options.map((o) => {
@@ -28,7 +29,7 @@ export const CheckboxSelect = ({ options, value, onChange, placeholder = "None",
                         const off = (on && value.length <= min) || (!on && !!o.disabled);
                         return (
                             <label key={o.value} className="dt-menu-item" title={!on ? o.disabled : on && value.length <= min ? `keep at least ${min}` : undefined}>
-                                <input type="checkbox" checked={on} disabled={off} onChange={() => toggle(o.value)} />
+                                <Input type="checkbox" checked={on} disabled={off} onChange={() => toggle(o.value)} />
                                 {o.label}
                             </label>
                         );

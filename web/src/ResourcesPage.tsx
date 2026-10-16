@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Resource, type ResourceKind, type ResourcePolicies, type ResourceSnapshot } from "./api";
 import { hours } from "./Analytics";
+import { Button, Card, Chip, Input, Tab, TabList } from "./components/ui";
 
 // Everything Stagehand has started on this host — dev servers, agent runs, terminals, browsers, worktrees — with what
 // each costs (RSS, CPU, disk), who owns it, what the policy will do with it and when. Three tabs: the Dashboard (the
@@ -32,13 +33,13 @@ const Tile = ({ label, value, sub, tone }: { label: string; value: string; sub?:
 );
 
 const Verdict = ({ r }: { r: Resource }) => {
-    if (r.pinned) return <span className="chip accent" title={r.policy.reason}>pinned</span>;
-    if (r.policy.verdict === "keep") return <span className="chip ok" title={r.policy.reason}>keep · {r.policy.reason}</span>;
+    if (r.pinned) return <Chip tone="accent" title={r.policy.reason}>pinned</Chip>;
+    if (r.policy.verdict === "keep") return <Chip tone="ok" title={r.policy.reason}>keep · {r.policy.reason}</Chip>;
     const due = r.policy.dueAt ? Date.parse(r.policy.dueAt) - Date.now() : 0;
     return (
-        <span className={`chip ${due <= 0 ? "bad" : "warn"}`} title={r.policy.reason}>
+        <Chip className={`${due <= 0 ? "bad" : "warn"}`} title={r.policy.reason}>
             {due <= 0 ? "stopping" : `stops in ${hours(due)}`} · {r.policy.reason}
-        </span>
+        </Chip>
     );
 };
 
@@ -91,8 +92,8 @@ const ResourceRow = ({ r, busy, act, worktree = false, nested = false }: { r: Re
         <td className="res-actions">
             {r.kind !== "run" && r.kind !== "worktree" && r.kind !== "database" && (
                 <>
-                    <button className="tiny" disabled={!!busy} title={r.pinned ? "Let the policy apply again" : "Never stopped by the policy"} onClick={() => void act(r.id, () => api.pinResource(r.id, !r.pinned))}>{r.pinned ? "unpin" : "pin"}</button>
-                    <button className="tiny danger" disabled={!!busy} onClick={() => void act(r.id, () => api.stopResource(r.id))}>stop</button>
+                    <Button size="sm" disabled={!!busy} title={r.pinned ? "Let the policy apply again" : "Never stopped by the policy"} onClick={() => void act(r.id, () => api.pinResource(r.id, !r.pinned))}>{r.pinned ? "unpin" : "pin"}</Button>
+                    <Button size="sm" variant="danger" disabled={!!busy} onClick={() => void act(r.id, () => api.stopResource(r.id))}>stop</Button>
                 </>
             )}
         </td>
@@ -124,8 +125,8 @@ const DevServers = ({ rows, tasks, max, busy, act }: { rows: Resource[]; tasks: 
     }, [rows, sort]);
     const sorted = sortBy(groups, sort);
     return (
-        <section className="card usage-table res-group">
-            <h2>Dev Servers <span className="chip">{tasks} / {max} tasks</span> <span className="chip">{rows.length} server{rows.length === 1 ? "" : "s"}</span></h2>
+        <Card className="usage-table res-group">
+            <h2>Dev Servers <Chip>{tasks} / {max} tasks</Chip> <Chip>{rows.length} server{rows.length === 1 ? "" : "s"}</Chip></h2>
             <table>
                 <thead>
                     <tr>
@@ -154,7 +155,7 @@ const DevServers = ({ rows, tasks, max, busy, act }: { rows: Resource[]; tasks: 
                                 <td className="mono">{g.cpuPct}%</td>
                                 <td className="mono">{ago(g.ageMs)}</td>
                                 <td className="mono">{ago(g.idleMs)}</td>
-                                <td>{g.due ? <span className="chip warn">some stop soon</span> : <Verdict r={g.rows[0]!} />}</td>
+                                <td>{g.due ? <Chip tone="warn">some stop soon</Chip> : <Verdict r={g.rows[0]!} />}</td>
                                 <td />
                             </tr>,
                             ...(expanded ? g.rows.map((r) => <ResourceRow key={r.id} r={r} busy={busy} act={act} nested />) : []),
@@ -162,7 +163,7 @@ const DevServers = ({ rows, tasks, max, busy, act }: { rows: Resource[]; tasks: 
                     })}
                 </tbody>
             </table>
-        </section>
+        </Card>
     );
 };
 
@@ -173,7 +174,7 @@ const Group = ({ kind, rows, busy, act }: { kind: ResourceKind; rows: Resource[]
         <section className={`card usage-table res-group${kind === "orphan" ? " res-orphans" : ""}`}>
             <h2>
                 {KIND_LABEL[kind]}
-                {kind !== "orphan" && rows.length > 1 ? "s" : ""} <span className="chip">{rows.length}</span>
+                {kind !== "orphan" && rows.length > 1 ? "s" : ""} <Chip>{rows.length}</Chip>
                 {kind === "orphan" && <span className="field-hint"> — running on the host, but no task, service row or session explains them</span>}
             </h2>
             <table>
@@ -202,8 +203,8 @@ const Worktrees = ({ rows, busy, act }: { rows: Resource[]; busy: string | null;
     const [expanded, setExpanded] = useState(false);
     const total = rows.reduce((n, r) => n + (r.diskMb ?? 0), 0);
     return (
-        <section className="card usage-table res-group">
-            <h2 className="res-toggle" onClick={() => setExpanded((x) => !x)}>{expanded ? "▾" : "▸"} Worktrees <span className="chip">{rows.length}</span> <span className="chip">{gb(total)} on disk</span></h2>
+        <Card className="usage-table res-group">
+            <h2 className="res-toggle" onClick={() => setExpanded((x) => !x)}>{expanded ? "▾" : "▸"} Worktrees <Chip>{rows.length}</Chip> <Chip>{gb(total)} on disk</Chip></h2>
             {expanded && <table>
                 <thead>
                     <tr>
@@ -218,7 +219,7 @@ const Worktrees = ({ rows, busy, act }: { rows: Resource[]; busy: string | null;
                 </thead>
                 <tbody>{sortBy(rows, sort).map((r) => <ResourceRow key={r.id} r={r} busy={busy} act={act} worktree />)}</tbody>
             </table>}
-        </section>
+        </Card>
     );
 };
 
@@ -248,8 +249,8 @@ const Databases = ({ rows, onChanged, onError }: { rows: Resource[]; onChanged: 
     const order = (r: Resource): number => (r.owner.status === "template" ? 0 : r.owner.type === "task" ? 1 : 2);
     const sorted = [...rows].sort((a, b) => a.owner.name === b.owner.name ? order(a) - order(b) || (b.diskMb ?? 0) - (a.diskMb ?? 0) : String(a.owner.name).localeCompare(String(b.owner.name)));
     return (
-        <section className="card usage-table res-group">
-            <h2 className="res-toggle" onClick={() => setExpanded((x) => !x)}>{expanded ? "▾" : "▸"} Databases <span className="chip">{rows.length}</span> <span className="chip">{gb(total)}</span></h2>
+        <Card className="usage-table res-group">
+            <h2 className="res-toggle" onClick={() => setExpanded((x) => !x)}>{expanded ? "▾" : "▸"} Databases <Chip>{rows.length}</Chip> <Chip>{gb(total)}</Chip></h2>
             {expanded && <table>
                 <thead>
                     <tr>
@@ -272,14 +273,14 @@ const Databases = ({ rows, onChanged, onError }: { rows: Resource[]; onChanged: 
                             <td className="mono">{ago(r.idleMs)}</td>
                             <td><Verdict r={r} /></td>
                             <td>
-                                {r.owner.status === "template" && <button className="tiny" disabled={busy !== null} onClick={() => void act(r, () => api.refreshTemplate(target(r).envId))}>{busy === r.id ? "Refreshing…" : "Refresh"}</button>}
-                                {r.owner.status === "orphan" && <button className="tiny danger" disabled={busy !== null} onClick={() => { if (confirm(`Drop database ${target(r).name}?`)) void act(r, () => api.dropEnvDb(target(r).envId, target(r).name)); }}>{busy === r.id ? "Dropping…" : "Drop"}</button>}
+                                {r.owner.status === "template" && <Button size="sm" disabled={busy !== null} onClick={() => void act(r, () => api.refreshTemplate(target(r).envId))}>{busy === r.id ? "Refreshing…" : "Refresh"}</Button>}
+                                {r.owner.status === "orphan" && <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => { if (confirm(`Drop database ${target(r).name}?`)) void act(r, () => api.dropEnvDb(target(r).envId, target(r).name)); }}>{busy === r.id ? "Dropping…" : "Drop"}</Button>}
                             </td>
                         </tr>
                     ))}
                 </tbody>
             </table>}
-        </section>
+        </Card>
     );
 };
 
@@ -300,27 +301,27 @@ const Policies = ({ value, onSaved, onError }: { value: ResourcePolicies; onSave
         }
     };
     return (
-        <section className="card env-section">
+        <Card className="env-section">
             <h2>Policies</h2>
             <p className="field-hint">What the reaper does on its own, every 20 s. A pinned resource is never touched; a BE/FE you start yourself is pinned until you stop it. Under memory pressure (swap or available RAM past the thresholds) every grace period becomes zero and idle terminals go after 30 min.</p>
             <div className="env-fields">
-                <label className="inline"><input type="checkbox" checked={p.enabled} onChange={(e) => setP((x) => ({ ...x, enabled: e.target.checked }))} /> Automatic cleanup on (off = the page only shows and lets you stop by hand)</label>
+                <label className="inline"><Input type="checkbox" checked={p.enabled} onChange={(e) => setP((x) => ({ ...x, enabled: e.target.checked }))} /> Automatic cleanup on (off = the page only shows and lets you stop by hand)</label>
                 <div className="two">
-                    <label>Parked task keeps its BE/FE for (min) <input type="number" min={0} value={p.idleServiceMinutes} onChange={num("idleServiceMinutes")} /></label>
-                    <label>Task past QA (PR stages, done, stopped) keeps them for (min) <input type="number" min={0} value={p.doneServiceMinutes} onChange={num("doneServiceMinutes")} /></label>
-                    <label>A fresh start settles for (min) — never stopped before that, whatever the pressure <input type="number" min={0} value={p.settleMinutes} onChange={num("settleMinutes")} /></label>
-                    <label>Task session rotates above (MB of transcript; 0 = never) — a resumed run pays for the whole conversation every time <input type="number" min={0} value={p.maxSessionMb} onChange={num("maxSessionMb")} /></label>
-                    <label>Tasks that may hold dev servers at once <input type="number" min={1} value={p.maxDevServerTasks} onChange={num("maxDevServerTasks")} /></label>
-                    <label>Task terminal idle limit (h) <input type="number" min={0} value={p.terminalIdleHours} onChange={num("terminalIdleHours")} /></label>
-                    <label>Session idle limit (h) <input type="number" min={0} value={p.sessionIdleHours} onChange={num("sessionIdleHours")} /></label>
-                    <label>Login helper lifetime (min) <input type="number" min={0} value={p.loginMinutes} onChange={num("loginMinutes")} /></label>
-                    <label>Orphan grace (min) <input type="number" min={0} value={p.orphanMinutes} onChange={num("orphanMinutes")} /></label>
-                    <label>Memory pressure below available (MB) <input type="number" min={0} value={p.minAvailableMb} onChange={num("minAvailableMb")} /></label>
-                    <label>Memory pressure above swap (MB) <input type="number" min={0} value={p.maxSwapMb} onChange={num("maxSwapMb")} /></label>
+                    <label>Parked task keeps its BE/FE for (min) <Input type="number" min={0} value={p.idleServiceMinutes} onChange={num("idleServiceMinutes")} /></label>
+                    <label>Task past QA (PR stages, done, stopped) keeps them for (min) <Input type="number" min={0} value={p.doneServiceMinutes} onChange={num("doneServiceMinutes")} /></label>
+                    <label>A fresh start settles for (min) — never stopped before that, whatever the pressure <Input type="number" min={0} value={p.settleMinutes} onChange={num("settleMinutes")} /></label>
+                    <label>Task session rotates above (MB of transcript; 0 = never) — a resumed run pays for the whole conversation every time <Input type="number" min={0} value={p.maxSessionMb} onChange={num("maxSessionMb")} /></label>
+                    <label>Tasks that may hold dev servers at once <Input type="number" min={1} value={p.maxDevServerTasks} onChange={num("maxDevServerTasks")} /></label>
+                    <label>Task terminal idle limit (h) <Input type="number" min={0} value={p.terminalIdleHours} onChange={num("terminalIdleHours")} /></label>
+                    <label>Session idle limit (h) <Input type="number" min={0} value={p.sessionIdleHours} onChange={num("sessionIdleHours")} /></label>
+                    <label>Login helper lifetime (min) <Input type="number" min={0} value={p.loginMinutes} onChange={num("loginMinutes")} /></label>
+                    <label>Orphan grace (min) <Input type="number" min={0} value={p.orphanMinutes} onChange={num("orphanMinutes")} /></label>
+                    <label>Memory pressure below available (MB) <Input type="number" min={0} value={p.minAvailableMb} onChange={num("minAvailableMb")} /></label>
+                    <label>Memory pressure above swap (MB) <Input type="number" min={0} value={p.maxSwapMb} onChange={num("maxSwapMb")} /></label>
                 </div>
             </div>
-            <div className="actions"><button className="primary" disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button></div>
-        </section>
+            <div className="actions"><Button variant="primary" disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</Button></div>
+        </Card>
     );
 };
 
@@ -365,16 +366,16 @@ export const ResourcesPage = ({ tab: tabArg, onTab: setTab, onError }: { tab: st
                 <h1>Resources</h1>
                 <span className="quiet">observed {ago(Date.now() - Date.parse(snap.at))} ago</span>
                 <div className="spacer" />
-                <button disabled={!!busy} onClick={() => void act("refresh", () => load(true))}>Refresh</button>
-                <button className="danger" disabled={!!busy || (!orphans.length && !due.length)} title="Stops every orphan and every resource whose policy already says stop" onClick={() => void act("sweep", () => api.sweepResources())}>
+                <Button disabled={!!busy} onClick={() => void act("refresh", () => load(true))}>Refresh</Button>
+                <Button variant="danger" disabled={!!busy || (!orphans.length && !due.length)} title="Stops every orphan and every resource whose policy already says stop" onClick={() => void act("sweep", () => api.sweepResources())}>
                     Clean up {orphans.length + due.length ? `(${orphans.length + due.length})` : ""}
-                </button>
+                </Button>
             </div>
-            <div className="subtabs">
-                <button className={tab === "dashboard" ? "active" : ""} onClick={() => setTab("dashboard")}>Dashboard</button>
-                <button className={tab === "policies" ? "active" : ""} onClick={() => setTab("policies")}>Policies</button>
-                <button className={tab === "actions" ? "active" : ""} onClick={() => setTab("actions")}>Recent actions <span className="chip">{snap.events.length}</span></button>
-            </div>
+            <TabList variant="pill">
+                <Tab active={tab === "dashboard"} onClick={() => setTab("dashboard")}>Dashboard</Tab>
+                <Tab active={tab === "policies"} onClick={() => setTab("policies")}>Policies</Tab>
+                <Tab active={tab === "actions"} onClick={() => setTab("actions")}>Recent actions <Chip>{snap.events.length}</Chip></Tab>
+            </TabList>
             {tab === "dashboard" && (
                 <>
                     {h.pressure !== "ok" && <div className={`blocked-box ${h.pressure === "critical" ? "" : "warn"}`}>Memory pressure: {h.pressureReason}. {h.pressure === "critical" ? "Grace periods are zero — parked dev servers and idle terminals stop now." : "Grace periods still apply."}</div>}
@@ -399,8 +400,8 @@ export const ResourcesPage = ({ tab: tabArg, onTab: setTab, onError }: { tab: st
             )}
             {tab === "policies" && <Policies value={snap.policies} onSaved={() => void load(true)} onError={onError} />}
             {tab === "actions" && (
-                <section className="card usage-table">
-                    <h2>Recent actions <span className="chip">{snap.events.length}</span></h2>
+                <Card className="usage-table">
+                    <h2>Recent actions <Chip>{snap.events.length}</Chip></h2>
                     {snap.events.length === 0 && <div className="quiet">nothing stopped yet</div>}
                     {snap.events.length > 0 && (
                         <table>
@@ -409,7 +410,7 @@ export const ResourcesPage = ({ tab: tabArg, onTab: setTab, onError }: { tab: st
                                 {snap.events.map((e) => (
                                     <tr key={e.id}>
                                         <td className="mono">{ago(Date.now() - Date.parse(e.at))} ago</td>
-                                        <td><b>{e.label}</b> <span className="chip">{KIND_LABEL[e.kind as ResourceKind] ?? e.kind}</span></td>
+                                        <td><b>{e.label}</b> <Chip>{KIND_LABEL[e.kind as ResourceKind] ?? e.kind}</Chip></td>
                                         <td className="mono">{e.task_id ? e.task_id.slice(0, 8) : "—"}</td>
                                         <td>{e.action}</td>
                                         <td className="res-why">{e.reason}</td>
@@ -419,7 +420,7 @@ export const ResourcesPage = ({ tab: tabArg, onTab: setTab, onError }: { tab: st
                             </tbody>
                         </table>
                     )}
-                </section>
+                </Card>
             )}
         </div>
     );

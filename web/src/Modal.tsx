@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { Button } from "./components/ui";
 
 // A dialog over the page: Esc or a click outside closes it.
 export const Modal = ({ title, children, onClose, wide }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) => {
@@ -12,7 +13,7 @@ export const Modal = ({ title, children, onClose, wide }: { title: string; child
             <div className="box" style={wide ? { minWidth: "min(900px, 100vw - 24px)" } : undefined} onClick={(e) => e.stopPropagation()}>
                 <div className="modal-head">
                     <h2>{title}</h2>
-                    <button className="close" onClick={onClose} aria-label="Close" title="Close (Esc)">×</button>
+                    <Button variant="ghost" className="close" onClick={onClose} aria-label="Close" title="Close (Esc)">×</Button>
                 </div>
                 {children}
             </div>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, componentsOf, type Env, type EnvComponent, type Service } from "./api";
 import { BranchPicker } from "./BranchPicker";
+import { Button, Chip } from "./components/ui";
 
 // Which branch of the dependency env this task's dependency runs from: the shared instance, or the BE of that env's
 // task on a branch (a change that needs the dependency's own unmerged change). Applied at the next start of the app.
@@ -11,14 +12,14 @@ const DependencyBranch = ({ depEnvId, value, disabled, onSave }: { taskId: strin
         return (
             <>
                 <BranchPicker envId={depEnvId} value={draft} onChange={setDraft} placeholder="shared instance" style={{ maxWidth: 260 }} autoFocus />
-                <button className="tiny" onClick={() => { onSave(draft.trim() || null); setEditing(false); }}>Save</button>
-                <button className="tiny" onClick={() => setEditing(false)}>×</button>
+                <Button size="sm" onClick={() => { onSave(draft.trim() || null); setEditing(false); }}>Save</Button>
+                <Button size="sm" onClick={() => setEditing(false)}>×</Button>
             </>
         );
     return (
         <>
             <code className="small" title="The dependency env's branch this task's dependency runs from — a task of that env must work on it; empty = the shared instance">⎇ {value ?? "shared"}</code>
-            <button className="tiny" disabled={disabled} title="Run this task's dependency from another branch of the dependency env (the BE of its task on that branch); the task's app restarts on it at its next start" onClick={() => { setDraft(value ?? ""); setEditing(true); }}>change</button>
+            <Button size="sm" disabled={disabled} title="Run this task's dependency from another branch of the dependency env (the BE of its task on that branch); the task's app restarts on it at its next start" onClick={() => { setDraft(value ?? ""); setEditing(true); }}>change</Button>
         </>
     );
 };
@@ -80,20 +81,20 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
             {env?.depends_on_env_id && <DependencyBranch taskId={taskId} depEnvId={env.depends_on_env_id} value={dependencyBranch ?? null} disabled={busy !== null || taskBusy} onSave={(b) => act("branch", () => api.patchTask(taskId, { dependencyBranch: b }))} />}
             {svc.state === "stopped" ? (
                 <>
-                    <span className="chip">stopped</span>
-                    <button className="primary" disabled={busy !== null} title={svc.command} onClick={() => act("dependency", () => api.startService(taskId, "dependency"))}>{busy === "dependency" ? "starting…" : "Run"}</button>
+                    <Chip>stopped</Chip>
+                    <Button variant="primary" disabled={busy !== null} title={svc.command} onClick={() => act("dependency", () => api.startService(taskId, "dependency"))}>{busy === "dependency" ? "starting…" : "Run"}</Button>
                 </>
             ) : (
                 <>
-                    {svc.state === "running" ? <span className="chip ok">running</span> : svc.state === "failed" ? <span className="chip bad">failed</span> : <span className="chip warn">starting…</span>}
+                    {svc.state === "running" ? <Chip tone="ok">running</Chip> : svc.state === "failed" ? <Chip tone="bad">failed</Chip> : <Chip tone="warn">starting…</Chip>}
                     {svc.url && <a href={svc.url} target="_blank" rel="noreferrer">{svc.url}</a>}
                     {svc.state === "failed" && (
-                        <button disabled={busy !== null} title="Stop and start it again with the same command" onClick={() => act("retry", async () => { await api.stopService(taskId, "dependency"); await api.startService(taskId, "dependency"); })}>
+                        <Button disabled={busy !== null} title="Stop and start it again with the same command" onClick={() => act("retry", async () => { await api.stopService(taskId, "dependency"); await api.startService(taskId, "dependency"); })}>
                             {busy === "retry" ? "restarting…" : "Retry"}
-                        </button>
+                        </Button>
                     )}
-                    <button disabled={busy !== null} title={svc.shared === false ? "Stops the dependency branch task's BE" : "Stops it for every task of this env"} onClick={() => act("dependency", () => api.stopService(taskId, "dependency"))}>{svc.state === "failed" ? "Dismiss" : "Stop"}</button>
-                    <button disabled={busy !== null} onClick={() => act("log", () => api.serviceLog(taskId, "dependency").then((text) => setLog({ kind: "dependency", text })))}>Log</button>
+                    <Button disabled={busy !== null} title={svc.shared === false ? "Stops the dependency branch task's BE" : "Stops it for every task of this env"} onClick={() => act("dependency", () => api.stopService(taskId, "dependency"))}>{svc.state === "failed" ? "Dismiss" : "Stop"}</Button>
+                    <Button disabled={busy !== null} onClick={() => act("log", () => api.serviceLog(taskId, "dependency").then((text) => setLog({ kind: "dependency", text })))}>Log</Button>
                     {svc.state === "failed" && svc.error && <span className="svc-error">{svc.error}</span>}
                 </>
             )}
@@ -108,15 +109,15 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
                 <span className="svc-kind" title={`optional component "${c.key}"${c.autoStart ? " — auto-started with the app" : ""}`}>{c.label}</span>
                 {svc ? (
                     <>
-                        {svc.state === "running" ? <span className="chip ok">running</span> : svc.state === "failed" ? <span className="chip bad">failed</span> : <span className="chip warn">starting…</span>}
-                        <button disabled={busy !== null} onClick={() => act(c.key, () => api.stopService(taskId, c.key))}>{svc.state === "failed" ? "Dismiss" : "Stop"}</button>
-                        <button disabled={busy !== null} onClick={() => act("log", () => api.serviceLog(taskId, c.key).then((text) => setLog({ kind: c.key, text })))}>Log</button>
+                        {svc.state === "running" ? <Chip tone="ok">running</Chip> : svc.state === "failed" ? <Chip tone="bad">failed</Chip> : <Chip tone="warn">starting…</Chip>}
+                        <Button disabled={busy !== null} onClick={() => act(c.key, () => api.stopService(taskId, c.key))}>{svc.state === "failed" ? "Dismiss" : "Stop"}</Button>
+                        <Button disabled={busy !== null} onClick={() => act("log", () => api.serviceLog(taskId, c.key).then((text) => setLog({ kind: c.key, text })))}>Log</Button>
                         {svc.state === "failed" && svc.error && <span className="svc-error">{svc.error}</span>}
                     </>
                 ) : (
                     <>
-                        <span className="chip">stopped</span>
-                        <button className="primary" disabled={busy !== null} title={c.command} onClick={() => act(c.key, () => api.startService(taskId, c.key))}>{busy === c.key ? "starting…" : "Run"}</button>
+                        <Chip>stopped</Chip>
+                        <Button variant="primary" disabled={busy !== null} title={c.command} onClick={() => act(c.key, () => api.startService(taskId, c.key))}>{busy === c.key ? "starting…" : "Run"}</Button>
                     </>
                 )}
             </div>
@@ -124,7 +125,7 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
     };
 
     const stateChip = (svc: Service) =>
-        svc.state === "running" ? <span className="chip ok">running</span> : svc.state === "failed" ? <span className="chip bad">failed</span> : <span className="chip warn">starting…</span>;
+        svc.state === "running" ? <Chip tone="ok">running</Chip> : svc.state === "failed" ? <Chip tone="bad">failed</Chip> : <Chip tone="warn">starting…</Chip>;
 
     const row = (kind: "be" | "fe", svc: Service | undefined) => (
         <div className={`svc ${svc?.state === "failed" ? "failed" : ""}`} key={kind}>
@@ -140,37 +141,37 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
                     {svc.state === "failed" && (
                         <>
                             {fixing.has(kind) || (taskBusy && fixing.size > 0) ? (
-                                <span className="chip wait" title="The result and the automatic restart land in Chat">agent fixing…</span>
+                                <Chip tone="wait" title="The result and the automatic restart land in Chat">agent fixing…</Chip>
                             ) : (
-                                <button
-                                    className="primary"
-                                    disabled={busy !== null || taskBusy}
-                                    title={taskBusy ? "a run is in progress — wait for it to finish" : "The task's agent reads the log, repairs the cause in the worktree, then Stagehand restarts the service; the outcome lands in Chat"}
-                                    onClick={() => act("fix", async () => { await api.fixService(taskId, kind); setFixing((s) => new Set(s).add(kind)); onFixStarted?.(); })}
-                                >
+                                <Button variant="primary"
+ 
+ disabled={busy !== null || taskBusy}
+ title={taskBusy ? "a run is in progress — wait for it to finish" : "The task's agent reads the log, repairs the cause in the worktree, then Stagehand restarts the service; the outcome lands in Chat"}
+ onClick={() => act("fix", async () => { await api.fixService(taskId, kind); setFixing((s) => new Set(s).add(kind)); onFixStarted?.(); })}
+>
                                     {busy === "fix" ? "Starting…" : "Fix with agent"}
-                                </button>
+                                </Button>
                             )}
-                            <button disabled={busy !== null || taskBusy} title="Stop and start it again with the same command" onClick={() => act("retry", async () => { await api.stopService(taskId, kind); await api.startService(taskId, kind); })}>
+                            <Button disabled={busy !== null || taskBusy} title="Stop and start it again with the same command" onClick={() => act("retry", async () => { await api.stopService(taskId, kind); await api.startService(taskId, kind); })}>
                                 {busy === "retry" ? "restarting…" : "Retry"}
-                            </button>
+                            </Button>
                         </>
                     )}
-                    <button disabled={busy !== null} onClick={() => act(kind, () => api.stopService(taskId, kind))}>{svc.state === "failed" ? "Dismiss" : "Stop"}</button>
-                    <button disabled={busy !== null} onClick={() => act("log", () => api.serviceLog(taskId, kind).then((text) => setLog({ kind, text })))}>Log</button>
+                    <Button disabled={busy !== null} onClick={() => act(kind, () => api.stopService(taskId, kind))}>{svc.state === "failed" ? "Dismiss" : "Stop"}</Button>
+                    <Button disabled={busy !== null} onClick={() => act("log", () => api.serviceLog(taskId, kind).then((text) => setLog({ kind, text })))}>Log</Button>
                     {svc.state === "failed" && svc.error && <span className="svc-error">{svc.error}</span>}
                 </>
             ) : (
                 <>
-                    <span className="chip">stopped</span>
-                    <button
-                        className="primary"
-                        disabled={busy !== null || !configured[kind] || (kind === "fe" && configured.be && (!be || be.state === "failed"))}
-                        title={kind === "fe" && configured.be && !be ? "start the BE first" : kind === "fe" && be?.state === "failed" ? "the BE failed — fix or retry it first" : ""}
-                        onClick={() => act(kind, () => api.startService(taskId, kind))}
-                    >
+                    <Chip>stopped</Chip>
+                    <Button variant="primary"
+ 
+ disabled={busy !== null || !configured[kind] || (kind === "fe" && configured.be && (!be || be.state === "failed"))}
+ title={kind === "fe" && configured.be && !be ? "start the BE first" : kind === "fe" && be?.state === "failed" ? "the BE failed — fix or retry it first" : ""}
+ onClick={() => act(kind, () => api.startService(taskId, kind))}
+>
                         {busy === kind ? "starting…" : `Run ${kind.toUpperCase()}`}
-                    </button>
+                    </Button>
                 </>
             )}
         </div>
@@ -195,7 +196,7 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
             )}
             {log && (
                 <div className="feed" style={{ maxHeight: 320, marginTop: 8 }}>
-                    <div className="k">{log.kind.toUpperCase()} log (tail, refreshes every 3 s) <button onClick={() => setLog(null)} style={{ float: "right", padding: "0 6px" }}>×</button></div>
+                    <div className="k">{log.kind.toUpperCase()} log (tail, refreshes every 3 s) <Button onClick={() => setLog(null)} style={{ float: "right", padding: "0 6px" }}>×</Button></div>
                     {log.text.split("\n").map((l, i) => <div key={i}>{l}</div>)}
                 </div>
             )}

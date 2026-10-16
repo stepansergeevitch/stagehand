@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ClipboardEvent, type DragEvent } from "react";
 import { api, type SharedFile } from "./api";
+import { Button, Chip, Input } from "./components/ui";
 
 const stamp = (): string => new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "").replace("T", "-");
 
@@ -51,16 +52,16 @@ const Thumb = ({ file }: { file: File }) => {
 export const FileChips = ({ pending, disabled }: { pending: PendingFiles; disabled?: boolean }) => (
     <div className="file-chips">
         {pending.files.map((f, i) => (
-            <span key={`${f.name}-${i}`} className="chip file-chip" title={`${f.name} · ${fmtBytes(f.size)}`}>
+            <Chip key={`${f.name}-${i}`} className="file-chip" title={`${f.name} · ${fmtBytes(f.size)}`}>
                 {f.type.startsWith("image/") ? <Thumb file={f} /> : <span>📎</span>}
                 <span className="name">{f.name}</span>
                 <span className="field-hint">{fmtBytes(f.size)}</span>
-                <button type="button" className="chip-x" aria-label={`Remove ${f.name}`} disabled={disabled} onClick={() => pending.remove(i)}>×</button>
-            </span>
+                <Button variant="ghost" type="button" className="chip-x" aria-label={`Remove ${f.name}`} disabled={disabled} onClick={() => pending.remove(i)}>×</Button>
+            </Chip>
         ))}
         <label className={`chip file-chip attach${disabled ? " disabled" : ""}`} title="Attach files for the agent — or paste a screenshot / drop files onto the text box">
             📎 Attach
-            <input
+            <Input
                 type="file"
                 multiple
                 disabled={disabled}

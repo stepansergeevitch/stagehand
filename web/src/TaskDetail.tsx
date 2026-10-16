@@ -15,6 +15,7 @@ import { TaskCost } from "./TaskCost";
 import { BaseCheckChip } from "./components/BaseCheckChip";
 import { DiffView, useDraftComments, type PriorComment } from "./DiffView";
 import { anchorOf, type Env, type LineComment, type PoDesignReview, type PoReview, type PrFixReplies as PrFixRepliesData, type CiAutopilot, type TaskDbInfo, type PoReviewComment, type ProductOwner, type Message, type MessageAnchor, type PrComment, type PrComments, type Review } from "./api";
+import { Button, Card, Chip, Input, Select, Textarea, Tab, TabList } from "./components/ui";
 
 const isResolved = (c: PrComment): boolean => c.kind === "line" && c.resolved;
 
@@ -49,9 +50,9 @@ const PrCommentThread = ({ items, canAsk, onAsk }: { items: Message[]; canAsk: b
     };
     return (
         <div className="pr-thread">
-            <button className="tiny" onClick={() => setOpen((o) => !o)} title="Ask the agent about this comment — a chat, nothing is changed">
+            <Button size="sm" onClick={() => setOpen((o) => !o)} title="Ask the agent about this comment — a chat, nothing is changed">
                 {open ? "▾" : "▸"} Ask agent{items.length ? ` (${items.length})` : ""}
-            </button>
+            </Button>
             {open && (
                 <div className="line-thread" style={{ marginLeft: 0 }}>
                     {items.map((msg) => (
@@ -79,7 +80,7 @@ const PrCommentThread = ({ items, canAsk, onAsk }: { items: Message[]; canAsk: b
                                 }}
                             />
                             <div className="actions" style={{ marginBottom: 0 }}>
-                                <button className="primary" disabled={!text.trim()} onClick={() => void send()}>Ask</button>
+                                <Button variant="primary" disabled={!text.trim()} onClick={() => void send()}>Ask</Button>
                             </div>
                         </>
                     )}
@@ -98,11 +99,11 @@ const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, on
     const sorted = items ? [...items].sort((a, b) => Number(isResolved(a)) - Number(isResolved(b)) || a.at.localeCompare(b.at)) : [];
     const resolvedCount = items ? items.filter(isResolved).length : 0;
     return (
-        <Card title={title} badge={items ? <span className="chip">{items.length - resolvedCount} open{resolvedCount ? ` · ${resolvedCount} resolved` : ""}</span> : undefined}>
+        <Card title={title} badge={items ? <Chip>{items.length - resolvedCount} open{resolvedCount ? ` · ${resolvedCount} resolved` : ""}</Chip> : undefined}>
             {!hasPr && <div className="empty">No pull request yet — comments appear here once it exists.</div>}
             {hasPr && (
                 <div className="actions" style={{ marginTop: 0 }}>
-                    <button onClick={onRefresh} disabled={loading}>{loading ? "Loading…" : "Refresh"}</button>
+                    <Button onClick={onRefresh} disabled={loading}>{loading ? "Loading…" : "Refresh"}</Button>
                     {url && <a href={url} target="_blank" rel="noreferrer">open PR ↗</a>}
                     {fetchedAt && <span className="field-hint">fetched {new Date(fetchedAt).toLocaleTimeString()}</span>}
                 </div>
@@ -117,25 +118,25 @@ const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, on
                             <div className={`gh-comment ${c.kind} ${selected.has(c.id) ? "picked" : ""} ${isResolved(c) ? "resolved" : ""}`}>
                                 <div className="gh-head">
                                     <label className="inline" title="Pick this comment to send to the agent">
-                                        <input type="checkbox" checked={selected.has(c.id)} onChange={() => onToggle(c.id)} />
+                                        <Input type="checkbox" checked={selected.has(c.id)} onChange={() => onToggle(c.id)} />
                                     </label>
                                     <b>{c.author}</b>
-                                    {c.kind === "review" && <span className={`chip ${c.state === "APPROVED" ? "ok" : c.state === "CHANGES_REQUESTED" ? "bad" : ""}`}>{c.state.toLowerCase().replace("_", " ")}</span>}
+                                    {c.kind === "review" && <Chip className={`${c.state === "APPROVED" ? "ok" : c.state === "CHANGES_REQUESTED" ? "bad" : ""}`}>{c.state.toLowerCase().replace("_", " ")}</Chip>}
                                     {c.kind === "line" && <code>{c.path}{c.line !== null ? `:${c.line}` : ""}{c.outdated ? " (outdated)" : ""}</code>}
-                                    {c.kind === "line" && c.replyTo !== null && <span className="chip">reply</span>}
-                                    {c.kind === "line" && (c.resolved ? <span className="chip ok">resolved</span> : <span className="chip wait">open</span>)}
-                                    {c.kind === "general" && <span className="chip">comment</span>}
+                                    {c.kind === "line" && c.replyTo !== null && <Chip>reply</Chip>}
+                                    {c.kind === "line" && (c.resolved ? <Chip tone="ok">resolved</Chip> : <Chip tone="wait">open</Chip>)}
+                                    {c.kind === "general" && <Chip>comment</Chip>}
                                     <span className="field-hint">{new Date(c.at).toLocaleString()}</span>
                                     <a href={c.url} target="_blank" rel="noreferrer">↗</a>
                                     {c.kind === "line" && c.threadId && c.replyTo === null && (
-                                        <button
-                                            className="tiny"
-                                            disabled={busy === c.id}
-                                            title={c.resolved ? "Reopen this review thread on GitHub" : "Mark this review thread resolved on GitHub (as you)"}
-                                            onClick={() => { setBusy(c.id); void onResolve(c.id, !c.resolved).finally(() => setBusy(null)); }}
-                                        >
+                                        <Button size="sm"
+ 
+ disabled={busy === c.id}
+ title={c.resolved ? "Reopen this review thread on GitHub" : "Mark this review thread resolved on GitHub (as you)"}
+ onClick={() => { setBusy(c.id); void onResolve(c.id, !c.resolved).finally(() => setBusy(null)); }}
+>
                                             {busy === c.id ? "…" : c.resolved ? "Reopen" : "Resolve"}
-                                        </button>
+                                        </Button>
                                     )}
                                 </div>
                                 {c.body && <Markdown source={c.body} />}
@@ -206,13 +207,6 @@ const useArtifactText = (taskId: string, rel: string, exists: boolean): string |
     return text;
 };
 
-const Card = ({ title, badge, children }: { title: React.ReactNode; badge?: React.ReactNode; children: React.ReactNode }) => (
-    <section className="card">
-        <h2>{title} {badge}</h2>
-        {children}
-    </section>
-);
-
 // A collapsible sub-heading inside a card (open by default).
 const Sub = ({ title, open = true, children }: { title: React.ReactNode; open?: boolean; children: React.ReactNode }) => (
     <details className="sub" open={open}>
@@ -255,12 +249,12 @@ const TicketCard = ({ taskId, ticket, source }: { taskId: string; ticket: Ticket
     const attachments = ticket.attachments ?? [];
     const [zoom, setZoom] = useState<{ src: string; caption: string } | null>(null);
     return (
-        <section className="card ticket-view">
+        <Card className="ticket-view">
             {zoom && <Lightbox src={zoom.src} caption={zoom.caption} onClose={() => setZoom(null)} />}
             <h2>{ticket.id} {ticket.title}</h2>
             <div className="sub">
-                {ticket.status && <span className="chip">{ticket.status}</span>}
-                <span className="chip">{ticket.source} · {ticket.fetchedVia}</span>
+                {ticket.status && <Chip>{ticket.status}</Chip>}
+                <Chip>{ticket.source} · {ticket.fetchedVia}</Chip>
                 {ticket.url && <a href={ticket.url} target="_blank" rel="noreferrer">open in {source} ↗</a>}
             </div>
             {attachments.length > 0 && <AttachmentsCard taskId={taskId} items={attachments} onZoom={setZoom} />}
@@ -292,7 +286,7 @@ const TicketCard = ({ taskId, ticket, source }: { taskId: string; ticket: Ticket
                     {ticket.parent.description.trim() ? <Markdown source={ticket.parent.description} /> : <div className="empty">no description</div>}
                 </Sub>
             )}
-        </section>
+        </Card>
     );
 };
 
@@ -303,16 +297,16 @@ const NotesCard = ({ detail, onSave }: { detail: TaskDetail; onSave: (notes: str
     const attach = usePendingFiles();
     useEffect(() => setText(detail.task.notes ?? ""), [detail.task.id, detail.task.notes]);
     return (
-        <section className="card">
-            <h2>Your instructions {detail.task.notes ? <span className="chip accent">given to every stage</span> : <span className="chip">none</span>}</h2>
+        <Card>
+            <h2>Your instructions {detail.task.notes ? <Chip tone="accent">given to every stage</Chip> : <Chip>none</Chip>}</h2>
             {!editing && (detail.task.notes ? <div className="md">{detail.task.notes}</div> : <div className="quiet">Extra context for the agents: constraints, where to look, what to skip. Applies to every stage that runs after you save.</div>)}
             {editing && <AgentInput value={text} onChange={setText} pending={attach} placeholder="e.g. Only touch the backend; the FE change ships separately. Use the existing BidRepository." />}
             <div className="actions" style={{ marginBottom: 0 }}>
-                {!editing && <button onClick={() => setEditing(true)}>{detail.task.notes ? "Edit" : "Add instructions"}</button>}
-                {editing && <button className="primary" onClick={async () => { await onSave(text, attach.files); attach.clear(); setEditing(false); }}>Save</button>}
-                {editing && <button onClick={() => { setText(detail.task.notes ?? ""); attach.clear(); setEditing(false); }}>Cancel</button>}
+                {!editing && <Button onClick={() => setEditing(true)}>{detail.task.notes ? "Edit" : "Add instructions"}</Button>}
+                {editing && <Button variant="primary" onClick={async () => { await onSave(text, attach.files); attach.clear(); setEditing(false); }}>Save</Button>}
+                {editing && <Button onClick={() => { setText(detail.task.notes ?? ""); attach.clear(); setEditing(false); }}>Cancel</Button>}
             </div>
-        </section>
+        </Card>
     );
 };
 
@@ -340,16 +334,16 @@ const TicketView = ({ detail, onFetch }: { detail: TaskDetail; onFetch: () => Pr
     if (!ticket) {
         const link = task.ticket_url ? <a href={task.ticket_url} target="_blank" rel="noreferrer">{task.ticket_id} ↗</a> : <code>{task.ticket_id}</code>;
         return (
-            <section className="card">
+            <Card>
                 <h2>Ticket</h2>
                 {state === "fetching" && <p className="quiet">Fetching {task.ticket_id} from {task.source}…</p>}
                 {state !== "fetching" && (
                     <div className="blocked-box">
                         Ticket {link} could not be fetched{reason ? `: ${reason}` : ""}.
-                        <div className="actions"><button onClick={() => void fetchNow()}>Fetch again</button></div>
+                        <div className="actions"><Button onClick={() => void fetchNow()}>Fetch again</Button></div>
                     </div>
                 )}
-            </section>
+            </Card>
         );
     }
     const all = detail.tickets?.length ? detail.tickets : [ticket];
@@ -379,21 +373,21 @@ const ReturnBox = ({ task, pending, onSend, onClose }: { task: TaskDetail["task"
             <b>Send the task back</b> — later stages run again after it.
             <label style={{ display: "block", margin: "6px 0" }}>
                 Return to{" "}
-                <select value={stage} onChange={(e) => setStage(e.target.value as Stage)}>
+                <Select value={stage} onChange={(e) => setStage(e.target.value as Stage)}>
                     {options.map((s) => <option key={s} value={s}>{STAGE_LABEL[s]}{s === task.stage ? " (current)" : ""}</option>)}
-                </select>
+                </Select>
                 <span className="field-hint">{runs ? `${STAGE_LABEL[stage]} runs again with your notes as reviewer notes.` : "User Review waits for you again; no agent runs."}</span>
             </label>
             <AgentInput placeholder={runs ? "What should change (required)" : "Notes for yourself (optional)"} value={notes} onChange={setNotes} pending={attach} />
             {stage === "implementation" && pending.length > 0 && <div className="field-hint">{pending.length} draft line comment(s) from Code changes go along.</div>}
             {qaAhead && (
                 <label className="inline" style={{ display: "block", margin: "6px 0" }}>
-                    <input type="checkbox" checked={skipQa} onChange={(e) => setSkipQa(e.target.checked)} /> Skip Manual QA this pass — go straight to User Review after {STAGE_LABEL[stage === "design_proposal" ? "implementation" : stage]} (you QA by hand)
+                    <Input type="checkbox" checked={skipQa} onChange={(e) => setSkipQa(e.target.checked)} /> Skip Manual QA this pass — go straight to User Review after {STAGE_LABEL[stage === "design_proposal" ? "implementation" : stage]} (you QA by hand)
                 </label>
             )}
             <div className="actions" style={{ marginBottom: 0 }}>
-                <button className="primary" disabled={runs && !notes.trim() && attach.files.length === 0 && !(stage === "implementation" && pending.length > 0)} onClick={() => void onSend(stage, notes, stage === "implementation", qaAhead && skipQa, attach.files)}>Send back to {STAGE_LABEL[stage]}</button>
-                <button onClick={onClose}>Cancel</button>
+                <Button variant="primary" disabled={runs && !notes.trim() && attach.files.length === 0 && !(stage === "implementation" && pending.length> 0)} onClick={() => void onSend(stage, notes, stage === "implementation", qaAhead && skipQa, attach.files)}>Send back to {STAGE_LABEL[stage]}</Button>
+                <Button onClick={onClose}>Cancel</Button>
             </div>
         </div>
     );
@@ -417,11 +411,11 @@ const QuestionsBox = ({ round, onSend }: { round: QuestionRound; onSend: (answer
             <span className="field-hint">It stopped at this point; your answers go back into the same session and the stage continues. Blank answers mean "you decide".</span>
             {round.questions.map((q, i) => (
                 <div key={q.id} className="question">
-                    <div className="question-text"><span className="chip accent">{i + 1}</span> {q.text}</div>
+                    <div className="question-text"><Chip tone="accent">{i + 1}</Chip> {q.text}</div>
                     {q.context && <div className="question-context">{q.context}</div>}
                     {q.options.length > 0 && (
                         <div className="question-options">
-                            {q.options.map((o) => <button key={o} className={answers[q.id] === o ? "on" : ""} onClick={() => set(q.id, answers[q.id] === o ? "" : o)}>{o}</button>)}
+                            {q.options.map((o) => <Button key={o} className={answers[q.id] === o ? "on" : ""} onClick={() => set(q.id, answers[q.id] === o ? "" : o)}>{o}</Button>)}
                         </div>
                     )}
                     <AgentInput value={answers[q.id] ?? ""} onChange={(v) => set(q.id, v)} pending={pending} chips="none" placeholder={q.options.length ? "Pick an option above or write your own answer" : "Your answer"} style={{ minHeight: 48 }} />
@@ -429,8 +423,8 @@ const QuestionsBox = ({ round, onSend }: { round: QuestionRound; onSend: (answer
             ))}
             <FileChips pending={pending} disabled={sending} />
             <div className="actions" style={{ marginBottom: 0 }}>
-                <button className="primary" disabled={sending || (answered === 0 && pending.files.length === 0)} onClick={send}>{sending ? "Sending…" : `Send answers${answered < round.questions.length ? ` (${answered}/${round.questions.length})` : ""}`}</button>
-                <button disabled={sending} onClick={() => { if (confirm("Let the agent decide every unanswered question itself and continue?")) send(); }}>Let the agent decide</button>
+                <Button variant="primary" disabled={sending || (answered === 0 && pending.files.length === 0)} onClick={send}>{sending ? "Sending…" : `Send answers${answered < round.questions.length ? ` (${answered}/${round.questions.length})` : ""}`}</Button>
+                <Button disabled={sending} onClick={() => { if (confirm("Let the agent decide every unanswered question itself and continue?")) send(); }}>Let the agent decide</Button>
             </div>
         </div>
     );
@@ -447,7 +441,7 @@ const PR_STAGES: ReadonlySet<Stage> = new Set(["pr_waiting", "pr_fix", "pr_green
 
 const statusChip = (s: string) => {
     const cls = s === "waiting_user" || s === "blocked" ? "wait" : s === "running" ? "accent" : s === "failed" ? "bad" : s === "done" ? "ok" : s === "rate_limited" ? "warn" : "";
-    return <span className={`chip ${cls}`}>{s.replace("_", " ")}</span>;
+    return <Chip className={`${cls}`}>{s.replace("_", " ")}</Chip>;
 };
 
 export type Tab = TaskTab;
@@ -482,7 +476,7 @@ const ChecksList = ({ checks, compact }: { checks: PrCheck[]; compact?: boolean 
                 const st = (c.conclusion ?? c.state ?? c.status ?? "pending").toLowerCase().replace(/_/g, " ");
                 return (
                     <li key={i} className={`check ${o} ${gate ? "gate" : ""}`}>
-                        <span className={`chip ${gate ? "" : o === "pass" ? "ok" : o === "fail" ? "bad" : o === "cancelled" ? "" : "warn"}`}>{gate ? "manual gate" : o === "pending" ? (c.status === "IN_PROGRESS" || c.startedAt ? "running" : "queued") : st}</span>
+                        <Chip className={`${gate ? "" : o === "pass" ? "ok" : o === "fail" ? "bad" : o === "cancelled" ? "" : "warn"}`}>{gate ? "manual gate" : o === "pending" ? (c.status === "IN_PROGRESS" || c.startedAt ? "running" : "queued") : st}</Chip>
                         {url ? <a href={url} target="_blank" rel="noreferrer">{label}</a> : <span>{label}</span>}
                         {o === "pending" && c.startedAt && <span className="field-hint">{elapsed(c.startedAt)}</span>}
                         {o !== "pending" && c.startedAt && c.completedAt && <span className="field-hint">{elapsed(c.startedAt, c.completedAt)}</span>}
@@ -500,7 +494,7 @@ const MERGE_KEY = "stagehand.mergeMethod";
 // comments of one repository are recognisable at a glance.
 const RepoChip = ({ repo, repos }: { repo: string; repos: string[] }) => {
     if (repos.length <= 1 && !repo) return null;
-    return <span className={`chip repo-chip ${repoColorClass(repo, repos)}`} title={repo ? `repository ${repo}/` : "repository"}>{repoName(repo)}</span>;
+    return <Chip className={`repo-chip ${repoColorClass(repo, repos)}`} title={repo ? `repository ${repo}/` : "repository"}>{repoName(repo)}</Chip>;
 };
 
 const prOutcome = (row: PrState | undefined): { kind: "none" | "manual" | "failed" | "pending" | "approved" | "green" | "merged" | "closed"; text: string; cls: string } => {
@@ -526,23 +520,23 @@ const MergeControls = ({ task, row, onAction }: { task: TaskDetail["task"]; row:
     const warn = failing ? `${failing} check(s) are failing` : pending ? `${pending} check(s) still running` : row.review_decision === "CHANGES_REQUESTED" ? "a reviewer requested changes" : row.review_decision !== "APPROVED" ? "not approved yet" : null;
     return (
         <span className="merge-controls">
-            <select value={method} onChange={(e) => { setMethod(e.target.value as MergeMethod); storage.set(MERGE_KEY, e.target.value); }} title="Merge method">
+            <Select value={method} onChange={(e) => { setMethod(e.target.value as MergeMethod); storage.set(MERGE_KEY, e.target.value); }} title="Merge method">
                 <option value="squash">squash</option>
                 <option value="merge">merge commit</option>
                 <option value="rebase">rebase</option>
-            </select>
-            <label className="inline" title="Delete the remote branch after merging"><input type="checkbox" checked={deleteBranch} onChange={(e) => setDeleteBranch(e.target.checked)} /> delete branch</label>
-            <button
-                className="primary"
-                disabled={task.status === "running"}
-                title={warn ? `Merge anyway — ${warn}` : "Merge the pull request as you"}
-                onClick={() => {
-                    if (!confirm(`Merge ${repoName(row.repo)} #${row.number} (${method})${deleteBranch ? " and delete the remote branch" : ""}?${warn ? `\n\nNote: ${warn}.` : ""}`)) return;
-                    void onAction(() => api.mergePr(task.id, { repo: row.repo, method, deleteBranch }));
-                }}
-            >
+            </Select>
+            <label className="inline" title="Delete the remote branch after merging"><Input type="checkbox" checked={deleteBranch} onChange={(e) => setDeleteBranch(e.target.checked)} /> delete branch</label>
+            <Button variant="primary"
+ 
+ disabled={task.status === "running"}
+ title={warn ? `Merge anyway — ${warn}` : "Merge the pull request as you"}
+ onClick={() => {
+ if (!confirm(`Merge ${repoName(row.repo)} #${row.number} (${method})${deleteBranch ? " and delete the remote branch" : ""}?${warn ? `\n\nNote: ${warn}.` : ""}`)) return;
+ void onAction(() => api.mergePr(task.id, { repo: row.repo, method, deleteBranch }));
+ }}
+>
                 Merge{warn ? " ⚠" : ""}
-            </button>
+            </Button>
         </span>
     );
 };
@@ -566,13 +560,13 @@ const BaseLine = ({ task, repo, repos, onAction }: { task: TaskDetail["task"]; r
             <code className="small">⎇ {task.branch}</code>
             {!editing && <code className="small" title="base branch — the branch this repository diffs against and its PR targets (the env default when none is set)"> → {base ?? "env default"}</code>}
             {!editing && task.status !== "running" && (
-                <button className="tiny" title="Change this repository's base branch (then use Rebase onto latest base on the Code changes tab)" onClick={() => { setValue(base ?? ""); setEditing(true); }}>change</button>
+                <Button size="sm" title="Change this repository's base branch (then use Rebase onto latest base on the Code changes tab)" onClick={() => { setValue(base ?? ""); setEditing(true); }}>change</Button>
             )}
             {editing && (
                 <>
                     <BranchPicker envId={task.env_id} repo={repo} value={value} onChange={setValue} placeholder="env default" style={{ maxWidth: 260 }} />
-                    <button className="tiny" onClick={save}>Save</button>
-                    <button className="tiny" onClick={() => setEditing(false)}>×</button>
+                    <Button size="sm" onClick={save}>Save</Button>
+                    <Button size="sm" onClick={() => setEditing(false)}>×</Button>
                 </>
             )}
         </div>
@@ -600,13 +594,13 @@ const PrRepoRow = ({ detail, repo, repos, onAction, onOpenInTab }: { detail: Tas
         <div className={`pr-repo ${o.kind}`}>
             <div className="widget-body">
                 <RepoChip repo={repo} repos={repos} />
-                <span className={`chip ${o.cls}`}>{o.text}</span>
+                <Chip className={`${o.cls}`}>{o.text}</Chip>
                 {row?.url && <a href={row.url} target="_blank" rel="noreferrer">#{row.number} ↗</a>}
-                {row?.review_decision && row.review_decision !== "APPROVED" && <span className="chip">{row.review_decision.toLowerCase().replace("_", " ")}</span>}
+                {row?.review_decision && row.review_decision !== "APPROVED" && <Chip>{row.review_decision.toLowerCase().replace("_", " ")}</Chip>}
                 {gated.length > 0 && <span className="mono small">{passed}/{countable} checks passed{cancelled ? ` (${cancelled} cancelled)` : ""}{checks.length > gated.length ? ` (+${checks.length - gated.length} gates)` : ""}</span>}
                 {row?.url && !row.merged_at && row.state !== "CLOSED" && <MergeControls task={task} row={row} onAction={onAction} />}
                 {row?.approved_at && !row.number && task.status !== "running" && (
-                    <button className="tiny" title="Push this repository's branch and open its PR now (uses the approved draft; needs the env to allow pushes / PR creation, or a PR opened by hand is picked up by branch)" onClick={() => onAction(() => api.createApprovedPrs(task.id))}>Push & open now</button>
+                    <Button size="sm" title="Push this repository's branch and open its PR now (uses the approved draft; needs the env to allow pushes / PR creation, or a PR opened by hand is picked up by branch)" onClick={() => onAction(() => api.createApprovedPrs(task.id))}>Push & open now</Button>
                 )}
             </div>
             {/* This repository's branch and the base it targets, right under its PR line (grouped per repository). */}
@@ -614,7 +608,7 @@ const PrRepoRow = ({ detail, repo, repos, onAction, onOpenInTab }: { detail: Tas
             {row?.url && !row.merged_at && live.length > 0 && (
                 <div className="widget-checks">
                     <ChecksList checks={live.slice(0, HEADER_CHECKS_LIMIT)} compact />
-                    {extra > 0 && <button className="tiny" onClick={() => onOpenInTab(repo)}>show {extra} more on the Pull request tab</button>}
+                    {extra > 0 && <Button size="sm" onClick={() => onOpenInTab(repo)}>show {extra} more on the Pull request tab</Button>}
                 </div>
             )}
         </div>
@@ -656,9 +650,9 @@ const BaseChecks = ({ detail, onAction }: { detail: TaskDetail; onAction: Props[
                 );
             })}
             {task.status !== "running" && (
-                <button className="tiny" disabled={checking} title="Merge each repository's branch with its latest base now and run the env's base check on the result" onClick={now}>
+                <Button size="sm" disabled={checking} title="Merge each repository's branch with its latest base now and run the env's base check on the result" onClick={now}>
                     {checking ? "checking…" : rows.length ? "↻ check base now" : "check against latest base"}
-                </button>
+                </Button>
             )}
         </div>
     );
@@ -673,19 +667,19 @@ const PrWidget = ({ detail, onAction, onOpenInTab }: { detail: TaskDetail; onAct
     const lastPoll = rows.map((r) => r.updated_at).sort().pop();
     let placeholder: React.ReactNode = null;
     if (repos.length === 0) {
-        if (task.stage === "pr_creation_review") placeholder = <span className="chip wait">{task.status === "waiting_user" ? "drafts ready — review per repository" : "drafting"}</span>;
-        else if (PR_STAGES.has(task.stage)) placeholder = <span className="chip warn">not created yet</span>;
-        else if (pr) placeholder = <span className="chip">draft</span>;
-        else placeholder = <span className="chip">none yet</span>;
+        if (task.stage === "pr_creation_review") placeholder = <Chip tone="wait">{task.status === "waiting_user" ? "drafts ready — review per repository" : "drafting"}</Chip>;
+        else if (PR_STAGES.has(task.stage)) placeholder = <Chip tone="warn">not created yet</Chip>;
+        else if (pr) placeholder = <Chip>draft</Chip>;
+        else placeholder = <Chip>none yet</Chip>;
     }
     return (
-        <section className="card widget">
+        <Card className="widget">
             <h2>
                 Pull request{repos.length > 1 ? "s" : ""}
                 {anyOpen && (
-                    <button className="tiny" disabled={refreshing} title="Re-read checks, review decisions and comments from GitHub now" onClick={() => { setRefreshing(true); void onAction(() => api.refreshPr(task.id)).finally(() => setRefreshing(false)); }}>
+                    <Button size="sm" disabled={refreshing} title="Re-read checks, review decisions and comments from GitHub now" onClick={() => { setRefreshing(true); void onAction(() => api.refreshPr(task.id)).finally(() => setRefreshing(false)); }}>
                         {refreshing ? "…" : "↻ refresh"}
-                    </button>
+                    </Button>
                 )}
             </h2>
             {placeholder && (
@@ -702,7 +696,7 @@ const PrWidget = ({ detail, onAction, onOpenInTab }: { detail: TaskDetail; onAct
                     {lastPoll ? `last poll ${new Date(lastPoll).toLocaleTimeString()} · ` : ""}polls every 2 min
                 </div>
             )}
-        </section>
+        </Card>
     );
 };
 
@@ -841,15 +835,15 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {task.stage === "user_review" && (
                 <label style={{ display: "block", margin: "6px 0" }}>
                     On changes, send back to{" "}
-                    <select value={routeTo} onChange={(e) => setRouteTo(e.target.value as typeof routeTo)}>
+                    <Select value={routeTo} onChange={(e) => setRouteTo(e.target.value as typeof routeTo)}>
                         <option value="implementation">Implementation</option>
                         <option value="design_proposal">Design Proposal</option>
-                    </select>
+                    </Select>
                 </label>
             )}
             {task.stage === "user_review" && (
                 <label className="inline" style={{ display: "block", margin: "6px 0" }}>
-                    <input type="checkbox" checked={skipQa} onChange={(e) => setSkipQa(e.target.checked)} /> Skip Manual QA this pass — come straight back here after the agent's changes (you QA by hand)
+                    <Input type="checkbox" checked={skipQa} onChange={(e) => setSkipQa(e.target.checked)} /> Skip Manual QA this pass — come straight back here after the agent's changes (you QA by hand)
                 </label>
             )}
             {canCommentDesign && (
@@ -863,45 +857,45 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     {pending.length} line comment{pending.length === 1 ? "" : "s"} to send:
                     <ul className="plain">
                         {pending.map(([k, c]) => (
-                            <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>
+                            <li key={k}><code>{c.path}:{c.line}</code>{c.text} <Button variant="danger" onClick={() => changeComment(k, null)} title="remove">×</Button></li>
                         ))}
                     </ul>
                 </div>
             )}
             <div className="actions">
-                <button
-                    className="primary"
-                    onClick={() => onAction(async () => { const files = await api.uploadFiles(task.id, attach.files); await api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}), ...(files.length ? { files } : {}) }); clearComments(); setNotes(""); attach.clear(); })}
-                >
+                <Button variant="primary"
+ 
+ onClick={() => onAction(async () => { const files = await api.uploadFiles(task.id, attach.files); await api.review(task.id, { verdict: "approve", ...(notes ? { notes } : {}), ...(files.length ? { files } : {}) }); clearComments(); setNotes(""); attach.clear(); })}
+>
                     {task.stage === "pr_fix" ? "Approve & push" : "Approve"}
-                </button>
+                </Button>
                 {task.stage === "pr_fix" && (
-                    <button title="You undid or handled this fix yourself: nothing is pushed, and the task follows its PRs again" onClick={() => onAction(() => api.discardPrFix(task.id))}>
+                    <Button title="You undid or handled this fix yourself: nothing is pushed, and the task follows its PRs again" onClick={() => onAction(() => api.discardPrFix(task.id))}>
                         Discard fix
-                    </button>
+                    </Button>
                 )}
-                <button
-                    disabled={!notes.trim() && attach.files.length === 0 && !(canComment && pending.length > 0) && !(canCommentDesign && (designPending.length > 0 || poPicked > 0))}
-                    onClick={() =>
-                        onAction(async () => {
-                            const files = await api.uploadFiles(task.id, attach.files);
-                            await api.review(task.id, {
-                                verdict: "changes",
-                                ...(notes.trim() ? { notes } : {}),
-                                ...(files.length ? { files } : {}),
-                                ...(task.stage === "user_review" ? { routeTo, comments: pending.map(([, c]) => c), ...(skipQa ? { skipQa: true } : {}) } : {}),
-                                ...(task.stage === "design_proposal" ? { comments: designPending.map(([, c]) => c), ...(poPicked > 0 ? { includePoReview: true } : {}) } : {}),
-                            });
-                            clearComments();
-                            setPoPicked(0);
-                            setNotes("");
-                            attach.clear();
-                        })
-                    }
-                >
+                <Button
+ disabled={!notes.trim() && attach.files.length === 0 && !(canComment && pending.length> 0) && !(canCommentDesign && (designPending.length > 0 || poPicked > 0))}
+ onClick={() =>
+ onAction(async () => {
+ const files = await api.uploadFiles(task.id, attach.files);
+ await api.review(task.id, {
+ verdict: "changes",
+ ...(notes.trim() ? { notes } : {}),
+ ...(files.length ? { files } : {}),
+ ...(task.stage === "user_review" ? { routeTo, comments: pending.map(([, c]) => c), ...(skipQa ? { skipQa: true } : {}) } : {}),
+ ...(task.stage === "design_proposal" ? { comments: designPending.map(([, c]) => c), ...(poPicked > 0 ? { includePoReview: true } : {}) } : {}),
+ });
+ clearComments();
+ setPoPicked(0);
+ setNotes("");
+ attach.clear();
+ })
+ }
+ >
                     Request changes{canComment && pending.length > 0 ? ` (${pending.length})` : canCommentDesign && designPending.length + poPicked > 0 ? ` (${designPending.length + poPicked})` : ""}
-                </button>
-                {task.stage === "user_review" && <button onClick={() => setTab("code")}>Open Code changes to comment on lines</button>}
+                </Button>
+                {task.stage === "user_review" && <Button onClick={() => setTab("code")}>Open Code changes to comment on lines</Button>}
             </div>
             <ReviewHistory reviews={detail.reviews} stage={task.stage} />
         </div>
@@ -911,8 +905,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
         <Card title="QA evidence">
             {task.status !== "running" && (
                 <div className="actions" style={{ marginTop: 0 }}>
-                    {stageOf(task.stage) === "design_proposal" && <button onClick={() => onAction(() => api.rerun(task.id, "qa_baseline"))}>Re-run QA baseline</button>}
-                    {currentIdx >= STAGE_ORDER.indexOf("manual_qa") && <button onClick={() => onAction(() => api.rerun(task.id, "manual_qa"))}>Re-run Manual QA</button>}
+                    {stageOf(task.stage) === "design_proposal" && <Button onClick={() => onAction(() => api.rerun(task.id, "qa_baseline"))}>Re-run QA baseline</Button>}
+                    {currentIdx >= STAGE_ORDER.indexOf("manual_qa") && <Button onClick={() => onAction(() => api.rerun(task.id, "manual_qa"))}>Re-run Manual QA</Button>}
                 </div>
             )}
             {qaHistory.length > 0 && (
@@ -941,14 +935,14 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
         switch (stepKey(s)) {
             case "research":
                 return research ? (
-                    <Card title="Research" badge={<span className={`chip ${research.classification === "bug" ? "bad" : "accent"}`}>{research.classification}</span>}>
+                    <Card title="Research" badge={<Chip className={`${research.classification === "bug" ? "bad" : "accent"}`}>{research.classification}</Chip>}>
                         <div className="kv"><b>Summary</b><span>{research.summary}</span><b>Branch</b><code>{research.branchName}</code><b>Areas</b><span>{(research.affectedAreas ?? []).join(", ") || "—"}</span></div>
                         {researchMd && <Sub title="research.md" open={false}><Markdown source={researchMd} /></Sub>}
                     </Card>
                 ) : <div className="empty">no research yet</div>;
             case "design_proposal":
                 return design ? (
-                    <Card title="Design proposal" badge={<><span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>{(design.affectedRepos ?? []).map((r) => <span key={r} className="chip">{r}</span>)}</>}>
+                    <Card title="Design proposal" badge={<><Chip className={`${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</Chip>{(design.affectedRepos ?? []).map((r) => <Chip key={r}>{r}</Chip>)}</>}>
                         {problemMd && <div className="proposed decision"><b>{problemMd.title}</b><Markdown source={problemMd.body.trim()} /></div>}
                         {explanation && <div className="proposed explanation"><b>{explanation.title}</b><Markdown source={explanation.body.trim()} /></div>}
                         <div className="kv">
@@ -958,8 +952,8 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             {design.qa.length > 0 && <><b>Baseline</b><span>{task.stage === "qa_baseline" ? <b>running now</b> : qaBefore ? `ran on ${qaBefore.scenarios.length} scenario(s)` : "not run yet"}</span></>}
                         </div>
                         <div className="actions">
-                            <button onClick={() => setTab("design")}>Open the full proposal</button>
-                            {design.qa.length > 0 && <button onClick={() => onView({ tab: "design", section: "qa" })}>QA tests and baseline</button>}
+                            <Button onClick={() => setTab("design")}>Open the full proposal</Button>
+                            {design.qa.length > 0 && <Button onClick={() => onView({ tab: "design", section: "qa" })}>QA tests and baseline</Button>}
                         </div>
                     </Card>
                 ) : <div className="empty">no design yet</div>;
@@ -968,7 +962,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 return qaPanel ?? <div className="empty">no QA evidence yet</div>;
             case "code_review":
                 return review ? (
-                    <Card title="Code review" badge={<><span className={`chip ${review.findings.some((f) => f.status === "open" && (f.severity === "P0" || f.severity === "P1")) ? "bad" : "ok"}`}>{review.findings.filter((f) => f.status === "open").length} open</span><span className="chip">{review.findings.filter((f) => f.status === "fixed").length} fixed</span></>}>
+                    <Card title="Code review" badge={<><Chip className={`${review.findings.some((f) => f.status === "open" && (f.severity === "P0" || f.severity === "P1")) ? "bad" : "ok"}`}>{review.findings.filter((f) => f.status === "open").length} open</Chip><Chip>{review.findings.filter((f) => f.status === "fixed").length} fixed</Chip></>}>
                         <p className="field-hint">{review.summary} — gstack's pre-landing checklist applied by a fresh session; fixed findings are committed on the branch, open ones are yours to judge, suppressed ones are low-confidence and kept for calibration.</p>
                         {(["open", "fixed", "suppressed"] as const).map((st) => {
                             const rows = review.findings.filter((f) => f.status === st);
@@ -977,9 +971,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                 <Sub key={st} title={`${st === "open" ? "Open" : st === "fixed" ? "Fixed" : "Suppressed (low confidence)"} (${rows.length})`} open={st !== "suppressed"}>
                                     {rows.map((f) => (
                                         <div key={f.id} className="kv" style={{ marginBottom: 10 }}>
-                                            <b><span className={`chip ${f.severity === "P0" || f.severity === "P1" ? "bad" : f.severity === "P2" ? "warn" : ""}`}>{f.severity}</span> {f.confidence}/10</b>
+                                            <b><Chip className={`${f.severity === "P0" || f.severity === "P1" ? "bad" : f.severity === "P2" ? "warn" : ""}`}>{f.severity}</Chip> {f.confidence}/10</b>
                                             <span>
-                                                <div><b>{f.title}</b> <code>{f.file}{f.line ? `:${f.line}` : ""}</code>{f.category ? <span className="chip" style={{ marginLeft: 6 }}>{f.category}</span> : null}{f.commit ? <code style={{ marginLeft: 6 }}>{f.commit.slice(0, 7)}</code> : null}</div>
+                                                <div><b>{f.title}</b> <code>{f.file}{f.line ? `:${f.line}` : ""}</code>{f.category ? <Chip style={{ marginLeft: 6 }}>{f.category}</Chip> : null}{f.commit ? <code style={{ marginLeft: 6 }}>{f.commit.slice(0, 7)}</code> : null}</div>
                                                 {f.detail && <div style={{ fontSize: 13 }}>{f.detail}</div>}
                                                 {f.quote && <pre style={{ fontSize: 12, margin: "4px 0 0", whiteSpace: "pre-wrap" }}>{f.quote}</pre>}
                                             </span>
@@ -997,9 +991,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         title="Implementation"
                         badge={
                             impl.gates ? (
-                                <span className={`chip ${impl.gates.tests && impl.gates.typecheck ? "ok" : "bad"}`}>tests {impl.gates.tests ? "✓" : "✗"} · typecheck {impl.gates.typecheck ? "✓" : "✗"}</span>
+                                <Chip className={`${impl.gates.tests && impl.gates.typecheck ? "ok" : "bad"}`}>tests {impl.gates.tests ? "✓" : "✗"} · typecheck {impl.gates.typecheck ? "✓" : "✗"}</Chip>
                             ) : (
-                                <span className="chip wait">in progress</span>
+                                <Chip tone="wait">in progress</Chip>
                             )
                         }
                     >
@@ -1011,13 +1005,13 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                             <b>Commits</b><span>{impl.commits?.length ? impl.commits.map((c) => <div key={c}><code>{c}</code></div>) : "none (uncommitted changes)"}</span>
                         </div>
                         {impl.notes && <Sub title="Notes from the implementer" open={false}><Markdown source={impl.notes} /></Sub>}
-                        <div className="actions"><button onClick={() => setTab("code")}>Open Code changes</button></div>
+                        <div className="actions"><Button onClick={() => setTab("code")}>Open Code changes</Button></div>
                     </Card>
                 ) : <div className="empty">no implementation yet</div>;
             case "user_review":
                 return (
                     <>
-                        {task.stage === "user_review" ? reviewBox : <Card title="User Review"><ReviewHistory reviews={detail.reviews} stage="user_review" /><div className="actions"><button onClick={() => setTab("comments")}>PR comments</button></div></Card>}
+                        {task.stage === "user_review" ? reviewBox : <Card title="User Review"><ReviewHistory reviews={detail.reviews} stage="user_review" /><div className="actions"><Button onClick={() => setTab("comments")}>PR comments</Button></div></Card>}
                     </>
                 );
             case "pr_creation_review":
@@ -1029,7 +1023,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 // Draft review through merge now lives on its own top-level tab, not here.
                 return (
                     <Card title="Pull request">
-                        <p>{STAGE_LABEL[task.stage]} — tracked on the <button className="tiny" onClick={() => openPrTab()}>Pull request tab</button>.</p>
+                        <p>{STAGE_LABEL[task.stage]} — tracked on the <Button size="sm" onClick={() => openPrTab()}>Pull request tab</Button>.</p>
                     </Card>
                 );
             default:
@@ -1045,103 +1039,103 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 <LabelEditor labels={labelsOf(task)} onChange={(next) => onAction(() => api.patchTask(task.id, { labels: next }))} />
                 <span>{STAGE_LABEL[task.stage]}</span>
                 {task.ticket_url ? <a href={task.ticket_url} target="_blank" rel="noreferrer">{task.source} ↗</a> : <span>{task.source}</span>}
-                {task.model && <span className="chip">{task.model}</span>}
+                {task.model && <Chip>{task.model}</Chip>}
                 <span>session {task.session_id.slice(0, 8)}</span>
                 {owners.length > 0 && (
                     <label title="The Product Owner whose project this ticket belongs to: it can review the design proposal">
                         product owner{" "}
-                        <select value={task.product_owner_id ?? ""} onChange={(e) => onAction(() => api.setTaskProductOwner(task.id, e.target.value || null))}>
+                        <Select value={task.product_owner_id ?? ""} onChange={(e) => onAction(() => api.setTaskProductOwner(task.id, e.target.value || null))}>
                             <option value="">none</option>
                             {owners.filter((o) => poEnvIds(o).includes(task.env_id)).map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
-                        </select>
+                        </Select>
                     </label>
                 )}
                 <label>
                     account{" "}
-                    <select value={task.account_id ?? ""} onChange={(e) => onAction(() => api.setAccount(task.id, e.target.value))}>
+                    <Select value={task.account_id ?? ""} onChange={(e) => onAction(() => api.setAccount(task.id, e.target.value))}>
                         {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                    </select>
+                    </Select>
                 </label>
             </div>
             <div className="actions">
-                {task.status === "running" && <button className="danger" onClick={() => onAction(() => api.stop(task.id))}>Stop</button>}
+                {task.status === "running" && <Button variant="danger" onClick={() => onAction(() => api.stop(task.id))}>Stop</Button>}
                 {(task.status === "failed" || task.status === "stopped" || task.status === "blocked") && (
-                    <button className="primary" onClick={() => onAction(() => api.retry(task.id))}>{task.status === "blocked" ? "Re-run stage" : "Retry stage"}</button>
+                    <Button variant="primary" onClick={() => onAction(() => api.retry(task.id))}>{task.status === "blocked" ? "Re-run stage" : "Retry stage"}</Button>
                 )}
                 {task.stage === "manual_qa" && task.status !== "running" && (
-                    <button title="Go on to User Review without this Manual QA pass (no after-state evidence) — for a pass stuck on the environment; you QA by hand there" onClick={() => onAction(() => api.skipManualQa(task.id))}>
+                    <Button title="Go on to User Review without this Manual QA pass (no after-state evidence) — for a pass stuck on the environment; you QA by hand there" onClick={() => onAction(() => api.skipManualQa(task.id))}>
                         Skip Manual QA
-                    </button>
+                    </Button>
                 )}
                 {task.status !== "running" && !PR_STAGES.has(task.stage) && (detail.prStates ?? []).some((r) => r.number && !r.merged_at && r.state !== "CLOSED" && r.state !== "MERGED") && (
-                    <button title="The PRs are already open: go back to following them (PR Waiting) without the rest of this round's stages — the branch must be pushed first" onClick={() => onAction(() => api.followPrs(task.id))}>
+                    <Button title="The PRs are already open: go back to following them (PR Waiting) without the rest of this round's stages — the branch must be pushed first" onClick={() => onAction(() => api.followPrs(task.id))}>
                         Back to PR Waiting
-                    </button>
+                    </Button>
                 )}
-                <button onClick={() => onAction(() => api.pin(task.id))}>{task.pinned ? "Unpin" : "Pin"}</button>
-                {terminal ? <button onClick={onCloseTerminal}>Close terminal</button> : <button disabled={task.status === "running"} onClick={onOpenTerminal}>Open terminal</button>}
-                {task.status !== "running" && currentIdx > 0 && <button onClick={() => setReturning((v) => !v)} title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)">{returning ? "Cancel return" : "Return to a stage…"}</button>}
+                <Button onClick={() => onAction(() => api.pin(task.id))}>{task.pinned ? "Unpin" : "Pin"}</Button>
+                {terminal ? <Button onClick={onCloseTerminal}>Close terminal</Button> : <Button disabled={task.status === "running"} onClick={onOpenTerminal}>Open terminal</Button>}
+                {task.status !== "running" && currentIdx > 0 && <Button onClick={() => setReturning((v) => !v)} title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)">{returning ? "Cancel return" : "Return to a stage…"}</Button>}
                 {task.status !== "running" && task.branch && task.worktree_path && (
                     <span className="rebase-group">
-                        <button
-                            title="Every repository: a plain git rebase of this task's own commits onto the latest base first (seconds); the task's agent takes over only where that conflicts. If the branch is on GitHub and this env allows pushes, Stagehand then force-pushes it with lease, the PR checks restart, and tasks stacked on this branch are rebased in turn"
-                            onClick={() => startRebase()}
-                        >
+                        <Button
+ title="Every repository: a plain git rebase of this task's own commits onto the latest base first (seconds); the task's agent takes over only where that conflicts. If the branch is on GitHub and this env allows pushes, Stagehand then force-pushes it with lease, the PR checks restart, and tasks stacked on this branch are rebased in turn"
+ onClick={() => startRebase()}
+>
                             Rebase onto latest base
-                        </button>
+                        </Button>
                         {envRepoList.length > 1 && (
                             <details className="rebase-pick">
                                 <summary title="Rebase only some repositories">▾</summary>
                                 <div className="rebase-pick-menu">
                                     {envRepoList.map((r) => (
                                         <label key={r} className="inline">
-                                            <input type="checkbox" checked={rebasePick.includes(r)} onChange={(e) => setRebasePick((p) => (e.target.checked ? [...p, r] : p.filter((x) => x !== r)))} /> {repoName(r)}
+                                            <Input type="checkbox" checked={rebasePick.includes(r)} onChange={(e) => setRebasePick((p) => (e.target.checked ? [...p, r] : p.filter((x) => x !== r)))} /> {repoName(r)}
                                         </label>
                                     ))}
-                                    <button className="tiny" disabled={rebasePick.length === 0} onClick={() => startRebase(rebasePick)}>Rebase {rebasePick.length ? rebasePick.map(repoName).join(" + ") : "selected"}</button>
+                                    <Button size="sm" disabled={rebasePick.length === 0} onClick={() => startRebase(rebasePick)}>Rebase {rebasePick.length ? rebasePick.map(repoName).join(" + ") : "selected"}</Button>
                                 </div>
                             </details>
                         )}
                     </span>
                 )}
                 {task.status !== "running" && task.worktree_path && (
-                    <button
-                        title="Stop BE/FE, close their Chrome tabs, run the env's cleanup command, remove the worktree and local branch; the task and its history stay"
-                        onClick={() => {
-                            if (!confirm(`Clean up ${task.ticket_id}? BE/FE stop, the worktree and local branch ${task.branch ?? ""} are removed. Pushed commits and the PR are untouched.`)) return;
-                            void onAction(async () => {
-                                try {
-                                    await api.cleanup(task.id);
-                                } catch (e) {
-                                    const msg = String((e as Error).message ?? e);
-                                    if (/nowhere else/.test(msg) && confirm(`${msg}\n\nDiscard them and clean up anyway?`)) await api.cleanup(task.id, true);
-                                    else throw e;
-                                }
-                            });
-                        }}
-                    >
+                    <Button
+ title="Stop BE/FE, close their Chrome tabs, run the env's cleanup command, remove the worktree and local branch; the task and its history stay"
+ onClick={() => {
+ if (!confirm(`Clean up ${task.ticket_id}? BE/FE stop, the worktree and local branch ${task.branch ?? ""} are removed. Pushed commits and the PR are untouched.`)) return;
+ void onAction(async () => {
+ try {
+ await api.cleanup(task.id);
+ } catch (e) {
+ const msg = String((e as Error).message ?? e);
+ if (/nowhere else/.test(msg) && confirm(`${msg}\n\nDiscard them and clean up anyway?`)) await api.cleanup(task.id, true);
+ else throw e;
+ }
+ });
+ }}
+>
                         Clean up
-                    </button>
+                    </Button>
                 )}
                 {task.status !== "running" && (
-                    <button
-                        className="danger"
-                        title="Stop BE/FE, close their Chrome tabs, run the env's cleanup command, remove the worktree/branch, then forget this task"
-                        onClick={() => {
-                            if (!confirm(`Delete task ${task.ticket_id}? This cleans up (BE/FE, Chrome tabs, worktree, local branch) the same way "Clean up" does, then removes the task itself. The PR (if any) stays on GitHub.`)) return;
-                            void onAction(async () => {
-                                try {
-                                    await api.deleteTask(task.id);
-                                } catch (e) {
-                                    const msg = String((e as Error).message ?? e);
-                                    if (/nowhere else/.test(msg) && confirm(`${msg}\n\nDiscard them and delete anyway?`)) await api.deleteTask(task.id, false, true);
-                                    else throw e;
-                                }
-                            });
-                        }}
-                    >
+                    <Button variant="danger"
+ 
+ title="Stop BE/FE, close their Chrome tabs, run the env's cleanup command, remove the worktree/branch, then forget this task"
+ onClick={() => {
+ if (!confirm(`Delete task ${task.ticket_id}? This cleans up (BE/FE, Chrome tabs, worktree, local branch) the same way "Clean up" does, then removes the task itself. The PR (if any) stays on GitHub.`)) return;
+ void onAction(async () => {
+ try {
+ await api.deleteTask(task.id);
+ } catch (e) {
+ const msg = String((e as Error).message ?? e);
+ if (/nowhere else/.test(msg) && confirm(`${msg}\n\nDiscard them and delete anyway?`)) await api.deleteTask(task.id, false, true);
+ else throw e;
+ }
+ });
+ }}
+>
                         Delete
-                    </button>
+                    </Button>
                 )}
             </div>
             {returning && (
@@ -1162,12 +1156,12 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
             <div className="widgets">
                 {task.worktree_path ? (
-                    <section className="card widget">
+                    <Card className="widget">
                         <h2>App</h2>
                         <ServicesPanel taskId={task.id} env={env} dependencyBranch={task.dependency_branch ?? null} busy={task.status === "running"} onError={onError} onFixStarted={() => void onAction(async () => undefined)} />
-                    </section>
+                    </Card>
                 ) : (
-                    <section className="card widget"><h2>App</h2><div className="empty">no worktree yet</div></section>
+                    <Card className="widget"><h2>App</h2><div className="empty">no worktree yet</div></Card>
                 )}
                 {task.worktree_path && <TaskDbWidget task={task} onAction={onAction} />}
                 <PrWidget detail={detail} onAction={onAction} onOpenInTab={openPrTab} />
@@ -1180,13 +1174,13 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         <span key={s} className={`stage ${i < currentIdx ? "past" : i === currentIdx ? "current" : ""} ${skipped.has(s) ? "skipped" : ""}`}>
                             {STAGE_LABEL[s]}
                             {runnable && (
-                                <button
-                                    className="rerun"
-                                    title={`Re-run ${STAGE_LABEL[s]} (archives its previous output)`}
-                                    onClick={() => { if (confirm(`Re-run ${STAGE_LABEL[s]}? Later stages will run again after it.`)) void onAction(() => api.rerun(task.id, s)); }}
-                                >
+                                <Button variant="ghost"
+ className="rerun"
+ title={`Re-run ${STAGE_LABEL[s]} (archives its previous output)`}
+ onClick={() => { if (confirm(`Re-run ${STAGE_LABEL[s]}? Later stages will run again after it.`)) void onAction(() => api.rerun(task.id, s)); }}
+>
                                     ↻
-                                </button>
+                                </Button>
                             )}
                         </span>
                     );
@@ -1208,20 +1202,20 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         const failing = (detail.prStates ?? []).filter((r) => r.number && parseChecks(r.checks_json).some((c) => !isApprovalGateCheck(c) && checkOutcome(c) === "fail"));
                         return failing.length > 0 ? (
                             <div className="actions" style={{ marginBottom: 0 }}>
-                                {failing.map((r) => <button key={r.repo} className="primary" onClick={() => onAction(() => api.fixCi(task.id, r.repo))}>Fix CI{failing.length > 1 || r.repo ? ` on ${repoName(r.repo)}` : ""}</button>)}
+                                {failing.map((r) => <Button variant="primary" key={r.repo} onClick={() => onAction(() => api.fixCi(task.id, r.repo))}>Fix CI{failing.length > 1 || r.repo ? ` on ${repoName(r.repo)}` : ""}</Button>)}
                                 <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>The agent proposes a fix and commits it locally — nothing is pushed until you review the diff and approve.</span>
                             </div>
                         ) : null;
                     })()}
                     {/log ?in/i.test(task.status_line ?? "") && !/waiting for you/.test(task.status_line ?? "") && (
                         <div className="actions" style={{ marginBottom: 0 }}>
-                            <button className="primary" onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA</button>
+                            <Button variant="primary" onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA</Button>
                             <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Opens the app in the QA Chrome profile; you log in there, Stagehand watches the tab (and moves an Auth0 return from localhost:3000 to the app's port), then re-runs the stage. No agent, no cost.</span>
                         </div>
                     )}
                     {/Relaunch Chrome for QA/.test(task.status_line ?? "") && (
                         <div className="actions" style={{ marginBottom: 0 }}>
-                            <button className="primary" onClick={() => onAction(() => api.relaunchChrome(task.id))}>Relaunch Chrome for QA</button>
+                            <Button variant="primary" onClick={() => onAction(() => api.relaunchChrome(task.id))}>Relaunch Chrome for QA</Button>
                             <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Quits Chrome and reopens it with the switches that keep a covered window rendering (your tabs restore), then retries this stage. Needed once per Chrome start.</span>
                         </div>
                     )}
@@ -1235,12 +1229,12 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         if (!at) return null;
                         const ms = new Date(at).getTime() - Date.now();
                         const local = new Date(at).toLocaleString([], { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
-                        return <span className="chip warn" style={{ marginLeft: 8 }}>{ms > 0 ? `auto-resume at ${local} (in ${Math.ceil(ms / 60000)} min)` : "resuming…"}</span>;
+                        return <Chip tone="warn" style={{ marginLeft: 8 }}>{ms > 0 ? `auto-resume at ${local} (in ${Math.ceil(ms / 60000)} min)` : "resuming…"}</Chip>;
                     })()}
                 </div>
             )}
 
-            <div className="tabs" role="tablist">
+            <TabList>
                 {([
                     ["work", "Work"],
                     ["runs", `Runs (${runs.length})`],
@@ -1252,19 +1246,19 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     ["ticket", `Ticket${tickets.length > 1 ? `s (${tickets.length})` : ""}${task.notes ? " · notes" : ""}`],
                     ["cost", "Cost"],
                 ] as Array<[Tab, string]>).map(([t, label]) => (
-                    <button key={t} role="tab" className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{label}</button>
+                    <Tab key={t} active={tab === t} onClick={() => setTab(t)}>{label}</Tab>
                 ))}
-            </div>
+            </TabList>
 
             {tab === "work" && (
                 <>
-                    <div className="subtabs">
+                    <TabList variant="pill">
                         {steps.map((s) => (
-                            <button key={s} className={stepKey(step) === stepKey(s) ? "active" : ""} onClick={() => setStep(s)}>
+                            <Tab key={s} active={stepKey(step) === stepKey(s)} onClick={() => setStep(s)}>
                                 {PR_STAGES.has(s) ? "Pull request" : STAGE_LABEL[s]}{s === stepKey(task.stage) ? " ·" : ""}
-                            </button>
+                            </Tab>
                         ))}
-                    </div>
+                    </TabList>
                     {task.status === "running" && stepKey(step) === stepKey(task.stage) && (
                         <Card title="Live">
                             <div className="feed">{feed.length === 0 ? <div className="k">waiting for events…</div> : feed.slice(-40).map((l, i) => <div key={i}>{l}</div>)}</div>
@@ -1286,7 +1280,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         {runs.length === 0 && <div className="empty">none yet</div>}
                         {[...runs].reverse().map((r) => (
                             <div className="run" key={r.id}>
-                                <span>{STAGE_LABEL[r.stage]} <small style={{ color: "var(--ink-3)" }}>#{r.attempt}</small>{r.shard && <span className="chip" title="one shard of a QA pass that ran its scenarios in parallel">{r.shard}</span>}</span>
+                                <span>{STAGE_LABEL[r.stage]} <small style={{ color: "var(--ink-3)" }}>#{r.attempt}</small>{r.shard && <Chip title="one shard of a QA pass that ran its scenarios in parallel">{r.shard}</Chip>}</span>
                                 {statusChip(r.status)}
                                 <span className={r.error ? "err" : ""}>{r.error ?? r.last_event ?? ""}</span>
                                 <span className="mono" style={{ color: "var(--ink-3)" }}>{r.model ? `${r.model} · ` : ""}{r.num_turns ? `${r.num_turns} turns` : ""}{r.cost_usd ? ` · $${r.cost_usd.toFixed(2)}` : ""}</span>
@@ -1298,7 +1292,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
             {tab === "design" && (
                 design ? (
-                    <Card title="Design proposal" badge={<><span className={`chip ${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</span>{(design.affectedRepos ?? []).map((r) => <span key={r} className="chip">{r}</span>)}</>}>
+                    <Card title="Design proposal" badge={<><Chip className={`${design.classification === "bug" ? "bad" : "accent"}`}>{design.classification}</Chip>{(design.affectedRepos ?? []).map((r) => <Chip key={r}>{r}</Chip>)}</>}>
                         {task.stage === "design_proposal" && reviewBox}
                         <DesignTabs annot={{ comments, threads: threadMessages(detail.messages ?? []), canComment: canCommentDesign, canAsk: task.status !== "running", onChange: changeComment, onAsk: (anchor, text, files) => onAction(async () => { await api.sendMessage(task.id, text, anchor, await api.uploadFiles(task.id, files)); }) }} onPicked={setPoPicked} task={task} owner={owners.find((o) => o.id === task.product_owner_id) ?? null} design={design} md={designMd} before={qaBefore} section={view.tab === "design" ? view.section : undefined} onSection={(s) => onView({ tab: "design", section: s })} onAction={onAction} onError={onError} />
                     </Card>
@@ -1307,7 +1301,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
 
             {tab === "code" && (
                 task.branch && task.worktree_path ? (
-                    <Card title="Code changes" badge={pending.length > 0 ? <span className="chip wait">{pending.length} 💬</span> : undefined}>
+                    <Card title="Code changes" badge={pending.length > 0 ? <Chip tone="wait">{pending.length} 💬</Chip> : undefined}>
                         <p className="field-hint">
                             {canComment ? "Tap a line to leave a review comment (sent from the PR comments tab or the review box), or ask the agent about it" : canCommentPr ? "Tap a line to leave a comment for the agent to address in a PR-fix round (nothing is posted to GitHub), or ask the agent about it" : "Tap a line to ask the agent about it"}
                             {task.status === "running" ? " — questions wait until the current run is over." : " — the answer appears under the line and in Chat."}
@@ -1315,15 +1309,15 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         {canCommentPr && pending.length > 0 && (
                             <div className="review-box" style={{ marginBottom: 10 }}>
                                 <b>{pending.length} line comment{pending.length === 1 ? "" : "s"} for the agent.</b> It addresses them, commits locally, and you review the diff before it's pushed.
-                                <ul className="plain">{pending.map(([k, c]) => <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>)}</ul>
+                                <ul className="plain">{pending.map(([k, c]) => <li key={k}><code>{c.path}:{c.line}</code>{c.text} <Button variant="danger" onClick={() => changeComment(k, null)} title="remove">×</Button></li>)}</ul>
                                 <AgentInput placeholder="General notes (optional)" value={localNotes} onChange={setLocalNotes} />
                                 <div className="actions" style={{ marginBottom: 0 }}>
-                                    <button
-                                        className="primary"
-                                        onClick={() => void onAction(async () => { await api.fixLocalComments(task.id, { ...(localNotes.trim() ? { notes: localNotes } : {}), comments: pending.map(([, c]) => c) }); clearComments(); setLocalNotes(""); })}
-                                    >
+                                    <Button variant="primary"
+ 
+ onClick={() => void onAction(async () => { await api.fixLocalComments(task.id, { ...(localNotes.trim() ? { notes: localNotes } : {}), comments: pending.map(([, c]) => c) }); clearComments(); setLocalNotes(""); })}
+>
                                         Ask agent to address {pending.length} comment{pending.length === 1 ? "" : "s"}
-                                    </button>
+                                    </Button>
                                 </div>
                             </div>
                         )}
@@ -1356,7 +1350,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         <>
                             {task.stage === "pr_fix" && task.status === "waiting_user" && <PrFixReplies taskId={task.id} updatedAt={task.updated_at} />}
                             {task.stage === "pr_fix" && reviewBox}
-                            {task.stage === "pr_fix" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><button onClick={() => setTab("code")}>Open Code changes to review the diff</button></div></Card>}
+                            {task.stage === "pr_fix" && prFix?.summary && <Card title="Proposed fix"><Markdown source={prFix.summary} /><div className="actions"><Button onClick={() => setTab("code")}>Open Code changes to review the diff</Button></div></Card>}
                             <PrPanel detail={detail} onAction={onAction} focusRepo={prFocusRepo} onFocusRepo={setPrFocusRepo} />
                             <CiAutopilotCard task={task} onAction={onAction} />
                             {/* A repository whose draft was never approved (the task moved on when another repository's PR opened): still reviewable here. */}
@@ -1374,22 +1368,22 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {tab === "comments" && (
                 <>
                     {prdRepos.length > 1 && (
-                        <div className="subtabs pr-repo-tabs">
-                            {prdRepos.map((r) => <button key={r} className={`${ghRepo === r ? "active" : ""} repo-${repoColorClass(r, prdRepos)}`} onClick={() => setGhRepo(r)}>{repoName(r)} <span className="chip">#{prStateOf(detail, r)?.number}</span></button>)}
-                        </div>
+                        <TabList variant="pill" className="pr-repo-tabs">
+                            {prdRepos.map((r) => <Tab key={r} active={ghRepo === r} className={`repo-${repoColorClass(r, prdRepos)}`} onClick={() => setGhRepo(r)}>{repoName(r)} <Chip>#{prStateOf(detail, r)?.number}</Chip></Tab>)}
+                        </TabList>
                     )}
-                    <div className="subtabs">
-                        <button className={commentsTab === "user" ? "active" : ""} onClick={() => setCommentsTab("user")}>Human · User comments</button>
-                        <button className={commentsTab === "pr" ? "active" : ""} onClick={() => setCommentsTab("pr")}>Human · PR comments{gh ? ` (${gh.human.length})` : ""}</button>
-                        <button className={commentsTab === "automation" ? "active" : ""} onClick={() => setCommentsTab("automation")}>Automation comments{gh ? ` (${gh.automation.length})` : ""}</button>
-                    </div>
+                    <TabList variant="pill">
+                        <Tab active={commentsTab === "user"} onClick={() => setCommentsTab("user")}>Human · User comments</Tab>
+                        <Tab active={commentsTab === "pr"} onClick={() => setCommentsTab("pr")}>Human · PR comments{gh ? ` (${gh.human.length})` : ""}</Tab>
+                        <Tab active={commentsTab === "automation"} onClick={() => setCommentsTab("automation")}>Automation comments{gh ? ` (${gh.automation.length})` : ""}</Tab>
+                    </TabList>
                     {commentsTab === "user" && (
                         task.stage === "user_review" && waiting ? reviewBox : (
                             <Card title="Your comments before the PR">
                                 {pending.length > 0 && (
                                     <div className="pending-comments">
                                         Draft line comments ({canCommentPr ? "sent from the box on Code changes" : "sent with the next \"Request changes\" in User Review"}):
-                                        <ul className="plain">{pending.map(([k, c]) => <li key={k}><code>{c.path}:{c.line}</code>{c.text} <button className="danger" onClick={() => changeComment(k, null)} title="remove">×</button></li>)}</ul>
+                                        <ul className="plain">{pending.map(([k, c]) => <li key={k}><code>{c.path}:{c.line}</code>{c.text} <Button variant="danger" onClick={() => changeComment(k, null)} title="remove">×</Button></li>)}</ul>
                                     </div>
                                 )}
                                 <ReviewHistory reviews={detail.reviews} stage="user_review" />
@@ -1403,14 +1397,14 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                                 <div className="review-box" style={{ marginBottom: 10 }}>
                                     <b>{selectedComments.size} comment(s) picked.</b> The agent addresses just these, commits locally, and you review the diff before it's pushed — no re-run of QA or User Review. To only ask what it thinks of a comment, use "Ask agent" under that comment.
                                     <div className="actions" style={{ marginBottom: 0 }}>
-                                        <button
-                                            className="primary"
-                                            disabled={task.status === "running"}
-                                            onClick={() => void onAction(async () => { await api.fixComments(task.id, ghRepo ?? "", [...selectedComments]); clearPicks(); })}
-                                        >
+                                        <Button variant="primary"
+ 
+ disabled={task.status === "running"}
+ onClick={() => void onAction(async () => { await api.fixComments(task.id, ghRepo ?? "", [...selectedComments]); clearPicks(); })}
+>
                                             Ask agent to address {selectedComments.size} comment(s)
-                                        </button>
-                                        <button onClick={clearPicks}>Clear selection</button>
+                                        </Button>
+                                        <Button onClick={clearPicks}>Clear selection</Button>
                                     </div>
                                 </div>
                             )}
@@ -1491,10 +1485,10 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
             title={<><RepoChip repo={entry.repo} repos={repos} /> PR draft</>}
             badge={
                 <>
-                    {created && <span className={`chip ${o.cls}`}>{row?.url ? <a href={row.url} target="_blank" rel="noreferrer">#{row.number} {o.text} ↗</a> : o.text}</span>}
-                    {!created && approved && <span className="chip warn" title="Approved; Stagehand could not push or open it itself — see the status line">approved · {o.text}</span>}
-                    {!created && !approved && reviewing && <span className="chip wait">awaiting your approval</span>}
-                    {editable && !editing && <button className="tiny" onClick={() => setEditing(true)}>Edit</button>}
+                    {created && <Chip className={`${o.cls}`}>{row?.url ? <a href={row.url} target="_blank" rel="noreferrer">#{row.number} {o.text} ↗</a> : o.text}</Chip>}
+                    {!created && approved && <Chip tone="warn" title="Approved; Stagehand could not push or open it itself — see the status line">approved · {o.text}</Chip>}
+                    {!created && !approved && reviewing && <Chip tone="wait">awaiting your approval</Chip>}
+                    {editable && !editing && <Button size="sm" onClick={() => setEditing(true)}>Edit</Button>}
                 </>
             }
         >
@@ -1516,12 +1510,12 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
             )}
             {editing && (
                 <div className="pr-editor">
-                    <label>Title <input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
+                    <label>Title <Input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
                     <label>Base branch{repos.length > 1 ? ` for ${repoName(entry.repo)}` : ""} <BranchPicker envId={task.env_id} repo={entry.repo} value={base} onChange={setBase} style={{ maxWidth: 320 }} /></label>
                     <div className="pr-editor-panes">
                         <div className="pr-editor-pane">
                             <div className="pr-editor-head">Markdown</div>
-                            <textarea value={body} onChange={(e) => setBody(e.target.value)} spellCheck={false} />
+                            <Textarea value={body} onChange={(e) => setBody(e.target.value)} spellCheck={false} />
                         </div>
                         <div className="pr-editor-pane preview">
                             <div className="pr-editor-head">Preview</div>
@@ -1529,8 +1523,8 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
                         </div>
                     </div>
                     <div className="actions" style={{ marginBottom: 0 }}>
-                        <button className="primary" disabled={saving || !title.trim() || !dirty} onClick={() => { setSaving(true); void onAction(() => api.patchPrDraft(task.id, { repo: entry.repo, title: title.trim(), body, base })).then(() => setEditing(false)).finally(() => setSaving(false)); }}>{saving ? "Saving…" : "Save draft"}</button>
-                        <button disabled={saving} onClick={() => setEditing(false)}>Cancel</button>
+                        <Button variant="primary" disabled={saving || !title.trim() || !dirty} onClick={() => { setSaving(true); void onAction(() => api.patchPrDraft(task.id, { repo: entry.repo, title: title.trim(), body, base })).then(() => setEditing(false)).finally(() => setSaving(false)); }}>{saving ? "Saving…" : "Save draft"}</Button>
+                        <Button disabled={saving} onClick={() => setEditing(false)}>Cancel</Button>
                         {dirty && <span className="field-hint">unsaved edits{approved ? " — saving withdraws the approval until you approve again" : ""}</span>}
                     </div>
                 </div>
@@ -1540,8 +1534,8 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
                     <b>{repoName(entry.repo)} — your call.</b>
                     {!approved && (
                         <div className="actions">
-                            <button className="primary" onClick={() => onAction(() => api.review(task.id, { verdict: "approve", repo: entry.repo }))}>Approve & create {repoName(entry.repo)} PR</button>
-                            <button onClick={() => setChanges((v) => !v)}>{changes ? "Cancel" : "Request changes"}</button>
+                            <Button variant="primary" onClick={() => onAction(() => api.review(task.id, { verdict: "approve", repo: entry.repo }))}>Approve & create {repoName(entry.repo)} PR</Button>
+                            <Button onClick={() => setChanges((v) => !v)}>{changes ? "Cancel" : "Request changes"}</Button>
                         </div>
                     )}
                     {approved && <div className="field-hint" style={{ marginTop: 6 }}>Approved. {task.status_line}</div>}
@@ -1549,7 +1543,7 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
                         <>
                             <AgentInput placeholder={`What should change in the ${repoName(entry.repo)} description (required)`} value={notes} onChange={setNotes} pending={attach} />
                             <div className="actions" style={{ marginBottom: 0 }}>
-                                <button className="primary" disabled={!notes.trim()} onClick={() => onAction(async () => { const files = await api.uploadFiles(task.id, attach.files); await api.review(task.id, { verdict: "changes", repo: entry.repo, notes, ...(files.length ? { files } : {}) }); setNotes(""); attach.clear(); setChanges(false); })}>Send back to the drafting agent</button>
+                                <Button variant="primary" disabled={!notes.trim()} onClick={() => onAction(async () => { const files = await api.uploadFiles(task.id, attach.files); await api.review(task.id, { verdict: "changes", repo: entry.repo, notes, ...(files.length ? { files } : {}) }); setNotes(""); attach.clear(); setChanges(false); })}>Send back to the drafting agent</Button>
                                 <span className="field-hint">The agent redrafts this repository's PR (others are copied through unchanged); drafts not yet approved go back to pending.</span>
                             </div>
                         </>
@@ -1579,24 +1573,24 @@ const PrDraftTabs = ({ detail, onAction, focusRepo, onFocusRepo }: { detail: Tas
                     <b>This draft predates per-repository PRs:</b> one description was written (on the first repository's template) and is shown under every repository. Redraft so each repository gets its own description on its own template.
                     {task.status !== "running" && (
                         <div className="actions" style={{ marginBottom: 0 }}>
-                            <button className="primary" onClick={() => { if (confirm("Redraft the pull requests per repository? The current draft is archived.")) void onAction(() => api.rerun(task.id, "pr_creation_review")); }}>Redraft per repository</button>
+                            <Button variant="primary" onClick={() => { if (confirm("Redraft the pull requests per repository? The current draft is archived.")) void onAction(() => api.rerun(task.id, "pr_creation_review")); }}>Redraft per repository</Button>
                         </div>
                     )}
                 </div>
             )}
             {drafts.length > 1 && (
-                <div className="subtabs pr-repo-tabs">
+                <TabList variant="pill" className="pr-repo-tabs">
                     {drafts.map((d, i) => {
                         const row = prStateOf(detail, d.repo);
                         const o = prOutcome(row);
                         return (
-                            <button key={d.repo} className={`${i === active ? "active" : ""} repo-${repoColorClass(d.repo, repos)}`} onClick={() => setActive(i)}>
-                                {repoName(d.repo)} <span className={`chip ${row?.approved_at ? o.cls || "ok" : "wait"}`}>{row?.number ? `#${row.number}` : row?.approved_at ? "approved" : "pending"}</span>
-                            </button>
+                            <Tab key={d.repo} active={i === active} className={`repo-${repoColorClass(d.repo, repos)}`} onClick={() => setActive(i)}>
+                                {repoName(d.repo)} <Chip className={`${row?.approved_at ? o.cls || "ok" : "wait"}`}>{row?.number ? `#${row.number}` : row?.approved_at ? "approved" : "pending"}</Chip>
+                            </Tab>
                         );
                     })}
                     <span className="field-hint" style={{ alignSelf: "center", marginTop: 0 }}>{approvedCount}/{drafts.length} approved · the task moves on once every repository is approved</span>
-                </div>
+                </TabList>
             )}
             {task.stage === "pr_creation_review" && <ReviewHistory reviews={detail.reviews} stage="pr_creation_review" />}
             <PrDraftEntryView key={cur.repo} detail={detail} entry={cur} repos={repos} onAction={onAction} />
@@ -1690,31 +1684,31 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
     };
     const idle = task.status !== "running";
     return (
-        <Card title="Batch jobs for the agent" badge={jobs ? <span className="chip accent">{jobs} job{jobs === 1 ? "" : "s"}</span> : undefined}>
+        <Card title="Batch jobs for the agent" badge={jobs ? <Chip tone="accent">{jobs} job{jobs === 1 ? "" : "s"}</Chip> : undefined}>
             <p className="field-hint">Tick what to do in one agent session; it commits as it goes, you review the diff once, then one push. The rebase runs mechanically first — only conflicts reach the agent.</p>
             <div className="pr-jobs">
                 <label className="inline">
-                    <input type="checkbox" checked={rebase} onChange={(e) => setRebase(e.target.checked)} /> Rebase onto latest base
+                    <Input type="checkbox" checked={rebase} onChange={(e) => setRebase(e.target.checked)} /> Rebase onto latest base
                     {rebase && repos.length > 1 && (
                         <span className="pr-jobs-sub">
                             {repos.map((r) => (
                                 <label key={r} className="inline">
-                                    <input type="checkbox" checked={rebaseRepos.includes(r)} onChange={(e) => setRebaseRepos((p) => (e.target.checked ? [...p, r] : p.filter((x) => x !== r)))} /> {repoName(r)}
+                                    <Input type="checkbox" checked={rebaseRepos.includes(r)} onChange={(e) => setRebaseRepos((p) => (e.target.checked ? [...p, r] : p.filter((x) => x !== r)))} /> {repoName(r)}
                                 </label>
                             ))}
                         </span>
                     )}
                 </label>
                 <label className="inline" title={failing.length ? failing.map((f) => `${repoName(f.repo)}: ${f.n} failing`).join(" · ") : "no failing checks right now"}>
-                    <input type="checkbox" checked={fixCi} disabled={!failing.length} onChange={(e) => setFixCi(e.target.checked)} /> Fix failing CI
-                    {failing.length > 0 && <span className="chip bad">{failing.map((f) => `${repos.length > 1 ? `${repoName(f.repo)} ` : ""}${f.n}`).join(" · ")}</span>}
+                    <Input type="checkbox" checked={fixCi} disabled={!failing.length} onChange={(e) => setFixCi(e.target.checked)} /> Fix failing CI
+                    {failing.length > 0 && <Chip tone="bad">{failing.map((f) => `${repos.length > 1 ? `${repoName(f.repo)} ` : ""}${f.n}`).join(" · ")}</Chip>}
                 </label>
                 <div className="pr-jobs-comments">
                     <span>Address PR comments{allComments.length ? ` (${openPicks.length}/${allComments.length} picked)` : withPr.length ? " — none open" : " — no PR yet"}</span>
                     {allComments.length > 0 && (
                         <>
-                            <button className="tiny" onClick={() => setPicked(new Set(allComments.map((x) => commentKey(x.repo, x.c.id))))}>all</button>
-                            <button className="tiny" onClick={() => setPicked(new Set())}>none</button>
+                            <Button size="sm" onClick={() => setPicked(new Set(allComments.map((x) => commentKey(x.repo, x.c.id))))}>all</Button>
+                            <Button size="sm" onClick={() => setPicked(new Set())}>none</Button>
                         </>
                     )}
                     {allComments.map(({ repo, c }) => {
@@ -1722,7 +1716,7 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
                         const text = c.kind === "line" ? `${c.path}:${c.line ?? "?"} — ${c.body}` : c.kind === "review" ? `review (${c.state.toLowerCase()}): ${c.body || "(no text)"}` : c.body;
                         return (
                             <label key={key} className="inline pr-jobs-comment" title={text}>
-                                <input type="checkbox" checked={picked.has(key)} onChange={(e) => setPicked((p) => { const n = new Set(p); if (e.target.checked) n.add(key); else n.delete(key); return n; })} />
+                                <Input type="checkbox" checked={picked.has(key)} onChange={(e) => setPicked((p) => { const n = new Set(p); if (e.target.checked) n.add(key); else n.delete(key); return n; })} />
                                 {repos.length > 1 && <RepoChip repo={repo} repos={repos} />}
                                 <b>{c.author}</b> <span className="pr-jobs-comment-text">{text.slice(0, 140)}{text.length > 140 ? "…" : ""}</span>
                             </label>
@@ -1733,7 +1727,7 @@ const PrJobsCard = ({ detail, repos, onAction }: { detail: TaskDetail; repos: st
                     <AgentInput value={instructions} onChange={setInstructions} pending={attach} placeholder="Anything else the agent should do in the same run…" rows={3} />
                 </label>
                 <div className="pr-jobs-actions">
-                    <button className="primary" disabled={!idle || busy || jobs === 0} onClick={() => void run()}>{busy ? "Starting…" : `Run ${jobs || ""} job${jobs === 1 ? "" : "s"} in one session`}</button>
+                    <Button variant="primary" disabled={!idle || busy || jobs === 0} onClick={() => void run()}>{busy ? "Starting…" : `Run ${jobs || ""} job${jobs === 1 ? "" : "s"} in one session`}</Button>
                     {!idle && <span className="field-hint">a run is in progress</span>}
                     {note && <span className="field-hint">{note}</span>}
                 </div>
@@ -1758,20 +1752,20 @@ const PrPanel = ({ detail, onAction, focusRepo, onFocusRepo }: { detail: TaskDet
     return (
         <>
             {repos.length > 1 && (
-                <div className="subtabs pr-repo-tabs">
+                <TabList variant="pill" className="pr-repo-tabs">
                     {repos.map((r, i) => {
                         const rRow = prStateOf(detail, r);
                         const rO = prOutcome(rRow);
                         return (
-                            <button key={r} className={`${i === active ? "active" : ""} repo-${repoColorClass(r, repos)}`} onClick={() => setActive(i)}>
-                                {repoName(r)} <span className={`chip ${rO.cls}`}>{rRow?.number ? `#${rRow.number}` : rO.text}</span>
-                            </button>
+                            <Tab key={r} active={i === active} className={`repo-${repoColorClass(r, repos)}`} onClick={() => setActive(i)}>
+                                {repoName(r)} <Chip className={`${rO.cls}`}>{rRow?.number ? `#${rRow.number}` : rO.text}</Chip>
+                            </Tab>
                         );
                     })}
-                </div>
+                </TabList>
             )}
             <PrJobsCard detail={detail} repos={repos} onAction={onAction} />
-            <Card title={<><RepoChip repo={repo} repos={repos} /> Pull request</>} badge={<span className={`chip ${o.cls}`}>{o.text}</span>}>
+            <Card title={<><RepoChip repo={repo} repos={repos} /> Pull request</>} badge={<Chip className={`${o.cls}`}>{o.text}</Chip>}>
                 {task.branch && (() => {
                     const bases = parseBaseBranch(task.base_branch);
                     const base = typeof bases === "string" ? bases : bases?.[repo];
@@ -1793,7 +1787,7 @@ const PrPanel = ({ detail, onAction, focusRepo, onFocusRepo }: { detail: TaskDet
                             <ChecksList checks={checks} />
                             {o.kind === "failed" && task.status !== "running" && (
                                 <div className="actions" style={{ margin: "8px 0 0" }}>
-                                    <button className="primary" onClick={() => onAction(() => api.fixCi(task.id, repo))}>Fix CI on {repoName(repo)}</button>
+                                    <Button variant="primary" onClick={() => onAction(() => api.fixCi(task.id, repo))}>Fix CI on {repoName(repo)}</Button>
                                 </div>
                             )}
                         </span>
@@ -1835,7 +1829,7 @@ const splitSections = (md: string): { intro: string; sections: MdSection[] } => 
 const QaTests = ({ taskId, design, before }: { taskId: string; design: NonNullable<TaskDetail["design"]>; before: QaPass | null }) => {
     const [zoom, setZoom] = useState<{ src: string; caption: string } | null>(null);
     const chip = (o?: string) =>
-        o ? <span className={`chip ${o === "pass" ? "ok" : o === "fail" ? "bad" : o === "needs_human" ? "wait" : "warn"}`}>baseline {o === "needs_human" ? "check yourself" : o}</span> : <span className="chip">no baseline yet</span>;
+        o ? <Chip className={`${o === "pass" ? "ok" : o === "fail" ? "bad" : o === "needs_human" ? "wait" : "warn"}`}>baseline {o === "needs_human" ? "check yourself" : o}</Chip> : <Chip>no baseline yet</Chip>;
     if (design.qa.length === 0) return <div className="quiet"><b>No QA scenarios</b> — {design.qaSkippedReason ?? "no reason given"}</div>;
     return (
         <>
@@ -1850,8 +1844,8 @@ const QaTests = ({ taskId, design, before }: { taskId: string; design: NonNullab
                     <details className="scenario" key={s.id} open>
                         <summary>
                             <h3>
-                                <span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip">API</span>}<b className="scenario-title">{s.title}</b> <code>{s.url}</code> <span className="chip persona">{s.persona}</span>{" "}
-                                {s.baseline === false ? <span className="chip" title="The journey does not exist before the change: the baseline records it as a failure by construction">new surface — no baseline</span> : chip(b?.outcome)}
+                                <Chip tone="accent">{s.id}</Chip>{s.kind === "api" && <Chip>API</Chip>}<b className="scenario-title">{s.title}</b> <code>{s.url}</code> <Chip className="persona">{s.persona}</Chip>{" "}
+                                {s.baseline === false ? <Chip title="The journey does not exist before the change: the baseline records it as a failure by construction">new surface — no baseline</Chip> : chip(b?.outcome)}
                             </h3>
                         </summary>
                         <ol className="qa-steps">
@@ -1859,7 +1853,7 @@ const QaTests = ({ taskId, design, before }: { taskId: string; design: NonNullab
                                 <li key={i}>
                                     <b>Do:</b> {s.kind === "api" ? <code>{st.action}</code> : st.action}
                                     <br />
-                                    <b>Expect:</b> {st.assert} {st.shot && <span className="chip warn">shot</span>}
+                                    <b>Expect:</b> {st.assert} {st.shot && <Chip tone="warn">shot</Chip>}
                                 </li>
                             ))}
                         </ol>
@@ -1926,7 +1920,7 @@ const TaskDbWidget = ({ task, onAction }: { task: TaskDetail["task"]; onAction: 
     };
     const size = d.sizeMb == null ? null : d.sizeMb >= 1024 ? `${(d.sizeMb / 1024).toFixed(1)} GB` : `${d.sizeMb} MB`;
     return (
-        <section className="card widget">
+        <Card className="widget">
             <h2>Database</h2>
             {own ? (
                 <div><code>{row!.name}</code>{size && <span className="field-hint"> · {size}</span>}<div className="field-hint">copied from {row!.template} · {new Date(row!.created_at).toLocaleString()}</div></div>
@@ -1937,12 +1931,12 @@ const TaskDbWidget = ({ task, onAction }: { task: TaskDetail["task"]; onAction: 
             )}
             {d.active && (
                 <div className="actions">
-                    <button className="tiny" disabled={busy || task.status === "running" || row?.status === "creating"} title={own ? "Stop the app, migrate the template to the base branch, copy it again (this task's data is lost), point the worktree at the copy" : "Stop the app, migrate the template to the base branch, copy it for this task, point the worktree at the copy"} onClick={() => void run()}>
+                    <Button size="sm" disabled={busy || task.status === "running" || row?.status === "creating"} title={own ? "Stop the app, migrate the template to the base branch, copy it again (this task's data is lost), point the worktree at the copy" : "Stop the app, migrate the template to the base branch, copy it for this task, point the worktree at the copy"} onClick={() => void run()}>
                         {busy ? "Working…" : own ? "Recreate" : row ? "Retry" : "Adopt"}
-                    </button>
+                    </Button>
                 </div>
             )}
-        </section>
+        </Card>
     );
 };
 
@@ -1952,12 +1946,12 @@ const CiAutopilotCard = ({ task, onAction }: { task: TaskDetail["task"]; onActio
     if (!d) return null;
     const explicit = task.ci_autopilot === 0 || task.ci_autopilot === 1;
     return (
-        <Card title="CI autopilot" badge={<span className={`chip ${d.on ? "ok" : ""}`}>{d.on ? "on" : "off"}</span>}>
+        <Card title="CI autopilot" badge={<Chip className={`${d.on ? "ok" : ""}`}>{d.on ? "on" : "off"}</Chip>}>
             <div className="po-comment-top">
                 <label className="inline" title="When the PR's checks finish red, fix the failures this branch caused (its migrations, its tests, untouched tests it broke that pass on base, lint on its own lines), review the fix, and push">
-                    <input type="checkbox" checked={d.on} onChange={(e) => void onAction(() => api.patchTask(task.id, { ciAutopilot: e.target.checked }))} /> Fix this task's own CI failures by itself
+                    <Input type="checkbox" checked={d.on} onChange={(e) => void onAction(() => api.patchTask(task.id, { ciAutopilot: e.target.checked }))} /> Fix this task's own CI failures by itself
                 </label>
-                {explicit && <button className="tiny" onClick={() => void onAction(() => api.patchTask(task.id, { ciAutopilot: null }))}>Use the environment's default</button>}
+                {explicit && <Button size="sm" onClick={() => void onAction(() => api.patchTask(task.id, { ciAutopilot: null }))}>Use the environment's default</Button>}
                 {!explicit && <span className="field-hint">the environment's default</span>}
                 {d.on && <span className="field-hint">· {d.consecutive} of 5 rounds in a row{d.busy ? " · working…" : ""}</span>}
             </div>
@@ -1967,8 +1961,8 @@ const CiAutopilotCard = ({ task, onAction }: { task: TaskDetail["task"]; onActio
                 return (
                     <details key={r.id} className="po-comment-card" open={r === d.rounds[d.rounds.length - 1]}>
                         <summary className="po-comment-top">
-                            <b>#{r.prNumber}</b>{r.repo && <span className="chip">{r.repo}</span>} <code>{r.headSha.slice(0, 7)}</code>
-                            <span className={`chip ${chip}`}>{label}</span>
+                            <b>#{r.prNumber}</b>{r.repo && <Chip>{r.repo}</Chip>} <code>{r.headSha.slice(0, 7)}</code>
+                            <Chip className={`${chip}`}>{label}</Chip>
                             {r.verified && <span className="field-hint">{r.verified.filter((v) => v.allowed).length} to fix · {r.verified.filter((v) => !v.allowed).length} yours</span>}
                             <span className="field-hint">{new Date(r.at).toLocaleString()}</span>
                         </summary>
@@ -1983,7 +1977,7 @@ const CiAutopilotCard = ({ task, onAction }: { task: TaskDetail["task"]; onActio
                                             <td>{v.check}</td>
                                             <td>{v.kind.replace(/_/g, " ")}</td>
                                             <td>{v.what}{v.keep.length > 0 && <div className="field-hint">{v.keep.join(", ")}</div>}</td>
-                                            <td><span className={`chip ${v.allowed ? "ok" : "warn"}`}>{v.allowed ? "fix" : "yours"}</span></td>
+                                            <td><Chip className={`${v.allowed ? "ok" : "warn"}`}>{v.allowed ? "fix" : "yours"}</Chip></td>
                                             <td className="field-hint">{v.why}</td>
                                         </tr>
                                     ))}
@@ -1993,7 +1987,7 @@ const CiAutopilotCard = ({ task, onAction }: { task: TaskDetail["task"]; onActio
                         {r.review && (
                             <div className="po-human-note">
                                 <b>Review of the fix:</b> {r.review.summary}
-                                {r.review.findings.length > 0 && <ul className="plain">{r.review.findings.map((f, i) => <li key={i}><span className="chip">{f.severity}</span> ({f.confidence}/10) <code>{f.file}{f.line ? `:${f.line}` : ""}</code> {f.title}</li>)}</ul>}
+                                {r.review.findings.length > 0 && <ul className="plain">{r.review.findings.map((f, i) => <li key={i}><Chip>{f.severity}</Chip> ({f.confidence}/10) <code>{f.file}{f.line ? `:${f.line}` : ""}</code> {f.title}</li>)}</ul>}
                             </div>
                         )}
                         {r.pushed && <div className="field-hint">Pushed: {Object.entries(r.pushed).map(([repo, sha]) => `${repo || "repo"} ${sha.slice(0, 7)}`).join(", ")}</div>}
@@ -2031,7 +2025,7 @@ const PrFixReplies = ({ taskId, updatedAt }: { taskId: string; updatedAt: string
                 const commit = commits.find((k) => k.sha === sha);
                 const head = (
                     <>
-                        <b>{c.author}</b> <span className="chip">{c.kind === "line" ? `${c.path ?? ""}${c.line ? `:${c.line}` : ""}` : c.kind}</span>
+                        <b>{c.author}</b> <Chip>{c.kind === "line" ? `${c.path ?? ""}${c.line ? `:${c.line}` : ""}` : c.kind}</Chip>
                         <span className="fix-reply-body">{c.body.split("\n")[0]?.slice(0, 140)}</span>
                         <a href={c.url} target="_blank" rel="noreferrer">↗</a>
                     </>
@@ -2041,26 +2035,26 @@ const PrFixReplies = ({ taskId, updatedAt }: { taskId: string; updatedAt: string
                         {o && !o.addressed ? (
                             <>
                                 <span className="inline">{head}</span>
-                                <span className="chip warn">not addressed</span>
+                                <Chip tone="warn">not addressed</Chip>
                                 {o.note && <span className="field-hint">{o.note}</span>}
                             </>
                         ) : (
                             <>
                                 <label className="inline">
-                                    <input type="checkbox" checked={!!p} disabled={!sha} onChange={(e) => void save(e.target.checked ? [...current(), { repo, commentId: c.id, sha }] : current().filter((x) => !(x.repo === repo && x.commentId === c.id)))} />
+                                    <Input type="checkbox" checked={!!p} disabled={!sha} onChange={(e) => void save(e.target.checked ? [...current(), { repo, commentId: c.id, sha }] : current().filter((x) => !(x.repo === repo && x.commentId === c.id)))} />
                                     {head}
                                 </label>
                                 {o ? (
                                     <span className="field-hint">Addressed in <code>{sha.slice(0, 7)}</code> {commit?.subject.slice(0, 70) ?? ""}</span>
                                 ) : commits.length > 0 ? (
-                                    <select value={sha} disabled={!p} onChange={(e) => void save(current().map((x) => (x.repo === repo && x.commentId === c.id ? { ...x, sha: e.target.value } : x)))}>
+                                    <Select value={sha} disabled={!p} onChange={(e) => void save(current().map((x) => (x.repo === repo && x.commentId === c.id ? { ...x, sha: e.target.value } : x)))}>
                                         {commits.map((k) => <option key={k.sha} value={k.sha}>{k.sha.slice(0, 7)} {k.subject.slice(0, 60)}</option>)}
-                                    </select>
+                                    </Select>
                                 ) : <span className="quiet">no commit in this round</span>}
                             </>
                         )}
                         {p?.posted && <a className="chip ok" href={p.posted} target="_blank" rel="noreferrer">replied</a>}
-                        {p?.error && <span className="chip bad" title={p.error}>reply failed</span>}
+                        {p?.error && <Chip tone="bad" title={p.error}>reply failed</Chip>}
                         <span className="field-hint">PR #{r.number}</span>
                     </div>
                 );
@@ -2076,15 +2070,15 @@ const PoBriefCard = ({ task, onError }: { task: TaskDetail["task"]; onError: (m:
     useEffect(load, [load, task.updated_at]);
     if (!b) return null;
     return (
-        <section className="card">
+        <Card>
             <h2>Product Owner brief <span className="field-hint">— what to pay attention to beyond the ticket; research and design read it</span></h2>
             {b.status === "failed" && <div className="blocked-box">The brief failed: {b.error}</div>}
             {b.text ? <Markdown source={b.text} /> : <div className="quiet">{b.running ? "The Product Owner is writing it…" : "No brief yet. It is written before research starts."}</div>}
             <div className="actions">
-                <button disabled={b.running} onClick={async () => { try { setB(await api.startPoBrief(task.id)); } catch (e) { onError(String((e as Error).message ?? e)); } }}>{b.running ? "Writing…" : b.text ? "Write again" : "Write brief"}</button>
+                <Button disabled={b.running} onClick={async () => { try { setB(await api.startPoBrief(task.id)); } catch (e) { onError(String((e as Error).message ?? e)); } }}>{b.running ? "Writing…" : b.text ? "Write again" : "Write brief"}</Button>
                 {b.at && <span className="field-hint">{b.status} · {new Date(b.at).toLocaleString()}</span>}
             </div>
-        </section>
+        </Card>
     );
 };
 
@@ -2107,14 +2101,14 @@ const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, 
             <div className="po-comment-top">
                 {!closed && (
                     <label className="inline" title={c.withdrawn ? "The Product Owner withdrew this comment" : "Send this comment in the next design round"}>
-                        <input type="checkbox" checked={!!c.include && !c.withdrawn} disabled={c.withdrawn || busy} onChange={(e) => onPick(e.target.checked)} />
+                        <Input type="checkbox" checked={!!c.include && !c.withdrawn} disabled={c.withdrawn || busy} onChange={(e) => onPick(e.target.checked)} />
                     </label>
                 )}
-                <span className={`chip ${SEVERITY_CHIP[c.severity]}`}>{c.severity}</span>
-                <span className="chip">{c.area}</span>
-                {c.laterTicket && <span className="chip accent" title="This task's design makes this later ticket harder; the comment says what to change here">for {c.laterTicket}</span>}
+                <Chip className={`${SEVERITY_CHIP[c.severity]}`}>{c.severity}</Chip>
+                <Chip>{c.area}</Chip>
+                {c.laterTicket && <Chip tone="accent" title="This task's design makes this later ticket harder; the comment says what to change here">for {c.laterTicket}</Chip>}
                 <b>{c.id} · {c.title}</b>
-                {c.withdrawn && <span className="chip">withdrawn</span>}
+                {c.withdrawn && <Chip>withdrawn</Chip>}
 
             </div>
             <Markdown source={c.body} />
@@ -2122,8 +2116,8 @@ const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, 
                 <div className="po-human-note">
                     <AgentInput placeholder="Your note on this comment — it goes to the design agent with it" value={note} onChange={setNote} rows={3} />
                     <div className="actions" style={{ marginBottom: 0 }}>
-                        <button className="primary" onClick={() => void onNote(note.trim() || null).then(() => setNote(null))}>Save note</button>
-                        <button onClick={() => setNote(null)}>Cancel</button>
+                        <Button variant="primary" onClick={() => void onNote(note.trim() || null).then(() => setNote(null))}>Save note</Button>
+                        <Button onClick={() => setNote(null)}>Cancel</Button>
                     </div>
                 </div>
             ) : c.note ? (
@@ -2132,14 +2126,14 @@ const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, 
                     <Markdown source={c.note} />
                     {!closed && (
                         <div className="actions" style={{ marginBottom: 0 }}>
-                            <button className="tiny" onClick={() => setNote(c.note ?? "")}>Edit</button>
-                            <button className="tiny danger" onClick={() => void onNote(null)}>Delete</button>
+                            <Button size="sm" onClick={() => setNote(c.note ?? "")}>Edit</Button>
+                            <Button size="sm" variant="danger" onClick={() => void onNote(null)}>Delete</Button>
                         </div>
                     )}
                 </div>
             ) : null}
-            {!closed && note === null && !c.note && <button className="tiny" onClick={() => setNote("")}>+ Add note</button>}{" "}
-            {(!closed || c.thread.length > 0) && <button className="tiny" onClick={() => setOpen((o) => !o)}>{open ? "▾" : "▸"} {closed ? "Discussion" : "Discuss with Product owner"}{c.thread.length ? ` (${c.thread.length})` : ""}</button>}
+            {!closed && note === null && !c.note && <Button size="sm" onClick={() => setNote("")}>+ Add note</Button>}{" "}
+            {(!closed || c.thread.length > 0) && <Button size="sm" onClick={() => setOpen((o) => !o)}>{open ? "▾" : "▸"} {closed ? "Discussion" : "Discuss with Product owner"}{c.thread.length ? ` (${c.thread.length})` : ""}</Button>}
             {open && (
                 <div className="line-thread" style={{ marginLeft: 0 }}>
                     {c.thread.map((m, i) => (
@@ -2164,7 +2158,7 @@ const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, 
                                 }}
                             />
                             <div className="actions" style={{ marginBottom: 0 }}>
-                                <button className="primary" disabled={!text.trim() || busy} title={busy ? "The Product Owner is busy with this review" : undefined} onClick={() => void send()}>Ask</button>
+                                <Button variant="primary" disabled={!text.trim() || busy} title={busy ? "The Product Owner is busy with this review" : undefined} onClick={() => void send()}>Ask</Button>
                             </div>
                         </>
                     )}
@@ -2192,14 +2186,14 @@ const PoReviewPanel = ({ task, owner, onPicked, onAction, onError }: { task: Tas
     return (
         <div className="po-review">
             <div className="actions" style={{ marginTop: 0 }}>
-                <button className="primary" disabled={r.running} onClick={() => void call(() => api.startPoReview(task.id))}>{reviewing ? "The Product Owner is reviewing…" : rev ? "Review again by Product owner" : "Review by Product owner"}</button>
+                <Button variant="primary" disabled={r.running} onClick={() => void call(() => api.startPoReview(task.id))}>{reviewing ? "The Product Owner is reviewing…" : rev ? "Review again by Product owner" : "Review by Product owner"}</Button>
                 <span className="field-hint">{owner.title}{r.at ? ` · ${r.status ?? ""} ${new Date(r.at).toLocaleString()}` : ""}</span>
             </div>
             {r.status === "failed" && <div className="blocked-box">The review failed: {r.error}</div>}
             {rev && (
                 <>
                     <div className="po-verdict">
-                        <span className={`chip ${rev.verdict === "approve" ? "ok" : "warn"}`}>{rev.verdict === "approve" ? "approve" : "changes"}</span> <b>{rev.summary}</b>
+                        <Chip className={`${rev.verdict === "approve" ? "ok" : "warn"}`}>{rev.verdict === "approve" ? "approve" : "changes"}</Chip> <b>{rev.summary}</b>
                     </div>
                     {rev.sentAt ? (
                         <>
@@ -2248,11 +2242,11 @@ const DesignTabs = ({ annot, onPicked, task, owner, design, md, before, section,
     const ran = design.qa.filter((s) => before?.scenarios.some((x) => x.id === s.id)).length;
     return (
         <>
-            <div className="subtabs">
-                <button className={active === "proposal" ? "active" : ""} onClick={() => onSection("proposal")}>Proposal</button>
-                <button className={active === "qa" ? "active" : ""} onClick={() => onSection("qa")}>QA tests <span className="chip">{design.qa.length}</span>{design.qa.length > 0 && <span className="chip">{ran ? `baseline ${ran}/${design.qa.length}` : "no baseline"}</span>}</button>
-                <button className={active === "po" ? "active" : ""} onClick={() => onSection("po")}>Product owner review{owner ? "" : " · none"}</button>
-            </div>
+            <TabList variant="pill">
+                <Tab active={active === "proposal"} onClick={() => onSection("proposal")}>Proposal</Tab>
+                <Tab active={active === "qa"} onClick={() => onSection("qa")}>QA tests <Chip>{design.qa.length}</Chip>{design.qa.length > 0 && <Chip>{ran ? `baseline ${ran}/${design.qa.length}` : "no baseline"}</Chip>}</Tab>
+                <Tab active={active === "po"} onClick={() => onSection("po")}>Product owner review{owner ? "" : " · none"}</Tab>
+            </TabList>
             <div className="design-section">
                 {active === "proposal" ? (md ? <AnnotatedMarkdown source={body} path={DESIGN_DOC} comments={annot.comments} threads={annot.threads} canComment={annot.canComment} canAsk={annot.canAsk} onChange={annot.onChange} onAsk={annot.onAsk} /> : <div className="empty">design.md is missing</div>) : active === "qa" ? <QaTests taskId={task.id} design={design} before={before} /> : <PoReviewPanel task={task} owner={owner} onPicked={onPicked} onAction={onAction} onError={onError} />}
             </div>
@@ -2273,9 +2267,9 @@ const Lightbox = ({ src, caption, onClose }: { src: string; caption: string; onC
             <div className="lightbox-bar" onClick={(e) => e.stopPropagation()}>
                 <span>{caption}</span>
                 <span className="lightbox-actions">
-                    <button onClick={() => setNatural((v) => !v)}>{natural ? "Fit to width" : "Actual size"}</button>
+                    <Button onClick={() => setNatural((v) => !v)}>{natural ? "Fit to width" : "Actual size"}</Button>
                     <a href={src} target="_blank" rel="noreferrer">Open in a tab ↗</a>
-                    <button onClick={onClose} aria-label="Close">×</button>
+                    <Button onClick={onClose} aria-label="Close">×</Button>
                 </span>
             </div>
             <img src={src} alt="" className={natural ? "natural" : ""} onClick={(e) => { e.stopPropagation(); setNatural((v) => !v); }} />
@@ -2292,21 +2286,21 @@ const QaChanges = ({ taskId, running, onAction }: { taskId: string; running: boo
     if (!changes.length) return null;
     const what = (c: QaChange): string => (c.kind === "scenario" ? "scenario rewritten" : `${c.kind} ${c.index + 1}`);
     return (
-        <Sub title={<>Scenario changes during QA <span className="chip">{changes.length}</span></>} open={false}>
+        <Sub title={<>Scenario changes during QA <Chip>{changes.length}</Chip></>} open={false}>
             <div className="qa-changes">
                 {changes.map((c) => (
                     <div className="qa-change" key={c.id}>
-                        <span className="chip accent">{c.scenario}</span> <b>{what(c)}</b>{" "}
-                        <span className={`chip ${c.by === "jev" ? "ok" : ""}`} title={c.jev ? `legit ${Math.round(c.jev.legit * 100)} %, weakens ${Math.round(c.jev.weakens * 100)} %, read as ${c.jev.kind}` : "approved by you"}>{c.by === "jev" ? "Jev-approved" : "your answer"}</span>{" "}
+                        <Chip tone="accent">{c.scenario}</Chip> <b>{what(c)}</b>{" "}
+                        <Chip className={`${c.by === "jev" ? "ok" : ""}`} title={c.jev ? `legit ${Math.round(c.jev.legit * 100)} %, weakens ${Math.round(c.jev.weakens * 100)} %, read as ${c.jev.kind}` : "approved by you"}>{c.by === "jev" ? "Jev-approved" : "your answer"}</Chip>{" "}
                         <span className="field-hint">{new Date(c.at).toLocaleString()}</span>
-                        {c.revertedAt && <span className="chip warn">reverted</span>}
+                        {c.revertedAt && <Chip tone="warn">reverted</Chip>}
                         {c.reason && <div className="field-hint">{c.reason}</div>}
                         <details>
                             <summary>before / after</summary>
                             <pre className="qa-change-diff">{JSON.stringify(c.before, null, 2)}</pre>
                             <pre className="qa-change-diff">{JSON.stringify(c.after, null, 2)}</pre>
                         </details>
-                        {!c.revertedAt && <button className="tiny" disabled={running} onClick={() => void onAction(async () => { await api.revertQaChange(taskId, c.id); load(); })}>Revert</button>}
+                        {!c.revertedAt && <Button size="sm" disabled={running} onClick={() => void onAction(async () => { await api.revertQaChange(taskId, c.id); load(); })}>Revert</Button>}
                     </div>
                 ))}
             </div>
@@ -2329,7 +2323,7 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
             const a = after?.scenarios.find((x) => x.id === s.id);
             const shots = s.steps.map((st, i) => (st.shot ? i + 1 : null)).filter((x): x is number => x !== null);
             const chip = (o?: string) =>
-                o ? <span className={`chip ${o === "pass" ? "ok" : o === "fail" ? "bad" : o === "needs_human" ? "wait" : "warn"}`}>{o === "needs_human" ? "check yourself" : o}</span> : <span className="chip">—</span>;
+                o ? <Chip className={`${o === "pass" ? "ok" : o === "fail" ? "bad" : o === "needs_human" ? "wait" : "warn"}`}>{o === "needs_human" ? "check yourself" : o}</Chip> : <Chip>—</Chip>;
             // A "pass" whose own observation talks about errors deserves a second look (the runner may have rationalised an env problem away).
             const suspicious = (p?: { outcome: string; observation: string }) =>
                 p?.outcome === "pass" && /\berror|exception|unauthori[sz]ed|forbidden|denied|could not|couldn't|failed|4\d\d\b|5\d\d\b/i.test(p.observation);
@@ -2337,9 +2331,9 @@ const QaGallery = ({ taskId, design, before, after }: { taskId: string; design: 
                 <details className="scenario" key={s.id} open>
                     <summary>
                         <h3>
-                            <span className="chip accent">{s.id}</span>{s.kind === "api" && <span className="chip">API</span>}<span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}{b?.superseded && <span className="chip warn" title={`The scenario changed after the baseline pass (change ${b.superseded}); this before result no longer pairs with the after pass (the baseline runs only in the design stage)`}>baseline superseded</span>}</span> <span>after {chip(a?.outcome)}</span>
-                            {a?.jev && <span className={`chip ${a.jev.verdict === "pass" ? "ok" : "warn"}`} title={`Jev's grade of the runner's observation against the asserts (pass needs 85); the runner said ${a.jev.runner}`}>Jev {a.jev.grade}/100</span>}
-                            {(suspicious(b) || suspicious(a)) && <span className="chip warn" title="The runner marked this pass but its observation mentions an error — check the screenshots">⚠ observation mentions an error</span>}
+                            <Chip tone="accent">{s.id}</Chip>{s.kind === "api" && <Chip>API</Chip>}<span className="scenario-title">{s.title}</span> <span>before {chip(b?.outcome)}{b?.superseded && <Chip tone="warn" title={`The scenario changed after the baseline pass (change ${b.superseded}); this before result no longer pairs with the after pass (the baseline runs only in the design stage)`}>baseline superseded</Chip>}</span> <span>after {chip(a?.outcome)}</span>
+                            {a?.jev && <Chip className={`${a.jev.verdict === "pass" ? "ok" : "warn"}`} title={`Jev's grade of the runner's observation against the asserts (pass needs 85); the runner said ${a.jev.runner}`}>Jev {a.jev.grade}/100</Chip>}
+                            {(suspicious(b) || suspicious(a)) && <Chip tone="warn" title="The runner marked this pass but its observation mentions an error — check the screenshots">⚠ observation mentions an error</Chip>}
                         </h3>
                     </summary>
                     {a?.outcome === "needs_human" && (

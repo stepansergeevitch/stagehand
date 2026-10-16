@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type TaskLabel } from "./api";
+import { Button, Input } from "./components/ui";
 
 // Free-text labels with a colour, chosen by the human: shown on the task in the list, the dashboard and the header.
 export const LABEL_COLORS = ["#1f6f8b", "#2e8b57", "#c98a1b", "#b8413a", "#6b5bb5", "#c2557a", "#3b7dd8", "#5f6b73"];
@@ -8,7 +9,7 @@ export const LABEL_COLORS = ["#1f6f8b", "#2e8b57", "#c98a1b", "#b8413a", "#6b5bb
 export const LabelChip = ({ label, onRemove }: { label: TaskLabel; onRemove?: () => void }) => (
     <span className="label-chip" style={{ color: label.color, background: `${label.color}22`, borderColor: `${label.color}66` }} title={label.text}>
         {label.text}
-        {onRemove && <button type="button" className="chip-x" onClick={(e) => { e.stopPropagation(); onRemove(); }} aria-label={`remove ${label.text}`}>×</button>}
+        {onRemove && <Button variant="ghost" type="button" className="chip-x" onClick={(e) => { e.stopPropagation(); onRemove(); }} aria-label={`remove ${label.text}`}>×</Button>}
     </span>
 );
 
@@ -60,26 +61,26 @@ export const LabelEditor = ({ labels, onChange }: { labels: TaskLabel[]; onChang
     return (
         <span className="label-editor" ref={ref}>
             {labels.map((l, i) => <LabelChip key={`${l.text}-${i}`} label={l} onRemove={() => void save(labels.filter((_, j) => j !== i))} />)}
-            <button type="button" className="tiny" disabled={busy} onClick={() => setOpen((v) => !v)} title="Add a label">+ label</button>
+            <Button size="sm" type="button" disabled={busy} onClick={() => setOpen((v) => !v)} title="Add a label">+ label</Button>
             {open && (
                 <span className="label-menu">
-                    <input autoFocus value={text} maxLength={40} onChange={(e) => setText(e.target.value)} placeholder="Label text" onKeyDown={(e) => { if (e.key === "Enter") void add(exact && !touchedColor ? exact : undefined); }} />
+                    <Input autoFocus value={text} maxLength={40} onChange={(e) => setText(e.target.value)} placeholder="Label text" onKeyDown={(e) => { if (e.key === "Enter") void add(exact && !touchedColor ? exact : undefined); }} />
                     {suggested.length > 0 && (
                         <span className="label-suggestions">
                             <span className="field-hint" style={{ marginTop: 0 }}>{needle ? "matching" : "most used"}</span>
                             {suggested.map((s) => (
-                                <button type="button" key={s.text} className="label-suggestion" disabled={busy} onClick={() => void add(s)} title={`used on ${s.count} task${s.count === 1 ? "" : "s"}`}>
+                                <Button type="button" key={s.text} className="label-suggestion" disabled={busy} onClick={() => void add(s)} title={`used on ${s.count} task${s.count === 1 ? "" : "s"}`}>
                                     <LabelChip label={s} /><small>{s.count}</small>
-                                </button>
+                                </Button>
                             ))}
                         </span>
                     )}
                     <span className="label-swatches">
-                        {LABEL_COLORS.map((c) => <button type="button" key={c} className={`swatch ${c === color ? "on" : ""}`} style={{ background: c }} onClick={() => setColor(c)} aria-label={c} />)}
-                        <input type="color" value={color} onChange={(e) => setColor(e.target.value)} title="Any colour" />
+                        {LABEL_COLORS.map((c) => <Button type="button" key={c} className={`swatch ${c === color ? "on" : ""}`} style={{ background: c }} onClick={() => setColor(c)} aria-label={c} />)}
+                        <Input type="color" value={color} onChange={(e) => setColor(e.target.value)} title="Any colour" />
                     </span>
                     <span className="label-preview"><LabelChip label={{ text: text.trim() || "preview", color: exact && !touchedColor ? exact.color : color }} /></span>
-                    <button type="button" className="primary" disabled={busy || !text.trim()} onClick={() => void add(exact && !touchedColor ? exact : undefined)}>Add</button>
+                    <Button variant="primary" type="button" disabled={busy || !text.trim()} onClick={() => void add(exact && !touchedColor ? exact : undefined)}>Add</Button>
                 </span>
             )}
         </span>

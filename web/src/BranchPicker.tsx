@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import { api } from "./api";
+import { Input } from "./components/ui";
 
 // Remote branches of one repository of an env, fetched once per (env, repo) and kept for the page's life.
 const cache = new Map<string, Promise<string[]>>();
@@ -37,7 +38,7 @@ export const BranchPicker = ({ envId, repo = "", value, onChange, placeholder, a
     }, [envId, repo]);
     return (
         <span className="branch-picker">
-            <input list={id} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus} spellCheck={false} autoComplete="off" style={style} />
+            <Input list={id} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus} spellCheck={false} autoComplete="off" style={style} />
             <datalist id={id}>{(names ?? []).map((n) => <option key={n} value={n} />)}</datalist>
             <span className="field-hint branch-picker-hint">{error ? `branches unavailable: ${error}` : names === null ? "loading branches…" : `${names.length} remote branch${names.length === 1 ? "" : "es"}`}</span>
         </span>

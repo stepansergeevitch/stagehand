@@ -1,5 +1,6 @@
 import { forwardRef, type CSSProperties, type KeyboardEvent } from "react";
 import { FileChips, type PendingFiles } from "./FilePicker";
+import { Textarea } from "./components/ui";
 
 export { FileChips, usePendingFiles, type PendingFiles } from "./FilePicker";
 
@@ -27,7 +28,7 @@ interface Props {
 export const AgentInput = forwardRef<HTMLTextAreaElement, Props>(({ value, onChange, pending, chips = "above", placeholder, disabled, rows, autoFocus, spellCheck, style, className, onKeyDown }, ref) => (
     <div className={`agent-input${className ? ` ${className}` : ""}`}>
         {pending && chips === "above" && <FileChips pending={pending} disabled={disabled} />}
-        <textarea
+        <Textarea
             ref={ref}
             value={value}
             onChange={(e) => onChange(e.target.value)}

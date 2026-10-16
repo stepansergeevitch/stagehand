@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { AgentInput, usePendingFiles } from "../AgentInput";
+import { Button } from "./ui";
 
 // One editor for both things a line takes: a review comment (Save — kept as a draft until the review is sent) and a
 // question for the agent (Ask — sent right away, answered in place). Either button is offered only when allowed.
@@ -22,10 +23,10 @@ export const CommentEditor = ({ initial, placeholder, onSave, onAsk, onCancel, o
                 }}
             />
             <div className="actions">
-                {onSave && <button className="primary" disabled={!text.trim()} onClick={() => onSave(text.trim())}>Save comment</button>}
-                {onAsk && <button className={onSave ? "" : "primary"} disabled={!text.trim() && attach.files.length === 0} title="Ask the task's agent about this; the answer appears here and in Chat" onClick={ask}>Ask agent</button>}
-                <button onClick={onCancel}>Cancel</button>
-                {onDelete && <button className="danger" onClick={onDelete}>Delete</button>}
+                {onSave && <Button variant="primary" disabled={!text.trim()} onClick={() => onSave(text.trim())}>Save comment</Button>}
+                {onAsk && <Button className={onSave ? "" : "primary"} disabled={!text.trim() && attach.files.length === 0} title="Ask the task's agent about this; the answer appears here and in Chat" onClick={ask}>Ask agent</Button>}
+                <Button onClick={onCancel}>Cancel</Button>
+                {onDelete && <Button variant="danger" onClick={onDelete}>Delete</Button>}
             </div>
         </div>
     );

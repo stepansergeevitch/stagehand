@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Button } from "./components/ui";
 
 // A render error inside one view must not blank the whole app (React unmounts the tree on an uncaught render error —
 // on a phone that was "a blank screen with no way to tell why"). Shows the message and a way back instead.
@@ -17,8 +18,8 @@ export class ErrorBoundary extends Component<{ children: ReactNode; label?: stri
                 <b>{this.props.label ?? "This view"} crashed.</b> {this.state.error.message}
                 <pre>{this.state.error.stack?.split("\n").slice(0, 6).join("\n")}</pre>
                 <div className="actions" style={{ marginBottom: 0 }}>
-                    <button className="primary" onClick={() => this.setState({ error: null })}>Try again</button>
-                    <button onClick={() => { location.hash = "#/dashboard"; location.reload(); }}>Reload to the dashboard</button>
+                    <Button variant="primary" onClick={() => this.setState({ error: null })}>Try again</Button>
+                    <Button onClick={() => { location.hash = "#/dashboard"; location.reload(); }}>Reload to the dashboard</Button>
                 </div>
             </div>
         );

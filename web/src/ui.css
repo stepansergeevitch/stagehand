@@ -1,0 +1,65 @@
+/* Component styles for web/src/components/ui — Button, Chip, Card, Input/Select/Textarea, Tabs, Notice, Icon.
+   Pages compose these; they do not restyle them. */
+
+/* ---------- Button ---------- */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--ctl-h); padding: 0 12px; font: inherit; font-weight: 500; line-height: 1; color: var(--ink); background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r-md); cursor: pointer; box-shadow: var(--shadow-sm); transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+.btn:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.btn:active:not(:disabled) { transform: translateY(.5px); }
+.btn:focus-visible, .field-ctl:focus-visible, .tab:focus-visible, .chip-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+.btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 86%, #000); border-color: transparent; }
+.btn-danger { color: var(--bad); }
+.btn-danger:hover:not(:disabled) { border-color: var(--bad); background: var(--bad-soft); }
+.btn-ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--ink-2); }
+.btn-ghost:hover:not(:disabled) { background: var(--code); border-color: transparent; color: var(--ink); }
+.btn-sm { min-height: var(--ctl-h-sm); padding: 0 9px; font-size: var(--fs-sm); font-weight: 400; }
+.btn-icon { padding: 0; width: var(--ctl-h); }
+.btn-icon.btn-sm { width: var(--ctl-h-sm); }
+.btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+.btn .icon { flex: none; }
+a.btn { text-decoration: none; }
+
+/* ---------- Icon ---------- */
+.icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------- Chip: a status or label ---------- */
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: var(--r-pill); font-family: var(--mono); font-size: var(--fs-xs); line-height: 1.5; background: var(--code); color: var(--ink-2); vertical-align: baseline; }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.chip.bad { background: var(--bad-soft); color: var(--bad); }
+.chip.wait { background: var(--wait-soft); color: var(--wait); }
+.chip.accent { background: var(--accent-soft); color: var(--accent); }
+button.chip { border: 0; cursor: pointer; }
+
+/* ---------- Card ---------- */
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--sp-4); margin-bottom: var(--sp-3); box-shadow: var(--shadow-sm); }
+.card > h2 { font-size: var(--fs-md); font-weight: 600; margin: 0 0 var(--sp-2); display: flex; align-items: center; gap: 10px; }
+.card h3 { font-size: 13px; font-weight: 600; margin: var(--sp-3) 0 6px; }
+
+/* ---------- Inputs ---------- */
+input, select, textarea { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 0 10px; min-height: var(--ctl-h); transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }
+textarea { padding: 6px 10px; width: 100%; min-height: 90px; font-family: var(--mono); font-size: var(--fs-sm); line-height: 1.5; resize: vertical; }
+input::placeholder, textarea::placeholder { color: var(--ink-3); }
+input:hover:not(:disabled), select:hover:not(:disabled), textarea:hover:not(:disabled) { border-color: var(--ink-3); }
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+input:disabled, select:disabled, textarea:disabled { opacity: .6; background: var(--code); cursor: not-allowed; }
+input[type="checkbox"], input[type="radio"] { min-height: 0; width: 15px; height: 15px; padding: 0; accent-color: var(--accent); vertical-align: middle; }
+select { padding-right: 6px; }
+.field-ctl.invalid { border-color: var(--bad); }
+
+/* ---------- Tabs ---------- */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 0 0 var(--sp-4); overflow-x: auto; }
+.tab { white-space: nowrap; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 8px 14px; margin-bottom: -1px; color: var(--ink-3); font: inherit; font-weight: 500; cursor: pointer; transition: color var(--dur) var(--ease); }
+.tab:hover { color: var(--ink); }
+.tab.active { color: var(--ink); border-bottom-color: var(--accent); }
+.subtabs { display: flex; flex-wrap: wrap; gap: 4px; margin: -6px 0 var(--sp-3); }
+.subtabs .tab { border: 1px solid var(--line); border-radius: var(--r-pill); padding: 2px 10px; margin: 0; font-size: var(--fs-sm); font-weight: 400; min-height: 0; }
+.subtabs .tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+
+/* ---------- Notice ---------- */
+.notice { padding: 8px 12px; border-radius: var(--r-md); border-left: 3px solid var(--accent); background: var(--accent-soft); font-size: 13px; }
+.notice.ok { border-color: var(--ok); background: var(--ok-soft); }
+.notice.warn { border-color: var(--warn); background: var(--warn-soft); }
+.notice.bad { border-color: var(--bad); background: var(--bad-soft); }
+.notice.wait { border-color: var(--wait); background: var(--wait-soft); }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, pct, STAGE_LABEL, type Stage, type UsageBucket, type UsageReport } from "./api";
 import { storage } from "./storage";
+import { Button, Card, Tab, TabList } from "./components/ui";
 
 // Token and cost usage as reported by claude's result events, sliced by environment, account, task, stage, model and day.
 
@@ -27,7 +28,7 @@ const Breakdown = ({ title, rows, total, labelOf, limit, windows }: { title: str
     const [all, setAll] = useState(false);
     const shown = limit && !all ? rows.slice(0, limit) : rows;
     return (
-        <section className="card usage-table">
+        <Card className="usage-table">
             <h2>{title}</h2>
             {rows.length === 0 && <div className="quiet">nothing in this period</div>}
             {rows.length > 0 && (
@@ -51,8 +52,8 @@ const Breakdown = ({ title, rows, total, labelOf, limit, windows }: { title: str
                     </tbody>
                 </table>
             )}
-            {limit && rows.length > limit && <div className="actions"><button onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${rows.length}`}</button></div>}
-        </section>
+            {limit && rows.length > limit && <div className="actions"><Button onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${rows.length}`}</Button></div>}
+        </Card>
     );
 };
 
@@ -71,9 +72,9 @@ export const Analytics = ({ days: routedDays, onDays, onError }: { days?: number
         <div className="env-page analytics">
             <h1>Analytics</h1>
             <p className="field-hint">What the agents consumed, as reported by claude at the end of every run (stage runs, ticket fetches, QA logins). Cost is claude's own estimate at API list prices — on a subscription it is a proxy for how much of the rate-limit windows each thing used, not a bill.</p>
-            <div className="subtabs">
-                {PERIODS.map((p) => <button key={p.days} className={days === p.days ? "active" : ""} onClick={() => setDays(p.days)}>{p.label}</button>)}
-            </div>
+            <TabList variant="pill">
+                {PERIODS.map((p) => <Tab key={p.days} active={days === p.days} onClick={() => setDays(p.days)}>{p.label}</Tab>)}
+            </TabList>
             {!report && <div className="empty">loading…</div>}
             {report && t && (
                 <>

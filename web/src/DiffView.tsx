@@ -6,6 +6,7 @@ import type { CodeScope, DiffRoute } from "./routes";
 import { AgentInput, usePendingFiles } from "./AgentInput";
 import { CommentEditor } from "./components/CommentEditor";
 import { LineThread, threadMessages, type ThreadMessage } from "./components/LineThread";
+import { Button, Chip, Input, Tab, TabList } from "./components/ui";
 
 // A test file by the common conventions of any stack: a tests / __tests__ / spec directory, test_*.py / *_test.py,
 // *.test.* / *.spec.*, *_test.go, *Test.java / *Tests.cs, conftest.py.
@@ -127,26 +128,26 @@ const CommitList = ({ taskId, repo, commits, uncommitted, filter, onFilter, busy
             <summary>Commits ({commits.length}) · showing {label}</summary>
             <div className="commit-list">
                 <div className="commit-toolbar">
-                    <label className="inline"><input type="checkbox" checked={allPicked} disabled={!commits.length} onChange={() => setPicked(allPicked ? new Set() : new Set(commits.map((c) => c.sha)))} /> {sel.length ? `${sel.length} picked` : "Pick commits"}</label>
-                    <button className="primary tiny" disabled={!sel.length} onClick={() => onFilter({ kind: "commits", shas: sel.map((c) => c.sha) })}>View{sel.length ? ` ${sel.length}` : ""}</button>
-                    <button className="tiny" disabled={filter.kind === "all"} onClick={() => onFilter({ kind: "all" })}>All changes</button>
-                    <button className="tiny" disabled={!uncommitted || filter.kind === "uncommitted"} onClick={() => onFilter({ kind: "uncommitted" })}>Uncommitted only</button>
+                    <label className="inline"><Input type="checkbox" checked={allPicked} disabled={!commits.length} onChange={() => setPicked(allPicked ? new Set() : new Set(commits.map((c) => c.sha)))} /> {sel.length ? `${sel.length} picked` : "Pick commits"}</label>
+                    <Button variant="primary" size="sm" disabled={!sel.length} onClick={() => onFilter({ kind: "commits", shas: sel.map((c) => c.sha) })}>View{sel.length ? ` ${sel.length}` : ""}</Button>
+                    <Button size="sm" disabled={filter.kind === "all"} onClick={() => onFilter({ kind: "all" })}>All changes</Button>
+                    <Button size="sm" disabled={!uncommitted || filter.kind === "uncommitted"} onClick={() => onFilter({ kind: "uncommitted" })}>Uncommitted only</Button>
                     {taskId && (
                         <>
                             <span className="dt-spacer" />
-                            <button className="tiny" disabled={disabled || !consecutive} title={sel.length >= 2 && !consecutive ? "only consecutive commits can be squashed" : "Squash the picked consecutive commits into one (files end exactly as they are; nothing is pushed)"} onClick={() => setSquashing((v) => (v === null ? oldestPicked?.subject ?? "" : null))}>Squash{consecutive ? ` ${sel.length}` : ""}</button>
-                            <button className="tiny danger" disabled={disabled || !sel.length} onClick={() => setDeleting((d) => !d)}>Delete{sel.length ? ` ${sel.length}` : ""}</button>
-                            <button className="tiny" disabled={disabled} title="Push the branch with --force-with-lease — needed after Change message, Squash or Delete rewrite the history GitHub already has" onClick={forcePush}>{busy === "push" ? "Pushing…" : "Force-push"}</button>
+                            <Button size="sm" disabled={disabled || !consecutive} title={sel.length>= 2 && !consecutive ? "only consecutive commits can be squashed" : "Squash the picked consecutive commits into one (files end exactly as they are; nothing is pushed)"} onClick={() => setSquashing((v) => (v === null ? oldestPicked?.subject ?? "" : null))}>Squash{consecutive ? ` ${sel.length}` : ""}</Button>
+                            <Button size="sm" variant="danger" disabled={disabled || !sel.length} onClick={() => setDeleting((d) => !d)}>Delete{sel.length ? ` ${sel.length}` : ""}</Button>
+                            <Button size="sm" disabled={disabled} title="Push the branch with --force-with-lease — needed after Change message, Squash or Delete rewrite the history GitHub already has" onClick={forcePush}>{busy === "push" ? "Pushing…" : "Force-push"}</Button>
                         </>
                     )}
                 </div>
                 {squashing !== null && consecutive && (
                     <div className="commit-remove">
                         <b>Squash {sel.length} commits into one</b>
-                        <input autoFocus value={squashing} onChange={(e) => setSquashing(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void squash()} placeholder="Commit message" />
+                        <Input autoFocus value={squashing} onChange={(e) => setSquashing(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void squash()} placeholder="Commit message" />
                         <div className="actions" style={{ margin: 0 }}>
-                            <button className="primary" disabled={disabled || !squashing.trim()} onClick={() => void squash()}>{busy === "squash" ? "Squashing…" : "Squash"}</button>
-                            <button disabled={disabled} onClick={() => setSquashing(null)}>Cancel</button>
+                            <Button variant="primary" disabled={disabled || !squashing.trim()} onClick={() => void squash()}>{busy === "squash" ? "Squashing…" : "Squash"}</Button>
+                            <Button disabled={disabled} onClick={() => setSquashing(null)}>Cancel</Button>
                         </div>
                     </div>
                 )}
@@ -155,15 +156,15 @@ const CommitList = ({ taskId, repo, commits, uncommitted, filter, onFilter, busy
                         <b>Remove {sel.length === 1 ? `commit ${sel[0]!.short}` : `${sel.length} commits`} from history</b> — not a revert: the agent replays everything after them, resolves conflicts and re-runs tests. Nothing is pushed.
                         <AgentInput placeholder="Optional note for the agent: why remove them" value={note} onChange={setNote} pending={attach} />
                         <div className="actions" style={{ margin: 0 }}>
-                            <button className="danger" disabled={disabled} onClick={() => void remove()}>{busy === "delete" ? "Starting…" : "Remove from history"}</button>
-                            <button disabled={disabled} onClick={() => { setDeleting(false); setNote(""); }}>Cancel</button>
+                            <Button variant="danger" disabled={disabled} onClick={() => void remove()}>{busy === "delete" ? "Starting…" : "Remove from history"}</Button>
+                            <Button disabled={disabled} onClick={() => { setDeleting(false); setNote(""); }}>Cancel</Button>
                         </div>
                     </div>
                 )}
                 {started && (
                     <div className="commit-remove started">
                         Removing {started} — the agent is replaying the branch; the result (and any conflicts it hit) will appear in Chat.
-                        <button className="tiny" onClick={() => setStarted(null)}>Dismiss</button>
+                        <Button size="sm" onClick={() => setStarted(null)}>Dismiss</Button>
                     </div>
                 )}
                 {pushed && <div className="field-hint">{pushed}</div>}
@@ -172,19 +173,19 @@ const CommitList = ({ taskId, repo, commits, uncommitted, filter, onFilter, busy
                     <div className={`commit-row ${picked.has(c.sha) ? "picked" : ""} ${shown.includes(c.sha) ? "shown" : ""}`} key={c.sha}>
                         {editing === c.sha ? (
                             <div className="commit-edit">
-                                <input autoFocus value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void reword(c.sha)} />
+                                <Input autoFocus value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void reword(c.sha)} />
                                 <div className="actions" style={{ margin: 0 }}>
-                                    <button className="primary" disabled={busy === c.sha || !text.trim()} onClick={() => void reword(c.sha)}>{busy === c.sha ? "Saving…" : "Save"}</button>
-                                    <button disabled={busy === c.sha} onClick={() => setEditing(null)}>Cancel</button>
+                                    <Button variant="primary" disabled={busy === c.sha || !text.trim()} onClick={() => void reword(c.sha)}>{busy === c.sha ? "Saving…" : "Save"}</Button>
+                                    <Button disabled={busy === c.sha} onClick={() => setEditing(null)}>Cancel</Button>
                                 </div>
                             </div>
                         ) : (
                             <>
-                                <input type="checkbox" aria-label={`pick ${c.short}`} checked={picked.has(c.sha)} onChange={() => toggle(c.sha)} />
+                                <Input type="checkbox" aria-label={`pick ${c.short}`} checked={picked.has(c.sha)} onChange={() => toggle(c.sha)} />
                                 <code className="commit-sha">{c.short}</code>
                                 <span className="commit-subject">{c.subject}</span>
                                 <small className="field-hint">{c.author} · {ago(c.at)} ago</small>
-                                {taskId && <span className="commit-actions"><button className="tiny" disabled={disabled} onClick={() => { setEditing(c.sha); setText(c.subject); }}>Change message</button></span>}
+                                {taskId && <span className="commit-actions"><Button size="sm" disabled={disabled} onClick={() => { setEditing(c.sha); setText(c.subject); }}>Change message</Button></span>}
                             </>
                         )}
                     </div>
@@ -294,40 +295,40 @@ const FileDiff = ({
         <details className={`diff-file ${reviewed ? "reviewed" : ""}`} open={open} onToggle={(e) => { const now = (e.currentTarget as HTMLDetailsElement).open; if (now !== open) onOpen(now); }}>
             <summary>
                 <label className="inline file-reviewed" title={print ? "Mark as reviewed — the mark drops by itself when the file changes" : "loading…"} onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" checked={reviewed} disabled={!print} onChange={(e) => onReviewed(e.target.checked ? print : null)} /> Reviewed
+                    <Input type="checkbox" checked={reviewed} disabled={!print} onChange={(e) => onReviewed(e.target.checked ? print : null)} /> Reviewed
                 </label>
-                <span className={`chip ${file.status === "added" ? "ok" : file.status === "deleted" ? "bad" : ""}`}>{file.status}</span>
+                <Chip className={`${file.status === "added" ? "ok" : file.status === "deleted" ? "bad" : ""}`}>{file.status}</Chip>
                 <code className="path">{file.path}</code>
                 <span className="mono stat"><span className="add">+{file.additions}</span> <span className="del">−{file.deletions}</span></span>
-                {count > 0 && <span className="chip wait">{count} 💬</span>}
-                {priorCount > 0 && <span className="chip" title="comments from earlier review rounds">{priorCount} earlier</span>}
-                {threadCount > 0 && <span className="chip accent" title="questions asked to the agent on lines of this file">{threadCount} Q&amp;A</span>}
+                {count > 0 && <Chip tone="wait">{count} 💬</Chip>}
+                {priorCount > 0 && <Chip title="comments from earlier review rounds">{priorCount} earlier</Chip>}
+                {threadCount > 0 && <Chip tone="accent" title="questions asked to the agent on lines of this file">{threadCount} Q&amp;A</Chip>}
             </summary>
             {file.binary && <div className="empty">binary file</div>}
             {file.collapsed && (
                 <div className="empty collapsed-file">
                     Generated or very large file — {file.additions + file.deletions} changed lines not loaded.
-                    <button className="tiny" style={{ marginLeft: 8 }} disabled={expanding} onClick={() => { setExpanding(true); void onExpand(file.path).finally(() => setExpanding(false)); }}>{expanding ? "Loading…" : "Show anyway"}</button>
+                    <Button size="sm" style={{ marginLeft: 8 }} disabled={expanding} onClick={() => { setExpanding(true); void onExpand(file.path).finally(() => setExpanding(false)); }}>{expanding ? "Loading…" : "Show anyway"}</Button>
                 </div>
             )}
             {(placed.outdated.length > 0 || placedThreads.outdated.length > 0 || drafts.outdated.length > 0) && (
                 <div className="outdated">
                     {drafts.outdated.map((c, i) => (
                         <div key={`d${i}`} className="line-comment outdated-item">
-                            <b>💬 draft</b> <span className="chip">line not in this view</span> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
+                            <b>💬 draft</b> <Chip>line not in this view</Chip> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
                             <div>{c.text}</div>
-                            {canComment && <button className="tiny" onClick={() => onChange(commentKey(c), null)}>Delete</button>}
+                            {canComment && <Button size="sm" onClick={() => onChange(commentKey(c), null)}>Delete</Button>}
                         </div>
                     ))}
                     {placed.outdated.map((c, i) => (
                         <div key={i} className="line-comment prior outdated-item">
-                            <b>{roundLabel(c)}</b> <span className="chip">outdated</span> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
+                            <b>{roundLabel(c)}</b> <Chip>outdated</Chip> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
                             <div>{c.text}</div>
                         </div>
                     ))}
                     {placedThreads.outdated.map((t) => (
                         <div key={t.msg.id} className="line-comment prior outdated-item">
-                            <b>{t.msg.role === "user" ? "You" : "Agent"}</b> <span className="chip">line changed since</span> <code>:{t.line}</code> <code className="snippet">{t.snippet.trim().slice(0, 80)}</code>
+                            <b>{t.msg.role === "user" ? "You" : "Agent"}</b> <Chip>line changed since</Chip> <code>:{t.line}</code> <code className="snippet">{t.snippet.trim().slice(0, 80)}</code>
                             <div>{t.msg.text}</div>
                         </div>
                     ))}
@@ -582,11 +583,11 @@ export const DiffView = ({
     // slice is re-anchored to the full diff's line numbers (handleChange).
     const commentsOn = canComment;
     const tabs = repos.length > 1 && (
-        <div className="subtabs pr-repo-tabs">
+        <TabList variant="pill" className="pr-repo-tabs">
             {repos.map((r) => (
-                <button key={r} className={`${r === repo ? "active" : ""} repo-${repoColorClass(r, repos)}`} onClick={() => setActiveRepo(r)}>{repoName(r)}</button>
+                <Tab key={r} active={r === repo} className={`repo-${repoColorClass(r, repos)}`} onClick={() => setActiveRepo(r)}>{repoName(r)}</Tab>
             ))}
-        </div>
+        </TabList>
     );
     const commitPanel = <CommitList {...(taskId ? { taskId } : {})} repo={repo} commits={repoCommits} uncommitted={branch.uncommitted} filter={filter} onFilter={setFilter} busy={taskBusy} onError={onError} />;
     if (error) return <>{tabs}{commitPanel}<div className="blocked-box">diff: {error}</div></>;
@@ -614,7 +615,7 @@ export const DiffView = ({
                 {drifted && (
                     <div className="blocked-box base-drift">
                         <b>Base branch rewritten.</b> <span className="mono">origin/{diff.base}</span> was rebased or force-pushed since this branch was last based on it, so what you see below includes the base's own commits, not just this task's.
-                        {onRebase && !taskBusy && <> <button className="tiny" onClick={onRebase}>Rebase onto latest base</button></>}
+                        {onRebase && !taskBusy && <> <Button size="sm" onClick={onRebase}>Rebase onto latest base</Button></>}
                         {onRebase && taskBusy && <span className="hint"> Rebase once the current run finishes.</span>}
                     </div>
                 )}
@@ -623,16 +624,16 @@ export const DiffView = ({
                         Uncommitted in this checkout ({dirty.length}): <span className="mono">{dirty.slice(0, 12).join(", ")}{dirty.length > 12 ? ", …" : ""}</span>. A rebase sets them aside and puts them back.
                     </p>
                 )}
-                <div className="subtabs diff-kind">
-                    <button className={kind === "files" ? "active" : ""} onClick={() => setKind("files")}>Files <span className="chip">{repoFiles.length - testCount}</span></button>
-                    <button className={kind === "tests" ? "active" : ""} onClick={() => setKind("tests")}>Tests <span className="chip">{testCount}</span></button>
-                </div>
+                <TabList variant="pill" className="diff-kind">
+                    <Tab active={kind === "files"} onClick={() => setKind("files")}>Files <Chip>{repoFiles.length - testCount}</Chip></Tab>
+                    <Tab active={kind === "tests"} onClick={() => setKind("tests")}>Tests <Chip>{testCount}</Chip></Tab>
+                </TabList>
                 <div className="diff-summary mono">
                     {files.length > 0 && (
                         <span className="diff-fold">
-                            <button className="tiny" onClick={() => review.setMany(Object.fromEntries(files.map((f) => [f.path, { open: false }])))}>Collapse all</button>
-                            <button className="tiny" onClick={() => review.setMany(Object.fromEntries(files.map((f) => [f.path, { open: true }])))}>Expand all</button>
-                            {threadKeys.length > 0 && <button className="tiny" onClick={() => review.setMany(Object.fromEntries(threadKeys.map((k) => [`thread:${k}`, { open: allThreadsOpen ? false : null }])))}>{allThreadsOpen ? "Collapse Q&A" : "Expand Q&A"}</button>}
+                            <Button size="sm" onClick={() => review.setMany(Object.fromEntries(files.map((f) => [f.path, { open: false }])))}>Collapse all</Button>
+                            <Button size="sm" onClick={() => review.setMany(Object.fromEntries(files.map((f) => [f.path, { open: true }])))}>Expand all</Button>
+                            {threadKeys.length > 0 && <Button size="sm" onClick={() => review.setMany(Object.fromEntries(threadKeys.map((k) => [`thread:${k}`, { open: allThreadsOpen ? false : null }])))}>{allThreadsOpen ? "Collapse Q&A" : "Expand Q&A"}</Button>}
                         </span>
                     )}
                     {files.length} file{files.length === 1 ? "" : "s"}{diff.filtered ? "" : ` vs origin/${diff.base}`} · <span className="add">+{adds}</span> <span className="del">−{dels}</span>{files.length > 0 && <> · {reviewedCount}/{files.length} reviewed</>}
@@ -647,7 +648,7 @@ export const DiffView = ({
                         <div className="outdated">
                             {gone.map((c, i) => (
                                 <div key={i} className="line-comment prior outdated-item">
-                                    <b>{roundLabel(c)}</b> <span className="chip">file no longer changed</span> <code>{c.path}:{c.line}</code>
+                                    <b>{roundLabel(c)}</b> <Chip>file no longer changed</Chip> <code>{c.path}:{c.line}</code>
                                     <div>{c.text}</div>
                                 </div>
                             ))}

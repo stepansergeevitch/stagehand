@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { Button, Input, Tab, TabList } from "./ui";
 
 // Stagehand's standard entity view — what a list row opens (the counterpart of DataTable):
 //
@@ -44,13 +45,13 @@ export const EntityView = ({ type, onType, id, actions, tabs, tab, onTab, notice
             </div>
             {notice && <div className={`test-result ev-notice ${notice.ok ? "" : "bad"}`}>{notice.text}</div>}
             {tabs.length > 1 && (
-                <div className="tabs ev-tabs" role="tablist">
+                <TabList className="ev-tabs">
                     {tabs.map((t) => (
-                        <button key={t.key} role="tab" aria-selected={t.key === current?.key} className={t.key === current?.key ? "active" : ""} onClick={() => onTab(t.key)}>
+                        <Tab key={t.key} active={t.key === current?.key} onClick={() => onTab(t.key)}>
                             {t.label}
-                        </button>
+                        </Tab>
                     ))}
-                </div>
+                </TabList>
             )}
             <div className="ev-body">{current?.content}</div>
         </div>
@@ -79,7 +80,7 @@ export const Field = ({ label, hint, children }: { label: ReactNode; hint?: Reac
 export const CheckField = ({ label, hint, checked, onChange, disabled }: { label: ReactNode; hint?: ReactNode; checked: boolean; onChange: (on: boolean) => void; disabled?: boolean }) => (
     <div className="field field-check">
         <label className="field-label">
-            <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
+            <Input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
             {label}
         </label>
         {hint && <Hint text={hint} />}
@@ -99,8 +100,8 @@ export const EntityForm = ({ children, dirty, saving, onSave, onDiscard, saveLab
     <div className="entity-form">
         <div className="ev-fields">{children}</div>
         <div className="form-actions">
-            <button className="primary" disabled={!dirty || saving} onClick={() => void onSave()}>{saving ? "Saving…" : saveLabel}</button>
-            <button disabled={!dirty || saving} onClick={onDiscard}>Discard</button>
+            <Button variant="primary" disabled={!dirty || saving} onClick={() => void onSave()}>{saving ? "Saving…" : saveLabel}</Button>
+            <Button disabled={!dirty || saving} onClick={onDiscard}>Discard</Button>
             {extra}
         </div>
     </div>

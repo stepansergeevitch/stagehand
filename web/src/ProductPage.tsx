@@ -11,6 +11,7 @@ type ProductRoute = Extract<Route, { page: "product" }>;
 import { CorrectionsTab, EventsTab, QuestionsTab } from "./PoJournal";
 import { Collapsible } from "./components/Collapsible";
 import { CheckboxSelect } from "./components/CheckboxSelect";
+import { Button, Card, Chip, Input, Select, Textarea, Tab, TabList } from "./components/ui";
 
 // The Product section: the global product context, the Product Owners (one per project of the product), and the
 // palace search. A PO page shows its three documents as pages — context, design, tickets — beside the chat that
@@ -25,16 +26,16 @@ const EditableMarkdown = ({ text, empty, onSave }: { text: string; empty: string
     useEffect(() => { if (!editing) setDraft(text); }, [text, editing]);
     return editing ? (
         <>
-            <textarea className="md-editor" value={draft} onChange={(e) => setDraft(e.target.value)} rows={Math.min(30, Math.max(8, draft.split("\n").length + 2))} />
+            <Textarea className="md-editor" value={draft} onChange={(e) => setDraft(e.target.value)} rows={Math.min(30, Math.max(8, draft.split("\n").length + 2))} />
             <div className="actions">
-                <button className="primary" onClick={async () => { await onSave(draft); setEditing(false); }}>Save</button>
-                <button onClick={() => setEditing(false)}>Cancel</button>
+                <Button variant="primary" onClick={async () => { await onSave(draft); setEditing(false); }}>Save</Button>
+                <Button onClick={() => setEditing(false)}>Cancel</Button>
             </div>
         </>
     ) : (
         <>
             {text.trim() ? <Markdown source={text} /> : <div className="empty">{empty}</div>}
-            <div className="actions"><button onClick={() => setEditing(true)}>Edit</button></div>
+            <div className="actions"><Button onClick={() => setEditing(true)}>Edit</Button></div>
         </>
     );
 };
@@ -49,14 +50,14 @@ const PalaceSearch = ({ wing, env, envLabel, onError }: { wing?: string; env?: s
     return (
         <>
             <div className="po-row">
-                <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void run()} placeholder={wing ? `Search this PO's memory (${wing})` : `Search the memory of ${envLabel ?? "this environment"}`} />
-                <button onClick={() => void run()}>Search</button>
+                <Input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void run()} placeholder={wing ? `Search this PO's memory (${wing})` : `Search the memory of ${envLabel ?? "this environment"}`} />
+                <Button onClick={() => void run()}>Search</Button>
             </div>
             {hits && (hits.length === 0 ? <div className="quiet">No drawers match.</div> : (
                 <div className="palace-hits">
                     {hits.map((h, i) => (
                         <details key={i} className="palace-hit">
-                            <summary><span className="chip">{h.wing}</span><span className="chip">{h.room}</span>{h.similarity != null && <span className="field-hint"> {Math.round(h.similarity * 100)} %</span>} {h.text.split("\n")[0]?.slice(0, 120)}</summary>
+                            <summary><Chip>{h.wing}</Chip><Chip>{h.room}</Chip>{h.similarity != null && <span className="field-hint"> {Math.round(h.similarity * 100)} %</span>} {h.text.split("\n")[0]?.slice(0, 120)}</summary>
                             <Markdown source={h.text} />
                         </details>
                     ))}
@@ -124,14 +125,14 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
                 <EnvsSelect envs={envs} value={envIds} switchable onChange={(ids) => { if (envs.find((e) => e.id === ids[0])?.ticket_source !== env?.ticket_source) setUrl(""); setEnvIds(ids); }} />
             </label>
             <div className="po-kind">
-                <label className="inline"><input type="radio" checked={kind === "project"} onChange={() => setKind("project")} /> <b>Project</b> — one {manager === "Linear" ? "Linear project" : "ClickUp epic"}: plans it, designs it, splits it into tickets</label>
-                <label className="inline"><input type="radio" checked={kind === "env"} onChange={() => setKind("env")} /> <b>Whole environment</b> — no project: briefs and reviews every task of the environment that has no project PO, from the product context and the environment's memory (one per picked environment)</label>
+                <label className="inline"><Input type="radio" checked={kind === "project"} onChange={() => setKind("project")} /> <b>Project</b> — one {manager === "Linear" ? "Linear project" : "ClickUp epic"}: plans it, designs it, splits it into tickets</label>
+                <label className="inline"><Input type="radio" checked={kind === "env"} onChange={() => setKind("env")} /> <b>Whole environment</b> — no project: briefs and reviews every task of the environment that has no project PO, from the product context and the environment's memory (one per picked environment)</label>
             </div>
             {kind === "project" && (
                 <>
                     <div className="field-hint">Task manager: <b>{manager}</b> — the Product Owner reads its project and creates tickets only there. Only the tasks of the picked environments get it.</div>
                     <label>{manager === "Linear" ? "Linear project" : "ClickUp epic"}
-                        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={manager === "Linear" ? "https://linear.app/<workspace>/project/…" : "https://app.clickup.com/t/…"} />
+                        <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={manager === "Linear" ? "https://linear.app/<workspace>/project/…" : "https://app.clickup.com/t/…"} />
                     </label>
                     {url.trim() && !urlOk && <div className="field-hint bad">This is not a {manager === "Linear" ? "Linear project URL" : "ClickUp task URL"}.</div>}
                 </>
@@ -140,27 +141,27 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
             {sources.length > 0 && (
                 <ul className="po-pending">
                     {sources.map((s, i) => (
-                        <li key={i}><span className="chip">{s.kind}</span> {label(s)} <button className="tiny" onClick={() => setSources((x) => x.filter((_, j) => j !== i))}>Remove</button></li>
+                        <li key={i}><Chip>{s.kind}</Chip> {label(s)} <Button size="sm" onClick={() => setSources((x) => x.filter((_, j) => j !== i))}>Remove</Button></li>
                     ))}
                 </ul>
             )}
             <div className="po-row">
-                <input value={srcUrl} onChange={(e) => setSrcUrl(e.target.value)} placeholder="Linear issue, ClickUp task, Notion page, Figma link or any web page URL" />
-                <button disabled={!/^https?:\/\//.test(srcUrl.trim())} onClick={() => { setSources((x) => [...x, { kind: "url", url: srcUrl.trim() }]); setSrcUrl(""); }}>Add URL</button>
-                <button onClick={() => setPaste((p) => (p ? null : { title: "", text: "" }))}>Paste text</button>
-                <button onClick={() => fileRef.current?.click()}>Upload files</button>
-                <input ref={fileRef} type="file" multiple hidden onChange={(e) => { const files = [...(e.target.files ?? [])]; e.target.value = ""; setSources((x) => [...x, ...files.map((file) => ({ kind: "file" as const, file }))]); }} />
+                <Input value={srcUrl} onChange={(e) => setSrcUrl(e.target.value)} placeholder="Linear issue, ClickUp task, Notion page, Figma link or any web page URL" />
+                <Button disabled={!/^https?:\/\//.test(srcUrl.trim())} onClick={() => { setSources((x) => [...x, { kind: "url", url: srcUrl.trim() }]); setSrcUrl(""); }}>Add URL</Button>
+                <Button onClick={() => setPaste((p) => (p ? null : { title: "", text: "" }))}>Paste text</Button>
+                <Button onClick={() => fileRef.current?.click()}>Upload files</Button>
+                <Input ref={fileRef} type="file" multiple hidden onChange={(e) => { const files = [...(e.target.files ?? [])]; e.target.value = ""; setSources((x) => [...x, ...files.map((file) => ({ kind: "file" as const, file }))]); }} />
             </div>
             {paste && (
                 <div className="po-paste">
-                    <input value={paste.title} onChange={(e) => setPaste({ ...paste, title: e.target.value })} placeholder="Title (optional)" />
-                    <textarea rows={8} value={paste.text} onChange={(e) => setPaste({ ...paste, text: e.target.value })} placeholder="Paste a conversation, notes or any text with context for this project" autoFocus />
-                    <div className="actions"><button disabled={!paste.text.trim()} onClick={() => { setSources((x) => [...x, { kind: "text", title: paste.title.trim(), text: paste.text }]); setPaste(null); }}>Add text</button></div>
+                    <Input value={paste.title} onChange={(e) => setPaste({ ...paste, title: e.target.value })} placeholder="Title (optional)" />
+                    <Textarea rows={8} value={paste.text} onChange={(e) => setPaste({ ...paste, text: e.target.value })} placeholder="Paste a conversation, notes or any text with context for this project" autoFocus />
+                    <div className="actions"><Button disabled={!paste.text.trim()} onClick={() => { setSources((x) => [...x, { kind: "text", title: paste.title.trim(), text: paste.text }]); setPaste(null); }}>Add text</Button></div>
                 </div>
             )}
             <div className="actions">
-                <button className="primary" disabled={!env || (kind === "project" && !urlOk) || !!progress} onClick={() => void create()}>{progress ?? "Create"}</button>
-                <button disabled={!!progress} onClick={onClose}>Cancel</button>
+                <Button variant="primary" disabled={!env || (kind === "project" && !urlOk) || !!progress} onClick={() => void create()}>{progress ?? "Create"}</Button>
+                <Button disabled={!!progress} onClick={onClose}>Cancel</Button>
             </div>
         </Modal>
     );
@@ -188,7 +189,7 @@ const EnvsSelect = ({ envs, value, onChange, disabled, switchable }: { envs: Env
 
 const EnvPicker = ({ envs, value, onChange }: { envs: Env[]; value: string; onChange: (id: string) => void }) => (
     <label className="inline env-picker">Environment
-        <select value={value} onChange={(e) => onChange(e.target.value)}>{envs.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
+        <Select value={value} onChange={(e) => onChange(e.target.value)}>{envs.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</Select>
     </label>
 );
 
@@ -225,9 +226,9 @@ const ProductHome = ({ route, onOpen, onError }: { route: ProductRoute; onOpen: 
             filter: "auto",
             render: (po) => (
                 <>
-                    <span className={`chip ${po.phase === "live" ? "ok" : "accent"}`}>{PHASE_LABEL[po.phase]}</span>
-                    {po.status === "running" && <span className="chip wait"> answering…</span>}
-                    {po.status === "failed" && <span className="chip bad" title={po.status_line ?? ""}> failed</span>}
+                    <Chip className={`${po.phase === "live" ? "ok" : "accent"}`}>{PHASE_LABEL[po.phase]}</Chip>
+                    {po.status === "running" && <Chip tone="wait"> answering…</Chip>}
+                    {po.status === "failed" && <Chip tone="bad" title={po.status_line ?? ""}> failed</Chip>}
                 </>
             ),
         },
@@ -245,11 +246,11 @@ const ProductHome = ({ route, onOpen, onError }: { route: ProductRoute; onOpen: 
     const envLabel = envs.find((e) => e.id === envId)?.name;
     return (
         <div className="product">
-            <div className="subtabs">
-                <button className={tab === "owners" ? "active" : ""} onClick={() => setTab("owners")}>Product owners {pos ? <span className="chip">{pos.length}</span> : null}</button>
-                <button className={tab === "context" ? "active" : ""} onClick={() => setTab("context")}>Product context</button>
-                <button className={tab === "memory" ? "active" : ""} onClick={() => setTab("memory")}>Memory</button>
-            </div>
+            <TabList variant="pill">
+                <Tab active={tab === "owners"} onClick={() => setTab("owners")}>Product owners {pos ? <Chip>{pos.length}</Chip> : null}</Tab>
+                <Tab active={tab === "context"} onClick={() => setTab("context")}>Product context</Tab>
+                <Tab active={tab === "memory"} onClick={() => setTab("memory")}>Memory</Tab>
+            </TabList>
             {creating && <NewPoDialog envs={envs} onClose={() => setCreating(false)} onCreated={(id) => { setCreating(false); onOpen(id); }} onError={onError} />}
             {tab === "owners" && (pos === null ? <div className="empty">loading…</div> : (
                 <DataTable
@@ -274,14 +275,14 @@ const ProductHome = ({ route, onOpen, onError }: { route: ProductRoute; onOpen: 
                     {ctx === null ? <div className="empty">loading…</div> : <EditableMarkdown key={envId} text={ctx} empty="Empty. Describe the product: what it is, who uses it, its main areas, its rules." onSave={async (t) => { await api.setProductContext(envId, t); setCtx(t); }} />}
                 </div>
             </details>}
-            {tab === "memory" && <section className="card">
+            {tab === "memory" && <Card>
                 <div className="po-head">
                     <h2>Memory <span className="field-hint">— this environment's product and its Product Owners</span></h2>
                     <EnvPicker envs={envs} value={envId} onChange={setEnvId} />
                 </div>
                 {envs.find((e) => e.id === envId) && <MemoryWings key={envId} env={envs.find((e) => e.id === envId)!} onError={onError} />}
                 <PalaceSearch key={envId} env={envId} {...(envLabel ? { envLabel } : {})} onError={onError} />
-            </section>}
+            </Card>}
         </div>
     );
 };
@@ -297,7 +298,7 @@ const MemoryWings = ({ env, onError }: { env: Env; onError: (m: string) => void 
             await api.patchEnv(env.id, { memoryWings: wings });
             setSaved(wings.join(", "));
         })}>
-            <Field label="Memory wings" hint="Palace wings that belong to this environment's memory besides its product wing and its Product Owners' — e.g. an imported palace's knowledge wings. Comma-separated."><input value={d.value.wings} onChange={(e) => d.patch({ wings: e.target.value })} /></Field>
+            <Field label="Memory wings" hint="Palace wings that belong to this environment's memory besides its product wing and its Product Owners' — e.g. an imported palace's knowledge wings. Comma-separated."><Input value={d.value.wings} onChange={(e) => d.patch({ wings: e.target.value })} /></Field>
         </EntityForm>
     );
 };
@@ -312,12 +313,12 @@ const ArtifactRow = ({ poId, a, onRemove }: { poId: string; a: PoArtifact; onRem
     return (
         <details className="po-artifact" onToggle={(e) => { if ((e.target as HTMLDetailsElement).open && text === null && readable) void api.poFileText(poId, readable).then(setText).catch(() => setText("(could not read)")); }}>
             <summary>
-                <span className="chip">{a.kind}</span> <b>{a.title}</b>
+                <Chip>{a.kind}</Chip> <b>{a.title}</b>
                 {a.source_url && <> <a href={a.source_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>source ↗</a></>}
-                {image && <span className="chip">{a.description ? "image · described" : "image · describing…"}</span>}
-                {a.text_file && <span className="chip">text extracted</span>}
+                {image && <Chip>{a.description ? "image · described" : "image · describing…"}</Chip>}
+                {a.text_file && <Chip>text extracted</Chip>}
                 {!textual && <> <a href={api.poFileUrl(poId, a.file)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>open ↗</a></>}
-                <button className="tiny danger" onClick={(e) => { e.preventDefault(); if (confirm(`Remove ${a.title}?`)) onRemove(); }}>Remove</button>
+                <Button size="sm" variant="danger" onClick={(e) => { e.preventDefault(); if (confirm(`Remove ${a.title}?`)) onRemove(); }}>Remove</Button>
             </summary>
             {image && (
                 <div className="po-image">
@@ -343,40 +344,40 @@ const ContextTab = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) 
                     <b>The Product Owner proposes a new product context.</b> It replaces the product context of every Product Owner.
                     <details><summary>Read the proposal</summary><Markdown source={d.proposal} /></details>
                     <div className="actions">
-                        <button className="primary" onClick={() => void act(() => api.poAcceptProposal(d.po.id))}>Accept</button>
-                        <button onClick={() => void act(() => api.poRejectProposal(d.po.id))}>Reject</button>
+                        <Button variant="primary" onClick={() => void act(() => api.poAcceptProposal(d.po.id))}>Accept</Button>
+                        <Button onClick={() => void act(() => api.poRejectProposal(d.po.id))}>Reject</Button>
                     </div>
                 </div>
             )}
             <Collapsible title="Project context" hint="— the PO keeps it current; filed in its palace wing after every turn">
                 <EditableMarkdown text={d.context} empty="Empty — the Product Owner writes it in the first turn." onSave={(t) => api.poSetContext(d.po.id, t).then(reload)} />
             </Collapsible>
-            <section className="card">
-                <h2>Sources <span className="chip">{d.artifacts.length}</span></h2>
+            <Card>
+                <h2>Sources <Chip>{d.artifacts.length}</Chip></h2>
                 <div className="po-row">
-                    <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Linear project or issue, ClickUp task, Notion page, Figma link, or any web page URL" />
-                    <button disabled={busy || url.trim().length < 8} onClick={() => void act(async () => { await api.poFetch(d.po.id, url.trim()); setUrl(""); })}>{busy ? "Fetching…" : "Fetch"}</button>
-                    <button disabled={busy} onClick={() => fileRef.current?.click()}>Upload</button>
-                    <button disabled={busy} onClick={() => setPaste((p) => (p ? null : { title: "", text: "", tell: true }))}>Paste text</button>
-                    <input ref={fileRef} type="file" multiple hidden onChange={(e) => { const files = [...(e.target.files ?? [])]; e.target.value = ""; void act(async () => { for (const f of files) await api.poUpload(d.po.id, f); }); }} />
+                    <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Linear project or issue, ClickUp task, Notion page, Figma link, or any web page URL" />
+                    <Button disabled={busy || url.trim().length < 8} onClick={() => void act(async () => { await api.poFetch(d.po.id, url.trim()); setUrl(""); })}>{busy ? "Fetching…" : "Fetch"}</Button>
+                    <Button disabled={busy} onClick={() => fileRef.current?.click()}>Upload</Button>
+                    <Button disabled={busy} onClick={() => setPaste((p) => (p ? null : { title: "", text: "", tell: true }))}>Paste text</Button>
+                    <Input ref={fileRef} type="file" multiple hidden onChange={(e) => { const files = [...(e.target.files ?? [])]; e.target.value = ""; void act(async () => { for (const f of files) await api.poUpload(d.po.id, f); }); }} />
                 </div>
                 {paste && (
                     <div className="po-paste">
-                        <input value={paste.title} onChange={(e) => setPaste({ ...paste, title: e.target.value })} placeholder="Title (optional) — e.g. Call with Austin about density" />
-                        <textarea rows={10} value={paste.text} onChange={(e) => setPaste({ ...paste, text: e.target.value })} placeholder="Paste a conversation, notes or any text with context for this project" autoFocus />
+                        <Input value={paste.title} onChange={(e) => setPaste({ ...paste, title: e.target.value })} placeholder="Title (optional) — e.g. Call with Austin about density" />
+                        <Textarea rows={10} value={paste.text} onChange={(e) => setPaste({ ...paste, text: e.target.value })} placeholder="Paste a conversation, notes or any text with context for this project" autoFocus />
                         <div className="actions">
-                            <label className="inline" title={d.running ? "The Product Owner is answering; it reads the source in a later turn" : undefined}><input type="checkbox" checked={paste.tell} onChange={(e) => setPaste({ ...paste, tell: e.target.checked })} /> Product Owner reads it now and updates the context</label>
-                            <button className="primary" disabled={busy || !paste.text.trim()} onClick={() => void act(async () => { await api.poPaste(d.po.id, paste.title, paste.text, paste.tell); setPaste(null); })}>Add source</button>
-                            <button onClick={() => setPaste(null)}>Cancel</button>
+                            <label className="inline" title={d.running ? "The Product Owner is answering; it reads the source in a later turn" : undefined}><Input type="checkbox" checked={paste.tell} onChange={(e) => setPaste({ ...paste, tell: e.target.checked })} /> Product Owner reads it now and updates the context</label>
+                            <Button variant="primary" disabled={busy || !paste.text.trim()} onClick={() => void act(async () => { await api.poPaste(d.po.id, paste.title, paste.text, paste.tell); setPaste(null); })}>Add source</Button>
+                            <Button onClick={() => setPaste(null)}>Cancel</Button>
                         </div>
                     </div>
                 )}
                 {d.artifacts.map((a) => <ArtifactRow key={a.id} poId={d.po.id} a={a} onRemove={() => void act(() => api.poRemoveArtifact(d.po.id, a.id))} />)}
-            </section>
-            <section className="card">
+            </Card>
+            <Card>
                 <h2>Memory</h2>
                 <PalaceSearch wing={d.po.slug} onError={onError} />
-            </section>
+            </Card>
         </>
     );
 };
@@ -407,7 +408,7 @@ const DesignTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: str
         return (
             <div className="empty">
                 No design yet. The Product Owner writes <code>design.md</code> once the context is complete.
-                <div className="actions"><button className="primary" disabled={d.running} onClick={() => send("Write design.md now, from what we know. Mark what is still open in Open questions.")}>Ask for the design</button></div>
+                <div className="actions"><Button variant="primary" disabled={d.running} onClick={() => send("Write design.md now, from what we know. Mark what is still open in Open questions.")}>Ask for the design</Button></div>
             </div>
         );
     }
@@ -418,19 +419,19 @@ const DesignTab = ({ d, onError, reload, send }: { d: PoDetail; onError: (m: str
                 {sections.map((s, i) => <a key={i} href={`#`} onClick={(e) => { e.preventDefault(); document.getElementById(`po-sec-${i}`)?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>{s.title}</a>)}
                 {revs.length > 1 && (
                     <label className="field-hint">Version
-                        <select value={rev?.name ?? ""} onChange={async (e) => { const n = e.target.value; if (!n) return setRev(null); try { setRev({ name: n, text: (await api.poRevision(d.po.id, n)).text }); } catch (err) { onError(String((err as Error).message ?? err)); } }}>
+                        <Select value={rev?.name ?? ""} onChange={async (e) => { const n = e.target.value; if (!n) return setRev(null); try { setRev({ name: n, text: (await api.poRevision(d.po.id, n)).text }); } catch (err) { onError(String((err as Error).message ?? err)); } }}>
                             <option value="">current</option>
                             {revs.slice(0, -1).reverse().map((r) => <option key={r.name} value={r.name}>{new Date(r.at).toLocaleString()}</option>)}
-                        </select>
+                        </Select>
                     </label>
                 )}
             </nav>
             <div className="po-doc-body">
-                {rev && <div className="review-box">You are reading an earlier version. <button onClick={() => setRev(null)}>Back to current</button></div>}
+                {rev && <div className="review-box">You are reading an earlier version. <Button onClick={() => setRev(null)}>Back to current</Button></div>}
                 {canApprove && !rev && (
                     <div className="review-box">
                         <b>Design — your call.</b> Refine it in the chat, or approve it: the Product Owner then splits it into tickets.
-                        <div className="actions"><button className="primary" disabled={d.running} onClick={async () => { try { await api.poApproveDesign(d.po.id); reload(); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Approve design</button></div>
+                        <div className="actions"><Button variant="primary" disabled={d.running} onClick={async () => { try { await api.poApproveDesign(d.po.id); reload(); } catch (e) { onError(String((e as Error).message ?? e)); } }}>Approve design</Button></div>
                     </div>
                 )}
                 {sections.map((s, i) => (
@@ -448,13 +449,13 @@ const TicketEditor = ({ t, onSave, onCancel }: { t: PoTicket; onSave: (t: PoTick
     const [x, setX] = useState(t);
     return (
         <div className="po-ticket-edit">
-            <label>Title<input value={x.title} onChange={(e) => setX({ ...x, title: e.target.value })} /></label>
-            <label>Type<select value={x.type} onChange={(e) => setX({ ...x, type: e.target.value as PoTicket["type"] })}>{["epic", "story", "task", "bug"].map((k) => <option key={k}>{k}</option>)}</select></label>
-            <label>Estimate<input value={x.estimate ?? ""} onChange={(e) => setX({ ...x, estimate: e.target.value.trim() === "" ? null : Number(e.target.value) })} /></label>
-            <label>Summary<input value={x.summary} onChange={(e) => setX({ ...x, summary: e.target.value })} /></label>
-            <label>Description<textarea rows={8} value={x.description} onChange={(e) => setX({ ...x, description: e.target.value })} /></label>
-            <label>Acceptance criteria (one per line)<textarea rows={5} value={x.acceptanceCriteria.join("\n")} onChange={(e) => setX({ ...x, acceptanceCriteria: e.target.value.split("\n").map((l) => l.trim()).filter(Boolean) })} /></label>
-            <div className="actions"><button className="primary" onClick={() => onSave(x)}>Save</button><button onClick={onCancel}>Cancel</button></div>
+            <label>Title<Input value={x.title} onChange={(e) => setX({ ...x, title: e.target.value })} /></label>
+            <label>Type<Select value={x.type} onChange={(e) => setX({ ...x, type: e.target.value as PoTicket["type"] })}>{["epic", "story", "task", "bug"].map((k) => <option key={k}>{k}</option>)}</Select></label>
+            <label>Estimate<Input value={x.estimate ?? ""} onChange={(e) => setX({ ...x, estimate: e.target.value.trim() === "" ? null : Number(e.target.value) })} /></label>
+            <label>Summary<Input value={x.summary} onChange={(e) => setX({ ...x, summary: e.target.value })} /></label>
+            <label>Description<Textarea rows={8} value={x.description} onChange={(e) => setX({ ...x, description: e.target.value })} /></label>
+            <label>Acceptance criteria (one per line)<Textarea rows={5} value={x.acceptanceCriteria.join("\n")} onChange={(e) => setX({ ...x, acceptanceCriteria: e.target.value.split("\n").map((l) => l.trim()).filter(Boolean) })} /></label>
+            <div className="actions"><Button variant="primary" onClick={() => onSave(x)}>Save</Button><Button onClick={onCancel}>Cancel</Button></div>
         </div>
     );
 };
@@ -474,8 +475,8 @@ const IssuesRefresh = ({ d, onError, reload }: { d: PoDetail; onError: (m: strin
     const read = d.po.issues_refreshed_at ? `read ${since(d.po.issues_refreshed_at)}` : "never read";
     return (
         <>
-            {d.po.issues_error && <span className="chip bad" title={d.po.issues_error}>last refresh failed</span>}
-            <button disabled={busy || d.refreshingIssues || d.running} title={`${d.issues.length} issue(s) tracked · ${read} · read every hour, and the Product Owner gets what changed${d.running ? " · wait for the Product Owner's turn" : ""}`} onClick={() => void refresh()}>{busy || d.refreshingIssues ? "Refreshing…" : "Refresh issues"}</button>
+            {d.po.issues_error && <Chip tone="bad" title={d.po.issues_error}>last refresh failed</Chip>}
+            <Button disabled={busy || d.refreshingIssues || d.running} title={`${d.issues.length} issue(s) tracked · ${read} · read every hour, and the Product Owner gets what changed${d.running ? " · wait for the Product Owner's turn" : ""}`} onClick={() => void refresh()}>{busy || d.refreshingIssues ? "Refreshing…" : "Refresh issues"}</Button>
         </>
     );
 };
@@ -485,10 +486,10 @@ const LiveIssue = ({ issue }: { issue: PoIssue }) => (
     <>
         <h3>In {issue.url.includes("clickup") ? "ClickUp" : "Linear"} now</h3>
         <div className="po-ticket-meta">
-            <span className="chip accent">{issue.status ?? "?"}</span>
-            {issue.assignee && <span className="chip">{issue.assignee}</span>}
-            {issue.priority && <span className="chip">priority {issue.priority}</span>}
-            {issue.labels.map((l) => <span key={l} className="chip">{l}</span>)}
+            <Chip tone="accent">{issue.status ?? "?"}</Chip>
+            {issue.assignee && <Chip>{issue.assignee}</Chip>}
+            {issue.priority && <Chip>priority {issue.priority}</Chip>}
+            {issue.labels.map((l) => <Chip key={l}>{l}</Chip>)}
         </div>
         <h3>Comments ({issue.comments.length})</h3>
         {issue.comments.length === 0 ? <p className="quiet">No comments.</p> : (
@@ -532,16 +533,16 @@ const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail;
     const createIssues = (keys?: string[]) => act(() => api.poApproveTickets(d.po.id, keys));
     const createTasks = (ids: string[]) => act(() => api.createTasks({ envId: targetEnv, tickets: ids, mode: "each", productOwnerId: d.po.id }));
     const targetPicker = poEnvs.length > 1 && (
-        <select value={targetEnv} title="The environment new tasks are created in" onChange={(e) => setTarget(e.target.value)}>
+        <Select value={targetEnv} title="The environment new tasks are created in" onChange={(e) => setTarget(e.target.value)}>
             {poEnvs.map((id) => <option key={id} value={id}>{allEnvs.find((e) => e.id === id)?.name ?? id}</option>)}
-        </select>
+        </Select>
     );
     if (!d.tickets) {
         return (
             <div className="empty">
                 {d.ticketsError ? <div className="blocked-box">tickets.json: {d.ticketsError}</div> : null}
                 No ticket proposal yet. {d.po.phase === "tickets" ? "The Product Owner is writing it." : "It comes after you approve the design."}
-                {d.po.phase === "tickets" && <div className="actions"><button disabled={d.running} onClick={() => send("Write tickets.json now from the approved design.")}>Ask for the tickets</button></div>}
+                {d.po.phase === "tickets" && <div className="actions"><Button disabled={d.running} onClick={() => send("Write tickets.json now from the approved design.")}>Ask for the tickets</Button></div>}
             </div>
         );
     }
@@ -561,8 +562,8 @@ const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail;
                 id={<>{current.key}{ident ? ` · ${ident}` : ""} · {current.title}</>}
                 actions={
                     <>
-                        {!ident && <button className="primary" disabled={busy || d.running} onClick={() => void createIssues([current.key])}>Create in {tracker}</button>}
-                        {ident && !task && <>{targetPicker}<button className="primary" disabled={busy || !d.po.env_id} title={d.po.env_id ? undefined : "this Product Owner has no environment"} onClick={() => void createTasks([ident])}>Create task{envName ? ` in ${envName}` : ""}</button></>}
+                        {!ident && <Button variant="primary" disabled={busy || d.running} onClick={() => void createIssues([current.key])}>Create in {tracker}</Button>}
+                        {ident && !task && <>{targetPicker}<Button variant="primary" disabled={busy || !d.po.env_id} title={d.po.env_id ? undefined : "this Product Owner has no environment"} onClick={() => void createTasks([ident])}>Create task{envName ? ` in ${envName}` : ""}</Button></>}
                         {task && <a className="button" href={`#/tasks/${encodeURIComponent(task.id)}`}>Open task · {task.stage.replace(/_/g, " ")}</a>}
                         {url && <a className="button" href={url} target="_blank" rel="noreferrer">{ident} ↗</a>}
                     </>
@@ -573,12 +574,12 @@ const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail;
                         label: "Details",
                         content: (
                             <div className="ev-fields">
-                                <ReadField label="Type">{current.type}{current.estimate != null && <span className="chip">{current.estimate} pt</span>}{current.labels.map((l) => <span key={l} className="chip">{l}</span>)}</ReadField>
-                                {current.parent && byKey.get(current.parent) && <ReadField label="Parent"><button className="tiny" onClick={() => setSel(current.parent)}>{current.parent} · {byKey.get(current.parent)!.title}</button></ReadField>}
+                                <ReadField label="Type">{current.type}{current.estimate != null && <Chip>{current.estimate} pt</Chip>}{current.labels.map((l) => <Chip key={l}>{l}</Chip>)}</ReadField>
+                                {current.parent && byKey.get(current.parent) && <ReadField label="Parent"><Button size="sm" onClick={() => setSel(current.parent)}>{current.parent} · {byKey.get(current.parent)!.title}</Button></ReadField>}
                                 {current.summary && <ReadField label="Summary">{current.summary}</ReadField>}
                                 <Field label="Description"><Markdown source={current.description} /></Field>
                                 {current.acceptanceCriteria.length > 0 && <Field label="Acceptance criteria"><ul className="po-ac">{current.acceptanceCriteria.map((a, i) => <li key={i}>{a}</li>)}</ul></Field>}
-                                {current.dependsOn.length > 0 && <ReadField label="Depends on">{current.dependsOn.map((k) => <button key={k} className="tiny" onClick={() => setSel(k)}>{k} {byKey.get(k)?.title ?? ""}</button>)}</ReadField>}
+                                {current.dependsOn.length > 0 && <ReadField label="Depends on">{current.dependsOn.map((k) => <Button size="sm" key={k} onClick={() => setSel(k)}>{k} {byKey.get(k)?.title ?? ""}</Button>)}</ReadField>}
                             </div>
                         ),
                     },
@@ -592,9 +593,9 @@ const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail;
     const columns: DataColumn<PoTicket>[] = [
         { key: "key", label: "Key", value: (t) => t.key, filter: false },
         { key: "title", label: "Title", kind: "label", value: (t) => t.title, filter: false },
-        { key: "type", label: "Type", value: (t) => t.type, filter: "auto", render: (t) => <span className={`chip ${t.type === "epic" ? "accent" : t.type === "bug" ? "bad" : ""}`}>{t.type}</span> },
+        { key: "type", label: "Type", value: (t) => t.type, filter: "auto", render: (t) => <Chip className={`${t.type === "epic" ? "accent" : t.type === "bug" ? "bad" : ""}`}>{t.type}</Chip> },
         { key: "points", label: "Points", kind: "num", value: (t) => t.estimate ?? null, filter: false, render: (t) => (t.estimate == null ? <span className="quiet">—</span> : t.estimate) },
-        { key: "issue", label: tracker, value: (t) => identOf(t) ?? "not created", filter: false, render: (t) => (identOf(t) ? <span className="chip ok">{identOf(t)}</span> : <span className="chip">not created</span>) },
+        { key: "issue", label: tracker, value: (t) => identOf(t) ?? "not created", filter: false, render: (t) => (identOf(t) ? <Chip tone="ok">{identOf(t)}</Chip> : <Chip>not created</Chip>) },
         { key: "status", label: "Status", value: (t) => issueOf(t)?.status ?? "", filter: "auto" },
         { key: "task", label: "Task", value: (t) => taskOf(t)?.stage.replace(/_/g, " ") ?? "none", filter: "auto" },
         { key: "comments", label: "Comments", kind: "num", value: (t) => issueOf(t)?.comments.length ?? 0, filter: false, defaultHidden: true },
@@ -613,7 +614,7 @@ const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail;
                 actions={
                     <>
                         <IssuesRefresh d={d} onError={onError} reload={reload} />
-                        {pendingAll.length > 0 && <button className="primary" disabled={busy || d.running} title={`Creates the ${pendingAll.length} ticket(s) not in ${tracker} yet`} onClick={() => void createIssues()}>{busy ? "Creating…" : `Create ${pendingAll.length} in ${tracker}`}</button>}
+                        {pendingAll.length > 0 && <Button variant="primary" disabled={busy || d.running} title={`Creates the ${pendingAll.length} ticket(s) not in ${tracker} yet`} onClick={() => void createIssues()}>{busy ? "Creating…" : `Create ${pendingAll.length} in ${tracker}`}</Button>}
                     </>
                 }
                 bulkActions={(rows, clear) => {
@@ -621,9 +622,9 @@ const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: { d: PoDetail;
                     const toStart = rows.filter((t) => identOf(t) && !taskOf(t));
                     return (
                         <>
-                            {toCreate.length > 0 && <button className="tiny" disabled={busy || d.running} onClick={() => void createIssues(toCreate.map((t) => t.key)).then(clear)}>Create {toCreate.length} in {tracker}</button>}
+                            {toCreate.length > 0 && <Button size="sm" disabled={busy || d.running} onClick={() => void createIssues(toCreate.map((t) => t.key)).then(clear)}>Create {toCreate.length} in {tracker}</Button>}
                             {toStart.length > 0 && targetPicker}
-                            {toStart.length > 0 && <button className="tiny primary" disabled={busy || !d.po.env_id} onClick={() => void createTasks(toStart.map((t) => identOf(t)!)).then(clear)}>Create {toStart.length} task{toStart.length === 1 ? "" : "s"}{envName ? ` in ${envName}` : ""}</button>}
+                            {toStart.length > 0 && <Button size="sm" variant="primary" disabled={busy || !d.po.env_id} onClick={() => void createTasks(toStart.map((t) => identOf(t)!)).then(clear)}>Create {toStart.length} task{toStart.length === 1 ? "" : "s"}{envName ? ` in ${envName}` : ""}</Button>}
                         </>
                     );
                 }}
@@ -667,9 +668,9 @@ const PoChat = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => v
                 <div ref={end} />
             </div>
             <div className="po-input">
-                <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={d.running ? "The Product Owner is answering…" : "Message the Product Owner (⌘/Ctrl+Enter sends)"} rows={3} disabled={d.running} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }} />
+                <Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={d.running ? "The Product Owner is answering…" : "Message the Product Owner (⌘/Ctrl+Enter sends)"} rows={3} disabled={d.running} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }} />
                 <div className="actions">
-                    {d.running ? <button className="danger" onClick={() => void api.poStop(d.po.id).then(reload)}>Stop</button> : <button className="primary" disabled={!text.trim()} onClick={() => void send()}>Send</button>}
+                    {d.running ? <Button variant="danger" onClick={() => void api.poStop(d.po.id).then(reload)}>Stop</Button> : <Button variant="primary" disabled={!text.trim()} onClick={() => void send()}>Send</Button>}
                 </div>
             </div>
         </div>
@@ -705,30 +706,30 @@ const PoPage = ({ id, tab: tabArg, ticket, ticketTab, onTab, onBack, onError }: 
     return (
         <div className="po-page">
             <div className="po-head">
-                <button onClick={onBack}>← Product</button>
+                <Button onClick={onBack}>← Product</Button>
                 <h1>{d.po.title}</h1>
                 {d.po.scope_url && <a href={d.po.scope_url} target="_blank" rel="noreferrer">{d.po.source === "linear" ? "Linear project" : "ClickUp epic"} ↗</a>}
                 <PoEnvs d={d} onSaved={reload} onError={onError} />
-                <span className="po-phases">{PHASES.map((p, i) => <span key={p} className={`chip ${i < idx ? "ok" : i === idx ? "accent" : ""}`}>{PHASE_LABEL[p]}</span>)}</span>
+                <span className="po-phases">{PHASES.map((p, i) => <Chip key={p} className={`${i < idx ? "ok" : i === idx ? "accent" : ""}`}>{PHASE_LABEL[p]}</Chip>)}</span>
                 {d.po.status_line && <span className={`field-hint ${d.po.status === "failed" ? "bad" : ""}`}>{d.po.status_line}</span>}
                 <span className="spacer" />
                 {d.tasks.length > 0 && <span className="field-hint">{d.tasks.length} task(s) assigned</span>}
-                <button className="danger" onClick={async () => { if (!confirm(`Delete the Product Owner "${d.po.title}"? Its chat, sources and proposals go; its palace wing and the created tickets stay.`)) return; await api.deleteProductOwner(id); onBack(); }}>Delete</button>
+                <Button variant="danger" onClick={async () => { if (!confirm(`Delete the Product Owner "${d.po.title}"? Its chat, sources and proposals go; its palace wing and the created tickets stay.`)) return; await api.deleteProductOwner(id); onBack(); }}>Delete</Button>
             </div>
             <div className="po-layout">
                 <div className="po-main">
-                    <div className="subtabs">
+                    <TabList variant="pill">
                         {tabs.map((t) => (
-                            <button key={t} className={tab === t ? "active" : ""} onClick={() => onTab(t)}>
+                            <Tab key={t} active={tab === t} onClick={() => onTab(t)}>
                                 {t === "context" ? `Context · ${d.artifacts.length} source(s)` : t === "design" ? "Design" : t === "questions" ? "Questions" : t === "events" ? "Events" : t === "corrections" ? "Corrections" : `Tickets${d.tickets ? ` · ${d.tickets.tickets.length}` : ""}`}
-                                {t === "context" && d.proposal && <span className="chip warn">proposal</span>}
-                                {t === "questions" && openQuestions > 0 && <span className="chip">{openQuestions}</span>}
-                                {t === "questions" && proposed > 0 && <span className="chip accent" title="Resolutions to confirm">{proposed} to confirm</span>}
-                                {t === "events" && unread > 0 && <span className="chip warn" title="Events the Product Owner has not read">{unread}</span>}
-                                {t === "corrections" && openCorrections > 0 && <span className="chip warn">{openCorrections}</span>}
-                            </button>
+                                {t === "context" && d.proposal && <Chip tone="warn">proposal</Chip>}
+                                {t === "questions" && openQuestions > 0 && <Chip>{openQuestions}</Chip>}
+                                {t === "questions" && proposed > 0 && <Chip tone="accent" title="Resolutions to confirm">{proposed} to confirm</Chip>}
+                                {t === "events" && unread > 0 && <Chip tone="warn" title="Events the Product Owner has not read">{unread}</Chip>}
+                                {t === "corrections" && openCorrections > 0 && <Chip tone="warn">{openCorrections}</Chip>}
+                            </Tab>
                         ))}
-                    </div>
+                    </TabList>
                     {tab === "context" && <ContextTab d={d} onError={onError} reload={reload} />}
                     {tab === "design" && d.po.scope_kind !== "env" && <DesignTab d={d} onError={onError} reload={reload} send={send} />}
                     {tab === "questions" && <QuestionsTab d={d} onError={onError} reload={reload} />}

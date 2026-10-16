@@ -3,6 +3,7 @@ import { accountUsableWith, api, envRepos, modelLabel, type Account, type Config
 import { DiffView, sessionSource } from "./DiffView";
 import { LazyTerminal } from "./LazyTerminal";
 import type { DiffRoute } from "./routes";
+import { Button, Card, Chip, Input, Select, Tab, TabList } from "./components/ui";
 
 // Free-form claude sessions: pick an environment (its config dir, env vars and checkout) and an AI account, optionally
 // a fresh worktree on a branch, and get an interactive `claude` in a terminal — plus the same diff view tasks have,
@@ -50,7 +51,7 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, session, vi
                 A plain interactive <code>claude</code> in an environment's checkout (or its own worktree), with the environment's config dir and the AI account you pick. It runs in tmux: leave the page and come back, or Open again after claude exited to resume the same conversation.
             </p>
             <div className="actions" style={{ marginTop: 0 }}>
-                <button className="primary" onClick={() => onCreating(!creating)}>{creating ? "Cancel" : "+ Session"}</button>
+                <Button variant="primary" onClick={() => onCreating(!creating)}>{creating ? "Cancel" : "+ Session"}</Button>
             </div>
             {creating && (
                 <NewSession
@@ -95,27 +96,27 @@ export const SessionsPage = ({ envs, accounts, configDirs, settings, session, vi
                 />
             ))}
             {current && (
-                <section className="card session-view">
+                <Card className="session-view">
                     <h2>
                         {current.name}
-                        <span className="chip">{current.env_name}</span>
-                        {current.branch && <span className="chip accent">{current.branch}</span>}
+                        <Chip>{current.env_name}</Chip>
+                        {current.branch && <Chip tone="accent">{current.branch}</Chip>}
                     </h2>
-                    <div className="subtabs">
-                        <button className={view === "terminal" ? "active" : ""} onClick={() => onNavigate(current.id, "terminal")}>Terminal</button>
-                        <button className={view === "changes" ? "active" : ""} onClick={() => { onNavigate(current.id, "changes"); setRefreshKey((k) => k + 1); }}>Changes</button>
-                    </div>
+                    <TabList variant="pill">
+                        <Tab active={view === "terminal"} onClick={() => onNavigate(current.id, "terminal")}>Terminal</Tab>
+                        <Tab active={view === "changes"} onClick={() => { onNavigate(current.id, "changes"); setRefreshKey((k) => k + 1); }}>Changes</Tab>
+                    </TabList>
                     {view === "terminal" && (current.alive ? <LazyTerminal key={current.tmux} session={current.tmux} /> : <div className="empty">The pane is closed — Open starts claude again, resuming this conversation.</div>)}
                     {view === "changes" && (
                         <>
                             <p className="field-hint">
                                 {current.worktree_path ? `Everything on ${current.branch} versus the environment's base branch, committed or not.` : `This session works in the environment's main checkout, so only uncommitted changes there are shown.`}
-                                <button className="tiny" style={{ marginLeft: 8 }} onClick={() => setRefreshKey((k) => k + 1)}>Refresh</button>
+                                <Button size="sm" style={{ marginLeft: 8 }} onClick={() => setRefreshKey((k) => k + 1)}>Refresh</Button>
                             </p>
                             <DiffView source={sessionSource(current.id)} refreshKey={`${current.id}:${refreshKey}`} repos={envRepos(currentEnv)} view={diff ?? {}} onView={onDiff} />
                         </>
                     )}
-                </section>
+                </Card>
             )}
         </div>
     );
@@ -133,40 +134,40 @@ const SessionCard = ({ s, env, settings, selected, busy, onOpen, onChanges, onCl
             <h2 onDoubleClick={() => { setName(s.name); setRenaming(true); }} title="double-click to rename">
                 {renaming ? (
                     <span className="inline-edit">
-                        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) { void onRename(name.trim()); setRenaming(false); } if (e.key === "Escape") setRenaming(false); }} />
-                        <button className="tiny" disabled={!name.trim()} onClick={() => { void onRename(name.trim()); setRenaming(false); }}>Save</button>
-                        <button className="tiny" onClick={() => setRenaming(false)}>Cancel</button>
+                        <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) { void onRename(name.trim()); setRenaming(false); } if (e.key === "Escape") setRenaming(false); }} />
+                        <Button size="sm" disabled={!name.trim()} onClick={() => { void onRename(name.trim()); setRenaming(false); }}>Save</Button>
+                        <Button size="sm" onClick={() => setRenaming(false)}>Cancel</Button>
                     </span>
                 ) : s.name}
-                <span className={`chip ${s.alive ? "ok" : ""}`}>{s.alive ? "open" : "closed"}</span>
-                <span className="chip">{s.env_name}</span>
-                {s.account_name && <span className="chip">{s.account_name}</span>}
-                {s.model && <span className="chip">{modelLabel(s.model, settings?.models) ?? s.model}</span>}
+                <Chip className={`${s.alive ? "ok" : ""}`}>{s.alive ? "open" : "closed"}</Chip>
+                <Chip>{s.env_name}</Chip>
+                {s.account_name && <Chip>{s.account_name}</Chip>}
+                {s.model && <Chip>{modelLabel(s.model, settings?.models) ?? s.model}</Chip>}
             </h2>
             <div className="kv">
                 <b>Directory</b><code>{s.cwd}</code>
                 {s.branch && <><b>Branch</b><span><code>{s.branch}</code> <small className="field-hint" style={{ display: "inline" }}>own worktree{env ? ` from ${env.base_branch}` : ""}</small></span></>}
-                {(s.db || s.dbAvailable) && <><b>Database</b><span>{s.db?.status === "ready" ? <code>{s.db.name}</code> : s.db ? <span className="chip bad" title={s.db.error ?? ""}>{s.db.status}{s.db.error ? `: ${s.db.error.slice(0, 120)}` : ""}</span> : <span className="field-hint" style={{ display: "inline" }}>the env&apos;s shared database</span>}</span></>}
+                {(s.db || s.dbAvailable) && <><b>Database</b><span>{s.db?.status === "ready" ? <code>{s.db.name}</code> : s.db ? <Chip tone="bad" title={s.db.error ?? ""}>{s.db.status}{s.db.error ? `: ${s.db.error.slice(0, 120)}` : ""}</Chip> : <span className="field-hint" style={{ display: "inline" }}>the env&apos;s shared database</span>}</span></>}
                 <b>Created</b><span>{new Date(s.created_at).toLocaleString()}{s.opened_at ? "" : " · never opened"}</span>
             </div>
             <div className="actions">
-                <button className="primary" disabled={busy !== null} onClick={() => void onOpen()}>{mine("open") ? "Opening…" : s.alive ? "Show terminal" : s.opened_at ? "Open (resume)" : "Open"}</button>
-                <button disabled={busy !== null} onClick={onChanges}>Changes</button>
-                {s.dbAvailable && <button disabled={busy !== null} title={s.db?.status === "ready" ? "Close the pane, copy the template again (this session's data is lost), point the worktree at the copy" : "Close the pane, copy the template for this session, point the worktree at the copy"} onClick={() => void onRecreateDb()}>{mine("db") ? "Copying the database…" : s.db?.status === "ready" ? "Recreate database" : "Own database"}</button>}
-                {s.alive && <button disabled={busy !== null} title="Kills the tmux pane; the conversation can be resumed with Open" onClick={() => void onClose()}>{mine("close") ? "Closing…" : "Close pane"}</button>}
-                <button
-                    className="danger"
-                    disabled={busy !== null}
-                    onClick={() => {
-                        if (s.worktree_path) {
-                            const rm = confirm(`Delete session "${s.name}" AND remove its worktree + local branch ${s.branch}?\n\nOK = remove the worktree too · Cancel = keep the worktree, forget only the session`);
-                            if (!rm && !confirm(`Forget session "${s.name}" and keep the worktree at ${s.worktree_path}?`)) return;
-                            void onDelete(rm);
-                        } else if (confirm(`Delete session "${s.name}"? The conversation cannot be resumed from Stagehand afterwards.`)) void onDelete(false);
-                    }}
-                >
+                <Button variant="primary" disabled={busy !== null} onClick={() => void onOpen()}>{mine("open") ? "Opening…" : s.alive ? "Show terminal" : s.opened_at ? "Open (resume)" : "Open"}</Button>
+                <Button disabled={busy !== null} onClick={onChanges}>Changes</Button>
+                {s.dbAvailable && <Button disabled={busy !== null} title={s.db?.status === "ready" ? "Close the pane, copy the template again (this session's data is lost), point the worktree at the copy" : "Close the pane, copy the template for this session, point the worktree at the copy"} onClick={() => void onRecreateDb()}>{mine("db") ? "Copying the database…" : s.db?.status === "ready" ? "Recreate database" : "Own database"}</Button>}
+                {s.alive && <Button disabled={busy !== null} title="Kills the tmux pane; the conversation can be resumed with Open" onClick={() => void onClose()}>{mine("close") ? "Closing…" : "Close pane"}</Button>}
+                <Button variant="danger"
+ 
+ disabled={busy !== null}
+ onClick={() => {
+ if (s.worktree_path) {
+ const rm = confirm(`Delete session "${s.name}" AND remove its worktree + local branch ${s.branch}?\n\nOK = remove the worktree too · Cancel = keep the worktree, forget only the session`);
+ if (!rm && !confirm(`Forget session "${s.name}" and keep the worktree at ${s.worktree_path}?`)) return;
+ void onDelete(rm);
+ } else if (confirm(`Delete session "${s.name}"? The conversation cannot be resumed from Stagehand afterwards.`)) void onDelete(false);
+ }}
+>
                     {mine("delete") ? "Deleting…" : "Delete"}
-                </button>
+                </Button>
             </div>
         </section>
     );
@@ -193,35 +194,35 @@ const NewSession = ({ envs, accounts, configDirs, settings, onCreate }: {
     const prefix = env?.branch_prefix ?? "";
     const canSubmit = !!env && !!accountId && (!worktree || branch.trim().length > 0) && !submitting;
     return (
-        <section className="card env-section">
+        <Card className="env-section">
             <h2>New session</h2>
             <div className="env-fields">
                 <label>Environment
-                    <select value={envId} onChange={(e) => setEnvId(e.target.value)}>
+                    <Select value={envId} onChange={(e) => setEnvId(e.target.value)}>
                         {envs.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.base_branch})</option>)}
-                    </select>
+                    </Select>
                     <span className="field-hint">Fixes the config dir ({dir?.name ?? "server default"}), env vars and the checkout at <code>{env?.path}</code>.</span>
                 </label>
                 <label>AI account
-                    <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+                    <Select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
                         {usable.length === 0 && <option value="">no account can run in this config dir</option>}
                         {usable.map((a) => <option key={a.id} value={a.id}>{a.name}{a.plan ? ` · ${a.plan}` : ""}</option>)}
-                    </select>
+                    </Select>
                 </label>
                 <label>Model
-                    <select value={model} onChange={(e) => setModel(e.target.value)}>
+                    <Select value={model} onChange={(e) => setModel(e.target.value)}>
                         {(settings?.models ?? [{ value: "", label: "Account default" }]).map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-                    </select>
+                    </Select>
                 </label>
                 <label>Name <span className="field-hint" style={{ display: "inline" }}>(optional)</span>
-                    <input value={name} onChange={(e) => setName(e.target.value)} placeholder={worktree && branch ? branch : `${env?.name ?? "session"} · date`} />
+                    <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={worktree && branch ? branch : `${env?.name ?? "session"} · date`} />
                 </label>
                 <label className="inline">
-                    <input type="checkbox" checked={worktree} onChange={(e) => setWorktree(e.target.checked)} /> Own worktree on a new branch
+                    <Input type="checkbox" checked={worktree} onChange={(e) => setWorktree(e.target.checked)} /> Own worktree on a new branch
                 </label>
                 {worktree && (
                     <label>Branch
-                        <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder={`${prefix}my-experiment`} />
+                        <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder={`${prefix}my-experiment`} />
                         <span className="field-hint">
                             Created from <code>origin/{env?.base_branch}</code> under <code>{env?.path}/.claude/worktrees/</code>; the env's setup command runs in the terminal before claude starts.
                             {prefix && !branch.startsWith(prefix) ? ` This env's branches usually start with "${prefix}".` : ""}
@@ -231,17 +232,17 @@ const NewSession = ({ envs, accounts, configDirs, settings, onCreate }: {
                 {!worktree && <span className="field-hint">Without a worktree, claude works directly in the environment's main checkout, whatever branch it is on.</span>}
             </div>
             <div className="actions">
-                <button
-                    className="primary"
-                    disabled={!canSubmit}
-                    onClick={() => {
-                        setSubmitting(true);
-                        void onCreate({ envId, accountId, model: model || null, ...(name.trim() ? { name: name.trim() } : {}), branch: worktree ? branch.trim() : null }).finally(() => setSubmitting(false));
-                    }}
-                >
+                <Button variant="primary"
+ 
+ disabled={!canSubmit}
+ onClick={() => {
+ setSubmitting(true);
+ void onCreate({ envId, accountId, model: model || null, ...(name.trim() ? { name: name.trim() } : {}), branch: worktree ? branch.trim() : null }).finally(() => setSubmitting(false));
+ }}
+>
                     {submitting ? "Creating…" : "Create and open"}
-                </button>
+                </Button>
             </div>
-        </section>
+        </Card>
     );
 };

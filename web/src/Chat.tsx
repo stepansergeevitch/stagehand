@@ -4,6 +4,7 @@ import { MessageFiles } from "./FilePicker";
 import { AgentInput, usePendingFiles } from "./AgentInput";
 import { Markdown } from "./Markdown";
 import { Collapsible } from "./components/Collapsible";
+import { Button, Chip } from "./components/ui";
 
 type Mode = "ask" | "do";
 
@@ -66,8 +67,8 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
                         <div key={m.id} className={`chat-msg ${m.role}${m.kind ? ` ${m.kind}` : ""}`}>
                             <div className="chat-msg-head">
                                 <b>{m.role === "user" ? "You" : "Agent"}</b>
-                                {m.kind === "instruction" && <span className="chip accent">instruction</span>}
-                                {m.kind === "instruction_result" && <span className="chip ok">report</span>}
+                                {m.kind === "instruction" && <Chip tone="accent">instruction</Chip>}
+                                {m.kind === "instruction_result" && <Chip tone="ok">report</Chip>}
                                 <span className="field-hint">{new Date(m.created_at).toLocaleString()}</span>
                                 {a && a.prComment && (
                                     <a className="chip accent anchor-chip" href={a.prComment.url} target="_blank" rel="noreferrer" title={`About a PR comment — ${a.snippet.trim().slice(0, 120)}`}>
@@ -89,8 +90,8 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
             </div>
             {error && <div className="blocked-box" style={{ marginBottom: 0 }}>{error}</div>}
             <div className="chat-mode" role="tablist" aria-label="Message mode">
-                <button type="button" role="tab" aria-selected={mode === "ask"} className={mode === "ask" ? "active" : ""} onClick={() => setMode("ask")} title="A question — the agent answers, changes nothing">Ask</button>
-                <button type="button" role="tab" aria-selected={mode === "do"} className={mode === "do" ? "active" : ""} onClick={() => setMode("do")} title="An instruction — the agent carries it out in the worktree and reports back; it can also try something in the running app (manual QA), with screenshots attached to its reply">Do</button>
+                <Button type="button" role="tab" aria-selected={mode === "ask"} className={mode === "ask" ? "active" : ""} onClick={() => setMode("ask")} title="A question — the agent answers, changes nothing">Ask</Button>
+                <Button type="button" role="tab" aria-selected={mode === "do"} className={mode === "do" ? "active" : ""} onClick={() => setMode("do")} title="An instruction — the agent carries it out in the worktree and reports back; it can also try something in the running app (manual QA), with screenshots attached to its reply">Do</Button>
             </div>
             <div className="chat-input">
                 <AgentInput
@@ -104,9 +105,9 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
                     disabled={!idle || sending}
                     rows={mode === "do" ? 4 : 2}
                 />
-                <button className="primary" disabled={!idle || sending || (!text.trim() && pending.files.length === 0)} onClick={() => void send()}>
+                <Button variant="primary" disabled={!idle || sending || (!text.trim() && pending.files.length === 0)} onClick={() => void send()}>
                     {sending ? (mode === "do" ? "Starting…" : "Asking…") : mode === "do" ? "Run" : "Send"}
-                </button>
+                </Button>
             </div>
         </Collapsible>
     );

@@ -4,6 +4,7 @@ import { commentKey } from "../DiffView";
 import { Markdown } from "../Markdown";
 import { CommentEditor } from "./CommentEditor";
 import { LineThread, type ThreadMessage } from "./LineThread";
+import { Button } from "./ui";
 
 // A markdown document the reader can talk about. Select text or hover a block → comment on it (a draft that goes with
 // the next review round) or ask the agent about it (answered in a thread under the document). The document's blocks
@@ -106,13 +107,13 @@ export const AnnotatedMarkdown = ({
     return (
         <div className="annotated" ref={root} onMouseUp={onMouseUp} onMouseMove={onMouseMove} onMouseLeave={() => setHover(null)}>
             {enabled && hover && !editing && (
-                <button className="tiny annot-add" style={{ top: hover.top }} title="Comment on or ask about this paragraph (or select text)" onMouseDown={(e) => e.preventDefault()} onClick={openBlock}>+</button>
+                <Button variant="ghost" size="sm" className="annot-add" style={{ top: hover.top }} title="Comment on or ask about this paragraph (or select text)" onMouseDown={(e) => e.preventDefault()} onClick={openBlock}>+</Button>
             )}
             <Markdown source={source} numbered />
             {picked && !editing && (
                 <div className="annot-toolbar" style={{ left: picked.x, top: picked.y }} onMouseDown={(e) => e.preventDefault()}>
-                    {canAsk && <button className="primary tiny" onClick={() => setEditing(picked)}>Ask agent</button>}
-                    {canComment && <button className="tiny" onClick={() => setEditing(picked)}>Comment</button>}
+                    {canAsk && <Button variant="primary" size="sm" onClick={() => setEditing(picked)}>Ask agent</Button>}
+                    {canComment && <Button size="sm" onClick={() => setEditing(picked)}>Comment</Button>}
                 </div>
             )}
             {editing && (
@@ -133,7 +134,7 @@ export const AnnotatedMarkdown = ({
                         <div key={key} className="annot-note">
                             <blockquote className="annot-quote">{c.snippet.slice(0, 200)}</blockquote>
                             <div className="annot-note-text">{c.text}</div>
-                            <button className="tiny danger" title="Remove this comment" onClick={() => onChange(key, null)}>×</button>
+                            <Button size="sm" variant="danger" title="Remove this comment" onClick={() => onChange(key, null)}>×</Button>
                         </div>
                     ))}
                     {groups.map(([snippet, items]) => (

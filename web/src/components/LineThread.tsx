@@ -1,5 +1,6 @@
 import { anchorOf, type Message, type MessageAnchor } from "../api";
 import { Markdown } from "../Markdown";
+import { Button } from "./ui";
 
 // A chat message with its anchor unpacked, for placement.
 export interface ThreadMessage extends MessageAnchor {
@@ -22,7 +23,7 @@ export const LineThread = ({ items, asking, canAsk, onReply, open, onOpen }: { i
     }
     return (
     <div className="line-thread">
-        <button className="tiny thread-fold" onClick={() => onOpen(false)} title="Collapse this discussion">▾ Collapse</button>
+        <Button variant="ghost" size="sm" className="thread-fold" onClick={() => onOpen(false)} title="Collapse this discussion">▾ Collapse</Button>
         {items.map(({ msg }) => (
             <div key={msg.id} className={`thread-msg ${msg.role}`}>
                 <div className="chat-msg-head">
@@ -33,7 +34,7 @@ export const LineThread = ({ items, asking, canAsk, onReply, open, onOpen }: { i
             </div>
         ))}
         {asking && <div className="thread-msg agent pending">Agent is answering…</div>}
-        {canAsk && !asking && <button className="tiny" onClick={onReply}>Reply</button>}
+        {canAsk && !asking && <Button size="sm" onClick={onReply}>Reply</Button>}
     </div>
     );
 };

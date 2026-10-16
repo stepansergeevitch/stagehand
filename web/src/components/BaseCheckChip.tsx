@@ -1,4 +1,5 @@
 import type { BaseCheckState } from "../api";
+import { Chip } from "./ui";
 
 // Whether a task's branch still goes onto its latest base (server base-check.ts): one chip, the detail on hover.
 const LOOK: Record<BaseCheckState, { cls: string; text: string }> = {
@@ -15,8 +16,8 @@ export const BaseCheckChip = ({ state, detail, compact = false }: { state: BaseC
     // In a list only what needs attention shows; a healthy branch stays quiet.
     if (compact && look.cls === "ok") return null;
     return (
-        <span className={`chip ${look.cls}`} title={detail ?? look.text}>
+        <Chip className={`${look.cls}`} title={detail ?? look.text}>
             {look.text}
-        </span>
+        </Chip>
     );
 };
