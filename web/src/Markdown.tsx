@@ -67,17 +67,22 @@ const numberBlocks = (root: Element): void => {
     }
 };
 
-const render = (source: unknown, numbered: boolean): string => {
+const render = (source: unknown, numbered: boolean, collapsed?: string): string => {
     const clean = DOMPurify.sanitize(marked.parse(asMarkdownText(source), { async: false }) as string);
     const doc = new DOMParser().parseFromString(`<div>${clean}</div>`, "text/html");
     const root = doc.body.firstElementChild;
     if (!root) return clean;
     foldHeadings(root, 2);
+    if (collapsed) {
+        const re = new RegExp(collapsed, "i");
+        for (const d of root.querySelectorAll("details.md-h2")) if (re.test(d.querySelector("summary")?.textContent ?? "")) d.removeAttribute("open");
+    }
     if (numbered) numberBlocks(root);
     return root.innerHTML;
 };
 
-export const Markdown = ({ source, numbered = false }: { source: string | unknown; numbered?: boolean }) => {
-    const html = useMemo(() => render(source, numbered), [source, numbered]);
+// `collapsed`: a regex source; the `##` sections whose heading matches start folded.
+export const Markdown = ({ source, numbered = false, collapsed }: { source: string | unknown; numbered?: boolean; collapsed?: string }) => {
+    const html = useMemo(() => render(source, numbered, collapsed), [source, numbered, collapsed]);
     return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 };

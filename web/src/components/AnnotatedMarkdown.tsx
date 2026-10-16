@@ -33,8 +33,11 @@ export const AnnotatedMarkdown = ({
     canAsk,
     onChange,
     onAsk,
+    collapsed,
 }: {
     source: string;
+    // Regex source: the `##` sections whose heading matches start folded.
+    collapsed?: string;
     path: string;
     comments: Record<string, LineComment>;
     threads: ThreadMessage[];
@@ -109,7 +112,7 @@ export const AnnotatedMarkdown = ({
             {enabled && hover && !editing && (
                 <Button variant="ghost" size="sm" className="annot-add" style={{ top: hover.top }} title="Comment on or ask about this paragraph (or select text)" onMouseDown={(e) => e.preventDefault()} onClick={openBlock}>+</Button>
             )}
-            <Markdown source={source} numbered />
+            <Markdown source={source} numbered collapsed={collapsed} />
             {picked && !editing && (
                 <div className="annot-toolbar" style={{ left: picked.x, top: picked.y }} onMouseDown={(e) => e.preventDefault()}>
                     {canAsk && <Button variant="primary" size="sm" onClick={() => setEditing(picked)}>Ask agent</Button>}

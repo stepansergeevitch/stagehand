@@ -199,7 +199,7 @@ export const DesignTabs = ({ annot, onPicked, task, owner, design, md, before, s
                 <Tab active={active === "po"} onClick={() => onSection("po")}>Product owner review</Tab>
             </TabList>
             <div className="design-section">
-                {active === "proposal" ? (md ? <AnnotatedMarkdown source={body} path={DESIGN_DOC} comments={annot.comments} threads={annot.threads} canComment={annot.canComment} canAsk={annot.canAsk} onChange={annot.onChange} onAsk={annot.onAsk} /> : <EmptyState icon="alert" title="design.md is missing" />) : active === "qa" ? <QaTests taskId={task.id} design={design} before={before} /> : <PoReviewPanel task={task} owner={owner} onPicked={onPicked} onAction={onAction} onError={onError} />}
+                {active === "proposal" ? (md ? <AnnotatedMarkdown source={body} path={DESIGN_DOC} collapsed="^technical changes" comments={annot.comments} threads={annot.threads} canComment={annot.canComment} canAsk={annot.canAsk} onChange={annot.onChange} onAsk={annot.onAsk} /> : <EmptyState icon="alert" title="design.md is missing" />) : active === "qa" ? <QaTests taskId={task.id} design={design} before={before} /> : <PoReviewPanel task={task} owner={owner} onPicked={onPicked} onAction={onAction} onError={onError} />}
             </div>
         </>
     );

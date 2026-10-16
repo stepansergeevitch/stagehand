@@ -6,7 +6,7 @@ import { Panel } from "../components/Panel";
 import { threadMessages } from "../components/LineThread";
 import { Markdown } from "../Markdown";
 import type { DesignSection } from "../routes";
-import { DesignTabs, splitSections } from "./Design";
+import { DesignTabs } from "./Design";
 import { QaEvidence } from "./Qa";
 import type { ReviewState } from "./Review";
 import { Sub } from "./common";
@@ -39,8 +39,6 @@ export const StepPanel = ({ detail, step, researchMd, designMd, owners, rv, sect
     const rerun = RERUNNABLE.has(step) && task.status !== "running" ? (
         <Button size="sm" variant="ghost" title={`Run ${STAGE_LABEL[step]} again; its previous output is archived and the later stages run after it`} onClick={() => { if (confirm(`Re-run ${STAGE_LABEL[step]}? Later stages will run again after it.`)) void onAction(() => api.rerun(task.id, step)); }}>Re-run</Button>
     ) : undefined;
-    const problemMd = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^(problem statement|decision)/i.test(s.title)) ?? null : null), [designMd]);
-    const explanation = useMemo(() => (designMd ? splitSections(designMd).sections.find((s) => /^suggested approach/i.test(s.title)) ?? splitSections(designMd).sections.find((s) => /^(root cause|approach)/i.test(s.title)) ?? null : null), [designMd]);
 
     switch (step) {
         case "research":
@@ -54,21 +52,6 @@ export const StepPanel = ({ detail, step, researchMd, designMd, owners, rv, sect
             return design ? (
                 <>
                     <Panel title="Design proposal" badge={<><Chip tone={classTone(design.classification)}>{design.classification}</Chip>{(design.affectedRepos ?? []).map((r) => <Chip key={r}>{r}</Chip>)}</>} actions={rerun}>
-                        {section === undefined && (
-                            <>
-                                {problemMd && <div className="proposed decision"><b>{problemMd.title}</b><Markdown source={problemMd.body.trim()} /></div>}
-                                {explanation && <div className="proposed explanation"><b>{explanation.title}</b><Markdown source={explanation.body.trim()} /></div>}
-                                <KeyValue
-                                    columns={2}
-                                    items={[
-                                        { label: "Plan", value: `${design.plan.length} layer(s): ${design.plan.map((p) => p.layer).join(", ")}` },
-                                        { label: "Tests", value: `${design.testPlan.reduce((n, t) => n + t.cases.length, 0)} case(s) in ${design.testPlan.length} file(s)` },
-                                        { label: "QA", value: design.qa.length ? `${design.qa.length} scenario(s)` : `None: ${design.qaSkippedReason ?? "no reason given"}` },
-                                        ...(design.qa.length > 0 ? [{ label: "Baseline", value: task.stage === "qa_baseline" ? "Running now" : qaBefore ? `Ran on ${qaBefore.scenarios.length} scenario(s)` : "Not run yet" }] : []),
-                                    ]}
-                                />
-                            </>
-                        )}
                         <DesignTabs
                             annot={{ comments: rv.comments, threads: threadMessages(detail.messages ?? []), canComment: rv.canCommentDesign, canAsk: task.status !== "running", onChange: rv.changeComment, onAsk: (anchor: MessageAnchor, text: string, files: File[]) => onAction(async () => { await api.sendMessage(task.id, text, anchor, await api.uploadFiles(task.id, files)); }) }}
                             onPicked={rv.setPoPicked}
