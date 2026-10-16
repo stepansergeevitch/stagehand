@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Button, Input, Tab, TabList } from "@vortex/ds";
+import { Button, Checkbox, Hint, Notice, StatusDot, Tabs } from "@vortex/ds";
+import { PageHeader } from "./PageHeader";
+import "./entity.css";
 
 // Vortex's standard entity view — what a list row opens (the counterpart of DataTable):
 //
@@ -16,13 +18,15 @@ export interface EntityTab {
     content: ReactNode;
 }
 
-export const EntityView = ({ type, onType, id, actions, tabs, tab, onTab, notice }: {
+export const EntityView = ({ type, onType, id, actions, meta, tabs, tab, onTab, notice }: {
     // The list's title ("Environments"); clicking it goes back to the list. Without onType (a singleton such as the
     // Prompter) it is plain text.
     type: string;
     onType?: () => void;
     // The entity's identifier (its name); a singleton has none.
     id?: ReactNode;
+    // State chips beside the title (Active, Logged out, …).
+    meta?: ReactNode;
     // The outcome of the last entity action (Verify, Test, …), shown under the header.
     notice?: { ok: boolean; text: ReactNode } | null;
     // Entity-level actions on the right of the title (Delete, Renew token, …).
@@ -34,38 +38,27 @@ export const EntityView = ({ type, onType, id, actions, tabs, tab, onTab, notice
     onTab: (key: string) => void;
 }) => {
     const current = tabs.find((t) => t.key === tab) ?? tabs[0];
+    const title = (
+        <>
+            {onType ? <a className="ev-type" href="#" onClick={(e) => { e.preventDefault(); onType(); }}>{type}</a> : <span>{type}</span>}
+            {id !== undefined && <><span className="ev-sep">/</span><span className="ev-id">{id}</span></>}
+        </>
+    );
     return (
         <div className="entity-view">
-            <div className="ev-header">
-                <h1 className="ev-title">
-                    {onType ? <a href="#" onClick={(e) => { e.preventDefault(); onType(); }}>{type}</a> : <span>{type}</span>}
-                    {id !== undefined && <><span className="ev-sep">/</span><span>{id}</span></>}
-                </h1>
-                {actions && <div className="ev-actions">{actions}</div>}
-            </div>
-            {notice && <div className={`test-result ev-notice ${notice.ok ? "" : "bad"}`}>{notice.text}</div>}
-            {tabs.length > 1 && (
-                <TabList className="ev-tabs">
-                    {tabs.map((t) => (
-                        <Tab key={t.key} active={t.key === current?.key} onClick={() => onTab(t.key)}>
-                            {t.label}
-                        </Tab>
-                    ))}
-                </TabList>
-            )}
-            <div className="ev-body">{current?.content}</div>
+            <PageHeader title={title} meta={meta} actions={actions}>
+                {tabs.length > 1 && <Tabs items={tabs.map((t) => ({ key: t.key, label: t.label }))} active={current?.key} onChange={onTab} className="ev-tabs" />}
+            </PageHeader>
+            {notice && <Notice tone={notice.ok ? "ok" : "bad"} className="ev-notice">{notice.text}</Notice>}
+            <div className="ev-body" role="tabpanel">{current?.content}</div>
         </div>
     );
 };
 
 // A hint icon; its text shows on hover or focus.
-export const Hint = ({ text }: { text: ReactNode }) => (
-    <span className="hint-icon" tabIndex={0} role="img" aria-label="hint">
-        ⓘ<span className="hint-tip" role="tooltip">{text}</span>
-    </span>
-);
+export { Hint };
 
-// One field: its title (with an optional hint icon), then its input.
+// One field: its title (with an optional hint icon), then its input. On wide screens the title sits left of the input.
 export const Field = ({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children: ReactNode }) => (
     <div className="field">
         <div className="field-label">
@@ -76,13 +69,10 @@ export const Field = ({ label, hint, children }: { label: ReactNode; hint?: Reac
     </div>
 );
 
-// A yes/no field: the checkbox with its title on one line.
+// A yes/no field: the switch with its title on one line.
 export const CheckField = ({ label, hint, checked, onChange, disabled }: { label: ReactNode; hint?: ReactNode; checked: boolean; onChange: (on: boolean) => void; disabled?: boolean }) => (
     <div className="field field-check">
-        <label className="field-label">
-            <Input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
-            {label}
-        </label>
+        <Checkbox label={label} checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
         {hint && <Hint text={hint} />}
     </div>
 );
@@ -94,15 +84,17 @@ export const ReadField = ({ label, hint, children }: { label: ReactNode; hint?: 
     </Field>
 );
 
-// A tab's fields followed by Save / Discard; both are enabled only while something changed.
+// A tab's fields followed by Save / Discard; both are enabled only while something changed. The bar sticks to the
+// bottom of the viewport while the form is dirty, so a long tab never hides its Save.
 // `extra`: another action of the form beside them (e.g. Reset to defaults, which only fills the fields).
 export const EntityForm = ({ children, dirty, saving, onSave, onDiscard, saveLabel = "Save", extra }: { children: ReactNode; dirty: boolean; saving?: boolean; onSave: () => void | Promise<void>; onDiscard: () => void; saveLabel?: string; extra?: ReactNode }) => (
     <div className="entity-form">
         <div className="ev-fields">{children}</div>
-        <div className="form-actions">
+        <div className={`form-actions${dirty ? " dirty" : ""}`}>
             <Button variant="primary" disabled={!dirty || saving} onClick={() => void onSave()}>{saving ? "Saving…" : saveLabel}</Button>
             <Button disabled={!dirty || saving} onClick={onDiscard}>Discard</Button>
             {extra}
+            {dirty && <span className="form-dirty" role="status"><StatusDot tone="warn" />Unsaved changes</span>}
         </div>
     </div>
 );

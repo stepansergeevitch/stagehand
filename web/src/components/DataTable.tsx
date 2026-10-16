@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { storage } from "../storage";
 import { useDismiss } from "./useDismiss";
-import { Button, Input } from "@vortex/ds";
+import { Badge, Button, EmptyState, Hint, Icon, IconButton, Input, Menu, Checkbox } from "@vortex/ds";
+import { PageHeader } from "./PageHeader";
+import { Toolbar } from "./Toolbar";
+import "./datatable.css";
 
 // Vortex's standard list of entities. Every page that lists things uses it, so lists look and behave alike:
 //
@@ -15,6 +18,10 @@ import { Button, Input } from "@vortex/ds";
 // A column says how to read a row (`value`, for sorting, searching and filtering) apart from how to show it (`render`).
 // Columns with few distinct values (status, type, …) get a filter; free-form text is only searched. Which columns are
 // shown is remembered per browser under `storageKey`.
+//
+// Layout (docs/ux-redesign.md §4.1): the page header (title, list actions, Create new) sits above the table box, which
+// holds the tools row, the optional filter row and the table. `embedded` renders the header as a section heading, for a
+// list inside another page's tab.
 
 export interface DataColumn<T> {
     key: string;
@@ -41,18 +48,6 @@ type Filters = Record<string, string[]>;
 
 const text = (v: unknown): string => (v === null || v === undefined ? "" : typeof v === "boolean" ? (v ? "yes" : "no") : String(v));
 
-const FilterIcon = () => (
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M1.5 2.5h13l-5 6v5l-3-1.5v-3.5z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-    </svg>
-);
-const ColumnsIcon = () => (
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-        <path d="M6 2.5v11M10.5 2.5v11" stroke="currentColor" strokeWidth="1.4" />
-    </svg>
-);
-
 // A checkbox that can show "some selected".
 const Check = ({ checked, indeterminate, onChange, label }: { checked: boolean; indeterminate?: boolean; onChange: (on: boolean) => void; label: string }) => {
     const ref = useRef<HTMLInputElement>(null);
@@ -78,6 +73,7 @@ export const DataTable = <T,>({
     empty = "Nothing here yet.",
     defaultSort,
     storageKey,
+    embedded,
 }: {
     // The header row: the list's name on the left, "Create new <entity>" on the right (when onCreate is given).
     title?: ReactNode;
@@ -99,6 +95,8 @@ export const DataTable = <T,>({
     defaultSort?: Sort;
     // Remembers the picked columns per browser.
     storageKey?: string;
+    // A list inside another page's tab: the header is a section heading, not the page's h1.
+    embedded?: boolean;
 }) => {
     const [query, setQuery] = useState("");
     const [filters, setFilters] = useState<Filters>({});
@@ -202,127 +200,150 @@ export const DataTable = <T,>({
             return { ...cur, [key]: vals.includes(value) ? vals.filter((v) => v !== value) : [...vals, value] };
         });
 
-    return (
-        <div className="data-table">
-            {(title || onCreate || actions) && (
-                <div className="dt-header">
-                    <h2 className="dt-title">{title}</h2>
-                    {actions && <span className="dt-actions">{actions}</span>}
-                    {onCreate && (
-                        <Button variant="primary" disabled={!!createDisabled} title={createDisabled} onClick={onCreate}>
-                            + Create new {entity ?? "item"}
-                        </Button>
-                    )}
-                </div>
-            )}
-            <div className="dt-tools">
-                <Button
- className={`dt-icon${filtersOpen || activeFilters ? " on" : ""}`}
- disabled={!facets.length}
- title={facets.length ? "Filter by column values" : "No column to filter by"}
- aria-label="Filters"
- onClick={() => setFiltersOpen((o) => !o)}
->
-                    <FilterIcon />
-                    {activeFilters > 0 && <span className="dt-badge">{activeFilters}</span>}
+    const actionsRow = (
+        <>
+            {actions}
+            {onCreate && (
+                <Button variant="primary" disabled={!!createDisabled} title={createDisabled} onClick={onCreate}>
+                    <Icon name="plus" />Create new {entity ?? "item"}
                 </Button>
-                <Input className="dt-search" type="search" placeholder="Search…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search" />
-                <span className="dt-spacer" />
-                {selectable && selected.length > 0 && (
-                    <span className="dt-bulk">
-                        <b>{selected.length} selected</b>
-                        {bulkActions?.(selected, clear)}
-                        <Button size="sm" onClick={clear}>Clear</Button>
-                    </span>
-                )}
-                <div className="dt-picker" ref={pickerRef}>
-                    <Button className={`dt-icon${pickerOpen ? " on" : ""}`} title="Choose columns" aria-label="Columns" onClick={() => setPickerOpen((o) => !o)}>
-                        <ColumnsIcon />
-                    </Button>
-                    {pickerOpen && (
-                        <div className="dt-menu" role="menu">
-                            {columns.map((c) => (
-                                <label key={c.key} className="dt-menu-item">
-                                    <Input type="checkbox" checked={!hidden.has(c.key)} disabled={!hidden.has(c.key) && visibleCols.length === 1} onChange={() => toggleHidden(c.key)} />
-                                    {c.label}
-                                </label>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            </div>
-            {filtersOpen && facets.length > 0 && (
-                <div className="dt-filters">
-                    {facets.map(({ col, values }) => (
-                        <div key={col.key} className="dt-facet">
-                            <span className="dt-facet-label">{col.label}</span>
-                            {values.map((v) => (
-                                <Button key={v} className={`dt-chip${filters[col.key]?.includes(v) ? " on" : ""}`} onClick={() => toggleFilter(col.key, v)}>
-                                    {v || "—"}
-                                </Button>
-                            ))}
-                        </div>
-                    ))}
-                    {activeFilters > 0 && (
-                        <Button size="sm" onClick={() => setFilters({})}>
-                            Reset filters
-                        </Button>
-                    )}
-                </div>
             )}
-            {!rows.length ? (
-                <div className="empty">{empty}</div>
-            ) : !shown.length ? (
-                <div className="empty">No row matches the search or filters.</div>
+        </>
+    );
+    const hasHeader = !!(title || onCreate || actions);
+    return (
+        <div className="data-table-wrap">
+            {hasHeader && (embedded ? (
+                <div className="dt-section-head">
+                    <h2>{title}</h2>
+                    <div className="dt-actions">{actionsRow}</div>
+                </div>
             ) : (
-                <div className="dt-scroll">
-                    <table>
-                        <thead>
-                            <tr>
-                                {selectable && (
-                                    <th className="dt-check">
-                                        <Check label="Select all shown" checked={allShownChecked} indeterminate={someShownChecked} onChange={setAllShown} />
-                                    </th>
+                <PageHeader title={title} actions={actionsRow} />
+            ))}
+            <div className="data-table">
+                <Toolbar
+                    className="dt-tools"
+                    end={
+                        <>
+                            {selectable && selected.length > 0 && (
+                                <span className="dt-bulk">
+                                    <b>{selected.length} selected</b>
+                                    {bulkActions?.(selected, clear)}
+                                    <Button size="sm" variant="ghost" onClick={clear}>Clear</Button>
+                                </span>
+                            )}
+                            <div className="dt-picker" ref={pickerRef}>
+                                <IconButton icon="columns" label="Choose columns" variant="ghost" on={pickerOpen} aria-expanded={pickerOpen} onClick={() => setPickerOpen((o) => !o)} />
+                                {pickerOpen && (
+                                    <Menu className="dt-menu">
+                                        {columns.map((c) => (
+                                            <Checkbox key={c.key} className="dt-menu-item" label={c.label} checked={!hidden.has(c.key)} disabled={!hidden.has(c.key) && visibleCols.length === 1} onChange={() => toggleHidden(c.key)} />
+                                        ))}
+                                    </Menu>
                                 )}
-                                {visibleCols.map((c) => {
-                                    const sortable = !!c.value && c.sortable !== false;
-                                    return (
-                                        <th key={c.key} className={`${sortable ? "sortable" : ""}${c.kind === "num" ? " num" : ""}`} title={c.hint} onClick={() => clickHeader(c)} aria-sort={sort?.key === c.key ? (sort.desc ? "descending" : "ascending") : undefined}>
-                                            {c.label}
-                                            {c.hint && <span className="hint-mark"> ⓘ</span>}
-                                            {sort?.key === c.key ? (sort.desc ? " ▼" : " ▲") : ""}
+                            </div>
+                        </>
+                    }
+                >
+                    <label className="dt-search">
+                        <Icon name="search" />
+                        <Input type="search" placeholder="Search…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search" />
+                    </label>
+                    <Button
+                        className="dt-filter-btn"
+                        on={filtersOpen || activeFilters > 0}
+                        disabled={!facets.length}
+                        title={facets.length ? "Filter by column values" : "No column to filter by"}
+                        aria-expanded={filtersOpen}
+                        onClick={() => setFiltersOpen((o) => !o)}
+                    >
+                        <Icon name="filter" />Filter
+                        {activeFilters > 0 && <Badge tone="accent">{activeFilters}</Badge>}
+                    </Button>
+                </Toolbar>
+                {filtersOpen && facets.length > 0 && (
+                    <div className="dt-filters">
+                        {facets.map(({ col, values }) => (
+                            <div key={col.key} className="dt-facet">
+                                <span className="dt-facet-label">{col.label}</span>
+                                {values.map((v) => (
+                                    <Button key={v} size="sm" className="dt-chip" on={filters[col.key]?.includes(v)} aria-pressed={!!filters[col.key]?.includes(v)} onClick={() => toggleFilter(col.key, v)}>
+                                        {v || "—"}
+                                    </Button>
+                                ))}
+                            </div>
+                        ))}
+                        {activeFilters > 0 && (
+                            <Button size="sm" variant="ghost" onClick={() => setFilters({})}>
+                                Reset filters
+                            </Button>
+                        )}
+                    </div>
+                )}
+                {!rows.length ? (
+                    <div className="dt-empty">{typeof empty === "string" ? <EmptyState title={empty} action={onCreate ? <Button variant="primary" disabled={!!createDisabled} onClick={onCreate}><Icon name="plus" />Create new {entity ?? "item"}</Button> : undefined} /> : empty}</div>
+                ) : !shown.length ? (
+                    <div className="dt-empty"><EmptyState icon="search" title="No row matches">Change the search or reset the filters.</EmptyState></div>
+                ) : (
+                    <div className="dt-scroll">
+                        <table>
+                            <thead>
+                                <tr>
+                                    {selectable && (
+                                        <th className="dt-check">
+                                            <Check label="Select all shown" checked={allShownChecked} indeterminate={someShownChecked} onChange={setAllShown} />
                                         </th>
+                                    )}
+                                    {visibleCols.map((c) => {
+                                        const sortable = !!c.value && c.sortable !== false;
+                                        const dir = sort?.key === c.key ? (sort.desc ? "descending" : "ascending") : undefined;
+                                        return (
+                                            <th key={c.key} className={`${sortable ? "sortable" : ""}${c.kind === "num" ? " num" : ""}`} onClick={() => clickHeader(c)} aria-sort={dir ?? (sortable ? "none" : undefined)}>
+                                                <span className="dt-th">
+                                                    {c.label}
+                                                    {c.hint && <Hint text={c.hint} />}
+                                                    {dir && <Icon name={dir === "descending" ? "chevronDown" : "chevronUp"} />}
+                                                </span>
+                                            </th>
+                                        );
+                                    })}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {shown.map((r) => {
+                                    const k = rowKey(r);
+                                    return (
+                                        <tr
+                                            key={k}
+                                            className={`${onRowClick ? "clickable" : ""}${activeKey === k ? " active" : ""}${checked.has(k) ? " checked" : ""}`}
+                                            tabIndex={onRowClick ? 0 : undefined}
+                                            onClick={onRowClick ? () => onRowClick(r) : undefined}
+                                            onKeyDown={onRowClick ? (e) => { if (e.key === "Enter" && e.target === e.currentTarget) onRowClick(r); } : undefined}
+                                        >
+                                            {selectable && (
+                                                <td className="dt-check" onClick={(e) => e.stopPropagation()}>
+                                                    <Check label="Select row" checked={checked.has(k)} onChange={(on) => setRow(k, on)} />
+                                                </td>
+                                            )}
+                                            {visibleCols.map((c) => (
+                                                <td key={c.key} className={c.kind === "label" ? "dt-label" : c.kind === "num" ? "mono num" : undefined}>
+                                                    {c.render ? c.render(r) : text(c.value?.(r))}
+                                                </td>
+                                            ))}
+                                        </tr>
                                     );
                                 })}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {shown.map((r) => {
-                                const k = rowKey(r);
-                                return (
-                                    <tr key={k} className={`${onRowClick ? "clickable" : ""}${activeKey === k ? " active" : ""}${checked.has(k) ? " checked" : ""}`} onClick={onRowClick ? () => onRowClick(r) : undefined}>
-                                        {selectable && (
-                                            <td className="dt-check" onClick={(e) => e.stopPropagation()}>
-                                                <Check label="Select row" checked={checked.has(k)} onChange={(on) => setRow(k, on)} />
-                                            </td>
-                                        )}
-                                        {visibleCols.map((c) => (
-                                            <td key={c.key} className={c.kind === "label" ? "dt-label" : c.kind === "num" ? "mono num" : undefined}>
-                                                {c.render ? c.render(r) : text(c.value?.(r))}
-                                            </td>
-                                        ))}
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </div>
-            )}
-            {rows.length > 0 && (
-                <div className="dt-footer">
-                    {shown.length === rows.length ? `${rows.length} ${rows.length === 1 ? "row" : "rows"}` : `${shown.length} of ${rows.length} rows`}
-                </div>
-            )}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+                {rows.length > 0 && (
+                    <div className="dt-footer">
+                        {shown.length === rows.length ? `${rows.length} ${rows.length === 1 ? "row" : "rows"}` : `${shown.length} of ${rows.length} rows`}
+                    </div>
+                )}
+            </div>
         </div>
     );
 };

@@ -1,0 +1,22 @@
+.usage { position: relative; }
+.usage-btn { display: inline-flex; align-items: center; gap: var(--sp-2); height: var(--ctl-h); padding: 0 var(--sp-3); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface-1); color: var(--ink-2); font: inherit; font-size: var(--fs-sm); font-weight: 500; cursor: pointer; transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+.usage-btn:hover { background: var(--code); color: var(--ink); }
+.usage-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--ink); }
+.usage-pop { position: absolute; right: 0; top: calc(100% + var(--sp-2)); z-index: var(--z-pop); width: 320px; max-width: calc(100vw - 2 * var(--sp-4)); display: grid; gap: var(--sp-4); }
+.usage-account { display: grid; gap: var(--sp-2); }
+.usage-account + .usage-account { padding-top: var(--sp-3); border-top: 1px solid var(--line); }
+.usage-head { display: flex; align-items: center; gap: var(--sp-2); }
+.usage-plan { color: var(--ink-3); font-size: var(--fs-xs); font-family: var(--mono); margin-left: auto; }
+.usage-head .btn-icon { margin-left: 0; }
+.usage-meters { display: grid; gap: 6px; }
+.usage-meters.stale .meter { opacity: .5; }
+.meter-row { display: grid; grid-template-columns: 56px 1fr 36px; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); color: var(--ink-2); }
+.meter-label { color: var(--ink-3); }
+.meter-pct { text-align: right; font-family: var(--mono); font-size: var(--fs-xs); }
+.meter { height: 6px; border-radius: var(--r-pill); background: var(--code); overflow: hidden; }
+.meter i { display: block; height: 100%; border-radius: inherit; background: var(--ok); transition: width var(--dur-overlay) var(--ease); }
+.meter i.warn { background: var(--warn); } .meter i.bad { background: var(--bad); }
+.usage-note { font-size: var(--fs-xs); color: var(--ink-3); }
+.usage-totals { display: grid; gap: 2px; font-family: var(--mono); font-size: var(--fs-sm); color: var(--ink-2); }
+.usage-totals small { color: var(--ink-3); font-family: var(--sans); font-size: var(--fs-xs); margin-right: var(--sp-1); }
+@media (max-width: 900px) { .usage-btn-text { display: none; } .usage-btn { padding: 0 var(--sp-2); } }

@@ -1,0 +1,19 @@
+.modal { position: fixed; inset: 0; z-index: var(--z-modal); background: var(--overlay); display: grid; place-items: center; padding: var(--sp-4); backdrop-filter: blur(2px); animation: modal-fade var(--dur-overlay) var(--ease); }
+.modal .box { display: flex; flex-direction: column; width: min(520px, 100%); max-height: min(92vh, 100%); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-xl); box-shadow: var(--shadow-lg), inset 0 1px 0 var(--hi); outline: none; animation: modal-rise var(--dur-overlay) var(--ease); }
+.modal .box.wide { width: min(960px, 100%); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--line); flex: none; }
+.modal-head h2 { margin: 0; font-size: var(--fs-lg); font-weight: 600; overflow-wrap: anywhere; }
+.modal-body { display: grid; gap: var(--sp-3); padding: var(--sp-5); overflow: auto; min-height: 0; }
+.modal-body label { display: grid; gap: var(--sp-1); font-weight: 500; color: var(--ink-2); font-size: var(--fs-md); }
+.modal-body label > select { max-width: 100%; }
+.modal-foot { display: flex; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-3) var(--sp-5); border-top: 1px solid var(--line); background: var(--panel-2); border-radius: 0 0 var(--r-xl) var(--r-xl); flex: none; }
+@keyframes modal-fade { from { opacity: 0; } }
+@keyframes modal-rise { from { opacity: 0; transform: translateY(8px) scale(.985); } }
+@media (prefers-reduced-motion: reduce) { .modal, .modal .box { animation: none; } }
+@media (max-width: 760px) {
+    .modal { align-items: end; padding: 0; }
+    .modal .box, .modal .box.wide { width: 100%; max-height: 92dvh; border-radius: var(--r-xl) var(--r-xl) 0 0; border-bottom: 0; padding-bottom: env(safe-area-inset-bottom); animation-name: modal-sheet; }
+    .modal-head, .modal-body, .modal-foot { padding-inline: var(--sp-4); }
+    .modal-foot > .btn { flex: 1; }
+}
+@keyframes modal-sheet { from { transform: translateY(24px); opacity: 0; } }

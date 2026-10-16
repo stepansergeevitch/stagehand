@@ -1,0 +1,11 @@
+.stage-name { font-size: var(--fs-sm); color: var(--ink-2); white-space: nowrap; }
+.stage-progress { display: inline-flex; gap: 2px; align-items: center; vertical-align: middle; }
+.stage-progress i { width: 10px; height: 4px; border-radius: 2px; background: var(--line-strong); }
+.stage-progress i.past { background: var(--ink-3); }
+.stage-progress i.now { background: var(--tone, var(--ink-2)); width: 16px; }
+.stage-progress i.now.warn { --tone: var(--warn); } .stage-progress i.now.bad { --tone: var(--bad); }
+.stage-progress i.now.info { --tone: var(--info); } .stage-progress i.now.wait { --tone: var(--wait); }
+.stage-progress i.now.ok { --tone: var(--ok); }
+.stage-cell { display: inline-flex; align-items: center; gap: var(--sp-3); }
+.chip.pulse::before { animation: vx-pulse 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .chip.pulse::before { animation: none; } }

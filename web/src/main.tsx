@@ -1,9 +1,10 @@
+// The design system first, so the app's component styles (loaded with App) override it, and styles.css overrides both.
+import "@vortex/ds/fonts.css";
+import "@vortex/ds/styles.css";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { ErrorBoundary } from "./ErrorBoundary";
-import "@vortex/ds/fonts.css";
-import "@vortex/ds/styles.css";
 import "./styles.css";
 
 // Every link that leaves the app (or opens an artifact/PR/app URL) opens in a new tab; in-app hash links stay.
