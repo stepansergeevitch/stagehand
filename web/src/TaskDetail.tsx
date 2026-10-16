@@ -9,6 +9,7 @@ import type { ConversationSub, DetailsPart, DesignSection, TaskTab, TaskView } f
 import { Chat } from "./Chat";
 import { DiffView, type PriorComment } from "./DiffView";
 import { AppQuick, ServicesPanel } from "./Services";
+import { Modal } from "./components/Modal";
 import { TaskCost } from "./TaskCost";
 import { AgentInput } from "./AgentInput";
 import { DataTable, type DataColumn } from "./components/DataTable";
@@ -69,6 +70,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const rv = useReview(detail, onAction);
     const { comments, pending } = rv;
     const [returning, setReturning] = useState(false);
+    const [appOpen, setAppOpen] = useState(false);
     const [localNotes, setLocalNotes] = useState("");
     // Product Owners, for Settings and the Product owner review.
     const [owners, setOwners] = useState<ProductOwner[]>([]);
@@ -212,6 +214,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {idle && currentIdx > 0 && <MenuItem title="Send the task back to an earlier stage with notes (e.g. after an accidental Approve)" onClick={() => setReturning(true)}>Return to a stage…</MenuItem>}
             {idle && task.branch && task.worktree_path && <MenuItem title="A plain git rebase of this task's own commits onto the latest base first; the agent takes over only where that conflicts. If the branch is on GitHub and this environment allows pushes, Vortex force-pushes it with lease and tasks stacked on it are rebased in turn." onClick={() => startRebase()}>Rebase onto the latest base</MenuItem>}
             {idle && task.branch && task.worktree_path && envRepoList.length > 1 && envRepoList.map((r) => <MenuItem key={r} onClick={() => startRebase([r])}>Rebase {repoName(r)} only</MenuItem>)}
+            {task.worktree_path && <MenuItem title="Ports, logs, components and the dependency branch of this task's app" onClick={() => setAppOpen(true)}>App details</MenuItem>}
             <MenuItem title="Labels, AI account, product owner, session, database" onClick={() => onView({ tab: "settings" })}>Settings</MenuItem>
             {terminal ? <MenuItem onClick={onCloseTerminal}>Close the terminal</MenuItem> : <MenuItem disabled={!idle} onClick={() => void onOpenTerminal()}>Open a terminal</MenuItem>}
             <MenuItem onClick={() => onAction(() => api.pin(task.id))}>{task.pinned ? "Unpin" : "Pin to the top"}</MenuItem>
@@ -241,7 +244,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     <LabelChips labels={labelsOf(task)} />
                 </>
             }
-            actions={<>{task.worktree_path && <AppQuick taskId={task.id} env={env} onError={onError} compact />}{primary}{menu}</>}
+            actions={<>{task.worktree_path && <AppQuick taskId={task.id} env={env} onError={onError} onDetails={() => setAppOpen(true)} />}{primary}{menu}</>}
         >
             <div className="task-strip">
                 <span className="task-strip-stage">
@@ -306,11 +309,6 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
             {terminal && (
                 <Panel title={<>Terminal <code>{terminal}</code></>} actions={<Button size="sm" onClick={onCloseTerminal}>Close</Button>}>
                     <LazyTerminal session={terminal} />
-                </Panel>
-            )}
-            {task.worktree_path && (
-                <Panel title="App" hint="This task's BE and FE, started in its worktree. Ports, logs and commands are under Details; Run / Open are also in the task header.">
-                    <ServicesPanel taskId={task.id} env={env} dependencyBranch={task.dependency_branch ?? null} busy={task.status === "running"} onError={onError} onFixStarted={() => void onAction(async () => undefined)} />
                 </Panel>
             )}
         </>
@@ -568,6 +566,11 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {tab === "details" && details}
                 {tab === "settings" && settings}
             </div>
+            {appOpen && task.worktree_path && (
+                <Modal title="App" wide onClose={() => setAppOpen(false)}>
+                    <ServicesPanel taskId={task.id} env={env} dependencyBranch={task.dependency_branch ?? null} busy={task.status === "running"} onError={onError} onFixStarted={() => void onAction(async () => undefined)} />
+                </Modal>
+            )}
             {returning && (
                 <ReturnDialog
                     task={task}

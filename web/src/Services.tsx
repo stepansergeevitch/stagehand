@@ -27,9 +27,9 @@ const DependencyBranch = ({ depEnvId, value, disabled, onSave }: { taskId: strin
 
 const appUrlOf = (env: Env | undefined, be?: Service, fe?: Service) => (env?.app_url ?? "{{feUrl}}").replace("{{feUrl}}", fe?.url ?? "").replace("{{beUrl}}", be?.url ?? "");
 
-// The 95% case of the app: Run it, Open it, see whether it is up. `compact` is the task header's form (a status dot and
-// one button); the full form sits at the top of the App panel. Ports, logs, commands and the rest are in the panel's Details.
-export const AppQuick = ({ taskId, env, onError, compact = false }: { taskId: string; env: Env | undefined; onError: (m: string) => void; compact?: boolean }) => {
+// The 95% case of the app: Run it, Open it, see whether it is up — a status dot and one button in the task header.
+// Ports, logs, commands and the rest are in ServicesPanel, opened from the task's more menu (or from "Details" on a failure).
+export const AppQuick = ({ taskId, env, onError, onDetails }: { taskId: string; env: Env | undefined; onError: (m: string) => void; onDetails?: () => void }) => {
     const [rows, setRows] = useState<Service[]>([]);
     const [busy, setBusy] = useState(false);
     const refresh = useCallback(() => api.services(taskId).then(setRows).catch(() => undefined), [taskId]);
@@ -62,14 +62,14 @@ export const AppQuick = ({ taskId, env, onError, compact = false }: { taskId: st
     };
     const openable = (fe?.running || (be?.running && !configured.fe)) && up;
     return (
-        <div className={`app-quick${compact ? " compact" : ""}`} role="group" aria-label={`App: ${label}`}>
+        <div className={"app-quick compact"} role="group" aria-label={`App: ${label}`}>
             <span className={`app-dot ${state}`} title={`App ${label}`} aria-hidden="true" />
-            {!compact && <span className="app-quick-label">{label}</span>}
-            {openable ? (
-                <a className="btn btn-primary btn-sm" href={appUrlOf(env, be, fe)} target="_blank" rel="noreferrer">{compact ? "Open app" : "Open the app"}</a>
+                        {openable ? (
+                <a className="btn btn-primary btn-sm" href={appUrlOf(env, be, fe)} target="_blank" rel="noreferrer">Open app</a>
             ) : (
                 <Button size="sm" variant="primary" disabled={busy || starting} onClick={() => void run()} title="Start this task's backend and frontend in its worktree">{busy || starting ? "Starting…" : failed ? "Retry app" : "Run app"}</Button>
             )}
+            {failed && onDetails && <Button size="sm" variant="ghost" onClick={onDetails}>Details</Button>}
         </div>
     );
 };
@@ -79,7 +79,6 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
     const [rows, setRows] = useState<Service[]>([]);
     const [busy, setBusy] = useState<string | null>(null);
     const [log, setLog] = useState<{ kind: string; text: string } | null>(null);
-    const [detailsOpen, setDetailsOpen] = useState(false);
     const [fixing, setFixing] = useState<Set<string>>(new Set());
 
     // The last start of each service that failed (until one succeeds): kept here so it never vanishes with the button's spinner.
@@ -228,7 +227,6 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
         </div>
     );
 
-    const anyFailed = failures.length > 0 || rows.some((r) => r.state === "failed");
     return (
         <>
             {failures.map((f) => (
@@ -236,9 +234,7 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
                     <b>The {f.kind.toUpperCase()} did not start</b> ({new Date(f.at).toLocaleTimeString()}): {f.error}
                 </Notice>
             ))}
-            <AppQuick taskId={taskId} env={env} onError={onError} />
-            <details className="app-details" open={detailsOpen || anyFailed} onToggle={(e) => setDetailsOpen((e.currentTarget as HTMLDetailsElement).open)}>
-                <summary>Details</summary>
+            <div className="app-details">
                 {dep && depRow(dep)}
                 {configured.be && row("be", be)}
                 {configured.fe && row("fe", fe)}
@@ -254,7 +250,7 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
                         {log.text.split("\n").map((l, i) => <div key={i}>{l}</div>)}
                     </div>
                 )}
-            </details>
+            </div>
         </>
     );
 };
