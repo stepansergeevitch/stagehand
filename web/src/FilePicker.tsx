@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState, type ClipboardEvent, type DragEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 import { api, type SharedFile } from "./api";
-import { Button, Chip, Input } from "@vortex/ds";
+import { Button, Chip, Icon, IconButton, Input } from "@vortex/ds";
+import "./agent-input.css";
 
 const stamp = (): string => new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "").replace("T", "-");
 
@@ -48,31 +49,36 @@ const Thumb = ({ file }: { file: File }) => {
     return url ? <img src={url} alt="" /> : null;
 };
 
-// The pending files as chips (thumbnail or 📎, name, size, ×) plus the Attach button. Sits above the text input.
-export const FileChips = ({ pending, disabled }: { pending: PendingFiles; disabled?: boolean }) => (
-    <div className="file-chips">
-        {pending.files.map((f, i) => (
-            <Chip key={`${f.name}-${i}`} className="file-chip" title={`${f.name} · ${fmtBytes(f.size)}`}>
-                {f.type.startsWith("image/") ? <Thumb file={f} /> : <span>📎</span>}
-                <span className="name">{f.name}</span>
-                <span className="field-hint">{fmtBytes(f.size)}</span>
-                <Button variant="ghost" type="button" className="chip-x" aria-label={`Remove ${f.name}`} disabled={disabled} onClick={() => pending.remove(i)}>×</Button>
-            </Chip>
-        ))}
-        <label className={`chip file-chip attach${disabled ? " disabled" : ""}`} title="Attach files for the agent — or paste a screenshot / drop files onto the text box">
-            📎 Attach
+// The pending files as chips (thumbnail, name, size, remove) plus the Attach button. Sits above the text input.
+export const FileChips = ({ pending, disabled }: { pending: PendingFiles; disabled?: boolean }) => {
+    const picker = useRef<HTMLInputElement>(null);
+    return (
+        <div className="file-chips">
+            {pending.files.map((f, i) => (
+                <Chip key={`${f.name}-${i}`} className="file-chip" title={`${f.name} · ${fmtBytes(f.size)}`}>
+                    {f.type.startsWith("image/") && <Thumb file={f} />}
+                    <span className="name">{f.name}</span>
+                    <span className="file-size">{fmtBytes(f.size)}</span>
+                    <IconButton icon="close" size="sm" variant="ghost" label={`Remove ${f.name}`} disabled={disabled} onClick={() => pending.remove(i)} />
+                </Chip>
+            ))}
+            <Button size="sm" className="file-attach" disabled={disabled} title="Attach files for the agent. You can also paste a screenshot or drop files onto the text box." onClick={() => picker.current?.click()}>
+                <Icon name="plus" />Attach
+            </Button>
             <Input
+                ref={picker}
                 type="file"
                 multiple
+                hidden
                 disabled={disabled}
                 onChange={(e) => {
                     if (e.target.files) pending.add(e.target.files);
                     e.target.value = "";
                 }}
             />
-        </label>
-    </div>
-);
+        </div>
+    );
+};
 
 // Files that went with a sent message: images inline (open full size in a new tab), anything else a link. The agent
 // got the same files by path.
@@ -89,7 +95,7 @@ export const MessageFiles = ({ taskId, files }: { taskId: string; files: SharedF
                     </a>
                 ) : (
                     <a key={f.file} className="file-tile" href={src} target="_blank" rel="noreferrer" title={meta}>
-                        📎 {f.name}
+                        {f.name}
                     </a>
                 );
             })}

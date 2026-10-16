@@ -1,0 +1,7 @@
+/* Resources: host tiles, one table of everything running, cleanup policies */
+.resources-page { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.res-observed, .res-quiet { color: var(--ink-3); font-size: var(--fs-sm); }
+.res-where { color: var(--ink-2); font-family: var(--mono); font-size: var(--fs-xs); white-space: nowrap; }
+.res-actions { display: inline-flex; gap: var(--sp-1); }
+.res-fields { display: grid; gap: var(--sp-4); }
+.res-fields .field-input > input[type="number"] { width: 140px; }

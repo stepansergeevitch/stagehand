@@ -1,0 +1,11 @@
+/* Sessions: list, session workspace, new-session dialog */
+.sessions-loading { display: grid; gap: var(--sp-4); }
+.ses-quiet { color: var(--ink-3); }
+.session-body { display: grid; gap: var(--sp-4); min-width: 0; }
+.session-term .term { height: calc(100dvh - 320px); min-height: 360px; }
+.session-scope { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--ink-2); }
+.session-rename { display: inline-flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.session-rename input { width: 260px; max-width: 100%; }
+.ns-label { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.ns-check { display: flex; align-items: center; gap: var(--sp-2); }
+@media (max-width: 760px) { .session-term .term { height: calc(100dvh - 280px); min-height: 280px; } }

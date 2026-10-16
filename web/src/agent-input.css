@@ -1,0 +1,15 @@
+/* AgentInput and FilePicker: the text box for anything written to an agent, its pending-file chips, and sent files */
+.agent-input { display: flex; flex-direction: column; min-width: 0; }
+.agent-input textarea { width: 100%; }
+.file-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; margin-bottom: var(--sp-2); }
+.file-chip { max-width: 280px; gap: var(--sp-1); }
+.file-chip img { width: 22px; height: 22px; object-fit: cover; border-radius: var(--r-sm); background: var(--code); flex: none; }
+.file-chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip .file-size { color: var(--ink-3); font-size: var(--fs-xs); flex: none; }
+.file-chip .btn { flex: none; }
+.file-attach { border-style: dashed; }
+.msg-files { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+.msg-files img { max-width: 240px; max-height: 180px; object-fit: contain; border-radius: var(--r-md); background: var(--code); display: block; }
+.msg-files .file-tile { display: inline-block; padding: var(--sp-2) var(--sp-3); background: var(--code); border-radius: var(--r-md); color: var(--ink); text-decoration: none; }
+.msg-files .file-tile:hover { color: var(--accent); }
+@media (max-width: 760px) { .file-chip { max-width: 100%; } .msg-files img { max-width: 100%; } }

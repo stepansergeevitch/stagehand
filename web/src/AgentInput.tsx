@@ -1,6 +1,7 @@
 import { forwardRef, type CSSProperties, type KeyboardEvent } from "react";
 import { FileChips, type PendingFiles } from "./FilePicker";
 import { Textarea } from "@vortex/ds";
+import "./agent-input.css";
 
 export { FileChips, usePendingFiles, type PendingFiles } from "./FilePicker";
 
