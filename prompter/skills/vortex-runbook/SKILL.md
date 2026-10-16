@@ -1,20 +1,20 @@
 ---
-name: stagehand-runbook
-description: Operating rules of this Stagehand installation — stage boundaries, what a restart does, QA and Chrome rules, environment specifics (DualEntry, Northspyre Deal, Core). Use before advising on or performing an operational action.
+name: vortex-runbook
+description: Operating rules of this Vortex installation — stage boundaries, what a restart does, QA and Chrome rules, environment specifics (DualEntry, Northspyre Deal, Core). Use before advising on or performing an operational action.
 ---
 
-# Stagehand runbook (this installation)
+# Vortex runbook (this installation)
 
-Search the palace (wing `stagehand`, rooms `operations` and `conventions`) for the full drawers; this is the short form.
+Search the palace (wing `vortex`, rooms `operations` and `conventions`) for the full drawers; this is the short form.
 
 ## Server
 
-- The server runs in tmux session `stagehand-server` (`cd ~/code/my/stagehand/server && npx tsx src/index.ts`), port
+- The server runs in tmux session `vortex-server` (`cd ~/code/my/stagehand/server && npx tsx src/index.ts`), port
   4747 (loopback) and 4748 (public, Basic auth). It is not in watch mode: code changes need a restart.
 - A restart kills every in-flight run. Restart only at a boundary: no task `running`/`queued` and no run `running`
-  (`sqlite3 ~/.stagehand/stagehand.sqlite`), and never during a QA pass. The human decides when; you do not restart
+  (`sqlite3 ~/.vortex/vortex.sqlite`), and never during a QA pass. The human decides when; you do not restart
   on your own.
-- Data: `~/.stagehand/` — `stagehand.sqlite`, `runs/*.ndjson` (event logs), `tasks/<id>/` (artifacts: research.json,
+- Data: `~/.vortex/` — `vortex.sqlite`, `runs/*.ndjson` (event logs), `tasks/<id>/` (artifacts: research.json,
   design.json, design.md, impl.json, qa/*.json, pr.json, questions.json, attachments), `config.json`.
 
 ## Tasks and stages
@@ -33,10 +33,10 @@ Search the palace (wing `stagehand`, rooms `operations` and `conventions`) for t
 
 - Browser stages need a Chrome profile whose Claude extension is signed into the account (no token sessions). With
   "Chrome per QA run" on, each run copies that profile into a private Chrome window and deletes it afterwards
-  (`~/.stagehand/chrome-clones/`); several runs go in parallel. The human logs in to the apps in the master profile;
+  (`~/.vortex/chrome-clones/`); several runs go in parallel. The human logs in to the apps in the master profile;
   copies inherit it. A cloned window must not be closed by hand while its run goes.
 - The Deal frontend runs on a 13xxx port through an origin-override hack; Auth0 sends logins back to
-  `localhost:3000/?code=…` and Stagehand moves that tab to the right port.
+  `localhost:3000/?code=…` and Vortex moves that tab to the right port.
 
 ## Environments
 

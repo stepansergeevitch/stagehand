@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Imports another MemPalace into Stagehand's: every drawer it does not have yet (same id = same drawer, kept as it is),
+"""Imports another MemPalace into Vortex's: every drawer it does not have yet (same id = same drawer, kept as it is),
 with its stored embedding, and the knowledge graph's entities and triples (insert-or-ignore). The source is read from
-a snapshot copy, so a palace in use by a running MCP server is never touched. Stagehand's palace is backed up first.
+a snapshot copy, so a palace in use by a running MCP server is never touched. Vortex's palace is backed up first.
 
   palace-import.py --from <MEMPALACE_HOME> --to <MEMPALACE_HOME> [--dry-run]
 """

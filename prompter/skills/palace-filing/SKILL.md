@@ -9,8 +9,8 @@ The palace is the only memory that survives between chats. Search first, file as
 
 ## Search
 
-- `mempalace_search(query, wing?, room?)` — semantic; try two or three phrasings. Filter by `wing: "stagehand"` for
-  Stagehand facts; drop the filter for cross-project questions.
+- `mempalace_search(query, wing?, room?)` — semantic; try two or three phrasings. Filter by `wing: "vortex"` for
+  Vortex facts; drop the filter for cross-project questions.
 - `mempalace_kg_query` for relations between system entities (service → uses_database → db, …).
 - `mempalace_diary_read(agent_name: "prompter")` for what earlier chats did.
 
@@ -28,7 +28,7 @@ add a parallel one. Ticket ids belong in `source_file` or inline as provenance, 
 | `infrastructure` | How is it deployed and configured? | ports, data dir layout, public listener |
 | `tooling` | How does the dev/CI/AI tooling work? | config dirs, hooks, skills, this palace |
 
-Wings: `stagehand` (this app), `northspyre-deal`, `northspyre`, `dualentry` (the environments Stagehand runs),
+Wings: `vortex` (this app; older drawers sit in `stagehand`), `northspyre-deal`, `northspyre`, `dualentry` (the environments Vortex runs),
 `wing_prompter` (your diary, via `mempalace_diary_write` with agent name `prompter`).
 
 ## What counts as durable

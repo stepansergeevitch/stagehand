@@ -29,11 +29,16 @@ for a in "$@"; do case "$a" in --force) FORCE=1 ;; --keep) KEEP=1 ;; *) echo "un
 
 REPO="${RELEASE_SH_REPO:?}"
 [ -d "$REPO/.git" ] || { echo "release: $REPO is not the main checkout" >&2; exit 2; }
-DB="${STAGEHAND_HOME:-$HOME/.stagehand}/stagehand.sqlite"
-TMUX_SESSION="${STAGEHAND_TMUX:-stagehand-server}"
+DATA="${VORTEX_HOME:-${STAGEHAND_HOME:-}}"
+# Default ~/.vortex; the pre-rename ~/.stagehand is used in place while ~/.vortex does not exist.
+[ -n "$DATA" ] || { if [ ! -d "$HOME/.vortex" ] && [ -d "$HOME/.stagehand" ]; then DATA="$HOME/.stagehand"; else DATA="$HOME/.vortex"; fi; }
+DB="$DATA/vortex.sqlite"
+[ -f "$DB" ] || [ ! -f "$DATA/stagehand.sqlite" ] || DB="$DATA/stagehand.sqlite"
+TMUX_SESSION="${VORTEX_TMUX:-${STAGEHAND_TMUX:-}}"
+[ -n "$TMUX_SESSION" ] || { if ! tmux has-session -t vortex-server 2>/dev/null && tmux has-session -t stagehand-server 2>/dev/null; then TMUX_SESSION=stagehand-server; else TMUX_SESSION=vortex-server; fi; }
 # The pane runs scripts/serve.sh, a loop that starts the server again after every exit; a restart is then just Ctrl-C.
 START_CMD="cd $REPO && scripts/serve.sh"
-API="http://127.0.0.1:${STAGEHAND_API_PORT:-4747}"
+API="http://127.0.0.1:${VORTEX_API_PORT:-${STAGEHAND_API_PORT:-4747}}"
 
 say() { echo "release: $*"; }
 
@@ -82,7 +87,7 @@ fi
 # (Prompter's turn, an agent run): the Ctrl-C that stops the server would kill that caller, and with it a restart
 # performed inline (2026-09-22: the server was stopped and never started again). Output goes to a log.
 say "restarting the server in tmux $TMUX_SESSION (detached; a caller that runs under the server ends here — the API answers again in ~10 s)"
-LOG="${STAGEHAND_HOME:-$HOME/.stagehand}/release.log"
+LOG="$DATA/release.log"
 # Ctrl-C ends the current server; serve.sh (when the pane runs it) starts the next one by itself. A pane without the
 # loop (older setup, or the loop was stopped) gets the start command. The bracket in the pgrep pattern keeps it from
 # matching this very shell, whose command line contains the pattern.

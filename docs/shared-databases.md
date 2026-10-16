@@ -8,7 +8,7 @@ per task (`dualentry_test_<slug>`, made by the setup command).
 
 - **Migrations leak between tasks.** A task's migrations are applied for every task. A task whose branch lacks them
   runs against a schema it does not know (extra columns usually pass; renamed or dropped ones do not).
-- **The QA baseline on base code is partial.** Before a baseline, Stagehand rolls back only the migrations the task's
+- **The QA baseline on base code is partial.** Before a baseline, Vortex rolls back only the migrations the task's
   branch added (`migrate_down_command`, `server/src/migrations.ts`). Migrations of other branches stay applied, so the
   "base" schema the baseline sees is the base plus whatever other tasks applied.
 - **Data leaks between tasks.** QA seeds and teardowns of one task write rows every other task sees; scenarios rely on

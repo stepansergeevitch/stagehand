@@ -1,11 +1,11 @@
-# Stagehand — rules for working in this repository
+# Vortex — rules for working in this repository
 
 **Golden rule: generics are implemented in code; specifics go to env config.** Every fix asks two questions — what is
 the mechanism any environment could use (that is code), and what does this one environment need (that is its config).
 
 ## No environment-specific logic
 
-Stagehand is environment-agnostic. Nothing in `server/`, `web/`, `prompts/`, `product-owner/` or `scripts/` may know a particular environment, project, product or host setup: no project names (DualEntry, Northspyre, …), no project paths, ports, database names, model or table names, identity-provider quirks, ticket ids used as logic.
+Vortex is environment-agnostic. Nothing in `server/`, `web/`, `prompts/`, `product-owner/` or `scripts/` may know a particular environment, project, product or host setup: no project names (DualEntry, Northspyre, …), no project paths, ports, database names, model or table names, identity-provider quirks, ticket ids used as logic.
 
 What one environment needs is **that environment's config** (the `envs` row, edited on its page):
 

@@ -1,14 +1,16 @@
 #!/bin/bash
-# Runs the Stagehand server in a loop inside its tmux pane: whenever the server process exits — the Ctrl-C of a
+# Runs the Vortex server in a loop inside its tmux pane: whenever the server process exits — the Ctrl-C of a
 # restart, a crash — it starts again two seconds later from the checkout as it is then. A restart is therefore only
 # "stop the current process"; nobody has to survive it to send a start command (Prompter's turn and every agent run
 # are children of the server and die with it — 2026-09-22 twice the server stayed down for that reason).
 #
-#   scripts/serve.sh            run in tmux session stagehand-server (release.sh and POST /api/server/restart start it)
-#   touch ~/.stagehand/stop-server ; then Ctrl-C     stop for real (or tmux kill-session -t stagehand-server)
+#   scripts/serve.sh            run in tmux session vortex-server (release.sh and POST /api/server/restart start it)
+#   touch ~/.vortex/stop-server ; then Ctrl-C     stop for real (or tmux kill-session -t vortex-server)
 set -u
 REPO="$(dirname "$(cd "$(dirname "$0")/.." && git rev-parse --path-format=absolute --git-common-dir)")"
-DATA="${STAGEHAND_HOME:-$HOME/.stagehand}"
+DATA="${VORTEX_HOME:-${STAGEHAND_HOME:-}}"
+# Default ~/.vortex; the pre-rename ~/.stagehand is used in place while ~/.vortex does not exist.
+[ -n "$DATA" ] || { if [ ! -d "$HOME/.vortex" ] && [ -d "$HOME/.stagehand" ]; then DATA="$HOME/.stagehand"; else DATA="$HOME/.vortex"; fi; }
 STOP="$DATA/stop-server"
 LOG="$DATA/server.log"
 rm -f "$STOP"

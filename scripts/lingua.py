@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Stagehand's LLMLingua-2 sidecar: compresses markdown into a digest the agent reads in place of a long source.
+"""Vortex's LLMLingua-2 sidecar: compresses markdown into a digest the agent reads in place of a long source.
 
-Runs in its own venv (~/.stagehand/lingua/.venv). Reads JSON lines on stdin, writes JSON lines on stdout:
+Runs in its own venv (~/.vortex/lingua/.venv). Reads JSON lines on stdin, writes JSON lines on stdout:
 
   in:  {"id": "…", "text": "…markdown…", "rate": 0.5}
   out: {"id": "…", "text": "…digest…", "origin_tokens": 1234, "tokens": 456, "fallbacks": 2}
@@ -15,7 +15,7 @@ import os
 import re
 import sys
 
-MODEL = os.environ.get("STAGEHAND_LINGUA_MODEL", "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank")
+MODEL = os.environ.get("VORTEX_LINGUA_MODEL") or os.environ.get("STAGEHAND_LINGUA_MODEL") or "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
 # Words whose loss flips or narrows the meaning; punctuation keeps sentences apart.
 FORCE = ["\n", ".", "?", "!", ",", ":", ";", "not", "no", "never", "only", "without", "must", "except", "unless"]
 SHORT = 300  # characters: a block this short stays verbatim — the saving is too small to risk

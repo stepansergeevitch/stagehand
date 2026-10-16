@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Stagehand guard hook (PreToolUse, Bash). Standard for every environment; the values come from $STAGEHAND_RULES.
+"""Vortex guard hook (PreToolUse, Bash). Standard for every environment; the values come from $VORTEX_RULES.
 
 Blocks (exit 2, reason on stderr) git commits with a non-conforming message, commits/pushes/PR creation when the
 environment forbids them, badly named branches, history rewrites, and — unconditionally, in every environment,
-regardless of $STAGEHAND_RULES — anything that would post a comment or review to GitHub under the human's own
+regardless of $VORTEX_RULES — anything that would post a comment or review to GitHub under the human's own
 account (gh CLI or a raw curl/wget to the GitHub API). Anything else passes (exit 0).
 """
 import json
@@ -14,7 +14,7 @@ import sys
 
 
 def load_rules():
-    path = os.environ.get("STAGEHAND_RULES")
+    path = os.environ.get("VORTEX_RULES") or os.environ.get("STAGEHAND_RULES")  # the latter: settings written before the rename
     if not path or not os.path.exists(path):
         return {}
     with open(path) as f:
@@ -22,7 +22,7 @@ def load_rules():
 
 
 def block(reason: str) -> None:
-    sys.stderr.write(f"[stagehand guard] {reason}\n")
+    sys.stderr.write(f"[vortex guard] {reason}\n")
     sys.exit(2)
 
 

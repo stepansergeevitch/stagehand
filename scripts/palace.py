@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Stagehand's access to its own MemPalace: fixed-id context drawers and search, JSON in and out.
+"""Vortex's access to its own MemPalace: fixed-id context drawers and search, JSON in and out.
 
 The MCP tool add_drawer always files a new drawer; a living context text needs one drawer that is replaced in place,
-so Stagehand upserts it here by a fixed id. Search goes through mempalace's own searcher.
+so Vortex upserts it here by a fixed id. Search goes through mempalace's own searcher.
 
   palace.py --palace <dir> get --id <drawer_id>
   palace.py --palace <dir> put --id <drawer_id> --wing <w> --room <r> [--source <s>]   (content on stdin)
@@ -36,7 +36,7 @@ def main():
     p.add_argument("--id", required=True)
     p.add_argument("--wing", required=True)
     p.add_argument("--room", required=True)
-    p.add_argument("--source", default="stagehand")
+    p.add_argument("--source", default="vortex")
     sub.add_parser("put-many")
     d = sub.add_parser("delete")
     d.add_argument("--where")
@@ -66,14 +66,14 @@ def main():
         col.upsert(
             ids=[a.id],
             documents=[content],
-            metadatas=[{"wing": a.wing, "room": a.room, "source_file": a.source, "chunk_index": 0, "added_by": "stagehand", "filed_at": datetime.now().isoformat()}],
+            metadatas=[{"wing": a.wing, "room": a.room, "source_file": a.source, "chunk_index": 0, "added_by": "vortex", "filed_at": datetime.now().isoformat()}],
         )
         print(json.dumps({"ok": True, "id": a.id}))
     elif a.cmd == "put-many":
         batch = json.loads(sys.stdin.read())
         col = collection(a.palace, create=True)
         at = datetime.now().isoformat()
-        metas = [{**m, "added_by": "stagehand", "filed_at": at} for m in batch["metadatas"]]
+        metas = [{**m, "added_by": "vortex", "filed_at": at} for m in batch["metadatas"]]
         for i in range(0, len(batch["ids"]), 200):
             col.upsert(ids=batch["ids"][i : i + 200], documents=batch["documents"][i : i + 200], metadatas=metas[i : i + 200])
         print(json.dumps({"ok": True, "count": len(batch["ids"])}))

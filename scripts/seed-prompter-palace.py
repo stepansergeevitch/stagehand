@@ -7,8 +7,8 @@ Idempotent: drawers whose id already exists in the destination are skipped. The 
 are copied when the destination has none yet.
 
 Usage:
-  seed-prompter-palace.py --src ~/code/northspyre/.mempalace --dst ~/.stagehand/prompter \
-      --wing task-orchestrator=stagehand --wing stagehand --diary wing_claude --mention stagehand
+  seed-prompter-palace.py --src ~/code/northspyre/.mempalace --dst ~/.vortex/prompter \
+      --wing task-orchestrator=vortex --wing vortex --diary wing_claude --mention vortex
 Prints one JSON object with the counts.
 """
 import argparse
@@ -29,7 +29,7 @@ def main() -> int:
     ap.add_argument("--dst", required=True)
     ap.add_argument("--wing", action="append", default=[], help="wing to copy, optionally old=new")
     ap.add_argument("--diary", default=None, help="diary wing whose entries mentioning --mention are copied")
-    ap.add_argument("--mention", default="stagehand")
+    ap.add_argument("--mention", default="vortex")
     a = ap.parse_args()
 
     src_home, dst_home = os.path.expanduser(a.src), os.path.expanduser(a.dst)

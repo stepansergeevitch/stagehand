@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs a Stagehand worktree branch as a PREVIEW beside the live app: its server on port 4757 (no scheduler, no
+# Runs a Vortex worktree branch as a PREVIEW beside the live app: its server on port 4757 (no scheduler, no
 # pollers, no public listener, no runs started — it shares the live data dir read-mostly) and its Vite UI on 5174,
 # both in tmux. Use it to test a change from its branch before scripts/release.sh lands it.
 #
@@ -8,10 +8,14 @@
 #   scripts/preview.sh status              what runs where
 set -euo pipefail
 
-API_PORT="${STAGEHAND_PREVIEW_PORT:-4757}"
-WEB_PORT="${STAGEHAND_PREVIEW_WEB_PORT:-5174}"
-S_SERVER=stagehand-preview-server
-S_WEB=stagehand-preview-web
+DATA="${VORTEX_HOME:-${STAGEHAND_HOME:-}}"
+# Default ~/.vortex; the pre-rename ~/.stagehand is used in place while ~/.vortex does not exist.
+[ -n "$DATA" ] || { if [ ! -d "$HOME/.vortex" ] && [ -d "$HOME/.stagehand" ]; then DATA="$HOME/.stagehand"; else DATA="$HOME/.vortex"; fi; }
+
+API_PORT="${VORTEX_PREVIEW_PORT:-${STAGEHAND_PREVIEW_PORT:-4757}}"
+WEB_PORT="${VORTEX_PREVIEW_WEB_PORT:-${STAGEHAND_PREVIEW_WEB_PORT:-5174}}"
+S_SERVER=vortex-preview-server
+S_WEB=vortex-preview-web
 # The main checkout (owner of .git), where the shared node_modules live — also when this copy runs from a worktree.
 REPO="$(dirname "$(cd "$(dirname "$0")/.." && git rev-parse --path-format=absolute --git-common-dir)")"
 
@@ -36,7 +40,7 @@ case "${1:-}" in
 esac
 
 WT="$(cd "$1" && pwd)"
-[ -f "$WT/server/src/index.ts" ] || { echo "not a Stagehand checkout: $WT" >&2; exit 2; }
+[ -f "$WT/server/src/index.ts" ] || { echo "not a Vortex checkout: $WT" >&2; exit 2; }
 # The worktree shares the main checkout's dependencies (npm workspaces): symlink what is missing.
 for d in node_modules server/node_modules web/node_modules; do
     [ -e "$WT/$d" ] || { [ -d "$REPO/$d" ] && ln -s "$REPO/$d" "$WT/$d"; }
@@ -44,9 +48,9 @@ done
 
 stop >/dev/null
 tmux new-session -d -s "$S_SERVER" -c "$WT/server"
-tmux send-keys -t "$S_SERVER" "export STAGEHAND_PREVIEW=1 STAGEHAND_PORT=$API_PORT; npx tsx src/index.ts 2>&1 | tee ~/.stagehand/preview-server.log" Enter
+tmux send-keys -t "$S_SERVER" "export VORTEX_PREVIEW=1 VORTEX_PORT=$API_PORT; npx tsx src/index.ts 2>&1 | tee \"$DATA/preview-server.log\"" Enter
 tmux new-session -d -s "$S_WEB" -c "$WT/web"
-tmux send-keys -t "$S_WEB" "export STAGEHAND_WEB_PORT=$WEB_PORT STAGEHAND_API_PORT=$API_PORT; npx vite" Enter
+tmux send-keys -t "$S_WEB" "export VORTEX_WEB_PORT=$WEB_PORT VORTEX_API_PORT=$API_PORT; npx vite" Enter
 
 for i in $(seq 1 40); do
     sleep 1

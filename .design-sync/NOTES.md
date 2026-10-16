@@ -2,7 +2,7 @@
 
 - Build: `npm run build -w @vortex/ds` (vite + tsc) -> packages/vortex-ds/dist. Converter entry: `--entry ./packages/vortex-ds/dist/index.js --node-modules ./node_modules` (hoisted react at repo root).
 - CSS: `cssEntry` = dist/index.css (tokens + components in one file).
-- Render check: Stagehand's Chromium build (~/.stagehand/browsers, chromium_headless_shell-1234) does not match the staged playwright pin; run with `DS_CHROMIUM_PATH=~/.stagehand/browsers/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell`.
+- Render check: Vortex's Chromium build (~/.vortex/browsers, chromium_headless_shell-1234) does not match the staged playwright pin; run with `DS_CHROMIUM_PATH=~/.vortex/browsers/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell`.
 - `.d.ts` extraction drops inherited HTML attributes (disabled, onClick ...); `dtsPropsFor` hand-writes Button, Input, Select, Textarea, Tab, Icon. Update when props change.
 
 ## Re-sync risks

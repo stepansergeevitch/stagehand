@@ -14,7 +14,7 @@ You are starting work on ticket {{ticketId}} in the project at {{envPath}} (base
 
 Never end your turn while a command you started in the background is still running: this is a headless run, no completion notification ever arrives, and the process exit kills the command. Run long commands in the foreground (raise the timeout) or block on their output before you go on.
 
-1. Read the ticket above carefully. Do NOT re-fetch it unless the block above says Stagehand could not fetch it.
+1. Read the ticket above carefully. Do NOT re-fetch it unless the block above says Vortex could not fetch it.
    **Repository check first:** decide which project the ticket's code lives in. This task is bound to `{{envPath}}` (for a multi-repository workspace: the repositories listed above). If the ticket clearly belongs to a different checkout (e.g. it names files, routes or features that exist only in a sibling project such as a sibling directory of `{{envPath}}`), do NOT research the other project: write `{{taskDir}}/research.json` immediately with `"repositoryPath": "<absolute path of the project the ticket belongs to>"`, `"branchName": "wrong-repo"`, a one-paragraph `summary` explaining the evidence, and reply DONE. Otherwise set `"repositoryPath": "{{envPath}}"` and continue.
 2. Classify the ticket as `bug` or `feature`. State the classification in one line.
 3. Search institutional memory: call `mempalace_search` with the ticket's keywords, affected services/models and domain terms (skip only if the palace returns nothing relevant).

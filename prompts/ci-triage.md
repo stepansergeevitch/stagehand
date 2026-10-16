@@ -18,13 +18,13 @@ One entry per failure (group the lint errors of one check into one entry, the fa
 
 - **own_migration** — a migration conflict or a migration that fails to apply, and the migration was added by this branch. `locations`: the migration file path(s).
 - **own_test** — a test this branch added or changed fails. `tests`: the test ids.
-- **affected_test** — a test this branch did not touch fails because of what the branch changed (a query budget, a snapshot, an API contract, a changed default). `tests`: the test ids. Stagehand checks it passes on base.
+- **affected_test** — a test this branch did not touch fails because of what the branch changed (a query budget, a snapshot, an API contract, a changed default). `tests`: the test ids. Vortex checks it passes on base.
 - **own_lint** — lint or format errors on lines this branch added or changed. `locations`: every `path:line:col` from the log, exactly as printed.
 - **other** — anything else: a flaky or infra failure, a failure that also happens without this branch, lint on lines the branch did not change, a test failing for an unrelated reason.
 
 - **custom** — a failure one of this environment's allow rules covers; `rule` = its key.
 
-`verdict` is `allow` only for the kinds the autopilot may fix here (above) when you are sure the branch caused it; else `deny`. A deny rule of this environment that applies wins: `rule` = its key, `verdict` = `deny`. `rule` is `null` when no rule of this environment applies. Stagehand verifies every `allow` against the diff and the base before anything is fixed — be exact with paths, lines and test ids. `evidence`: the decisive log lines (short). `reason`: one sentence.
+`verdict` is `allow` only for the kinds the autopilot may fix here (above) when you are sure the branch caused it; else `deny`. A deny rule of this environment that applies wins: `rule` = its key, `verdict` = `deny`. `rule` is `null` when no rule of this environment applies. Vortex verifies every `allow` against the diff and the base before anything is fixed — be exact with paths, lines and test ids. `evidence`: the decisive log lines (short). `reason`: one sentence.
 
 ## Output
 

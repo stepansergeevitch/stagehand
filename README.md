@@ -1,4 +1,4 @@
-# Stagehand
+# Vortex
 
 A local orchestrator that takes a ticket from your task manager and walks it through a fixed pipeline with headless
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — research, design proposal, QA baseline, implementation,
@@ -10,7 +10,7 @@ It runs on your own machine, against your own checkouts, with your own Claude su
 
 ## What it does
 
-For every task Stagehand:
+For every task Vortex:
 
 1. **Fetches the ticket** (ClickUp or Linear, REST) with comments and attachments.
 2. **Research** — a headless Claude run reads the repo and the ticket and writes `research.json` (classification, branch name, affected areas).
@@ -38,7 +38,7 @@ Key concepts:
 - **Environment** — a repository (or a workspace of several) with a base branch, how to start its backend/frontend, a setup command for fresh worktrees, seeding hints for QA, and an optional dependency on another environment's backend.
 - **Claude config dir** — the `CLAUDE_CONFIG_DIR` (skills, hooks, MCP servers, rules) every run in an environment uses.
 - **AI account** — a Claude login (long-lived OAuth token from `claude setup-token`). Environments list accounts in priority order; runs fail over on rate limits and resume when the window resets.
-- **Task** — one ticket (or a batch), one branch, one worktree, one Claude session id threaded through the stages, artifacts under `~/.stagehand/tasks/<id>/`.
+- **Task** — one ticket (or a batch), one branch, one worktree, one Claude session id threaded through the stages, artifacts under `~/.vortex/tasks/<id>/`.
 
 ## Requirements
 
@@ -57,16 +57,16 @@ npm run dev          # API on http://127.0.0.1:4747, UI on http://localhost:5173
 Or, as in daily use, keep both in tmux so they survive terminal closes — after a reboot nothing starts by itself:
 
 ```bash
-scripts/up.sh            # tmux stagehand-server (scripts/serve.sh, API 4747, public 4748) + stagehand-web (Vite 5173, TLS from ~/.stagehand/tls); waits for /api/health
-scripts/up.sh status     # what runs where (also says whether Docker Desktop is up — the task envs need it, Stagehand does not)
+scripts/up.sh            # tmux vortex-server (scripts/serve.sh, API 4747, public 4748) + vortex-web (Vite 5173, TLS from ~/.vortex/tls); waits for /api/health
+scripts/up.sh status     # what runs where (also says whether Docker Desktop is up — the task envs need it, Vortex does not)
 scripts/up.sh down       # stop both (the server gets its stop file, so serve.sh does not start it again)
 ```
 
 By hand, the same thing is:
 
 ```bash
-tmux new-session -d -s stagehand-server -c "$PWD" 'scripts/serve.sh'
-tmux new-session -d -s stagehand-web -c "$PWD/web" 'npx vite --port 5173'
+tmux new-session -d -s vortex-server -c "$PWD" 'scripts/serve.sh'
+tmux new-session -d -s vortex-web -c "$PWD/web" 'npx vite --port 5173'
 ```
 
 The dev UI is plain HTTP on 127.0.0.1:5173. If your browser insists on HTTPS for `localhost` (Safari does once any
@@ -74,15 +74,21 @@ local HTTPS app has sent an HSTS header), serve it over TLS with a locally trust
 [mkcert](https://github.com/FiloSottile/mkcert):
 
 ```bash
-STAGEHAND_DEV_TLS_CERT=/path/cert.pem STAGEHAND_DEV_TLS_KEY=/path/key.pem npx vite --port 5173   # https://localhost:5173
+VORTEX_DEV_TLS_CERT=/path/cert.pem VORTEX_DEV_TLS_KEY=/path/key.pem npx vite --port 5173   # https://localhost:5173
 ```
 
 Then in the UI: add a Claude config dir, add an AI account (it opens a terminal running `claude setup-token`), add an
 environment (path, base branch, backend/frontend commands with `{{port}}`, setup command), set the ClickUp or Linear
 token under Integrations, and create a task from a ticket id.
 
-State lives in `~/.stagehand/` (`config.json`, `stagehand.sqlite`, `tasks/`, `runs/`, `accounts/`). Set
-`STAGEHAND_HOME` to use another directory — handy for a scratch instance while the real one keeps working.
+State lives in `~/.vortex/` (`config.json`, `vortex.sqlite`, `tasks/`, `runs/`, `accounts/`). Set
+`VORTEX_HOME` to use another directory — handy for a scratch instance while the real one keeps working.
+
+Renamed from Stagehand: an existing `~/.stagehand/` is used in place while `~/.vortex/` does not exist (nothing is moved;
+rename the directory yourself, with the server stopped, when you want to), a `stagehand.sqlite` in it is still opened, every
+`STAGEHAND_*` variable is read when its `VORTEX_*` twin is unset (and commands Vortex runs get both), and existing
+`stagehand-*` tmux sessions, template worktrees, `refs/stagehand/base/*` pins and browser-stored keys keep working. The code is
+`server/src/home.ts`.
 
 ### Public listener (optional)
 
@@ -93,7 +99,7 @@ so pushed notifications link there.
 ## Prompter — the assistant in the app
 
 The button in the bottom-right corner opens Prompter: a headless Claude session per chat window, on a token account,
-with its own config dir and its own MemPalace under `~/.stagehand/prompter/` (identity, skills and MCP setup come from
+with its own config dir and its own MemPalace under `~/.vortex/prompter/` (identity, skills and MCP setup come from
 this repository's `prompter/` folder and are re-synced at every start). Every message carries a description of the
 page you are on (the URL hash is the single source of truth for that — see `web/src/routes.ts`), it searches and files
 its palace, and it acts through the local API. Configure it on the AI accounts page (account, model, idle timeout) and

@@ -1,6 +1,6 @@
 # Memory: ideas parked for later
 
-Stagehand's palace (`~/.stagehand/mempalace`) files every Product Owner source and issue as verbatim chunks of about
+Vortex's palace (`~/.vortex/mempalace`) files every Product Owner source and issue as verbatim chunks of about
 700 characters, each opening with a locator line (`server/src/palace-index.ts`). The agent searches first and opens a
 file only when search is not enough. The ideas below came up while designing that, and are not built.
 
@@ -18,7 +18,7 @@ file only when search is not enough. The ideas below came up while designing tha
 ## LLMLingua-2 digests
 
 - **Idea** — compress a long source with LLMLingua-2 into a digest the agent reads in place of the original.
-- **Built and measured** — `scripts/lingua.py` (a JSON-lines sidecar; venv in `~/.stagehand/lingua`, model
+- **Built and measured** — `scripts/lingua.py` (a JSON-lines sidecar; venv in `~/.vortex/lingua`, model
   `microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank`, MPS). It keeps headings, code, tables and short
   blocks verbatim, protects identifiers, numbers, code spans and bold lead-ins as forced placeholder tokens, and
   compresses each list item on its own.

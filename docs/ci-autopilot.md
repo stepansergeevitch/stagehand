@@ -34,7 +34,7 @@ and the branch diff against the merge-base, and writes `ci-triage.json`:
 
 Deny by default: a failure the agent cannot tie to the branch is `other`.
 
-## 2. Verification — Stagehand checks each "allow" mechanically
+## 2. Verification — Vortex checks each "allow" mechanically
 
 The triage agent only extracts identifiers from the logs (`file:line`, a test id, a migration file); git and GitHub
 decide.
@@ -55,7 +55,7 @@ decide.
 
 A wrong "allow" from the agent is turned into deny by these checks; a wrong "deny" only leaves a failure for the human.
 
-The agent proposes; Stagehand decides from git and CI facts. A failure that does not pass its check becomes `deny`.
+The agent proposes; Vortex decides from git and CI facts. A failure that does not pass its check becomes `deny`.
 
 | Kind | Allowed when | Check |
 |---|---|---|

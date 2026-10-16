@@ -1,12 +1,12 @@
 ---
-name: stagehand-api
-description: The local Stagehand HTTP API (http://127.0.0.1:4747) — how to read tasks, runs, diffs, PRs, services, environments and accounts, and how to act (retry, stop, answer questions, instruct the agent, review, services, rerun/return, PR actions). Use whenever the context block is not enough or the human asks Prompter to do something.
+name: vortex-api
+description: The local Vortex HTTP API (http://127.0.0.1:4747) — how to read tasks, runs, diffs, PRs, services, environments and accounts, and how to act (retry, stop, answer questions, instruct the agent, review, services, rerun/return, PR actions). Use whenever the context block is not enough or the human asks Prompter to do something.
 ---
 
-# Stagehand local API
+# Vortex local API
 
 Base URL `http://127.0.0.1:4747`, JSON in and out, no auth on loopback. Use `curl -s` and `jq`. Ids are UUIDs; the
-`<stagehand-context>` block gives the task id of the open task. Every list below is `METHOD path — what it does`.
+`<vortex-context>` block gives the task id of the open task. Every list below is `METHOD path — what it does`.
 
 ## Read
 
@@ -73,7 +73,7 @@ Say what you do in one line first. Re-read `GET /api/tasks/:id` afterwards and r
 
 ## The server itself
 
-- `POST /api/server/restart {"force": false}` — restarts Stagehand in its tmux pane (needed after a code change).
+- `POST /api/server/restart {"force": false}` — restarts Vortex in its tmux pane (needed after a code change).
   Refused with 409 while a run goes; `force: true` kills the runs (Retry resumes them). Only when the human asks in
   the chat. Your own session survives the restart.
 - `GET /api/health` — is it back.

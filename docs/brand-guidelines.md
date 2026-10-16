@@ -6,7 +6,7 @@
 
 | Element | Value |
 |---------|-------|
-| Name | Vortex (formerly Stagehand) |
+| Name | Vortex (formerly Vortex) |
 | Positioning | A local orchestrator that walks tickets through stages with headless Claude Code, pausing where a human must look. |
 | Primary colour | `--accent` #2b59d6 (dark mode #7c9bff) |
 | UI font | IBM Plex Sans, mono IBM Plex Mono |
@@ -17,7 +17,7 @@
 - Written "Vortex": capital V, one word, never "VORTEX", "vortex" in running text or "Vortex.app".
 - One line: *a local orchestrator that walks tickets through stages with headless Claude Code, pausing where a human must look.*
 - What it is not: a hosted service, a chat client, a CI system. It runs on the user's machine, on their repositories.
-- The old name Stagehand survives only in code, paths (`~/.stagehand`), environment variables and storage keys. It does not appear in anything a person reads in the UI.
+- The old name Vortex survives only in code, paths (`~/.vortex`), environment variables and storage keys. It does not appear in anything a person reads in the UI.
 
 ## 2. Colour
 
@@ -105,4 +105,4 @@ Rules:
 
 ## Changelog
 
-- v1: first guidelines, written with the rename from Stagehand.
+- v1: first guidelines, written with the rename from Vortex.
