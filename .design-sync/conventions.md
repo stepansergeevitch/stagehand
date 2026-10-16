@@ -4,7 +4,7 @@ Vortex is a small React design system (`@vortex/ds`): tokens plus 11 React expor
 
 ## Setup
 - Import the one global stylesheet: `@vortex/ds/styles.css` (it defines tokens and every component class). No provider or wrapper exists; components work anywhere.
-- The stylesheet sets NO base typography. On `body` set `font-family: var(--sans); font-size: var(--fs-md); color: var(--ink); background: var(--bg)`.
+- The stylesheet sets base typography on `body` (--sans, --fs-md, line-height 1.5, --ink on --bg); components inherit it.
 - Light is the default; dark follows `prefers-color-scheme` through the same token names. Never hard-code a colour.
 
 ## Styling idiom: tokens, then component classes
@@ -22,7 +22,7 @@ Components render fixed class names: `btn btn-primary|btn-danger|btn-ghost btn-s
 - `Chip` tone neutral|ok|warn|bad|wait|accent: a status pill, monospace. `Notice` tone accent|ok|warn|bad|wait: an inline message with a left rule.
 - `Card` takes `title` (renders an h2) and optional `badge`.
 - `Icon name=` one of close, plus, search, columns, filter, chevronDown, chevronRight, check, info, refresh, arrowLeft, external; 16px, inherits `currentColor`. Put it inside a Button with text, or alone in an `icon` Button.
-- `Input`/`Select`/`Textarea`: `invalid` sets aria-invalid; the red border needs `className="field-ctl"` alongside it.
+- `Input`/`Select`/`Textarea`: `invalid` sets aria-invalid and a red border.
 - `Tabs` holds no state: pass `items`, `active`, `onChange`; `variant="pill"` is the compact second level. `TabList` + `Tab active` is the manual form.
 
 ## Where the truth lives

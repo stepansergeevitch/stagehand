@@ -2,7 +2,7 @@ import { Button, Icon } from '@vortex/ds';
 
 const row = { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } as const;
 
-const Variants_ = () => (
+export const Variants = () => (
   <div style={row}>
     <Button>Cancel</Button>
     <Button variant="primary">Create task</Button>
@@ -11,7 +11,7 @@ const Variants_ = () => (
   </div>
 );
 
-const Sizes_ = () => (
+export const Sizes = () => (
   <div style={row}>
     <Button variant="primary">Run QA</Button>
     <Button variant="primary" size="sm">Run QA</Button>
@@ -19,7 +19,7 @@ const Sizes_ = () => (
   </div>
 );
 
-const WithIcon_ = () => (
+export const WithIcon = () => (
   <div style={row}>
     <Button variant="primary"><Icon name="plus" /> New environment</Button>
     <Button><Icon name="refresh" /> Refresh</Button>
@@ -28,7 +28,7 @@ const WithIcon_ = () => (
   </div>
 );
 
-const ToggleAndDisabled_ = () => (
+export const ToggleAndDisabled = () => (
   <div style={row}>
     <Button icon on aria-label="Filter"><Icon name="filter" /></Button>
     <Button icon aria-label="Columns"><Icon name="columns" /></Button>
@@ -36,11 +36,3 @@ const ToggleAndDisabled_ = () => (
     <Button variant="primary" disabled>Push</Button>
   </div>
 );
-
-
-// The DS stylesheet sets no base font: a host page sets font-family/size/colour on body, so each cell does the same.
-const base = { fontFamily: 'var(--sans)', fontSize: 'var(--fs-md)', color: 'var(--ink)' } as const;
-export const Variants = () => <div style={base}><Variants_ /></div>;
-export const Sizes = () => <div style={base}><Sizes_ /></div>;
-export const WithIcon = () => <div style={base}><WithIcon_ /></div>;
-export const ToggleAndDisabled = () => <div style={base}><ToggleAndDisabled_ /></div>;

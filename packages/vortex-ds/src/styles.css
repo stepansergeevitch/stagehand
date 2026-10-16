@@ -40,6 +40,9 @@
 }
 @media (prefers-reduced-motion: reduce) { :root { --dur: 0ms; } }
 
+/* Base typography: pages inherit it; web sets the same on body. */
+body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: var(--fs-md); line-height: 1.5; }
+
 /* Component styles for @vortex/ds — Button, Chip, Card, Input/Select/Textarea, Tabs, Notice, Icon.
    Pages compose these; they do not restyle them. */
 
@@ -88,7 +91,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 0; 
 input:disabled, select:disabled, textarea:disabled { opacity: .6; background: var(--code); cursor: not-allowed; }
 input[type="checkbox"], input[type="radio"] { min-height: 0; width: 15px; height: 15px; padding: 0; accent-color: var(--accent); vertical-align: middle; }
 select { padding-right: 6px; }
-.field-ctl.invalid { border-color: var(--bad); }
+input.invalid, select.invalid, textarea.invalid { border-color: var(--bad); }
 
 /* ---------- Tabs ---------- */
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 0 0 var(--sp-4); overflow-x: auto; }
