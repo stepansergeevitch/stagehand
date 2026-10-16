@@ -6,6 +6,7 @@
 .modal-body { display: grid; gap: var(--sp-3); padding: var(--sp-5); overflow: auto; min-height: 0; }
 .modal-body label { display: grid; gap: var(--sp-1); font-weight: 500; color: var(--ink-2); font-size: var(--fs-md); }
 .modal-body label > select { max-width: 100%; }
+.modal-body label.check-row { display: inline-flex; font-weight: 400; }
 .modal-foot { display: flex; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-3) var(--sp-5); border-top: 1px solid var(--line); background: var(--panel-2); border-radius: 0 0 var(--r-xl) var(--r-xl); flex: none; }
 @keyframes modal-fade { from { opacity: 0; } }
 @keyframes modal-rise { from { opacity: 0; transform: translateY(8px) scale(.985); } }

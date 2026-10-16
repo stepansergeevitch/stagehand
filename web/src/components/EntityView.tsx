@@ -14,7 +14,7 @@ import "./entity.css";
 
 export interface EntityTab {
     key: string;
-    label: string;
+    label: ReactNode;
     content: ReactNode;
 }
 
