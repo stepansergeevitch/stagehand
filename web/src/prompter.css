@@ -1,0 +1,49 @@
+/* Prompter: the assistant window and its launcher. Sits above the page (and its menus), below the drawer scrim and dialogs. */
+.prompter-fab { position: fixed; right: var(--sp-4); bottom: var(--sp-4); z-index: calc(var(--z-pop) - 5); height: 40px; padding: 0 var(--sp-4); border-radius: var(--r-pill); box-shadow: var(--shadow-md); }
+.prompter { position: fixed; right: var(--sp-4); bottom: var(--sp-4); z-index: calc(var(--z-pop) - 5); width: min(420px, calc(100vw - 2 * var(--sp-3))); height: min(580px, calc(100dvh - 2 * var(--sp-4))); display: flex; flex-direction: column; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-xl); box-shadow: var(--shadow-lg), inset 0 1px 0 var(--hi); overflow: hidden; }
+.prompter.wide { width: min(720px, calc(100vw - 2 * var(--sp-3))); height: min(80dvh, calc(100dvh - 2 * var(--sp-4))); }
+
+.pr-head { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--line); min-width: 0; }
+.pr-title { margin: 0; font-size: var(--fs-md); font-weight: 600; flex: 0 0 auto; }
+.pr-account { flex: 0 1 auto; min-width: 0; max-width: 96px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pr-model { flex: 0 1 140px; min-width: 0; }
+.pr-spacer { flex: 1 1 0; min-width: 0; }
+.pr-menu-wrap { position: relative; }
+.pr-menu { position: absolute; right: 0; top: calc(100% + var(--sp-1)); z-index: var(--z-pop); white-space: nowrap; }
+
+.pr-strip { padding: var(--sp-2) var(--sp-3) 0; overflow-x: auto; flex: 0 0 auto; flex-wrap: nowrap; }
+.pr-strip .tab { flex: 0 0 auto; max-width: 180px; display: inline-flex; align-items: center; gap: var(--sp-2); }
+.pr-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-tab-title.unread { font-weight: 600; }
+.pr-where { padding: var(--sp-1) var(--sp-3); font-size: var(--fs-xs); color: var(--ink-3); border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pr-notice { margin: var(--sp-2) var(--sp-3) 0; }
+
+.pr-log { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
+.pr-empty { margin: auto 0; text-align: center; color: var(--ink-3); font-size: var(--fs-sm); }
+.pr-msg { max-width: 92%; padding: var(--sp-2) var(--sp-3); border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--panel-2); min-width: 0; overflow-wrap: anywhere; }
+.pr-msg.user { align-self: flex-end; background: var(--accent-soft); border-color: transparent; }
+.pr-msg.user.queued { background: transparent; border: 1px dashed var(--accent); }
+.pr-msg.live { opacity: .85; }
+.pr-msg .markdown > :first-child { margin-top: 0; } .pr-msg .markdown > :last-child { margin-bottom: 0; }
+.pr-user-text { white-space: pre-wrap; }
+.pr-queued { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-1); font-size: var(--fs-xs); color: var(--ink-3); }
+.pr-activity { font-size: var(--fs-xs); color: var(--ink-3); font-family: var(--mono); padding: 0 var(--sp-1); }
+
+.pr-input { display: flex; gap: var(--sp-2); align-items: flex-end; padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--line); }
+.pr-input .agent-input { flex: 1; min-width: 0; }
+.pr-input textarea { min-height: 40px; resize: vertical; }
+.pr-send { display: flex; flex-direction: column; gap: var(--sp-1); }
+
+@media (max-width: 760px) {
+    /* the launcher is a round button the size of a touch target; the window is a full-screen sheet */
+    .prompter-fab { right: max(var(--sp-3), env(safe-area-inset-right)); bottom: max(var(--sp-3), env(safe-area-inset-bottom)); width: var(--touch); height: var(--touch); padding: 0; justify-content: center; }
+    .prompter-fab .pr-fab-text { display: none; }
+    .prompter-fab .badge { position: absolute; top: -4px; right: -4px; }
+    .prompter, .prompter.wide { inset: 0; width: auto; height: auto; max-height: none; border-radius: 0; border: 0; padding-bottom: env(safe-area-inset-bottom); }
+    .pr-account { display: none; }
+    .pr-input { flex-direction: column; align-items: stretch; }
+    .pr-send { flex-direction: row-reverse; }
+    .pr-send .btn { flex: 1; }
+    /* leave room under the page so the launcher never covers a table footer */
+    body:has(.prompter-fab) .page-frame { padding-bottom: calc(var(--touch) + var(--sp-6) + env(safe-area-inset-bottom)); }
+}

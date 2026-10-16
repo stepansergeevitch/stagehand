@@ -5,7 +5,9 @@ import { storage } from "./storage";
 import { prompterBus } from "./prompterBus";
 import { formatRoute, type Route } from "./routes";
 import { AgentInput, usePendingFiles } from "./AgentInput";
-import { Button, Chip, Select } from "@vortex/ds";
+import { Badge, Button, Chip, Icon, IconButton, Menu, MenuItem, Notice, Select, StatusDot, Tab, TabList } from "@vortex/ds";
+import { useDismiss } from "./components/useDismiss";
+import "./prompter.css";
 
 // Prompter — the assistant in the bottom-right corner. Every chat is a claude session on the server; several can be
 // open at once and the strip under the header switches between them (the list is the server's, so a reload or a
@@ -43,6 +45,8 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
     const [text, setText] = useState("");
     const attach = usePendingFiles();
     const [error, setError] = useState<string | null>(null);
+    const [menuOpen, setMenuOpen] = useState(false);
+    const menuRef = useDismiss(menuOpen, () => setMenuOpen(false));
     const [model, setModel] = useState("");
     const [where, setWhere] = useState("");
     const [status, setStatus] = useState<{ ready: boolean; reason: string | null; account: string | null } | null>(null);
@@ -232,69 +236,72 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
     if (!open) {
         const unread = Object.values(chats).filter((c) => c.unread).length;
         return (
-            <Button className="prompter-fab" title="Prompter — the assistant that knows this app and sees what you see" onClick={() => setOpen(true)}>
-                <span className="prompter-fab-mark">P</span> Prompter{unread > 0 && <Chip tone="accent" title="chats with an answer you have not seen">{unread}</Chip>}
+            <Button className="prompter-fab" variant="primary" title="Prompter: the assistant that knows this app and sees what you see" onClick={() => setOpen(true)}>
+                <Icon name="spark" /><span className="pr-fab-text">Prompter</span>
+                {unread > 0 && <Badge tone="accent" title="Chats with an answer you have not seen">{unread}</Badge>}
             </Button>
         );
     }
     const placeholder = chat.busy
-        ? `Answering… Esc stops it; a message sent now waits for the next turn${queued.length ? ` (${queued.length} stacked; ArrowUp edits the last one)` : ""}`
-        : "Message Prompter… (Enter to send, Shift+Enter for a new line)";
+        ? `Answering. Esc stops it; a message sent now waits for the next turn${queued.length ? ` (${queued.length} stacked; ArrowUp edits the last one)` : ""}`
+        : "Message Prompter. Enter sends, Shift+Enter adds a line.";
     return (
-        <aside className={`prompter ${wide ? "wide" : ""}`} aria-label="Prompter">
-            <header className="prompter-head">
-                <b>Prompter</b>
-                {status?.account && <Chip title="the AI account that runs the assistant">{status.account}</Chip>}
-                <Select className="prompter-model" value={model} title="Model for the next new chat" onChange={(e) => setModel(e.target.value)}>
+        <aside className={`prompter${wide ? " wide" : ""}`} aria-label="Prompter">
+            <header className="pr-head">
+                <h2 className="pr-title">Prompter</h2>
+                {status?.account && <Chip className="pr-account" title="The AI account that runs the assistant">{status.account}</Chip>}
+                <Select className="pr-model" value={model} aria-label="Model for the next new chat" title="Model for the next new chat" onChange={(e) => setModel(e.target.value)}>
                     {(settings?.models ?? []).filter((m) => m.value).map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
                 </Select>
-                <span className="spacer" />
-                <Button size="sm" title="Start another chat (this one stays open in the strip)" onClick={() => void create().catch((e: Error) => setError(e.message))}>+ New</Button>
-                <Button size="sm" title={wide ? "Smaller" : "Larger"} onClick={() => setWide((v) => !v)}>{wide ? "⇲" : "⇱"}</Button>
-                <Button size="sm" title="Hide the window; the chats stay open" onClick={() => setOpen(false)}>–</Button>
-                <Button size="sm" title="End this chat" disabled={!session} onClick={() => session && end(session.id, sessions.length <= 1)}>×</Button>
+                <span className="pr-spacer" />
+                <IconButton icon="plus" label="New chat (this one stays open in the strip)" variant="ghost" size="sm" onClick={() => void create().catch((e: Error) => setError(e.message))} />
+                <div className="pr-menu-wrap" ref={menuRef}>
+                    <IconButton icon="more" label="Chat options" variant="ghost" size="sm" aria-expanded={menuOpen} aria-haspopup="menu" onClick={() => setMenuOpen((o) => !o)} />
+                    {menuOpen && (
+                        <Menu className="pr-menu">
+                            <MenuItem onClick={() => { setWide((v) => !v); setMenuOpen(false); }}>{wide ? "Smaller window" : "Larger window"}</MenuItem>
+                            <hr />
+                            <MenuItem danger disabled={!session} onClick={() => { setMenuOpen(false); if (session) end(session.id, sessions.length <= 1); }}>End this chat</MenuItem>
+                        </Menu>
+                    )}
+                </div>
+                <IconButton icon="chevronDown" label="Hide (the chats stay open)" variant="ghost" size="sm" onClick={() => setOpen(false)} />
             </header>
             {sessions.length > 1 && (
-                <div className="prompter-strip" role="tablist">
+                <TabList variant="pill" className="pr-strip" aria-label="Chats">
                     {sessions.map((s) => {
                         const c = chats[s.id] ?? EMPTY;
                         return (
-                            <Button
- key={s.id}
- role="tab"
- className={`prompter-tab ${s.id === activeId ? "active" : ""} ${c.unread ? "unread" : ""}`}
- title={`${s.title ?? "new chat"} · ${s.turns} turn${s.turns === 1 ? "" : "s"} · last ${ago(s.last_at)} ago${s.model ? ` · ${s.model}` : ""}`}
- onClick={() => setActiveId(s.id)}
->
-                                {c.busy && <span className="prompter-tab-busy" aria-label="answering" />}
-                                <span className="prompter-tab-title">{s.title ?? "new chat"}</span>
-                                <span className="prompter-tab-close" title="End this chat" onClick={(e) => { e.stopPropagation(); end(s.id, false); }}>×</span>
-                            </Button>
+                            <Tab key={s.id} active={s.id === activeId} title={`${s.title ?? "New chat"} · ${s.turns} turn${s.turns === 1 ? "" : "s"} · last ${ago(s.last_at)} ago${s.model ? ` · ${s.model}` : ""}`} onClick={() => setActiveId(s.id)}>
+                                {c.busy && <StatusDot tone="info" pulse title="Answering" />}
+                                {!c.busy && c.unread && <StatusDot tone="accent" title="Unread answer" />}
+                                <span className={`pr-tab-title${c.unread ? " unread" : ""}`}>{s.title ?? "New chat"}</span>
+                            </Tab>
                         );
                     })}
-                </div>
+                </TabList>
             )}
-            <div className="prompter-where" title="What the assistant is told you are looking at">{where || path}</div>
-            {status && !status.ready && <div className="blocked-box" style={{ margin: "0 10px 6px" }}>{status.reason}</div>}
-            <div className="prompter-log">
-                {chat.messages.length === 0 && !chat.live && <div className="empty">Ask about what you see, how Vortex works, or tell me what to do here. I remember through the palace, not through this window.</div>}
+            <div className="pr-where" title="What the assistant is told you are looking at">{where || path}</div>
+            {status && !status.ready && <Notice tone="warn" className="pr-notice">{status.reason}</Notice>}
+            <div className="pr-log">
+                {chat.messages.length === 0 && !chat.live && <p className="pr-empty">Ask about what you see, how Vortex works, or tell me what to do here. I remember through the palace, not through this window.</p>}
                 {chat.messages.map((m) => (
-                    <div key={m.id} className={`chat-msg ${m.role === "user" ? "user" : "agent"} ${m.state === "queued" ? "queued" : ""}`}>
-                        {m.role === "user" ? <div className="prompter-user-text">{m.text}</div> : <Markdown source={m.text} />}
+                    <div key={m.id} className={`pr-msg ${m.role === "user" ? "user" : "agent"}${m.state === "queued" ? " queued" : ""}`}>
+                        {m.role === "user" ? <div className="pr-user-text">{m.text}</div> : <Markdown source={m.text} />}
                         {m.state === "queued" && (
-                            <div className="prompter-queued-row">
-                                <span>waits for the next turn</span>
-                                <Button title="Take it back into the input to edit (ArrowUp does the same for the last one)" onClick={() => void takeBack(m)}>edit</Button>
+                            <div className="pr-queued">
+                                <span>Waits for the next turn</span>
+                                <Button size="sm" variant="ghost" title="Take it back into the input to edit (ArrowUp does the same for the last one)" onClick={() => void takeBack(m)}>Edit</Button>
                             </div>
                         )}
                     </div>
                 ))}
-                {chat.live && <div className="chat-msg agent live"><Markdown source={chat.live} /></div>}
-                {chat.busy && <div className="prompter-activity">{chat.activity ?? "thinking…"}</div>}
+                {chat.live && <div className="pr-msg agent live"><Markdown source={chat.live} /></div>}
+                {chat.busy && <div className="pr-activity" role="status">{chat.activity ?? "Thinking…"}</div>}
                 <div ref={bottom} />
             </div>
-            {error && <div className="blocked-box" style={{ margin: "0 10px 6px" }}>{error}</div>}
-            <div className="prompter-input">
+            {error && <Notice tone="bad" className="pr-notice">{error}</Notice>}
+            <div className="pr-input">
                 <AgentInput
                     ref={input}
                     value={text}
@@ -316,8 +323,10 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
                     disabled={!session || (status !== null && !status.ready)}
                     rows={2}
                 />
-                {chat.busy && <Button className="prompter-stop" title={`Stop this turn (Esc)${queued.length ? `; the ${queued.length} stacked message${queued.length === 1 ? "" : "s"} go out next` : ""}`} onClick={() => void stop()}>■ Stop</Button>}
-                <Button variant="primary" disabled={!session || (!text.trim() && attach.files.length === 0)} title={chat.busy ? "Stacks behind the running turn" : "Send"} onClick={() => void send()}>{chat.busy ? "Stack" : "Send"}</Button>
+                <div className="pr-send">
+                    {chat.busy && <Button variant="danger" title={`Stop this turn (Esc)${queued.length ? `; the ${queued.length} stacked message${queued.length === 1 ? "" : "s"} go out next` : ""}`} onClick={() => void stop()}>Stop</Button>}
+                    <Button variant="primary" disabled={!session || (!text.trim() && attach.files.length === 0)} title={chat.busy ? "Stacks behind the running turn" : "Send"} onClick={() => void send()}>{chat.busy ? "Stack" : "Send"}</Button>
+                </div>
             </div>
         </aside>
     );

@@ -1,66 +1,69 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, pct, STAGE_LABEL, type Stage, type UsageBucket, type UsageReport } from "./api";
 import { storage } from "./storage";
-import { Button, Card, Tab, TabList } from "@vortex/ds";
+import { Button, EmptyState, Hint, Skeleton } from "@vortex/ds";
+import { DataTable, type DataColumn } from "./components/DataTable";
+import { PageHeader } from "./components/PageHeader";
+import { Panel } from "./components/Panel";
+import { StatRow, StatTile } from "./components/StatTile";
+import { BarChart, PeriodTabs, ShareBar } from "./InsightParts";
 
-// Token and cost usage as reported by claude's result events, sliced by environment, account, task, stage, model and day.
-
-const PERIODS: Array<{ days: number; label: string }> = [
-    { days: 1, label: "24 h" },
-    { days: 7, label: "7 days" },
-    { days: 30, label: "30 days" },
-    { days: 0, label: "all time" },
-];
+// Usage: token and cost as reported by claude's result events, sliced by environment, account, task, stage, model and day.
 
 export const money = (n: number): string => (n >= 100 ? `$${n.toFixed(0)}` : n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`);
 export const tokens = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
 export const hours = (ms: number): string => (ms >= 3_600_000 ? `${(ms / 3_600_000).toFixed(1)} h` : ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
 
-const Tile = ({ label, value, sub }: { label: string; value: string; sub?: string }) => (
-    <div className="tile">
-        <div className="tile-label">{label}</div>
-        <div className="tile-value">{value}</div>
-        {sub && <div className="tile-sub">{sub}</div>}
-    </div>
-);
+const NOT_CALIBRATED = "Enterprise accounts have no windows, and a new account shows nothing until a run has moved its limit.";
 
-const Breakdown = ({ title, rows, total, labelOf, limit, windows }: { title: string; rows: UsageBucket[]; total: number; labelOf?: (b: UsageBucket) => string; limit?: number; windows?: boolean }) => {
+const Breakdown = ({ title, hint, name, rows, total, labelOf, limit, windowHint, storageKey }: { title: string; hint?: string; name: string; rows: UsageBucket[]; total: number; labelOf?: (b: UsageBucket) => string; limit?: number; windowHint?: string; storageKey: string }) => {
     const [all, setAll] = useState(false);
     const shown = limit && !all ? rows.slice(0, limit) : rows;
+    const hasSub = rows.some((b) => b.sub);
+    const columns: DataColumn<UsageBucket>[] = useMemo(() => {
+        const label = (b: UsageBucket): string => (labelOf ? labelOf(b) : b.label);
+        const num = (key: string, header: string, value: (b: UsageBucket) => number, render: (b: UsageBucket) => string, extra: Partial<DataColumn<UsageBucket>> = {}): DataColumn<UsageBucket> =>
+            ({ key, label: header, kind: "num", filter: false, value, render, ...extra });
+        const window = (key: string, header: string, pick: (b: UsageBucket) => number | null | undefined, hintText: string): DataColumn<UsageBucket> =>
+            ({ key, label: header, kind: "num", filter: false, hint: hintText, value: (b) => pick(b) ?? null, render: (b) => (pick(b) == null ? "—" : pct((pick(b) ?? 0) * 100)) });
+        return [
+            { key: "name", label: name, kind: "label", filter: false, value: label },
+            ...(hasSub ? [{ key: "sub", label: "Detail", filter: false, value: (b: UsageBucket) => b.sub ?? "" }] : []),
+            num("cost", "Cost", (b) => b.cost, (b) => money(b.cost)),
+            { key: "share", label: "Share", filter: false, value: (b) => b.cost, render: (b) => <ShareBar part={b.cost} total={total} /> },
+            ...(windowHint
+                ? [
+                    window("five", "5-hour window", (b) => b.fiveHour, `This cost as a share of the account's 5-hour subscription window. ${windowHint}`),
+                    window("seven", "7-day window", (b) => b.sevenDay, `This cost as a share of the account's 7-day subscription window. ${windowHint}`),
+                ]
+                : []),
+            num("runs", "Runs", (b) => b.runs, (b) => String(b.runs)),
+            num("output", "Output", (b) => b.output, (b) => tokens(b.output)),
+            num("cacheRead", "Cache read", (b) => b.cacheRead, (b) => tokens(b.cacheRead)),
+            num("cacheWrite", "Cache write", (b) => b.cacheWrite, (b) => tokens(b.cacheWrite), { defaultHidden: true }),
+            num("input", "Input", (b) => b.input, (b) => tokens(b.input), { defaultHidden: true }),
+            num("time", "Time", (b) => b.durationMs, (b) => hours(b.durationMs)),
+        ];
+    }, [name, hasSub, total, labelOf, windowHint]);
     return (
-        <Card className="usage-table">
-            <h2>{title}</h2>
-            {rows.length === 0 && <div className="quiet">nothing in this period</div>}
-            {rows.length > 0 && (
-                <table>
-                    <thead><tr><th></th><th>Cost</th><th>Share</th>{windows && <th title="This cost as a share of the account's 5-hour / 7-day subscription window, calibrated from runs">5h / 7d window</th>}<th>Runs</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Input</th><th>Time</th></tr></thead>
-                    <tbody>
-                        {shown.map((b) => (
-                            <tr key={b.key}>
-                                <td className="usage-label"><b>{labelOf ? labelOf(b) : b.label}</b>{b.sub && <small>{b.sub}</small>}</td>
-                                <td className="mono">{money(b.cost)}</td>
-                                <td><span className="share"><i style={{ width: `${total > 0 ? Math.round((b.cost / total) * 100) : 0}%` }} /><span>{total > 0 ? Math.round((b.cost / total) * 100) : 0}%</span></span></td>
-                                {windows && <td className="mono">{b.fiveHour == null && b.sevenDay == null ? <span title="enterprise, or no run has moved this account's windows yet">—</span> : `${pct(b.fiveHour == null ? null : b.fiveHour * 100)} / ${pct(b.sevenDay == null ? null : b.sevenDay * 100)}`}</td>}
-                                <td className="mono">{b.runs}</td>
-                                <td className="mono">{tokens(b.output)}</td>
-                                <td className="mono">{tokens(b.cacheRead)}</td>
-                                <td className="mono">{tokens(b.cacheWrite)}</td>
-                                <td className="mono">{tokens(b.input)}</td>
-                                <td className="mono">{hours(b.durationMs)}</td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            )}
-            {limit && rows.length > limit && <div className="actions"><Button onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${rows.length}`}</Button></div>}
-        </Card>
+        <DataTable
+            embedded
+            title={<>{title}{hint && <Hint text={hint} />}</>}
+            actions={limit && rows.length > limit ? <Button size="sm" onClick={() => setAll((v) => !v)}>{all ? "Show fewer" : `Show all ${rows.length}`}</Button> : undefined}
+            columns={columns}
+            rows={shown}
+            rowKey={(b) => b.key}
+            selectable={false}
+            empty="Nothing in this period."
+            defaultSort={name === "Day" ? { key: "name", desc: true } : { key: "cost", desc: true }}
+            storageKey={storageKey}
+        />
     );
 };
 
 // The period is routed (#/analytics?days=<n>); without one, the period used last.
 export const Analytics = ({ days: routedDays, onDays, onError }: { days?: number; onDays: (days: number) => void; onError: (m: string) => void }) => {
     const days = routedDays ?? Number(storage.get("vortex.usageDays") ?? "7");
-    const setDays = onDays;
     const [report, setReport] = useState<UsageReport | null>(null);
     useEffect(() => {
         storage.set("vortex.usageDays", String(days));
@@ -68,35 +71,53 @@ export const Analytics = ({ days: routedDays, onDays, onError }: { days?: number
         void api.usage(days).then(setReport).catch((e: Error) => onError(e.message));
     }, [days, onError]);
     const t = report?.totals;
+    const perDay = useMemo(
+        () => (report ? [...report.byDay].sort((a, b) => a.label.localeCompare(b.label)).slice(-90).map((b) => ({ key: b.key, label: b.label, value: b.cost })) : []),
+        [report],
+    );
+    // What one full window is worth, learned from how far each run moved the account's limit.
+    const windowHint = report?.shares.length
+        ? `One full window is about ${report.shares.map((s) => `${money(s.usdPerWindow)} (${s.accountName}, ${s.window === "five_hour" ? "5 h" : s.window === "seven_day" ? "7 d" : s.window}, ${s.samples} sample${s.samples === 1 ? "" : "s"})`).join(" · ")}. It refines with every run.`
+        : NOT_CALIBRATED;
     return (
-        <div className="env-page analytics">
-            <h1>Analytics</h1>
-            <p className="field-hint">What the agents consumed, as reported by claude at the end of every run (stage runs, ticket fetches, QA logins). Cost is claude's own estimate at API list prices — on a subscription it is a proxy for how much of the rate-limit windows each thing used, not a bill.</p>
-            <TabList variant="pill">
-                {PERIODS.map((p) => <Tab key={p.days} active={days === p.days} onClick={() => setDays(p.days)}>{p.label}</Tab>)}
-            </TabList>
-            {!report && <div className="empty">loading…</div>}
-            {report && t && (
+        <>
+            <PageHeader
+                title={<>Usage<Hint text="What the agents consumed, as reported by claude at the end of every run: stage runs, ticket fetches, QA logins. Cost is claude's estimate at API list prices. On a subscription it is a proxy for how much of the rate-limit windows each thing used, not a bill." /></>}
+                actions={<PeriodTabs days={days} onDays={onDays} />}
+            />
+            {!report && (
                 <>
-                    <div className="tiles">
-                        <Tile label="Cost" value={money(t.cost)} sub={`${t.runs} run${t.runs === 1 ? "" : "s"}`} />
-                        <Tile label="Output tokens" value={tokens(t.output)} sub={`${t.turns} turns`} />
-                        <Tile label="Cache read" value={tokens(t.cacheRead)} sub={`write ${tokens(t.cacheWrite)}`} />
-                        <Tile label="Agent time" value={hours(t.durationMs)} sub={`input ${tokens(t.input)}`} />
-                    </div>
-                    <Breakdown title="By environment" rows={report.byEnv} total={t.cost} />
-                    <Breakdown title="By AI account" rows={report.byAccount} total={t.cost} windows />
-                    {report.shares.length > 0 && (
-                        <p className="field-hint">
-                            Window shares: one full window ≈ {report.shares.map((s) => `${money(s.usdPerWindow)} (${s.accountName}, ${s.window === "five_hour" ? "5 h" : s.window === "seven_day" ? "7 d" : s.window}, ${s.samples} sample${s.samples === 1 ? "" : "s"})`).join(" · ")} — learned from how far each run moved the account's limit; refines with every run.
-                        </p>
-                    )}
-                    <Breakdown title="By task" rows={report.byTask} total={t.cost} limit={10} />
-                    <Breakdown title="By stage" rows={report.byStage} total={t.cost} labelOf={(b) => STAGE_LABEL[b.label as Stage] ?? b.label} />
-                    <Breakdown title="By model" rows={report.byModel} total={t.cost} />
-                    <Breakdown title="By day" rows={report.byDay} total={t.cost} limit={14} />
+                    <StatRow>{[0, 1, 2, 3].map((i) => <Skeleton key={i} height={84} />)}</StatRow>
+                    <Skeleton height={260} />
                 </>
             )}
-        </div>
+            {report && t && (
+                <>
+                    <StatRow>
+                        <StatTile label="Cost" value={money(t.cost)} sub={`${t.runs} run${t.runs === 1 ? "" : "s"}`} />
+                        <StatTile label="Output tokens" value={tokens(t.output)} sub={`${t.turns} turns`} />
+                        <StatTile label="Cache read" value={tokens(t.cacheRead)} sub={`${tokens(t.cacheWrite)} written`} />
+                        <StatTile label="Agent time" value={hours(t.durationMs)} sub={`${tokens(t.input)} input tokens`} />
+                    </StatRow>
+                    {t.runs === 0 ? (
+                        <Panel><EmptyState icon="chart" title="No runs in this period">Pick a longer period to see earlier usage.</EmptyState></Panel>
+                    ) : (
+                        <>
+                            {perDay.length > 0 && (
+                                <Panel title="Cost by day">
+                                    <BarChart data={perDay} format={money} title="Cost by day" yTitle="Cost per day (USD)" xTitle="Day" />
+                                </Panel>
+                            )}
+                            <Breakdown title="By environment" name="Environment" rows={report.byEnv} total={t.cost} storageKey="usage-env" />
+                            <Breakdown title="By AI account" name="Account" rows={report.byAccount} total={t.cost} windowHint={windowHint} storageKey="usage-account" />
+                            <Breakdown title="By task" name="Task" rows={report.byTask} total={t.cost} limit={10} storageKey="usage-task" />
+                            <Breakdown title="By stage" name="Stage" rows={report.byStage} total={t.cost} labelOf={(b) => STAGE_LABEL[b.label as Stage] ?? b.label} storageKey="usage-stage" />
+                            <Breakdown title="By model" name="Model" rows={report.byModel} total={t.cost} storageKey="usage-model" />
+                            <Breakdown title="By day" hint="The table view of the chart above." name="Day" rows={report.byDay} total={t.cost} limit={14} storageKey="usage-day" />
+                        </>
+                    )}
+                </>
+            )}
+        </>
     );
 };
