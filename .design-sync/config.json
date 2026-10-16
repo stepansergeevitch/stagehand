@@ -7,7 +7,7 @@
   "cssEntry": "dist/index.css",
   "readmeHeader": ".design-sync/conventions.md",
   "dtsPropsFor": {
-    "Button": "variant?: \"default\" | \"primary\" | \"danger\" | \"ghost\"; size?: \"md\" | \"sm\"; icon?: boolean; on?: boolean; disabled?: boolean; type?: \"button\" | \"submit\" | \"reset\"; onClick?: React.MouseEventHandler<HTMLButtonElement>; className?: string; style?: React.CSSProperties; children?: React.ReactNode; \"aria-label\"?: string; title?: string",
+    "Button": "variant?: \"default\" | \"primary\" | \"danger\" | \"ghost\"; size?: \"md\" | \"sm\"; icon?: boolean; leadingIcon?: string; on?: boolean; disabled?: boolean; type?: \"button\" | \"submit\" | \"reset\"; onClick?: React.MouseEventHandler<HTMLButtonElement>; className?: string; style?: React.CSSProperties; children?: React.ReactNode; \"aria-label\"?: string; title?: string",
     "Input": "invalid?: boolean; type?: string; value?: string | number; defaultValue?: string | number; placeholder?: string; disabled?: boolean; readOnly?: boolean; onChange?: React.ChangeEventHandler<HTMLInputElement>; className?: string; style?: React.CSSProperties; id?: string; name?: string",
     "Select": "invalid?: boolean; value?: string | number; defaultValue?: string | number; disabled?: boolean; onChange?: React.ChangeEventHandler<HTMLSelectElement>; className?: string; style?: React.CSSProperties; id?: string; name?: string; children?: React.ReactNode",
     "Textarea": "invalid?: boolean; value?: string; defaultValue?: string; placeholder?: string; rows?: number; disabled?: boolean; readOnly?: boolean; onChange?: React.ChangeEventHandler<HTMLTextAreaElement>; className?: string; style?: React.CSSProperties; id?: string; name?: string",
@@ -17,7 +17,7 @@
     "Wordmark": "size?: \"sm\" | \"md\" | \"lg\"; markOnly?: boolean; className?: string; style?: React.CSSProperties",
     "Notice": "tone?: \"accent\" | \"info\" | \"ok\" | \"warn\" | \"bad\" | \"wait\"; className?: string; style?: React.CSSProperties; children?: React.ReactNode",
     "Card": "title?: React.ReactNode; badge?: React.ReactNode; actions?: React.ReactNode; footer?: React.ReactNode; className?: string; style?: React.CSSProperties; children?: React.ReactNode",
-    "Chip": "tone?: \"neutral\" | \"ok\" | \"warn\" | \"bad\" | \"wait\" | \"accent\" | \"info\"; className?: string; style?: React.CSSProperties; title?: string; children?: React.ReactNode",
+    "Chip": "mono?: boolean; tone?: \"neutral\" | \"ok\" | \"warn\" | \"bad\" | \"wait\" | \"accent\" | \"info\"; className?: string; style?: React.CSSProperties; title?: string; children?: React.ReactNode",
     "StatusDot": "tone?: \"neutral\" | \"ok\" | \"warn\" | \"bad\" | \"wait\" | \"accent\" | \"info\"; pulse?: boolean; title?: string; className?: string",
     "Badge": "tone?: \"neutral\" | \"ok\" | \"warn\" | \"bad\" | \"wait\" | \"accent\" | \"info\"; className?: string; children?: React.ReactNode",
     "Tooltip": "text: React.ReactNode; children: React.ReactNode; className?: string",
@@ -35,7 +35,9 @@
     "MenuItem": "danger?: boolean; disabled?: boolean; onClick?: React.MouseEventHandler<HTMLButtonElement>; className?: string; children?: React.ReactNode",
     "Popover": "className?: string; style?: React.CSSProperties; children?: React.ReactNode",
     "Avatar": "name: string; size?: number; tone?: \"ok\" | \"warn\" | \"bad\" | \"wait\" | \"info\"; className?: string",
-    "Foundations": ""
+    "Foundations": "",
+    "CodeArea": "size?: \"sm\" | \"md\" | \"lg\"; prose?: boolean; invalid?: boolean; value?: string; defaultValue?: string; placeholder?: string; rows?: number; disabled?: boolean; readOnly?: boolean; onChange?: React.ChangeEventHandler<HTMLTextAreaElement>; className?: string; style?: React.CSSProperties; id?: string; name?: string",
+    "MoreMenu": "label?: string; children: React.ReactNode | ((close: () => void) => React.ReactNode)"
   },
   "extraFonts": [
     "src/fonts.css"

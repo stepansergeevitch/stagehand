@@ -15,10 +15,10 @@ Everything is a CSS custom property; never write a raw colour.
 - Type: `--sans --mono`, scale `--fs-xs 11 / sm 12.5 / md 14 / lg 16 / xl 20 / 2xl 28`. Space `--sp-1..6` (4px grid). Radius `--r-sm/md/lg/xl/pill`. Elevation `--shadow-sm/md/lg` + inner highlight `--hi`. Controls `--ctl-h` 32px, `--ctl-h-sm` 26px. Motion `--dur` 150ms, `--dur-overlay` 220ms (both 0 under reduced motion).
 
 ## Components and gotchas
-- `Button` variant default|primary|danger|ghost, `size="sm"`, `icon`, `on`; `IconButton icon label` is the icon-only form (label required).
-- `Chip` / `Badge` / `StatusDot` tone neutral|ok|warn|bad|wait|accent|info: a toned chip leads with a dot, so state is never colour alone. `StatusDot pulse` = in progress.
+- `Button` variant default|primary|danger|ghost, `size="sm"`, `leadingIcon="name"` (glyph before the label), `icon` (square, one icon), `on`; `IconButton icon label` is the icon-only form (label required).
+- `Chip` is sans by default; add `mono` for ids, branches and other machine text. `Chip` / `Badge` / `StatusDot` tone neutral|ok|warn|bad|wait|accent|info: a toned chip leads with a dot, so state is never colour alone. `StatusDot pulse` = in progress.
 - `Notice` tone accent|info|ok|warn|bad|wait shows a tone icon. `Card` takes `title`, `badge`, `actions` (header right) and `footer`.
-- `Input/Select/Textarea invalid` gives the red state. `Checkbox`, `Radio`, `Switch` take `label`.
+- `Input/Select/Textarea invalid` gives the red state. `CodeArea` (size sm|md|lg, `prose`) is the textarea for commands and machine text; `prose` wraps lines. `MoreMenu` is the header or row `⋯` button; put `MenuItem`s (and `<hr />`) inside, choosing one closes it. `Checkbox`, `Radio`, `Switch` take `label`.
 - `Tabs items active onChange` (state is the caller's); `variant="pill"` for the second level; `TabList` + `Tab active` manually.
 - `Tooltip text`, `Hint text` (info icon), `Kbd`, `Divider [vertical]`, `Skeleton`, `Spinner`, `EmptyState icon title action`, `Menu` + `MenuItem` (+ `<hr />`), `Popover` (surfaces; the host positions them), `Avatar name`.
 - `Wordmark` (size sm|md|lg, `markOnly`) is the logo, `Mark` the bare mark; copy is sentence case, product name "Vortex".

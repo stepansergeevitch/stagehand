@@ -15,3 +15,4 @@
 - `Foundations` is a documentation component (token scales) exported only so it gets a preview card; `overrides.Foundations` uses a tall single card. Icon uses cardMode column (GRID_OVERFLOW).
 - Tooltip preview forces the bubble open with an injected <style>; the real one is hover/focus only.
 - Web mock screenshots: `.ds-sync/shots.mjs` (gitignored) serves web/dist and stubs /api; a thin mock crashes pages that need real data, so only list/config pages render.
+- MoreMenu preview clicks its own button on mount (useEffect) so the card shows the open menu; the menu is absolutely positioned, so the wrapper reserves min-height. CodeArea sizes map to rows (CODE_ROWS in Input.tsx). `Button leadingIcon` and `Chip mono` are listed in dtsPropsFor by hand.

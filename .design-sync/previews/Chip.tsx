@@ -16,11 +16,20 @@ const Tones_ = () => (
 
 const AsLabels_ = () => (
   <div style={row}>
-    <Chip tone="accent">ENG-24845</Chip>
-    <Chip>main</Chip>
+    <Chip tone="accent" mono>ENG-24845</Chip>
+    <Chip mono>main</Chip>
     <Chip tone="ok">3 checks green</Chip>
   </div>
 );
 
+const MonoVsSans_ = () => (
+  <div style={row}>
+    <Chip tone="ok">3 checks green</Chip>
+    <Chip tone="ok" mono>3 checks green</Chip>
+    <Chip mono>feature/billing-export</Chip>
+    <Chip tone="bad" mono>ENG-24845</Chip>
+  </div>
+);
+export const MonoVsSans = () => <Both><MonoVsSans_ /></Both>;
 export const Tones = () => <Both><Tones_ /></Both>;
 export const AsLabels = () => <Both><AsLabels_ /></Both>;

@@ -29,6 +29,14 @@ const WithIcon_ = () => (
   </div>
 );
 
+const LeadingIcon_ = () => (
+  <div style={row}>
+    <Button leadingIcon="refresh">Rebase</Button>
+    <Button variant="primary" leadingIcon="plus">Create task</Button>
+    <Button size="sm" leadingIcon="external">Open pull request</Button>
+    <Button variant="ghost" leadingIcon="filter">Filters</Button>
+  </div>
+);
 const ToggleAndDisabled_ = () => (
   <div style={row}>
     <Button icon on aria-label="Filter"><Icon name="filter" /></Button>
@@ -40,5 +48,6 @@ const ToggleAndDisabled_ = () => (
 
 export const Variants = () => <Both><Variants_ /></Both>;
 export const Sizes = () => <Both><Sizes_ /></Both>;
+export const LeadingIcon = () => <Both><LeadingIcon_ /></Both>;
 export const WithIcon = () => <Both><WithIcon_ /></Both>;
 export const ToggleAndDisabled = () => <Both><ToggleAndDisabled_ /></Both>;
