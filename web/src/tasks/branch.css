@@ -1,0 +1,4 @@
+/* Branch picker (BranchPicker.tsx). */
+.branch-picker { display: inline-flex; flex-direction: column; gap: 2px; width: 100%; }
+.branch-picker input { width: 100%; font-family: var(--mono); }
+.branch-picker-hint { font-size: 11px; }

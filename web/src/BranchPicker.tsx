@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import { api } from "./api";
 import { Input } from "@vortex/ds";
+import "./tasks/branch.css";
 
 // Remote branches of one repository of an env, fetched once per (env, repo) and kept for the page's life.
 const cache = new Map<string, Promise<string[]>>();
@@ -17,14 +18,13 @@ const branchesOf = (envId: string, repo: string): Promise<string[]> => {
 
 // A branch name input with a searchable dropdown of the repository's remote branches (native datalist: typing filters
 // by substring, the arrow key opens the full list). Free text is still accepted — a branch that exists only locally.
-export const BranchPicker = ({ envId, repo = "", value, onChange, placeholder, autoFocus = false, style }: {
+export const BranchPicker = ({ envId, repo = "", value, onChange, placeholder, autoFocus = false }: {
     envId: string;
     repo?: string;
     value: string;
     onChange: (v: string) => void;
     placeholder?: string;
     autoFocus?: boolean;
-    style?: React.CSSProperties;
 }) => {
     const id = useId();
     const [names, setNames] = useState<string[] | null>(null);
@@ -38,7 +38,7 @@ export const BranchPicker = ({ envId, repo = "", value, onChange, placeholder, a
     }, [envId, repo]);
     return (
         <span className="branch-picker">
-            <Input list={id} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus} spellCheck={false} autoComplete="off" style={style} />
+            <Input list={id} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus} spellCheck={false} autoComplete="off" />
             <datalist id={id}>{(names ?? []).map((n) => <option key={n} value={n} />)}</datalist>
             <span className="field-hint branch-picker-hint">{error ? `branches unavailable: ${error}` : names === null ? "loading branches…" : `${names.length} remote branch${names.length === 1 ? "" : "es"}`}</span>
         </span>

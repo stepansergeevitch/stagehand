@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { anchorOf, api, repoColorClass, repoName, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type FileReviewState, type LineComment, type Message, type MessageAnchor } from "./api";
-import { Markdown } from "./Markdown";
+import { useEffect, useMemo, useState } from "react";
+import { api, repoColorClass, repoName, type BranchCommit, type DiffFile, type DiffLine, type DiffResponse, type FileReviewState, type LineComment, type Message, type MessageAnchor } from "./api";
 import { storage } from "./storage";
 import type { CodeScope, DiffRoute } from "./routes";
 import { AgentInput, usePendingFiles } from "./AgentInput";
 import { CommentEditor } from "./components/CommentEditor";
 import { LineThread, threadMessages, type ThreadMessage } from "./components/LineThread";
 import { Button, Chip, Input, Tab, TabList } from "@vortex/ds";
+import "./tasks/diff.css";
 
 // A test file by the common conventions of any stack: a tests / __tests__ / spec directory, test_*.py / *_test.py,
 // *.test.* / *.spec.*, *_test.go, *Test.java / *Tests.cs, conftest.py.
@@ -145,7 +145,7 @@ const CommitList = ({ taskId, repo, commits, uncommitted, filter, onFilter, busy
                     <div className="commit-remove">
                         <b>Squash {sel.length} commits into one</b>
                         <Input autoFocus value={squashing} onChange={(e) => setSquashing(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void squash()} placeholder="Commit message" />
-                        <div className="actions" style={{ margin: 0 }}>
+                        <div className="actions flush">
                             <Button variant="primary" disabled={disabled || !squashing.trim()} onClick={() => void squash()}>{busy === "squash" ? "Squashing…" : "Squash"}</Button>
                             <Button disabled={disabled} onClick={() => setSquashing(null)}>Cancel</Button>
                         </div>
@@ -155,7 +155,7 @@ const CommitList = ({ taskId, repo, commits, uncommitted, filter, onFilter, busy
                     <div className="commit-remove">
                         <b>Remove {sel.length === 1 ? `commit ${sel[0]!.short}` : `${sel.length} commits`} from history</b> — not a revert: the agent replays everything after them, resolves conflicts and re-runs tests. Nothing is pushed.
                         <AgentInput placeholder="Optional note for the agent: why remove them" value={note} onChange={setNote} pending={attach} />
-                        <div className="actions" style={{ margin: 0 }}>
+                        <div className="actions flush">
                             <Button variant="danger" disabled={disabled} onClick={() => void remove()}>{busy === "delete" ? "Starting…" : "Remove from history"}</Button>
                             <Button disabled={disabled} onClick={() => { setDeleting(false); setNote(""); }}>Cancel</Button>
                         </div>
@@ -174,7 +174,7 @@ const CommitList = ({ taskId, repo, commits, uncommitted, filter, onFilter, busy
                         {editing === c.sha ? (
                             <div className="commit-edit">
                                 <Input autoFocus value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void reword(c.sha)} />
-                                <div className="actions" style={{ margin: 0 }}>
+                                <div className="actions flush">
                                     <Button variant="primary" disabled={busy === c.sha || !text.trim()} onClick={() => void reword(c.sha)}>{busy === c.sha ? "Saving…" : "Save"}</Button>
                                     <Button disabled={busy === c.sha} onClick={() => setEditing(null)}>Cancel</Button>
                                 </div>
@@ -300,7 +300,7 @@ const FileDiff = ({
                 <Chip className={`${file.status === "added" ? "ok" : file.status === "deleted" ? "bad" : ""}`}>{file.status}</Chip>
                 <code className="path">{file.path}</code>
                 <span className="mono stat"><span className="add">+{file.additions}</span> <span className="del">−{file.deletions}</span></span>
-                {count > 0 && <Chip tone="wait">{count} 💬</Chip>}
+                {count > 0 && <Chip tone="wait">{count} comment{count === 1 ? "" : "s"}</Chip>}
                 {priorCount > 0 && <Chip title="comments from earlier review rounds">{priorCount} earlier</Chip>}
                 {threadCount > 0 && <Chip tone="accent" title="questions asked to the agent on lines of this file">{threadCount} Q&amp;A</Chip>}
             </summary>
@@ -308,14 +308,14 @@ const FileDiff = ({
             {file.collapsed && (
                 <div className="empty collapsed-file">
                     Generated or very large file — {file.additions + file.deletions} changed lines not loaded.
-                    <Button size="sm" style={{ marginLeft: 8 }} disabled={expanding} onClick={() => { setExpanding(true); void onExpand(file.path).finally(() => setExpanding(false)); }}>{expanding ? "Loading…" : "Show anyway"}</Button>
+                    <Button size="sm" disabled={expanding} onClick={() => { setExpanding(true); void onExpand(file.path).finally(() => setExpanding(false)); }}>{expanding ? "Loading…" : "Show anyway"}</Button>
                 </div>
             )}
             {(placed.outdated.length > 0 || placedThreads.outdated.length > 0 || drafts.outdated.length > 0) && (
                 <div className="outdated">
                     {drafts.outdated.map((c, i) => (
                         <div key={`d${i}`} className="line-comment outdated-item">
-                            <b>💬 draft</b> <Chip>line not in this view</Chip> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
+                            <b>Draft comment</b> <Chip>line not in this view</Chip> <code>:{c.line}</code> <code className="snippet">{c.snippet.trim().slice(0, 80)}</code>
                             <div>{c.text}</div>
                             {canComment && <Button size="sm" onClick={() => onChange(commentKey(c), null)}>Delete</Button>}
                         </div>
@@ -365,7 +365,7 @@ const FileDiff = ({
                                 {(thread || asking.has(key)) && <LineThread items={thread ?? []} asking={asking.has(key)} canAsk={canAsk} onReply={() => setEditing(key)} open={threadOpen(thread?.[0] ? commentKey(thread[0]) : key)} onOpen={(o) => onThreadOpen(thread?.[0] ? commentKey(thread[0]) : key, o)} />}
                                 {existing && editing !== key && (
                                     <div className="line-comment" onClick={() => canComment && setEditing(key)}>
-                                        <b>💬</b> {existing.text}
+                                        <b>Comment</b> {existing.text}
                                     </div>
                                 )}
                                 {editing === key && (

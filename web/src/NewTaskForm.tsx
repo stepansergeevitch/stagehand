@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { BranchPicker } from "./BranchPicker";
 import { accountOrderOf, api, envRepos, poEnvIds, modelLabel, type Account, type Env, type MyTicket, type ProductOwner, type Readiness, type Settings } from "./api";
 import { AgentInput } from "./AgentInput";
-import { Button, Chip, Input, Select, Textarea } from "@vortex/ds";
+import { Button, Chip, Hint, Icon, Input, Notice, Select, StatusDot, Textarea, type Tone } from "@vortex/ds";
+import "./tasks/newtask.css";
 
 // ClickUp and Linear both use 1 = urgent … 4 = low; 0/null = unset.
-const PRIORITY_MARK: Record<number, string> = { 0: "·", 1: "🔴", 2: "🟠", 3: "🟡", 4: "🔵" };
+const PRIORITY: Record<number, { tone: Tone; label: string }> = { 1: { tone: "bad", label: "Urgent" }, 2: { tone: "warn", label: "High" }, 3: { tone: "info", label: "Medium" }, 4: { tone: "neutral", label: "Low" } };
 
 // Splits pasted ticket ids/links (one per line, or separated by commas/spaces).
 const splitTickets = (s: string): string[] => [...new Set(s.split(/[\n,;]+|\s+(?=[A-Za-z]|https?:)/).map((x) => x.trim()).filter(Boolean))];
@@ -31,7 +32,7 @@ const TicketPicker = ({ groups, selected, onToggle }: { groups: Array<[string, M
     return (
         <div className="ticket-dropdown" ref={ref}>
             <Button type="button" className="ticket-dropdown-toggle" onClick={() => setOpen((v) => !v)}>
-                {picked.length ? `${picked.length} picked` : "Pick from my tickets"} <span className="caret">{open ? "▴" : "▾"}</span>
+                {picked.length ? `${picked.length} picked` : "Pick from my tickets"} <Icon name={open ? "chevronUp" : "chevronDown"} />
             </Button>
             {picked.length > 0 && (
                 <span className="ticket-chips">
@@ -51,15 +52,15 @@ const TicketPicker = ({ groups, selected, onToggle }: { groups: Array<[string, M
                                     {shown.map((t) => (
                                         <label key={t.id} className={`inline ticket-option ${selected.includes(t.id) ? "picked" : ""}`}>
                                             <Input type="checkbox" checked={selected.includes(t.id)} onChange={() => onToggle(t.id)} />
-                                            <span>{PRIORITY_MARK[t.priority ?? 0] ?? "·"} <b>{t.id}</b> {t.title.length > 70 ? `${t.title.slice(0, 70)}…` : t.title} <Chip>{t.status}</Chip></span>
+                                            <span>{PRIORITY[t.priority ?? 0] ? <StatusDot tone={PRIORITY[t.priority ?? 0]!.tone} title={PRIORITY[t.priority ?? 0]!.label} /> : null} <b>{t.id}</b> {t.title.length > 70 ? `${t.title.slice(0, 70)}…` : t.title} <Chip>{t.status}</Chip></span>
                                         </label>
                                     ))}
                                 </div>
                             );
                         })}
-                        {all.filter(match).length === 0 && <div className="quiet">nothing matches</div>}
+                        {all.filter(match).length === 0 && <div className="quiet">Nothing matches.</div>}
                     </div>
-                    <div className="actions" style={{ margin: "6px 0 0" }}><Button variant="primary" type="button" onClick={() => setOpen(false)}>Done{picked.length ? ` (${picked.length})` : ""}</Button></div>
+                    <div className="actions menu-done"><Button variant="primary" type="button" onClick={() => setOpen(false)}>Done{picked.length ? ` (${picked.length})` : ""}</Button></div>
                 </div>
             )}
         </div>
@@ -104,10 +105,10 @@ export const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
     return (
         <>
             {readiness && readiness.warnings.length > 0 && (
-                <div className="blocked-box" style={{ marginBottom: 0 }}>
+                <Notice tone="warn">
                     <b>Before you start:</b>
                     <ul className="plain">{readiness.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
-                </div>
+                </Notice>
             )}
             {readiness && readiness.warnings.length === 0 && <span className="field-hint">Ready: agents run as {readiness.run.join(" → ")}; browser QA as {readiness.browser.join(" → ")}.</span>}
             <div className="ticket-field">
@@ -117,47 +118,45 @@ export const TaskForm = ({ accounts, env, settings, readiness, onSubmit }: {
                 {mine && mine.tickets.length > 0 && <TicketPicker groups={groups} selected={list} onToggle={toggle} />}
                 {mine?.error && <span className="hint-line">{mine.error}</span>}
             </div>
-            <label>Ticket ids or links (one per line for several) <Textarea autoFocus value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder={"PRODUCT-8704\nhttps://app.clickup.com/t/…\nhttps://linear.app/…/issue/…"} style={{ minHeight: 60 }} /></label>
-            {list.length > 0 && <Chip className={`${bad.length ? "bad" : "accent"}`}>{bad.length ? `unrecognised: ${bad.join(", ")}` : `${list.length} ticket${list.length === 1 ? "" : "s"}`}</Chip>}
+            <label>Ticket ids or links (one per line for several) <Textarea autoFocus className="short-text" value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder={"PRODUCT-8704\nhttps://app.clickup.com/t/…\nhttps://linear.app/…/issue/…"} /></label>
+            {list.length > 0 && <Chip tone={bad.length ? "bad" : "accent"}>{bad.length ? `unrecognised: ${bad.join(", ")}` : `${list.length} ticket${list.length === 1 ? "" : "s"}`}</Chip>}
             {list.length > 1 && (
-                <label>Dispatch
+                <label>How to start them
                     <Select value={mode} onChange={(e) => setMode(e.target.value as "each" | "batch")}>
-                        <option value="each">One task per ticket — each gets its own branch and PR ({list.length} tasks)</option>
-                        <option value="batch">One task for all — one branch, one PR per repository</option>
+                        <option value="each">One task per ticket: each gets its own branch and PR ({list.length} tasks)</option>
+                        <option value="batch">One task for all: one branch, one PR per repository</option>
                     </Select>
                 </label>
             )}
             {owners.length > 0 && (
                 <label>Product owner
                     <Select value={owner} onChange={(e) => setOwner(e.target.value)}>
-                        <option value="">automatic — the one whose project the ticket belongs to</option>
-                        <option value="none">none</option>
+                        <option value="">Automatic: the one whose project the ticket belongs to</option>
+                        <option value="none">None</option>
                         {owners.filter((o) => poEnvIds(o).includes(env.id)).map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
                     </Select>
                 </label>
             )}
-            <label>Extra instructions for the agents (optional; every stage sees them) <AgentInput value={notes} onChange={setNotes} placeholder="Constraints, where the code lives, what to skip, how to test…" style={{ minHeight: 60 }} /></label>
+            <label>Extra instructions for the agents (optional; every stage sees them) <AgentInput value={notes} onChange={setNotes} placeholder="Constraints, where the code lives, what to skip, how to test…" className="short-text" /></label>
             {repoKeys.map((repo) => (
-                <label key={repo}>Base branch{repo ? ` · ${repo}` : ""}
+                <label key={repo}>Base branch{repo ? ` (${repo})` : ""}<Hint text={`The branch the work starts from and the PR targets. Default ${env.base_branch}. For a stacked PR, another task's branch${repoKeys.length > 1 ? " (per repository: a parent that touched only one repo leaves the other on the default)" : ""}; when that branch's PR merges, the task is rebased onto the new base automatically.`} />
                     <BranchPicker envId={env.id} repo={repo} value={bases[repo] ?? ""} onChange={(v) => setBases((b) => ({ ...b, [repo]: v }))} placeholder={env.base_branch} />
                 </label>
             ))}
-            <span className="field-hint">The branch the work starts from and the PR targets — default {env.base_branch}. For a stacked PR, another task's branch{repoKeys.length > 1 ? " (per repository: a parent that touched only one repo leaves the other on the default)" : ""}; when that branch's PR merges, the task is rebased onto the new base automatically.</span>
             <label>AI account
                 <Select value={acc} onChange={(e) => setAcc(e.target.value)}>
-                    {accounts.length === 0 && <option value="">— no account can run in this environment's config dir —</option>}
+                    {accounts.length === 0 && <option value="">No account can run in this environment's config dir</option>}
                     {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.email ? ` · ${a.email}` : ""}</option>)}
                 </Select>
             </label>
-            <label>Claude model
+            <label>Claude model<Hint text="Applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet." />
                 <Select value={model} onChange={(e) => setModel(e.target.value)}>
                     {(settings?.models ?? [{ value: "", label: "Account default" }]).map((m) => (
                         <option key={m.value} value={m.value}>
-                            {m.value === "" ? `Account default${(() => { const d = modelLabel(accounts.find((a) => a.id === acc)?.default_model, settings?.models); return d ? ` · ${d}` : " · not resolved yet (refresh the account)"; })()}` : m.label}
+                            {m.value === "" ? `Account default${(() => { const d = modelLabel(accounts.find((a) => a.id === acc)?.default_model, settings?.models); return d ? ` · ${d}` : " · not resolved yet, refresh the account"; })()}` : m.label}
                         </option>
                     ))}
                 </Select>
-                <span className="field-hint">Applies to Design, Implementation and PR fixes; Research, QA and the PR draft run on Sonnet.</span>
             </label>
             <Button variant="primary" disabled={list.length === 0 || bad.length> 0 || accounts.length === 0} onClick={() => onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}), ...(baseBranch ? { baseBranch } : {}), ...(owner ? { productOwnerId: owner === "none" ? null : owner } : {}) })}>
                 {list.length > 1 ? (mode === "each" ? `Start ${list.length} tasks` : `Start 1 task for ${list.length} tickets`) : "Start task"}

@@ -1,0 +1,23 @@
+/* New task form (NewTaskForm.tsx): pick tickets from the sprint in a dropdown. */
+.ticket-field { display: grid; gap: 4px; }
+.ticket-field-label { font-size: 13px; color: var(--ink-2); }
+.ticket-dropdown { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ticket-dropdown-toggle { text-align: left; }
+.ticket-dropdown-toggle .caret { color: var(--ink-3); margin-left: 4px; }
+.ticket-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.ticket-chips .chip { display: inline-flex; align-items: center; gap: 2px; }
+.btn.chip-x { padding: 0 0 0 2px; min-height: 0; width: auto; font-size: 12px; line-height: 1; color: inherit; }
+.ticket-menu { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; width: min(560px, calc(100vw - 48px)); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--shadow-md); padding: 8px 10px; display: grid; gap: 6px; }
+.ticket-menu > input { width: 100%; }
+.ticket-menu-list { display: grid; gap: 2px; max-height: min(320px, 50vh); overflow: auto; font-size: 13px; }
+.ticket-menu-list .group { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 4px 0 2px; }
+.ticket-option { display: flex; align-items: baseline; gap: 6px; font-weight: 400; padding: 2px 4px; border-radius: var(--r-sm); cursor: pointer; }
+.ticket-option:hover { background: var(--bg); }
+.ticket-option.picked { background: var(--accent-soft); }
+.ticket-option span { overflow-wrap: anywhere; }
+@media (max-width: 760px) { .ticket-menu { position: fixed; left: 12px; right: 12px; width: auto; top: auto; bottom: 12px; max-height: 70vh; } }
+.ticket-view h2 { font-size: 16px; margin-bottom: 6px; }
+.ticket-view .sub { margin-bottom: 10px; }
+
+.menu-done { margin: var(--sp-2) 0 0; }
+.short-text, .short-text textarea { min-height: 60px; }

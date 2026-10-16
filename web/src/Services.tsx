@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, componentsOf, type Env, type EnvComponent, type Service } from "./api";
 import { BranchPicker } from "./BranchPicker";
-import { Button, Chip } from "@vortex/ds";
+import { Button, Chip, EmptyState, Notice } from "@vortex/ds";
+import "./tasks/workspace.css";
 
 // Which branch of the dependency env this task's dependency runs from: the shared instance, or the BE of that env's
 // task on a branch (a change that needs the dependency's own unmerged change). Applied at the next start of the app.
@@ -11,15 +12,15 @@ const DependencyBranch = ({ depEnvId, value, disabled, onSave }: { taskId: strin
     if (editing)
         return (
             <>
-                <BranchPicker envId={depEnvId} value={draft} onChange={setDraft} placeholder="shared instance" style={{ maxWidth: 260 }} autoFocus />
+                <BranchPicker envId={depEnvId} value={draft} onChange={setDraft} placeholder="shared instance" autoFocus />
                 <Button size="sm" onClick={() => { onSave(draft.trim() || null); setEditing(false); }}>Save</Button>
-                <Button size="sm" onClick={() => setEditing(false)}>×</Button>
+                <Button size="sm" onClick={() => setEditing(false)}>Cancel</Button>
             </>
         );
     return (
         <>
             <code className="small" title="The dependency env's branch this task's dependency runs from — a task of that env must work on it; empty = the shared instance">⎇ {value ?? "shared"}</code>
-            <Button size="sm" disabled={disabled} title="Run this task's dependency from another branch of the dependency env (the BE of its task on that branch); the task's app restarts on it at its next start" onClick={() => { setDraft(value ?? ""); setEditing(true); }}>change</Button>
+            <Button size="sm" disabled={disabled} title="Run this task's dependency from another branch of the dependency env (the BE of its task on that branch); the task's app restarts on it at its next start" onClick={() => { setDraft(value ?? ""); setEditing(true); }}>Change</Button>
         </>
     );
 };
@@ -72,7 +73,7 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
     const comps = componentsOf(env);
     // The env's shared dependency (Deal → Core): listed by the server even while stopped, one instance for every task.
     const dep = rows.find((r) => r.kind === "dependency");
-    if (!configured.be && !configured.fe && comps.length === 0 && !dep) return <div className="empty">This env has no BE/FE commands configured — edit the env to add them.</div>;
+    if (!configured.be && !configured.fe && comps.length === 0 && !dep) return <EmptyState icon="server" title="No BE or FE commands configured">Add them on the environment's page to start the app from here.</EmptyState>;
 
     // Run / Stop / Log like a component, plus its URL; Stop ends it for every task of the env (the shared instance).
     const depRow = (svc: Service) => (
@@ -134,7 +135,7 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
                 <>
                     {stateChip(svc)}
                     {kind === "fe" && feNotTheApp ? (
-                        <span className="mono" title="This env's app is served by the BE (its app URL is {{beUrl}}); this port only builds the bundle">{svc.url} <span className="hint">(bundle only — use Open app)</span></span>
+                        <span className="mono" title="This env's app is served by the BE (its app URL is {{beUrl}}); this port only builds the bundle">{svc.url} <span className="field-hint">(bundle only, use Open app)</span></span>
                     ) : (
                         <a href={svc.url} target="_blank" rel="noreferrer">{svc.url}</a>
                     )}
@@ -180,9 +181,9 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
     return (
         <>
             {failures.map((f) => (
-                <div key={f.kind} className="blocked-box" style={{ whiteSpace: "pre-wrap" }}>
+                <Notice key={f.kind} tone="warn" className="svc-failure">
                     <b>The {f.kind.toUpperCase()} did not start</b> ({new Date(f.at).toLocaleTimeString()}): {f.error}
-                </div>
+                </Notice>
             ))}
             {dep && depRow(dep)}
             {configured.be && row("be", be)}
@@ -190,13 +191,13 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
             {comps.map(compRow)}
             {(fe?.running || (be?.running && !configured.fe)) && (
                 <div className="open-app">
-                    <a className="button-link" href={(env?.app_url ?? "{{feUrl}}").replace("{{feUrl}}", fe?.url ?? "").replace("{{beUrl}}", be?.url ?? "")} target="_blank" rel="noreferrer">Open app ↗</a>
-                    <span className="mono" style={{ color: "var(--ink-3)" }}>{[fe ? `FE ${fe.port}` : null, be ? `BE ${be.port}` : null].filter(Boolean).join(" → ")}</span>
+                    <a className="button-link" href={(env?.app_url ?? "{{feUrl}}").replace("{{feUrl}}", fe?.url ?? "").replace("{{beUrl}}", be?.url ?? "")} target="_blank" rel="noreferrer">Open the app</a>
+                    <span className="mono field-hint">{[fe ? `FE ${fe.port}` : null, be ? `BE ${be.port}` : null].filter(Boolean).join(" → ")}</span>
                 </div>
             )}
             {log && (
-                <div className="feed" style={{ maxHeight: 320, marginTop: 8 }}>
-                    <div className="k">{log.kind.toUpperCase()} log (tail, refreshes every 3 s) <Button onClick={() => setLog(null)} style={{ float: "right", padding: "0 6px" }}>×</Button></div>
+                <div className="feed svc-log">
+                    <div className="k">{log.kind.toUpperCase()} log (tail, refreshes every 3 s) <Button size="sm" variant="ghost" onClick={() => setLog(null)}>Close</Button></div>
                     {log.text.split("\n").map((l, i) => <div key={i}>{l}</div>)}
                 </div>
             )}

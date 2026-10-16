@@ -1,11 +1,18 @@
 import { useEffect, useState } from "react";
 import { api, pct, STAGE_LABEL, windowPct, type Stage, type TaskUsage } from "./api";
 import { hours, money, tokens } from "./Analytics";
-import { Button, Card, Chip } from "@vortex/ds";
+import { Button, Chip, EmptyState, Notice, Skeleton } from "@vortex/ds";
+import { DataTable, type DataColumn } from "./components/DataTable";
+import { Panel } from "./components/Panel";
+import { StatRow, StatTile } from "./components/StatTile";
+import "./tasks/workspace.css";
 
-// Cost tab of a task: what every claude invocation for this task consumed, in order, plus totals and a per-stage split.
+// Cost part of a task's Details: what every claude invocation for this task consumed, in order, plus totals and a per-stage split.
 const when = (iso: string): string => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const stageLabel = (s: string | null, kind: string): string => (s ? (STAGE_LABEL[s as Stage] ?? s) : kind === "qa-login" ? "QA login helper" : kind === "ticket-fetch" ? "Ticket fetch" : kind);
+
+type Row = TaskUsage["rows"][number];
+type StageRow = TaskUsage["byStage"][number];
 
 export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: string }) => {
     const [data, setData] = useState<TaskUsage | null>(null);
@@ -17,7 +24,7 @@ export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: s
         void api.taskSession(taskId).then(setSession).catch(() => setSession(null));
     }, [taskId, refreshKey]);
     const rotate = async () => {
-        if (!confirm("Start a fresh task session? The agent loses the conversation so far (design.md, impl.json, review.json and Chat stay), and the next resumed run stops paying for the whole transcript.")) return;
+        if (!confirm("Start a fresh task session? The agent loses the conversation so far (design.md, impl.json, review.json and the chat stay), and the next resumed run stops paying for the whole transcript.")) return;
         setRotating(true);
         try {
             await api.rotateSession(taskId);
@@ -28,79 +35,73 @@ export const TaskCost = ({ taskId, refreshKey }: { taskId: string; refreshKey: s
             setRotating(false);
         }
     };
-    if (error) return <div className="blocked-box">{error}</div>;
-    if (!data) return <div className="empty">loading…</div>;
+    if (error) return <Notice tone="bad">{error}</Notice>;
+    if (!data) return <Skeleton height={96} />;
     const t = data.totals;
+    const share = (cost: number): number => (t.cost > 0 ? Math.round((cost / t.cost) * 100) : 0);
+    const shareCell = (cost: number) => (
+        <span className="cost-share"><i style={{ width: `${Math.max(2, share(cost) * 0.6)}px` }} />{share(cost)}%</span>
+    );
+    const transcriptTone = session && session.transcriptMb != null && session.maxMb > 0 ? (session.transcriptMb > session.maxMb ? "bad" : session.transcriptMb > session.maxMb / 2 ? "warn" : "neutral") : "neutral";
+    const runColumns: Array<DataColumn<Row>> = [
+        { key: "at", label: "Started", value: (r) => r.at, render: (r) => when(r.at) },
+        { key: "stage", label: "Stage", value: (r) => stageLabel(r.stage, r.kind), filter: "auto", render: (r) => <>{stageLabel(r.stage, r.kind)}{r.attempt && r.attempt > 1 ? <span className="field-hint"> attempt {r.attempt}</span> : null}</> },
+        { key: "status", label: "Status", value: (r) => r.status ?? "helper", filter: "auto", render: (r) => (r.status ? <Chip tone={r.status === "done" ? "ok" : r.status === "failed" ? "bad" : r.status === "running" ? "info" : "neutral"}>{r.status}</Chip> : <Chip>helper</Chip>) },
+        { key: "model", label: "Model", value: (r) => r.models.map((m) => m.replace(/^claude-/, "")).join(", ") || "—", filter: "auto", defaultHidden: true },
+        { key: "turns", label: "Turns", kind: "num", value: (r) => r.turns ?? 0 },
+        { key: "time", label: "Time", kind: "num", value: (r) => r.durationMs ?? 0, render: (r) => (r.durationMs != null ? hours(r.durationMs) : "—") },
+        { key: "output", label: "Output", kind: "num", value: (r) => r.output, render: (r) => tokens(r.output) },
+        { key: "cacheRead", label: "Cache read", kind: "num", value: (r) => r.cacheRead, render: (r) => tokens(r.cacheRead), defaultHidden: true },
+        { key: "cacheWrite", label: "Cache write", kind: "num", value: (r) => r.cacheWrite, render: (r) => tokens(r.cacheWrite), defaultHidden: true },
+        { key: "input", label: "Input", kind: "num", value: (r) => r.input, render: (r) => tokens(r.input), defaultHidden: true },
+        { key: "cost", label: "Cost", kind: "num", value: (r) => r.cost, render: (r) => money(r.cost) },
+        { key: "share", label: "Share", value: (r) => r.cost, render: (r) => shareCell(r.cost), hint: "Share of this task's total cost" },
+        ...(data.shares.length > 0 ? [{ key: "win", label: "5 h window", kind: "num" as const, value: (r: Row) => windowPct(data.shares, r.accountId, "five_hour", r.cost) ?? 0, render: (r: Row) => pct(windowPct(data.shares, r.accountId, "five_hour", r.cost)), hint: "Share of the account's 5-hour window" }] : []),
+    ];
+    const stageColumns: Array<DataColumn<StageRow>> = [
+        { key: "stage", label: "Stage", value: (b) => stageLabel(b.label, b.label) },
+        { key: "runs", label: "Runs", kind: "num", value: (b) => b.runs },
+        { key: "turns", label: "Turns", kind: "num", value: (b) => b.turns },
+        { key: "time", label: "Time", kind: "num", value: (b) => b.durationMs, render: (b) => hours(b.durationMs) },
+        { key: "output", label: "Output", kind: "num", value: (b) => b.output, render: (b) => tokens(b.output) },
+        { key: "cacheRead", label: "Cache read", kind: "num", value: (b) => b.cacheRead, render: (b) => tokens(b.cacheRead), defaultHidden: true },
+        { key: "cost", label: "Cost", kind: "num", value: (b) => b.cost, render: (b) => money(b.cost) },
+        { key: "share", label: "Share", value: (b) => b.cost, render: (b) => shareCell(b.cost) },
+    ];
     return (
-        <Card className="usage-table">
-            <h2>Cost</h2>
-            <p className="field-hint">Claude's own estimate at API list prices, per invocation, from the result event of each run. On a subscription it is a proxy for how much of the rate-limit windows this task used.</p>
-            <div className="tiles">
-                <div className="tile"><div className="tile-label">Total</div><div className="tile-value">{money(t.cost)}</div><div className="tile-sub">{t.runs} invocation{t.runs === 1 ? "" : "s"}</div></div>
-                <div className="tile"><div className="tile-label">Output tokens</div><div className="tile-value">{tokens(t.output)}</div><div className="tile-sub">{t.turns} turns</div></div>
-                <div className="tile"><div className="tile-label">Cache read</div><div className="tile-value">{tokens(t.cacheRead)}</div><div className="tile-sub">write {tokens(t.cacheWrite)}</div></div>
-                <div className="tile"><div className="tile-label">Agent time</div><div className="tile-value">{hours(t.durationMs)}</div><div className="tile-sub">input {tokens(t.input)}</div></div>
-                {session && (
-                    <div className={`tile${session.transcriptMb != null && session.maxMb > 0 && session.transcriptMb > session.maxMb ? " tile-bad" : session.transcriptMb != null && session.transcriptMb > session.maxMb / 2 ? " tile-warn" : ""}`} title="The task session's transcript on disk. Every Chat, Do, fix, Implementation and PR Fix run resumes it and pays for all of it; above the limit the next run starts a fresh session by itself.">
-                        <div className="tile-label">Task session</div>
-                        <div className="tile-value">{session.transcriptMb == null ? "—" : `${session.transcriptMb} MB`}</div>
-                        <div className="tile-sub">limit {session.maxMb} MB · <Button size="sm" disabled={rotating} onClick={() => void rotate()}>{rotating ? "…" : "New session"}</Button></div>
-                    </div>
-                )}
-                {data.byAccount.filter((a) => a.fiveHour != null || a.sevenDay != null).map((a) => (
-                    <div className="tile" key={a.accountId} title="This task's cost on the account as a share of its subscription windows, calibrated from how far runs moved the limit">
-                        <div className="tile-label">{a.accountName} · window share</div>
-                        <div className="tile-value">{pct(a.fiveHour == null ? null : a.fiveHour * 100)} <small>of 5 h</small></div>
-                        <div className="tile-sub">{pct(a.sevenDay == null ? null : a.sevenDay * 100)} of 7 d · {money(a.cost)}</div>
-                    </div>
-                ))}
-            </div>
-            {data.rows.length === 0 && <div className="quiet">nothing recorded yet</div>}
-            {data.rows.length > 0 && (
+        <>
+            <Panel title="Cost" hint="Claude's own estimate at API list prices, per invocation, from the result event of each run. On a subscription it is a proxy for how much of the rate-limit windows this task used.">
+                <StatRow>
+                    <StatTile label="Total" value={money(t.cost)} sub={`${t.runs} invocation${t.runs === 1 ? "" : "s"}`} />
+                    <StatTile label="Output tokens" value={tokens(t.output)} sub={`${t.turns} turns`} />
+                    <StatTile label="Cache read" value={tokens(t.cacheRead)} sub={`write ${tokens(t.cacheWrite)}`} />
+                    <StatTile label="Agent time" value={hours(t.durationMs)} sub={`input ${tokens(t.input)}`} />
+                    {session && (
+                        <StatTile
+                            label="Task session"
+                            tone={transcriptTone}
+                            value={session.transcriptMb == null ? "—" : `${session.transcriptMb} MB`}
+                            sub={<>limit {session.maxMb} MB <Button size="sm" disabled={rotating} title="The task session's transcript on disk. Every chat, Do, fix, Implementation and PR Fix run resumes it and pays for all of it; above the limit the next run starts a fresh session by itself." onClick={() => void rotate()}>{rotating ? "…" : "New session"}</Button></>}
+                        />
+                    )}
+                    {data.byAccount.filter((a) => a.fiveHour != null || a.sevenDay != null).map((a) => (
+                        <StatTile
+                            key={a.accountId}
+                            label={`${a.accountName} window share`}
+                            value={<>{pct(a.fiveHour == null ? null : a.fiveHour * 100)} <small>of 5 h</small></>}
+                            sub={`${pct(a.sevenDay == null ? null : a.sevenDay * 100)} of 7 d, ${money(a.cost)}`}
+                        />
+                    ))}
+                </StatRow>
+            </Panel>
+            {data.rows.length === 0 ? (
+                <EmptyState icon="chart" title="Nothing recorded yet" />
+            ) : (
                 <>
-                    <h3>Per run</h3>
-                    <table>
-                        <thead><tr><th>Started</th><th>Stage</th><th>Status</th><th>Model</th><th>Turns</th><th>Time</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Input</th><th>Cost</th><th>Share</th>{data.shares.length > 0 && <th title="of the account's 5-hour window">5h win.</th>}</tr></thead>
-                        <tbody>
-                            {data.rows.map((r) => (
-                                <tr key={r.key}>
-                                    <td className="mono">{when(r.at)}</td>
-                                    <td className="usage-label"><b>{stageLabel(r.stage, r.kind)}</b>{r.attempt && r.attempt > 1 ? <small>attempt {r.attempt}</small> : null}</td>
-                                    <td>{r.status ? <Chip className={`${r.status === "done" ? "ok" : r.status === "failed" ? "bad" : r.status === "running" ? "accent" : ""}`}>{r.status}</Chip> : <Chip>helper</Chip>}</td>
-                                    <td className="mono">{r.models.map((m) => m.replace(/^claude-/, "")).join(", ") || "—"}</td>
-                                    <td className="mono">{r.turns ?? "—"}</td>
-                                    <td className="mono">{r.durationMs != null ? hours(r.durationMs) : "—"}</td>
-                                    <td className="mono">{tokens(r.output)}</td>
-                                    <td className="mono">{tokens(r.cacheRead)}</td>
-                                    <td className="mono">{tokens(r.cacheWrite)}</td>
-                                    <td className="mono">{tokens(r.input)}</td>
-                                    <td className="mono">{money(r.cost)}</td>
-                                    <td><span className="share"><i style={{ width: `${t.cost > 0 ? Math.round((r.cost / t.cost) * 100) : 0}%` }} /><span>{t.cost > 0 ? Math.round((r.cost / t.cost) * 100) : 0}%</span></span></td>
-                                    {data.shares.length > 0 && <td className="mono">{pct(windowPct(data.shares, r.accountId, "five_hour", r.cost))}</td>}
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                    <h3>Per stage</h3>
-                    <table>
-                        <thead><tr><th>Stage</th><th>Runs</th><th>Turns</th><th>Time</th><th>Output</th><th>Cache read</th><th>Cost</th><th>Share</th></tr></thead>
-                        <tbody>
-                            {data.byStage.map((b) => (
-                                <tr key={b.key}>
-                                    <td className="usage-label"><b>{stageLabel(b.label, b.label)}</b></td>
-                                    <td className="mono">{b.runs}</td>
-                                    <td className="mono">{b.turns}</td>
-                                    <td className="mono">{hours(b.durationMs)}</td>
-                                    <td className="mono">{tokens(b.output)}</td>
-                                    <td className="mono">{tokens(b.cacheRead)}</td>
-                                    <td className="mono">{money(b.cost)}</td>
-                                    <td><span className="share"><i style={{ width: `${t.cost > 0 ? Math.round((b.cost / t.cost) * 100) : 0}%` }} /><span>{t.cost > 0 ? Math.round((b.cost / t.cost) * 100) : 0}%</span></span></td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                    <DataTable embedded title="Per run" columns={runColumns} rows={data.rows} rowKey={(r) => r.key} selectable={false} storageKey="task-cost-runs" defaultSort={{ key: "at", desc: true }} />
+                    <DataTable embedded title="Per stage" columns={stageColumns} rows={data.byStage} rowKey={(b) => b.key} selectable={false} storageKey="task-cost-stages" />
                 </>
             )}
-        </Card>
+        </>
     );
 };

@@ -7,10 +7,9 @@ import { STAGE_ORDER, type Stage } from "./api";
 //
 //   #/dashboard                                    #/dashboard/<taskId>/<tab>…   (a task opened from the Dashboard stays there)
 //   #/tasks[?env=<envId>]                          #/tasks/new[?env=<envId>]
-//   #/tasks/<taskId>/work[/<stage>]                #/tasks/<taskId>/runs[/<runId>]
-//   #/tasks/<taskId>/design[/<section>]            #/tasks/<taskId>/code[?repo=<dir>&scope=all|uncommitted|<sha>,<sha>&kind=tests]
-//   #/tasks/<taskId>/pr[/<repo>]                   #/tasks/<taskId>/comments[/<user|pr|automation>][?repo=<dir>]
-//   #/tasks/<taskId>/chat | ticket | cost
+//   #/tasks/<taskId>/work[/<stage>[/<proposal|qa|po>]]       #/tasks/<taskId>/code[?repo=<dir>&scope=all|uncommitted|<sha>,<sha>&kind=tests]
+//   #/tasks/<taskId>/pr[/<repo>]                             #/tasks/<taskId>/conversation[/<user|pr|automation>][?repo=<dir>]
+//   #/tasks/<taskId>/details[/<runs[/<runId>]|cost|setup>]
 //   #/sessions[/new | /<sessionId>/<terminal|changes>[?repo&scope&kind]]           #/analytics[?days=<n>]   #/timing[?days=<n>]
 //   #/envs[/new | /<envId>[/<tab>]]                #/config-dirs[/new | /<dirId>[/<tab>]]
 //   #/accounts[/new | /<accountId>[/<tab>]]        #/integrations[/<id>[/<tab>]]  #/resources[/<tab>]
@@ -19,11 +18,15 @@ import { STAGE_ORDER, type Stage } from "./api";
 // The rule (CLAUDE.md, Web UI standards): a page, an opened entity, its tab, an opened item inside it, a create dialog and
 // a view selector (environment picker, Files/Tests, diff scope) are all part of the path. An EntityView's tab is routed
 // through `tab`/`onTab`; only transient UI (hover, expanded rows, menus, an inline edit) may live in component state.
-// Older shapes (#/env/<id>, #/dir/<id>, #/dirs, #/managers) still parse and are rewritten to the current one.
+// Older shapes (#/env/<id>, #/dir/<id>, #/dirs, #/managers, and the task tabs runs / design / comments / chat / ticket / cost)
+// still parse and are rewritten to the current one.
 
-export const TASK_TABS = ["work", "runs", "design", "code", "pr", "comments", "chat", "ticket", "cost"] as const;
+export const TASK_TABS = ["work", "code", "pr", "conversation", "details"] as const;
 export type TaskTab = (typeof TASK_TABS)[number];
-export type CommentsSub = "user" | "pr" | "automation";
+// The Conversation tab: the agent chat (default) or the comment lists; the Details tab: the ticket (default), the runs, the cost, the setup.
+export type ConversationSub = "user" | "pr" | "automation";
+export type DetailsPart = "runs" | "cost" | "setup";
+export type DesignSection = "proposal" | "qa" | "po";
 export type CodeScope = { kind: "all" } | { kind: "uncommitted" } | { kind: "commits"; shas: string[] };
 // The diff view's own location (task Code tab, session Changes): repository, which changes, files or tests.
 export interface DiffRoute {
@@ -36,17 +39,18 @@ export interface TaskView {
     tab: TaskTab;
     // work: the workflow step shown (default: the task's current stage).
     step?: Stage;
-    // runs: the run opened.
-    run?: string;
-    // design: the section title opened.
-    section?: string;
-    // code / pr / comments: the repository (multi-repo envs).
+    // work, design proposal step: the part of the proposal opened (the document by default).
+    section?: DesignSection;
+    // code / pr / conversation: the repository (multi-repo envs).
     repo?: string;
     // code: which changes are shown, and the Tests tab instead of Files.
     scope?: CodeScope;
     tests?: boolean;
-    // comments: which list.
-    sub?: CommentsSub;
+    // conversation: which comment list (the agent chat when absent).
+    sub?: ConversationSub;
+    // details: which part (the ticket when absent), and for the runs the run opened.
+    part?: DetailsPart;
+    run?: string;
 }
 
 export type Route =
@@ -71,9 +75,10 @@ export const PO_TABS: readonly PoTab[] = ["design", "questions", "corrections", 
 
 export type Page = Route["page"];
 
-const isTab = (s: string | undefined): s is TaskTab => !!s && (TASK_TABS as readonly string[]).includes(s);
 const isStage = (s: string | undefined): s is Stage => !!s && (STAGE_ORDER as readonly string[]).includes(s);
-const isCommentsSub = (s: string | undefined): s is CommentsSub => s === "user" || s === "pr" || s === "automation";
+const isSub = (s: string | undefined): s is ConversationSub => s === "user" || s === "pr" || s === "automation";
+const isPart = (s: string | undefined): s is DetailsPart => s === "runs" || s === "cost" || s === "setup";
+const isSection = (s: string | undefined): s is DesignSection => s === "proposal" || s === "qa" || s === "po";
 
 const parseScope = (s: string | null): CodeScope | undefined => {
     if (!s || s === "all") return undefined;
@@ -90,17 +95,22 @@ const parseDiff = (q: URLSearchParams): DiffRoute => {
 };
 const diffQuery = (d: DiffRoute | undefined) => ({ repo: d?.repo, scope: formatScope(d?.scope), kind: d?.tests ? "tests" : null });
 
-const parseTaskView = (tab: string | undefined, x: string | undefined, q: URLSearchParams): TaskView | undefined => {
-    if (!isTab(tab)) return undefined;
+// The task tabs of before the workspace rework: runs / design / comments / chat / ticket / cost fold into the five tabs.
+const parseTaskView = (tab: string | undefined, x: string | undefined, y: string | undefined, q: URLSearchParams): TaskView | undefined => {
     const repo = q.get("repo") ?? undefined;
     switch (tab) {
-        case "work": return { tab, ...(isStage(x) ? { step: x } : {}) };
-        case "runs": return { tab, ...(x ? { run: x } : {}) };
-        case "design": return { tab, ...(x ? { section: x } : {}) };
-        case "code": return { tab, ...parseDiff(q) };
-        case "pr": return { tab, ...(x ? { repo: x } : {}) };
-        case "comments": return { tab, ...(isCommentsSub(x) ? { sub: x } : {}), ...(repo !== undefined ? { repo } : {}) };
-        default: return { tab };
+        case "work": return { tab: "work", ...(isStage(x) ? { step: x, ...(isSection(y) ? { section: y } : {}) } : {}) };
+        case "code": return { tab: "code", ...parseDiff(q) };
+        case "pr": return { tab: "pr", ...(x ? { repo: x } : {}) };
+        case "conversation": return { tab: "conversation", ...(isSub(x) ? { sub: x } : {}), ...(repo !== undefined ? { repo } : {}) };
+        case "details": return { tab: "details", ...(isPart(x) ? { part: x } : {}), ...(x === "runs" && y ? { run: y } : {}) };
+        case "design": return { tab: "work", step: "design_proposal", ...(isSection(x) ? { section: x } : {}) };
+        case "comments": return { tab: "conversation", sub: isSub(x) ? x : "user", ...(repo !== undefined ? { repo } : {}) };
+        case "chat": return { tab: "conversation" };
+        case "runs": return { tab: "details", part: "runs", ...(x ? { run: x } : {}) };
+        case "cost": return { tab: "details", part: "cost" };
+        case "ticket": return { tab: "details" };
+        default: return undefined;
     }
 };
 
@@ -113,10 +123,10 @@ export const parseRoute = (hash: string): Route => {
     const env = q.get("env") ?? undefined;
     switch (head) {
         case "dashboard":
-            return a ? { page: "dashboard", task: a, ...(parseTaskView(b, c, q) ? { view: parseTaskView(b, c, q) } : {}) } : { page: "dashboard" };
+            return a ? { page: "dashboard", task: a, ...(parseTaskView(b, c, d, q) ? { view: parseTaskView(b, c, d, q) } : {}) } : { page: "dashboard" };
         case "tasks":
             if (a === "new") return { page: "tasks", create: true, ...(env ? { env } : {}) };
-            if (a) return { page: "tasks", task: a, ...(parseTaskView(b, c, q) ? { view: parseTaskView(b, c, q) } : {}) };
+            if (a) return { page: "tasks", task: a, ...(parseTaskView(b, c, d, q) ? { view: parseTaskView(b, c, d, q) } : {}) };
             return { page: "tasks", ...(env ? { env } : {}) };
         case "sessions":
             if (a === "new") return { page: "sessions", create: true };
@@ -174,13 +184,11 @@ const withQuery = (path: string, params: Record<string, string | null | undefine
 const formatTaskView = (base: string, view: TaskView | undefined): string => {
     const v = view ?? { tab: "work" };
     switch (v.tab) {
-        case "work": return `${base}/work${v.step ? `/${enc(v.step)}` : ""}`;
-        case "runs": return `${base}/runs${v.run ? `/${enc(v.run)}` : ""}`;
-        case "design": return `${base}/design${v.section ? `/${enc(v.section)}` : ""}`;
+        case "work": return `${base}/work${v.step ? `/${enc(v.step)}${v.section ? `/${v.section}` : ""}` : ""}`;
         case "code": return withQuery(`${base}/code`, diffQuery(v));
         case "pr": return `${base}/pr${v.repo ? `/${enc(v.repo)}` : ""}`;
-        case "comments": return withQuery(`${base}/comments${v.sub ? `/${v.sub}` : ""}`, { repo: v.repo });
-        default: return `${base}/${v.tab}`;
+        case "conversation": return withQuery(`${base}/conversation${v.sub ? `/${v.sub}` : ""}`, { repo: v.repo });
+        case "details": return `${base}/details${v.part ? `/${v.part}${v.part === "runs" && v.run ? `/${enc(v.run)}` : ""}` : ""}`;
     }
 };
 

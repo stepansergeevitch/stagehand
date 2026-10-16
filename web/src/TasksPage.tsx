@@ -2,108 +2,66 @@ import { useMemo, type ReactNode } from "react";
 import { BaseCheckChip } from "./components/BaseCheckChip";
 import { LabelChips } from "./Labels";
 import { labelsOf, STAGE_LABEL, taskLabel, type Env, type Task } from "./api";
-import { Button, Icon, Input, Select, StatusDot } from "@vortex/ds";
-import { age, taskState } from "./components/status";
+import { Button, EmptyState, Icon, Select } from "@vortex/ds";
+import { PageFrame } from "./components/AppShell";
+import { DataTable, type DataColumn } from "./components/DataTable";
+import { age, StageProgress, TaskStatusChip, taskState } from "./components/status";
 import "./tasks.css";
 
-// The Tasks page: the environment's tasks on the left (grouped by what they are doing), the open task on the right; on
-// phones one pane at a time. Phase 2 (docs/ux-redesign.md §6.2) replaces the list with a DataTable and the right pane with
-// the task workspace; until then this keeps the master/detail behaviour in the new shell.
-type Group = "Pinned" | "Needs input" | "Working" | "Idle" | "Failed" | "Completed" | "Stopped";
-const GROUP_ORDER: Group[] = ["Pinned", "Needs input", "Working", "Idle", "Failed", "Completed", "Stopped"];
-
-const groupOf = (t: Task): Group => {
-    if (t.pinned) return "Pinned";
-    switch (t.status) {
-        case "waiting_user":
-        case "blocked":
-            return "Needs input";
-        case "running":
-        case "queued":
-            return "Working";
-        case "failed":
-            return "Failed";
-        case "done":
-            return "Completed";
-        case "stopped":
-            return "Stopped";
-        default:
-            return "Idle";
-    }
-};
-
-export const TasksPage = ({ envs, envId, env, visible, selected, detailPane, picked, onPick, onDeletePicked, onSelectEnv, onNewTask, onOpen, onClose }: {
+// The Tasks page (docs/ux-redesign.md §4.1 and §4.3): one environment's tasks as a table, pinned and urgent first; a row
+// opens the task workspace in place of the list. The environment picker is the route's `?env=`.
+export const TasksPage = ({ envs, envId, env, visible, selected, detailPane, onDeleteTasks, onSelectEnv, onNewTask, onOpen }: {
     envs: Env[];
     envId: string;
     env: Env | undefined;
     // The environment's tasks.
     visible: Task[];
     selected: string | null;
-    // What the right pane shows: the task view, a loading line, or the empty hint.
+    // What the workspace shows: the task view or a loading line.
     detailPane: ReactNode;
-    picked: Set<string>;
-    onPick: (next: Set<string>) => void;
-    onDeletePicked: () => void;
+    onDeleteTasks: (ids: string[]) => void;
     onSelectEnv: (id: string) => void;
     onNewTask: () => void;
     onOpen: (id: string) => void;
-    onClose: () => void;
 }) => {
-    const grouped = useMemo(() => {
-        const m = new Map<Group, Task[]>();
-        for (const t of visible) m.set(groupOf(t), [...(m.get(groupOf(t)) ?? []), t]);
-        return GROUP_ORDER.filter((g) => m.has(g)).map((g) => [g, m.get(g)!] as const);
-    }, [visible]);
+    // Pinned first, then by what needs you, then the latest.
+    const rows = useMemo(
+        () => [...visible].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || taskState(a).rank - taskState(b).rank || b.updated_at.localeCompare(a.updated_at)),
+        [visible],
+    );
+    const columns: DataColumn<Task>[] = [
+        { key: "status", label: "Status", value: (t) => taskState(t).label, filter: "auto", render: (t) => <TaskStatusChip task={t} /> },
+        { key: "task", label: "Task", value: (t) => taskLabel(t), filter: false, render: (t) => <b className="task-id">{t.pinned ? <Icon name="pin" aria-label="Pinned" /> : null}{taskLabel(t)}</b> },
+        { key: "title", label: "Title", kind: "label", value: (t) => t.title ?? "", filter: false },
+        { key: "stage", label: "Stage", value: (t) => STAGE_LABEL[t.stage], filter: "auto", render: (t) => <span className="stage-cell">{STAGE_LABEL[t.stage]}<StageProgress task={t} /></span> },
+        { key: "latest", label: "Latest", value: (t) => t.status_line ?? "", filter: false, defaultHidden: true },
+        { key: "base", label: "Base", value: (t) => t.base_check_state ?? "", filter: false, defaultHidden: true, render: (t) => <BaseCheckChip state={t.base_check_state} detail={t.base_check_detail} /> },
+        { key: "labels", label: "Labels", value: (t) => labelsOf(t).map((l) => l.text).join(", "), filter: false, defaultHidden: true, render: (t) => <LabelChips labels={labelsOf(t)} /> },
+        { key: "age", label: "Updated", kind: "num", value: (t) => Date.now() - new Date(t.updated_at).getTime(), render: (t) => age(t.updated_at) },
+    ];
+    if (selected) return <PageFrame width="wide">{detailPane}</PageFrame>;
     return (
-        <div className={`tasks-split ${selected ? "has-selection" : ""}`}>
-            <aside className="list">
-                <div className="list-head">
+        <PageFrame width="wide">
+            <DataTable
+                title="Tasks"
+                entity="task"
+                actions={
                     <Select value={envId} onChange={(e) => onSelectEnv(e.target.value)} aria-label="Environment">
-                        {envs.map((e) => (
-                            <option key={e.id} value={e.id}>{e.name} ({e.base_branch})</option>
-                        ))}
+                        {envs.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.base_branch})</option>)}
                     </Select>
-                    <Button variant="primary" disabled={!env} onClick={onNewTask}><Icon name="plus" />New task</Button>
-                    {picked.size > 0 && (
-                        <div className="bulk-bar">
-                            <span>{picked.size} selected</span>
-                            <Button size="sm" variant="danger" onClick={onDeletePicked}>Delete selected</Button>
-                            <Button size="sm" onClick={() => onPick(new Set())}>Clear</Button>
-                        </div>
-                    )}
-                </div>
-                {visible.length === 0 && <div className="empty">No tasks in this env yet.</div>}
-                {grouped.map(([g, list]) => (
-                    <div key={g}>
-                        <div className="group">{g}</div>
-                        {list.map((t) => {
-                            const s = taskState(t);
-                            return (
-                                <div key={t.id} className={`row ${selected === t.id ? "selected" : ""} ${picked.has(t.id) ? "picked" : ""}`} onClick={() => onOpen(t.id)}>
-                                    <Input
-                                        type="checkbox"
-                                        className="pick"
-                                        title="Select for bulk delete"
-                                        aria-label="Select for bulk delete"
-                                        checked={picked.has(t.id)}
-                                        onClick={(e) => e.stopPropagation()}
-                                        onChange={(e) => { const n = new Set(picked); if (e.target.checked) n.add(t.id); else n.delete(t.id); onPick(n); }}
-                                    />
-                                    <StatusDot tone={s.tone} pulse={s.pulse} title={s.label} />
-                                    <span className="name">{taskLabel(t)}<small>{t.title ?? ""}</small></span>
-                                    <span className="age">{age(t.updated_at)}</span>
-                                    <span className="pr"><BaseCheckChip state={t.base_check_state} detail={t.base_check_detail} compact /></span>
-                                    <span className="status"><LabelChips labels={labelsOf(t)} /><span className="status-text">{t.status_line ?? STAGE_LABEL[t.stage]}</span></span>
-                                </div>
-                            );
-                        })}
-                    </div>
-                ))}
-            </aside>
-            <section className="detail tasks-detail">
-                {selected && <Button variant="ghost" size="sm" className="back" onClick={onClose}><Icon name="arrowLeft" />Tasks</Button>}
-                {detailPane}
-            </section>
-        </div>
+                }
+                onCreate={onNewTask}
+                createDisabled={env ? undefined : "Pick an environment first"}
+                columns={columns}
+                rows={rows}
+                rowKey={(t) => t.id}
+                onRowClick={(t) => onOpen(t.id)}
+                storageKey="tasks"
+                bulkActions={(sel, clear) => (
+                    <Button size="sm" variant="danger" onClick={() => { onDeleteTasks(sel.map((t) => t.id)); clear(); }}>Delete</Button>
+                )}
+                empty={<EmptyState icon="tasks" title="No tasks in this environment yet" action={env ? <Button variant="primary" onClick={onNewTask}><Icon name="plus" />Create new task</Button> : undefined}>Paste a ticket id or link to start one.</EmptyState>}
+            />
+        </PageFrame>
     );
 };
