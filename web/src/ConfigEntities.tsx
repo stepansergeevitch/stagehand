@@ -1,12 +1,16 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type AccountModels, type Env, type ModelOperation, type ModelStage, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
-import { CheckField, EntityForm, EntityView, Field, ReadField, useDraft, useSaver } from "./components/EntityView";
-import { Button, Chip, Input, Select } from "@vortex/ds";
+import { CheckField, EntityForm, EntityView, Field, Hint, ReadField, useDraft, useSaver } from "./components/EntityView";
+import { Section } from "./components/Panel";
+import { StatRow, StatTile } from "./components/StatTile";
+import { ActionMenu, limitTone, Loading, MenuItem } from "./SettingsParts";
+import { Button, Chip, EmptyState, Input, Select, type Tone } from "@vortex/ds";
 
 // The entity views of the Configuration pages that are not big enough for a file of their own: an AI account, an
 // integration, the Prompter (components/EntityView.tsx).
 
-type Notice = { ok: boolean; text: string } | null;
+// The outcome of the last action on the page (Verify, Test, …); `pending` while it runs.
+type Outcome = { ok: boolean; text: string; pending?: boolean } | null;
 const errText = (e: unknown): string => String((e as Error).message ?? e);
 
 // ---------- AI account ----------
@@ -33,6 +37,8 @@ const MODEL_OPERATIONS: Array<{ key: ModelOperation; label: string; hint: string
 
 const fmtTokens = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : String(n));
 export const authLabel = (a: Account): string => (a.setting_up ? "token setup in progress" : a.has_token ? "token" : a.logged_in ? "legacy login" : "no auth");
+// Working = ok, legacy login = warn (it only runs in its own config dir), nothing = bad.
+export const authTone = (a: Account): Tone => (a.setting_up ? "wait" : a.has_token ? "ok" : a.logged_in ? "warn" : "bad");
 
 const AccountGeneralTab = ({ a, save, saving }: { a: Account; save: (k: string, body: Parameters<typeof api.patchAccount>[1]) => Promise<void>; saving: string | null }) => {
     const d = useDraft(() => ({ name: a.name, chromeDeviceId: a.chrome_device_id ?? "", cloneQa: a.chrome_clone_qa === 1 }), [a]);
@@ -44,8 +50,8 @@ const AccountGeneralTab = ({ a, save, saving }: { a: Account; save: (k: string, 
             {a.email && <ReadField label="Email">{a.email}</ReadField>}
             {a.plan && <ReadField label="Plan">{a.plan}</ReadField>}
             <Field label="Chrome profile" hint="Browser stages (QA, the login helper) need a claude.ai browser login plus a Chrome profile whose Claude extension is signed into this account; tokens get no Chrome bridge. Probe Chrome lists the profiles.">
-                {a.chrome_capable === null ? <span className="quiet">not probed yet — use Probe Chrome</span> : a.chrome_capable ? (
-                    <Select value={v.chromeDeviceId} onChange={(e) => d.patch({ chromeDeviceId: e.target.value })}>
+                {a.chrome_capable === null ? <Chip>not probed yet — use Probe Chrome in the ⋯ menu</Chip> : a.chrome_capable ? (
+                    <Select aria-label="Chrome profile" value={v.chromeDeviceId} onChange={(e) => d.patch({ chromeDeviceId: e.target.value })}>
                         <option value="">— pick a profile —</option>
                         {(a.browsers ?? []).map((b) => <option key={b.deviceId} value={b.deviceId}>{chromeBrowserLabel(b)}{b.account ? ` · ${b.account}` : ""}</option>)}
                     </Select>
@@ -59,21 +65,30 @@ const AccountGeneralTab = ({ a, save, saving }: { a: Account; save: (k: string, 
 const AccountStatusTab = ({ a, envs }: { a: Account; envs: Env[] }) => {
     const five = a.limits.find((l) => l.window === "five_hour");
     const week = a.limits.find((l) => l.window === "seven_day");
-    const pct = (l: typeof five) => (l ? (l.expired ? "? (reset since)" : `${Math.round(l.utilization * 100)}%`) : "—");
+    const pctNum = (l: typeof five): number | null => (l && !l.expired ? Math.round(l.utilization * 100) : null);
+    const pct = (l: typeof five): string => (l ? (l.expired ? "reset" : `${Math.round(l.utilization * 100)}%`) : "—");
+    const windowHint = five?.updatedAt ? `As of ${new Date(five.updatedAt).toLocaleString()}${a.windows.length ? `; one window ≈ ${a.windows.map((w) => `$${w.usdPerWindow.toFixed(0)} (${w.window === "five_hour" ? "5 h" : "7 d"})`).join(", ")} of estimated cost` : ""}.` : undefined;
     return (
         <div className="ev-fields">
-            <ReadField label="Auth"><Chip className={`${a.setting_up ? "wait" : a.has_token ? "ok" : a.logged_in ? "warn" : "bad"}`}>{authLabel(a)}</Chip></ReadField>
-            <ReadField label="Runs in">{a.has_token ? "any config dir" : a.logged_in ? <>only <code>{a.auth_dir}</code></> : "nowhere yet — set up a token"}</ReadField>
-            <ReadField label="Browser login" hint={`A login in the account's own config dir serves environments using that dir; Log in (browser) adds one in ${a.browser_dir}, which serves every environment.`}>
-                {a.login_ok === null ? <Chip>unknown — probe</Chip> : a.login_ok ? <Chip tone="ok">in {a.login_dir ?? a.auth_dir}</Chip> : <Chip tone="bad">none</Chip>}
-            </ReadField>
-            <ReadField label="Chrome">{accountBrowserReady(a) ? <Chip tone="ok">ready{a.chrome_browser_name ? ` · ${a.chrome_browser_name}` : ""}</Chip> : <Chip>not ready</Chip>}</ReadField>
-            <ReadField label="CLI default model" hint="What claude picks for this account when no model is passed.">{a.default_model ?? "unknown"}</ReadField>
-            <ReadField label="Windows 5 h / 7 d" hint={five?.updatedAt ? `As of ${new Date(five.updatedAt).toLocaleString()}${a.windows.length ? `; one window ≈ ${a.windows.map((w) => `$${w.usdPerWindow.toFixed(0)} (${w.window === "five_hour" ? "5 h" : "7 d"})`).join(", ")} of estimated cost` : ""}.` : undefined}>
-                <span className="mono">{pct(five)} / {pct(week)}</span>
-            </ReadField>
-            <ReadField label="Consumed today / week"><span className="mono">{fmtTokens(a.usage?.today.tokens ?? 0)} · ${(a.usage?.today.cost ?? 0).toFixed(2)} / {fmtTokens(a.usage?.week.tokens ?? 0)} · ${(a.usage?.week.cost ?? 0).toFixed(2)}</span></ReadField>
-            <ReadField label="Used by">{envs.filter((e) => accountOrderOf(e).includes(a.id)).map((e) => `${e.name} (#${accountOrderOf(e).indexOf(a.id) + 1})`).join(", ") || "no environment lists it"}</ReadField>
+            <StatRow>
+                <StatTile label="5-hour window" value={pct(five)} tone={limitTone(pctNum(five))} sub="used" />
+                <StatTile label="7-day window" value={pct(week)} tone={limitTone(pctNum(week))} sub="used" />
+                <StatTile label="Today" value={`$${(a.usage?.today.cost ?? 0).toFixed(2)}`} sub={`${fmtTokens(a.usage?.today.tokens ?? 0)} tokens`} />
+                <StatTile label="This week" value={`$${(a.usage?.week.cost ?? 0).toFixed(2)}`} sub={`${fmtTokens(a.usage?.week.tokens ?? 0)} tokens`} />
+            </StatRow>
+            <Section title="Access">
+                <ReadField label="Auth"><Chip tone={authTone(a)}>{authLabel(a)}</Chip></ReadField>
+                <ReadField label="Runs in">{a.has_token ? "any config dir" : a.logged_in ? <>only <code>{a.auth_dir}</code></> : "nowhere yet — set up a token"}</ReadField>
+                <ReadField label="Browser login" hint={`A login in the account's own config dir serves environments using that dir; Log in (browser) adds one in ${a.browser_dir}, which serves every environment.`}>
+                    {a.login_ok === null ? <Chip>unknown — probe</Chip> : a.login_ok ? <Chip tone="ok">in {a.login_dir ?? a.auth_dir}</Chip> : <Chip tone="bad">none</Chip>}
+                </ReadField>
+                <ReadField label="Chrome">{accountBrowserReady(a) ? <Chip tone="ok">ready{a.chrome_browser_name ? ` · ${a.chrome_browser_name}` : ""}</Chip> : <Chip>not ready</Chip>}</ReadField>
+            </Section>
+            <Section title="Usage">
+                <ReadField label="CLI default model" hint="What claude picks for this account when no model is passed.">{a.default_model ?? "unknown"}</ReadField>
+                <ReadField label="Rate-limit windows" hint={windowHint}>5 h {pct(five)} · 7 d {pct(week)}</ReadField>
+                <ReadField label="Used by">{envs.filter((e) => accountOrderOf(e).includes(a.id)).map((e) => `${e.name} (#${accountOrderOf(e).indexOf(a.id) + 1})`).join(", ") || "no environment lists it"}</ReadField>
+            </Section>
         </div>
     );
 };
@@ -92,26 +107,37 @@ const AccountModelsTab = ({ a, settings, save, saving }: { a: Account; settings:
             <Field label="Default" hint={`The fallback of every blank below. ${settings.modelsFetchedAt ? `Model list from the Models API, fetched ${new Date(settings.modelsFetchedAt).toLocaleString()}.` : "Built-in model list."}${settings.modelsError ? ` Last fetch failed: ${settings.modelsError}.` : ""}`}>
                 <Select value={m.default ?? ""} onChange={(e) => d.patch({ default: e.target.value || null })}>{options(`→ ${cliDefault}`)}</Select>
             </Field>
-            {MODEL_STAGES.map((st) => (
-                <Field key={st.key} label={st.label} hint={`First run: the stage's first run on a task. Reruns: every later run of it (a review round sent back, Retry, a contract or unblock retry, a QA return). ${FALLBACK}`}>
-                    <div className="two">
-                        <Select aria-label={`${st.label} first run`} value={m.stages[st.key] ?? ""} onChange={(e) => set("stages", st.key, e.target.value)}>{options(`first run → default (${defaultLabel})`)}</Select>
-                        <Select aria-label={`${st.label} reruns`} value={m.reruns[st.key] ?? ""} onChange={(e) => set("reruns", st.key, e.target.value)}>{options(`reruns → first run (${m.stages[st.key] ? label(m.stages[st.key]) : defaultLabel})`)}</Select>
-                    </div>
-                </Field>
-            ))}
-            {MODEL_OPERATIONS.map((o) => (
-                <Field key={o.key} label={o.label} hint={`${o.hint} ${FALLBACK}`}>
-                    <Select value={m.operations[o.key] ?? ""} onChange={(e) => set("operations", o.key, e.target.value)}>{options(o.key.startsWith("pr_fix") ? `→ PR Fix stage (${m.stages.pr_fix ? label(m.stages.pr_fix) : defaultLabel})` : `→ default (${defaultLabel})`)}</Select>
-                </Field>
-            ))}
+            <Section title="Stages" hint={`First run: the stage's first run on a task. Reruns: every later run of it (a review round sent back, Retry, a contract or unblock retry, a QA return). ${FALLBACK}`}>
+                <div className="model-grid">
+                    <span className="mg-head">Stage</span>
+                    <span className="mg-head">First run</span>
+                    <span className="mg-head">Reruns</span>
+                    {MODEL_STAGES.map((st) => (
+                        <Fragment key={st.key}>
+                            <span className="mg-label">{st.label}</span>
+                            <Select aria-label={`${st.label} first run`} value={m.stages[st.key] ?? ""} onChange={(e) => set("stages", st.key, e.target.value)}>{options(`first run → default (${defaultLabel})`)}</Select>
+                            <Select aria-label={`${st.label} reruns`} value={m.reruns[st.key] ?? ""} onChange={(e) => set("reruns", st.key, e.target.value)}>{options(`reruns → first run (${m.stages[st.key] ? label(m.stages[st.key]) : defaultLabel})`)}</Select>
+                        </Fragment>
+                    ))}
+                </div>
+            </Section>
+            <Section title="Other operations" hint={FALLBACK}>
+                <div className="model-single">
+                    {MODEL_OPERATIONS.map((o) => (
+                        <Fragment key={o.key}>
+                            <span className="mg-label">{o.label}<Hint text={o.hint} /></span>
+                            <Select aria-label={o.label} value={m.operations[o.key] ?? ""} onChange={(e) => set("operations", o.key, e.target.value)}>{options(o.key.startsWith("pr_fix") ? `→ PR Fix stage (${m.stages.pr_fix ? label(m.stages.pr_fix) : defaultLabel})` : `→ default (${defaultLabel})`)}</Select>
+                        </Fragment>
+                    ))}
+                </div>
+            </Section>
         </EntityForm>
     );
 };
 
 export const AccountPage = ({ a, envs, tasks, settings, tab, onTab, onBack, onChanged, onError, onTerminal }: { tab: string | undefined; onTab: (t: string) => void; a: Account; envs: Env[]; tasks: Task[]; settings: Settings | null; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void; onTerminal: (name: string) => void }) => {
     const { saving, run } = useSaver(onError);
-    const [notice, setNotice] = useState<Notice>(null);
+    const [notice, setNotice] = useState<Outcome>(null);
     const [busy, setBusy] = useState<string | null>(null);
     const save = (k: string, body: Parameters<typeof api.patchAccount>[1]) => run(k, async () => {
         await api.patchAccount(a.id, body);
@@ -119,7 +145,7 @@ export const AccountPage = ({ a, envs, tasks, settings, tab, onTab, onBack, onCh
     });
     const check = async (key: string, start: string, fn: () => Promise<{ ok: boolean; detail: string }>) => {
         setBusy(key);
-        setNotice({ ok: true, text: start });
+        setNotice({ ok: true, text: start, pending: true });
         try {
             const r = await fn();
             setNotice({ ok: r.ok, text: r.detail });
@@ -138,21 +164,33 @@ export const AccountPage = ({ a, envs, tasks, settings, tab, onTab, onBack, onCh
         }
     };
     const used = envs.filter((e) => e.default_account_id === a.id).length + tasks.filter((t) => t.account_id === a.id).length;
+    const noAuth = !a.has_token && !a.logged_in;
+    const setupToken = () => void terminal(() => api.setupToken(a.id));
+    const verify = () => void check("verify", "Running a trivial agent turn…", () => api.refreshAccount(a.id));
     return (
         <EntityView tab={tab} onTab={onTab}
             type="AI accounts"
             onType={onBack}
             id={a.name}
             notice={notice}
+            meta={<><Chip tone={authTone(a)}>{authLabel(a)}</Chip>{a.plan && <Chip>{a.plan}</Chip>}</>}
             actions={
                 <>
-                    <Button onClick={() => void terminal(() => api.setupToken(a.id))}>{a.has_token ? "Renew token" : "Set up token"}</Button>
-                    <Button onClick={() => void terminal(() => api.loginAccount(a.id))}>Log in (browser)</Button>
-                    <Button disabled={busy !== null} onClick={() => void check("chrome", "checking the browser login, then running a tiny --chrome agent…", () => api.probeAccountChrome(a.id))}>{busy === "chrome" ? "Probing…" : "Probe Chrome"}</Button>
-                    <Button disabled={busy !== null || !a.chrome_device_id} onClick={() => void check("clone", "copying the profile, starting a Chrome on the copy, waiting for its extension…", () => api.testAccountClone(a.id))}>{busy === "clone" ? "Cloning…" : "Test profile cloning"}</Button>
-                    <Button disabled={busy !== null} onClick={() => void check("verify", "running a trivial agent turn…", () => api.refreshAccount(a.id))}>{busy === "verify" ? "Checking…" : "Verify"}</Button>
-                    {a.plan !== "enterprise" && a.logged_in === 1 && <Button disabled={busy !== null || a.refreshing_limits} onClick={() => void check("limits", "refreshing the rate-limit windows (one tiny Sonnet turn)…", () => api.refreshLimits(a.id))}>{a.refreshing_limits ? "Refreshing…" : "Refresh limits"}</Button>}
-                    <Button variant="danger" disabled={used> 0} title={used > 0 ? "an environment or task still uses it" : undefined} onClick={() => { if (confirm(`Forget account ${a.name} and its stored token?`)) void run("delete", async () => { await api.deleteAccount(a.id); await onChanged(); onBack(); }); }}>Delete</Button>
+                    {noAuth ? <Button variant="primary" onClick={setupToken}>Set up token</Button> : <Button variant="primary" disabled={busy !== null} onClick={verify}>{busy === "verify" ? "Checking…" : "Verify"}</Button>}
+                    <ActionMenu>
+                        {(close) => (
+                            <>
+                                {!noAuth && <MenuItem onClick={() => { close(); setupToken(); }}>{a.has_token ? "Renew token" : "Set up token"}</MenuItem>}
+                                {noAuth && <MenuItem disabled={busy !== null} onClick={() => { close(); verify(); }}>Verify</MenuItem>}
+                                <MenuItem onClick={() => { close(); void terminal(() => api.loginAccount(a.id)); }}>Log in (browser)</MenuItem>
+                                <hr />
+                                <MenuItem disabled={busy !== null} onClick={() => { close(); void check("chrome", "Checking the browser login, then running a tiny --chrome agent…", () => api.probeAccountChrome(a.id)); }}>Probe Chrome</MenuItem>
+                                <MenuItem disabled={busy !== null || !a.chrome_device_id} onClick={() => { close(); void check("clone", "Copying the profile, starting a Chrome on the copy, waiting for its extension…", () => api.testAccountClone(a.id)); }}>Test profile cloning</MenuItem>
+                                {a.plan !== "enterprise" && a.logged_in === 1 && <MenuItem disabled={busy !== null || a.refreshing_limits} onClick={() => { close(); void check("limits", "Refreshing the rate-limit windows (one tiny Sonnet turn)…", () => api.refreshLimits(a.id)); }}>{a.refreshing_limits ? "Refreshing limits…" : "Refresh limits"}</MenuItem>}
+                            </>
+                        )}
+                    </ActionMenu>
+                    <Button variant="danger" disabled={used > 0} title={used > 0 ? "An environment or task still uses it" : undefined} onClick={() => { if (confirm(`Forget account ${a.name} and its stored token?`)) void run("delete", async () => { await api.deleteAccount(a.id); await onChanged(); onBack(); }); }}>Delete</Button>
                 </>
             }
             tabs={[
@@ -229,26 +267,31 @@ const JevForm = ({ settings, onChanged, onError }: { settings: Settings; onChang
 export const IntegrationPage = ({ id, settings, tab, onTab, onBack, onChanged, onError }: { tab: string | undefined; onTab: (t: string) => void; id: string; settings: Settings | null; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
     const [managers, setManagers] = useState<TaskManager[] | null>(null);
     const [tokens, setTokens] = useState<TokenIntegration[] | null>(null);
-    const [notice, setNotice] = useState<Notice>(null);
+    const [notice, setNotice] = useState<Outcome>(null);
+    const [busy, setBusy] = useState(false);
     const load = async (): Promise<void> => {
         await Promise.all([api.taskManagers().then(setManagers), Promise.all(TOKEN_INTEGRATIONS.map((t) => api.tokenIntegration(t.id))).then(setTokens)]).catch((e: Error) => onError(e.message));
     };
     useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-    const attempt = async (start: string, fn: () => Promise<Notice>) => {
-        setNotice({ ok: true, text: start });
+    const attempt = async (start: string, fn: () => Promise<Outcome>) => {
+        setBusy(true);
+        setNotice({ ok: true, text: start, pending: true });
         try {
             setNotice(await fn());
         } catch (e) {
             setNotice({ ok: false, text: errText(e) });
+        } finally {
+            setBusy(false);
         }
     };
     const m = id.startsWith("tm:") ? managers?.find((x) => `tm:${x.source}` === id) : undefined;
-    if (id.startsWith("tm:") && !m) return <div className="empty">loading…</div>;
+    const state = (configured: boolean, no = "no token") => <Chip tone={configured ? "ok" : "neutral"}>{configured ? "configured" : no}</Chip>;
+    if (id.startsWith("tm:") && !m) return <Loading />;
     if (m) {
         return (
-            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id={m.label} notice={notice}
+            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id={m.label} notice={notice} meta={state(m.configured)}
                 actions={<>
-                    <Button disabled={!m.configured} onClick={() => void attempt("testing…", async () => { const r = await api.testTaskManager(m.source); return r.ok ? { ok: true, text: `OK — ${r.count} ticket(s) assigned to you${r.sample?.length ? `: ${r.sample.join(" · ")}` : ""}` } : { ok: false, text: `failed: ${r.error}` }; })}>Test</Button>
+                    <Button variant="primary" disabled={!m.configured || busy} onClick={() => void attempt("Testing…", async () => { const r = await api.testTaskManager(m.source); return r.ok ? { ok: true, text: `OK — ${r.count} ticket(s) assigned to you${r.sample?.length ? `: ${r.sample.join(" · ")}` : ""}` } : { ok: false, text: `Failed: ${r.error}` }; })}>{busy ? "Testing…" : "Test"}</Button>
                     <Button variant="danger" disabled={!m.configured} onClick={() => { if (confirm(`Remove the ${m.label} token?`)) void api.patchTaskManager(m.source, { token: null }).then(load); }}>Remove token</Button>
                 </>}
                 tabs={[{ key: "settings", label: "Settings", content: <TaskManagerForm m={m} onSaved={load} onError={onError} /> }]} />
@@ -256,34 +299,34 @@ export const IntegrationPage = ({ id, settings, tab, onTab, onBack, onChanged, o
     }
     const tokenDef = TOKEN_INTEGRATIONS.find((t) => t.id === id);
     if (tokenDef) {
-        const state = tokens?.find((t) => t.id === tokenDef.id);
-        if (!state) return <div className="empty">loading…</div>;
+        const token = tokens?.find((t) => t.id === tokenDef.id);
+        if (!token) return <Loading />;
         return (
-            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id={tokenDef.name}
-                actions={<Button variant="danger" disabled={!state.configured} onClick={() => { if (confirm(`Remove the ${tokenDef.name} token?`)) void api.setTokenIntegration(state.id, null).then(load); }}>Remove token</Button>}
-                tabs={[{ key: "settings", label: "Settings", content: <TokenIntegrationForm state={state} onSaved={load} onError={onError} /> }]} />
+            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id={tokenDef.name} meta={state(token.configured)}
+                actions={<Button variant="danger" disabled={!token.configured} onClick={() => { if (confirm(`Remove the ${tokenDef.name} token?`)) void api.setTokenIntegration(token.id, null).then(load); }}>Remove token</Button>}
+                tabs={[{ key: "settings", label: "Settings", content: <TokenIntegrationForm state={token} onSaved={load} onError={onError} /> }]} />
         );
     }
-    if (!settings) return <div className="empty">loading…</div>;
+    if (!settings) return <Loading />;
     if (id === "notifications") {
         return (
-            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id="Notifications" notice={notice}
-                actions={<Button onClick={() => void attempt("sending…", async () => { const r = await api.testNotification(); return { ok: !r.error, text: `desktop ${r.macos ? "sent" : "off"} · phone ${r.ntfy === null ? "not configured" : r.ntfy ? "sent" : `failed: ${r.error ?? "?"}`}` }; })}>Send a test</Button>}
+            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id="Notifications" notice={notice} meta={<Chip tone="ok">{settings.notifications.ntfyTopic ? "phone via ntfy" : "desktop only"}</Chip>}
+                actions={<Button variant="primary" disabled={busy} onClick={() => void attempt("Sending…", async () => { const r = await api.testNotification(); return { ok: !r.error, text: `Desktop ${r.macos ? "sent" : "off"} · phone ${r.ntfy === null ? "not configured" : r.ntfy ? "sent" : `failed: ${r.error ?? "?"}`}` }; })}>{busy ? "Sending…" : "Send a test"}</Button>}
                 tabs={[{ key: "settings", label: "Settings", content: <NotificationsForm settings={settings} onChanged={onChanged} onError={onError} /> }]} />
         );
     }
     if (id === "jev") {
         const configured = Boolean(settings.typesafeApiKey);
         return (
-            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id="Jev (TypeSafe AI)" notice={notice}
+            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id="Jev (TypeSafe AI)" notice={notice} meta={state(configured, "no key")}
                 actions={<>
-                    <Button disabled={!configured} onClick={() => void attempt("asking Jev to triage a sample CI failure…", async () => { const r = await api.testJev(); return r.ok ? { ok: true, text: `OK — ${r.model} answered in ${r.ms} ms (${r.inputTokens} input tokens): ${r.summary}` } : { ok: false, text: `failed: ${r.error}` }; })}>Test</Button>
+                    <Button variant="primary" disabled={!configured || busy} onClick={() => void attempt("Asking Jev to triage a sample CI failure…", async () => { const r = await api.testJev(); return r.ok ? { ok: true, text: `OK — ${r.model} answered in ${r.ms} ms (${r.inputTokens} input tokens): ${r.summary}` } : { ok: false, text: `Failed: ${r.error}` }; })}>{busy ? "Testing…" : "Test"}</Button>
                     <Button variant="danger" disabled={!configured} onClick={() => { if (confirm("Remove the TypeSafe API key?")) void api.patchSettings({ typesafeApiKey: null }).then(onChanged); }}>Remove key</Button>
                 </>}
                 tabs={[{ key: "settings", label: "Settings", content: <JevForm settings={settings} onChanged={onChanged} onError={onError} /> }]} />
         );
     }
-    return <div className="empty">No such integration.</div>;
+    return <EmptyState title="No such integration" action={<Button onClick={onBack}>Back to integrations</Button>} />;
 };
 
 // ---------- Prompter (a singleton: its settings view) ----------
@@ -291,7 +334,7 @@ export const IntegrationPage = ({ id, settings, tab, onTab, onBack, onChanged, o
 export const PrompterPage = ({ settings, accounts, tab, onTab, onChanged, onError }: { tab: string | undefined; onTab: (t: string) => void; settings: Settings; accounts: Account[]; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
     const p: PrompterSettings = settings.prompter ?? { accountId: null, model: "fable", idleHours: 24, purgeDays: 7, farewell: true, maxTurns: 40, seedFrom: "", seedWings: [] };
     const [status, setStatus] = useState<PrompterStatus | null>(null);
-    const [notice, setNotice] = useState<Notice>(null);
+    const [notice, setNotice] = useState<Outcome>(null);
     const [seeding, setSeeding] = useState(false);
     const { saving, run } = useSaver(onError);
     const refresh = async () => setStatus(await api.prompterStatus().catch(() => null));
@@ -308,7 +351,7 @@ export const PrompterPage = ({ settings, accounts, tab, onTab, onChanged, onErro
             await refresh();
         })}>
             <ReadField label="Status" hint={`The assistant in the bottom-right corner. It runs headless on a token account, in its own config dir with its own MemPalace under ${status?.home ?? "~/.vortex/prompter"}; every chat is a session of its own and the palace is its memory between chats. It sees the current page with every message and acts through the local API. Usage shows in Analytics as kind prompter.`}>
-                {status ? (status.ready ? <Chip tone="ok">ready</Chip> : <><Chip tone="bad">not ready</Chip> {status.reason}</>) : "…"}
+                {status ? (status.ready ? <Chip tone="ok">ready</Chip> : <><Chip tone="bad">not ready</Chip> {status.reason}</>) : <Chip>checking…</Chip>}
                 {status && status.open > 0 && <Chip>{status.open} open chat{status.open === 1 ? "" : "s"}</Chip>}
             </ReadField>
             <Field label="AI account">
@@ -335,8 +378,8 @@ export const PrompterPage = ({ settings, accounts, tab, onTab, onChanged, onErro
     return (
         <EntityView tab={tab} onTab={onTab} type="Prompter" notice={notice}
             actions={<>
-                <Button disabled={seeding} onClick={async () => { setSeeding(true); setNotice({ ok: true, text: "copying drawers…" }); try { const r = await api.prompterSeed(); setNotice({ ok: r.ok, text: r.detail }); await refresh(); } catch (e) { setNotice({ ok: false, text: errText(e) }); } finally { setSeeding(false); } }}>{seeding ? "Seeding…" : status?.seeded ? "Seed again" : "Seed the palace"}</Button>
-                <Button onClick={() => void refresh()}>Refresh</Button>
+                <Button variant={status?.seeded ? "default" : "primary"} disabled={seeding} onClick={async () => { setSeeding(true); setNotice({ ok: true, text: "Copying drawers…", pending: true }); try { const r = await api.prompterSeed(); setNotice({ ok: r.ok, text: r.detail }); await refresh(); } catch (e) { setNotice({ ok: false, text: errText(e) }); } finally { setSeeding(false); } }}>{seeding ? "Seeding…" : status?.seeded ? "Seed again" : "Seed the palace"}</Button>
+                <Button variant="ghost" onClick={() => void refresh()}>Refresh</Button>
             </>}
             tabs={[{ key: "general", label: "General", content: general }, { key: "palace", label: "Palace", content: palace }]} />
     );

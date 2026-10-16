@@ -28,7 +28,8 @@ export const EntityView = ({ type, onType, id, actions, meta, tabs, tab, onTab, 
     // State chips beside the title (Active, Logged out, …).
     meta?: ReactNode;
     // The outcome of the last entity action (Verify, Test, …), shown under the header.
-    notice?: { ok: boolean; text: ReactNode } | null;
+    // `pending`: the action is still running (an info notice instead of ok / bad).
+    notice?: { ok: boolean; text: ReactNode; pending?: boolean } | null;
     // Entity-level actions on the right of the title (Delete, Renew token, …).
     actions?: ReactNode;
     tabs: EntityTab[];
@@ -49,7 +50,7 @@ export const EntityView = ({ type, onType, id, actions, meta, tabs, tab, onTab, 
             <PageHeader title={title} meta={meta} actions={actions}>
                 {tabs.length > 1 && <Tabs items={tabs.map((t) => ({ key: t.key, label: t.label }))} active={current?.key} onChange={onTab} className="ev-tabs" />}
             </PageHeader>
-            {notice && <Notice tone={notice.ok ? "ok" : "bad"} className="ev-notice">{notice.text}</Notice>}
+            {notice && <Notice tone={notice.pending ? "info" : notice.ok ? "ok" : "bad"} className="ev-notice">{notice.text}</Notice>}
             <div className="ev-body" role="tabpanel">{current?.content}</div>
         </div>
     );

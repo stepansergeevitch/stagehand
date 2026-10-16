@@ -2,15 +2,14 @@ import { useEffect, useState } from "react";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { Modal } from "./Modal";
 import { navigate, type Route } from "./routes";
-import { authLabel, PrompterPage, type IntegrationType } from "./ConfigEntities";
+import { authLabel, authTone, PrompterPage, type IntegrationType } from "./ConfigEntities";
 import { accountBrowserReady, accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
+import { Field } from "./components/EntityView";
+import { limitTone, Loading } from "./SettingsParts";
 import { Button, Chip, Input } from "@vortex/ds";
 
 // List / create / read / update / delete for the things Vortex is configured with.
 export type ManageTab = "envs" | "dirs" | "accounts" | "integrations" | "prompter";
-
-// Every card on the Integrations page carries one of these, so a new kind of integration announces what it is.
-const TypeChip = ({ type }: { type: IntegrationType }) => <Chip className="type" title="integration type">{type}</Chip>;
 
 const repoList = (json: string | null): string => {
     try {
@@ -20,7 +19,6 @@ const repoList = (json: string | null): string => {
         return "single repo";
     }
 };
-
 
 export const ManagePage = ({
     tab,
@@ -56,33 +54,38 @@ export const ManagePage = ({
     onChanged: () => Promise<void>;
     onError: (m: string) => void;
 }) => {
-    const act = async (fn: () => Promise<unknown>) => {
+    // Runs a change, reloads, and says whether it worked (an error goes to the page's notice).
+    const act = async (fn: () => Promise<unknown>): Promise<boolean> => {
         try {
             await fn();
             await onChanged();
+            return true;
         } catch (e) {
             onError(String((e as Error).message ?? e));
+            return false;
         }
     };
     return (
-        <div className="env-page manage-page">
+        <>
             {tab === "envs" && <EnvTable envs={envs} configDirs={configDirs} accounts={accounts} tasks={tasks} onConfigure={onConfigureEnv} onAdd={onAddEnv} act={act} />}
             {tab === "dirs" && <ConfigDirTable dirs={configDirs} adding={route.page === "config-dirs" && !!route.create} onOpen={onOpenDir} act={act} />}
             {tab === "accounts" && <AccountTable accounts={accounts} envs={envs} tasks={tasks} settings={settings} onAdd={onAddAccount} onOpen={onOpenAccount} act={act} />}
             {tab === "prompter" && settings && <PrompterPage settings={settings} accounts={accounts} tab={route.page === "prompter" ? route.tab : undefined} onTab={(t) => navigate({ page: "prompter", tab: t })} onChanged={onChanged} onError={onError} />}
             {tab === "integrations" && <IntegrationTable settings={settings} onOpen={onOpenIntegration} onError={onError} />}
-        </div>
+        </>
     );
 };
 
-const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }: { envs: Env[]; configDirs: ConfigDir[]; accounts: Account[]; tasks: Task[]; onConfigure: (id: string) => void; onAdd: () => void; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
+type Act = (fn: () => Promise<unknown>) => Promise<boolean>;
+
+const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }: { envs: Env[]; configDirs: ConfigDir[]; accounts: Account[]; tasks: Task[]; onConfigure: (id: string) => void; onAdd: () => void; act: Act }) => {
     const taskCount = (e: Env): number => tasks.filter((t) => t.env_id === e.id).length;
     const dirName = (e: Env): string => configDirs.find((d) => d.id === e.config_dir_id)?.name ?? "server default";
     const accountList = (e: Env): string => accountOrderOf(e).map((id, i) => `${i + 1}. ${accounts.find((a) => a.id === id)?.name ?? "?"}`).join("  ") || "any that can run in the dir";
     const columns: DataColumn<Env>[] = [
         { key: "name", label: "Name", kind: "label", value: (e) => e.name, filter: false },
-        { key: "source", label: "Tickets", value: (e) => e.ticket_source, filter: "auto" },
-        { key: "base", label: "Base branch", value: (e) => e.base_branch, filter: "auto", render: (e) => <Chip tone="accent">{e.base_branch}</Chip> },
+        { key: "source", label: "Tickets", value: (e) => e.ticket_source, filter: "auto", render: (e) => (e.ticket_source === "linear" ? "Linear" : "ClickUp") },
+        { key: "base", label: "Base branch", value: (e) => e.base_branch, filter: "auto", render: (e) => <Chip>{e.base_branch}</Chip> },
         { key: "repos", label: "Repos", value: (e) => repoList(e.repos), filter: false },
         { key: "dir", label: "Config dir", value: dirName, filter: "auto" },
         { key: "accounts", label: "AI accounts", value: accountList, filter: false, defaultHidden: true },
@@ -113,7 +116,7 @@ const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }
     );
 };
 
-const ConfigDirTable = ({ dirs, adding, onOpen, act }: { dirs: ConfigDir[]; adding: boolean; onOpen: (id: string) => void; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
+const ConfigDirTable = ({ dirs, adding, onOpen, act }: { dirs: ConfigDir[]; adding: boolean; onOpen: (id: string) => void; act: Act }) => {
     const setAdding = (on: boolean): void => navigate(on ? { page: "config-dirs", create: true } : { page: "config-dirs" });
     const [add, setAdd] = useState({ name: "", path: "" });
     const columns: DataColumn<ConfigDir>[] = [
@@ -151,12 +154,25 @@ const ConfigDirTable = ({ dirs, adding, onOpen, act }: { dirs: ConfigDir[]; addi
                 }}
             />
             {adding && (
-                <Modal title="Register a config dir" onClose={() => setAdding(false)}>
-                    <div className="env-fields" style={{ maxWidth: 560 }}>
-                        <label>Name <Input value={add.name} onChange={(e) => setAdd({ ...add, name: e.target.value })} placeholder="personal" /></label>
-                        <label>Directory <Input value={add.path} onChange={(e) => setAdd({ ...add, path: e.target.value })} placeholder="/Users/you/code/project/.claude" /></label>
-                        <Button variant="primary" disabled={!add.name.trim() || !add.path.trim()} onClick={async () => { await act(() => api.addConfigDir(add.name.trim(), add.path.trim())); setAdd({ name: "", path: "" }); setAdding(false); }}>Register</Button>
-                    </div>
+                <Modal
+                    title="Register a config dir"
+                    onClose={() => setAdding(false)}
+                    footer={<><Button onClick={() => setAdding(false)}>Cancel</Button><Button variant="primary" type="submit" form="register-dir" disabled={!add.name.trim() || !add.path.trim()}>Register</Button></>}
+                >
+                    <form
+                        id="register-dir"
+                        className="modal-form"
+                        onSubmit={async (e) => {
+                            e.preventDefault();
+                            if (await act(() => api.addConfigDir(add.name.trim(), add.path.trim()))) {
+                                setAdd({ name: "", path: "" });
+                                setAdding(false);
+                            }
+                        }}
+                    >
+                        <Field label="Name" hint="How the dir is listed on environments."><Input autoFocus value={add.name} onChange={(e) => setAdd({ ...add, name: e.target.value })} placeholder="personal" /></Field>
+                        <Field label="Directory" hint="A Claude config directory: the folder holding settings.json, skills, agents and CLAUDE.md, usually a project's .claude."><Input value={add.path} onChange={(e) => setAdd({ ...add, path: e.target.value })} placeholder="/Users/you/code/project/.claude" /></Field>
+                    </form>
                 </Modal>
             )}
         </>
@@ -168,19 +184,19 @@ const pctOf = (a: Account, window: string): number | null => {
     return l && !l.expired ? Math.round(l.utilization * 100) : null;
 };
 
-const AccountTable = ({ accounts, envs, tasks, settings, onAdd, onOpen, act }: { accounts: Account[]; envs: Env[]; tasks: Task[]; settings: Settings | null; onAdd: () => void; onOpen: (id: string) => void; act: (fn: () => Promise<unknown>) => Promise<void> }) => {
+const AccountTable = ({ accounts, envs, tasks, settings, onAdd, onOpen, act }: { accounts: Account[]; envs: Env[]; tasks: Task[]; settings: Settings | null; onAdd: () => void; onOpen: (id: string) => void; act: Act }) => {
     const usedCount = (a: Account): number => envs.filter((e) => e.default_account_id === a.id).length + tasks.filter((t) => t.account_id === a.id).length;
     const usedBy = (a: Account): string => envs.filter((e) => accountOrderOf(e).includes(a.id)).map((e) => `${e.name} (#${accountOrderOf(e).indexOf(a.id) + 1})`).join(", ") || "no environment";
     const columns: DataColumn<Account>[] = [
         { key: "name", label: "Name", kind: "label", value: (a) => a.name, filter: false },
         { key: "provider", label: "Provider", value: (a) => a.provider, filter: "auto" },
-        { key: "auth", label: "Auth", value: authLabel, filter: "auto", render: (a) => <Chip className={`${a.setting_up ? "wait" : a.has_token ? "ok" : a.logged_in ? "warn" : "bad"}`}>{authLabel(a)}</Chip> },
-        { key: "chrome", label: "Chrome", value: (a) => (accountBrowserReady(a) ? a.chrome_browser_name ?? "ready" : "none"), filter: "auto" },
+        { key: "auth", label: "Auth", value: authLabel, filter: "auto", render: (a) => <Chip tone={authTone(a)}>{authLabel(a)}</Chip> },
+        { key: "chrome", label: "Chrome", value: (a) => (accountBrowserReady(a) ? a.chrome_browser_name ?? "ready" : "none"), filter: "auto", defaultHidden: true },
         { key: "plan", label: "Plan", value: (a) => a.plan ?? "", filter: "auto" },
         { key: "email", label: "Email", value: (a) => a.email ?? "", filter: false },
         { key: "model", label: "Default model", value: (a) => modelLabel(a.models?.default ?? a.default_model, settings?.models) ?? "", filter: "auto", defaultHidden: true },
-        { key: "five", label: "5 h", kind: "num", value: (a) => pctOf(a, "five_hour"), filter: false, render: (a) => { const v = pctOf(a, "five_hour"); return v === null ? "—" : `${v}%`; } },
-        { key: "week", label: "7 d", kind: "num", value: (a) => pctOf(a, "seven_day"), filter: false, render: (a) => { const v = pctOf(a, "seven_day"); return v === null ? "—" : `${v}%`; } },
+        { key: "five", label: "5 h", kind: "num", value: (a) => pctOf(a, "five_hour"), filter: false, render: (a) => { const v = pctOf(a, "five_hour"); return v === null ? "—" : <Chip tone={limitTone(v)}>{v}%</Chip>; } },
+        { key: "week", label: "7 d", kind: "num", value: (a) => pctOf(a, "seven_day"), filter: false, render: (a) => { const v = pctOf(a, "seven_day"); return v === null ? "—" : <Chip tone={limitTone(v)}>{v}%</Chip>; } },
         { key: "today", label: "Today", kind: "num", value: (a) => a.usage?.today.cost ?? 0, filter: false, render: (a) => `$${(a.usage?.today.cost ?? 0).toFixed(2)}` },
         { key: "weekCost", label: "This week", kind: "num", value: (a) => a.usage?.week.cost ?? 0, filter: false, render: (a) => `$${(a.usage?.week.cost ?? 0).toFixed(2)}` },
         { key: "used", label: "Used by", value: usedBy, filter: false, defaultHidden: true },
@@ -233,9 +249,9 @@ const IntegrationTable = ({ settings, onOpen, onError }: { settings: Settings | 
     ];
     const columns: DataColumn<IntegrationRow>[] = [
         { key: "name", label: "Name", kind: "label", value: (r) => r.name, filter: false },
-        { key: "type", label: "Type", value: (r) => r.type, filter: "auto", render: (r) => <TypeChip type={r.type} /> },
-        { key: "status", label: "Status", value: (r) => r.status, filter: "auto", render: (r) => <Chip className={`${r.ok ? "ok" : ""}`}>{r.status}</Chip> },
-        { key: "used", label: "Used by", value: (r) => r.usedBy, filter: false, render: (r) => r.usedBy || <span className="quiet">—</span> },
+        { key: "type", label: "Type", value: (r) => r.type, filter: "auto", render: (r) => <Chip>{r.type}</Chip> },
+        { key: "status", label: "Status", value: (r) => r.status, filter: "auto", render: (r) => <Chip tone={r.ok ? "ok" : "neutral"}>{r.status}</Chip> },
+        { key: "used", label: "Used by", value: (r) => r.usedBy, filter: false, render: (r) => r.usedBy || "—" },
     ];
     return (
         <>
@@ -246,7 +262,8 @@ const IntegrationTable = ({ settings, onOpen, onError }: { settings: Settings | 
                 rowKey={(r) => r.id}
                 onRowClick={(r) => onOpen(r.id)}
                 storageKey="config-integrations"
-                empty={managers === null ? "loading…" : "No integration."}
+                empty={managers === null ? <Loading lines={2} /> : "No integration."}
+                defaultSort={{ key: "name", desc: false }}
             />
         </>
     );

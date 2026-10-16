@@ -28,7 +28,7 @@ import { Topbar } from "./components/Topbar";
 import { UsageGauges } from "./components/UsageGauges";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { taskState } from "./components/status";
-import { Button, Icon, Notice, StatusDot } from "@vortex/ds";
+import { Button, Notice, StatusDot } from "@vortex/ds";
 
 // Where the user is lives in the URL hash only (see routes.ts): reloads, back/forward, pasted links and anything that
 // reads the path see the same screen. The shell is described in docs/ux-redesign.md.
@@ -106,8 +106,6 @@ export const App = () => {
     const [collapsed, setCollapsed] = useState<boolean>(() => storage.get("vortex.sidebar.collapsed") === "1");
     const [paletteOpen, setPaletteOpen] = useState(false);
     const [connected, setConnected] = useState(true);
-    // Tasks ticked in the list for a bulk delete.
-    const [picked, setPicked] = useState<Set<string>>(() => new Set());
 
     // An old-shaped link (#/env/<id>, #/dir/<id>, #/managers, a task without a tab) is rewritten to its current form once.
     useEffect(() => {
@@ -254,14 +252,16 @@ export const App = () => {
                     setTerminal(r.terminal);
                 }}
                 onCloseTerminal={() => setTerminal(null)}
+                onClose={closeTask}
+                listLabel={route.page === "dashboard" ? "Overview" : "Tasks"}
             />
         </ErrorBoundary>
     );
 
     // Bulk delete of the ticked tasks: same cleanup as a single Delete; tasks whose commits exist nowhere else are
     // refused first and offered a second, forced pass.
-    const deletePicked = async () => {
-        const ids = [...picked].filter((id) => tasks.some((t) => t.id === id));
+    const deletePicked = async (picked: string[]) => {
+        const ids = picked.filter((id) => tasks.some((t) => t.id === id));
         if (ids.length === 0) return;
         const names = ids.map((id) => tasks.find((t) => t.id === id)?.ticket_id ?? id);
         if (!confirm(`Delete ${ids.length} task${ids.length === 1 ? "" : "s"} (${names.join(", ")})? Each is cleaned up (BE/FE, Chrome tabs, worktree, local branch) and then removed. PRs stay on GitHub.`)) return;
@@ -278,7 +278,6 @@ export const App = () => {
         if (refused.length && confirm(`${refused.map((r) => `${r.name}: ${r.msg}`).join("\n\n")}\n\nDiscard their work and delete anyway?`)) {
             for (const r of refused) await api.deleteTask(r.id, false, true).catch((e: Error) => setError(e.message));
         }
-        setPicked(new Set());
         if (selected && ids.includes(selected)) closeTask();
         await reload();
     };
@@ -383,10 +382,7 @@ export const App = () => {
             )}
             {page === "dashboard" && frame(
                 selected ? (
-                    <>
-                        <div><Button variant="ghost" size="sm" onClick={closeTask}><Icon name="arrowLeft" />Overview</Button></div>
-                        {taskDetailView ?? <div className="empty">Loading…</div>}
-                    </>
+                    taskDetailView || <div className="empty">Loading…</div>
                 ) : (
                     <ErrorBoundary label="Overview"><Dashboard envs={envs} tasks={tasks} readiness={readiness} onOpen={(t) => navigate({ page: "dashboard", task: t.id })} onOpenEnv={(id) => navigate({ page: "envs", env: id })} /></ErrorBoundary>
                 ),
@@ -420,7 +416,7 @@ export const App = () => {
                 </ErrorBoundary>,
                 "wide",
             )}
-            {page === "envs" && envPage && frame(<EnvPage key={envPage.id} env={envPage} tab={route.page === "envs" ? route.tab : undefined} onTab={(t) => navigate({ page: "envs", env: envPage.id, tab: t })} envs={envs} accounts={accounts} configDirs={configDirs} onBack={() => navigate({ page: "envs" })} onOpenDir={(id) => navigate({ page: "config-dirs", dir: id })} onChanged={reload} onError={setError} />)}
+            {page === "envs" && envPage && frame(<EnvPage key={envPage.id} env={envPage} tab={route.page === "envs" ? route.tab : undefined} onTab={(t) => navigate({ page: "envs", env: envPage.id, tab: t })} envs={envs} accounts={accounts} configDirs={configDirs} tasks={tasks} onBack={() => navigate({ page: "envs" })} onOpenDir={(id) => navigate({ page: "config-dirs", dir: id })} onChanged={reload} onError={setError} />)}
             {page === "config-dirs" && dir && frame(<ConfigDirPage key={dir.id} dir={dir} tab={route.page === "config-dirs" ? route.tab : undefined} onTab={(t) => navigate({ page: "config-dirs", dir: dir.id, tab: t })} onBack={() => navigate({ page: "config-dirs" })} onChanged={reload} onError={setError} />)}
             {page === "accounts" && accountPage && frame(<AccountPage key={accountPage.id} a={accountPage} tab={route.page === "accounts" ? route.tab : undefined} onTab={(t) => navigate({ page: "accounts", account: accountPage.id, tab: t })} envs={envs} tasks={tasks} settings={settings} onBack={() => navigate({ page: "accounts" })} onChanged={reload} onError={setError} onTerminal={setTerminal} />)}
             {page === "integrations" && integrationId && frame(<IntegrationPage key={integrationId} id={integrationId} tab={route.page === "integrations" ? route.tab : undefined} onTab={(t) => navigate({ page: "integrations", integration: integrationId, tab: t })} settings={settings} onBack={() => navigate({ page: "integrations" })} onChanged={reload} onError={setError} />)}
@@ -452,13 +448,10 @@ export const App = () => {
                     visible={visible}
                     selected={selected}
                     detailPane={tasksDetailPane}
-                    picked={picked}
-                    onPick={setPicked}
-                    onDeletePicked={() => void deletePicked()}
+                    onDeleteTasks={(ids) => void deletePicked(ids)}
                     onSelectEnv={(id) => navigate(listRoute(id))}
                     onNewTask={() => navigate({ ...listRoute(), create: true })}
                     onOpen={(id) => navigate(taskRoute(route, id))}
-                    onClose={closeTask}
                 />
             )}
         </AppShell>

@@ -1,0 +1,78 @@
+/* Settings pages: environments, config dirs, AI accounts, integrations, Prompter (docs/ux-redesign.md §4.4) */
+
+/* ---------- code-ish text areas ---------- */
+textarea.code-area { min-height: 0; padding: var(--sp-2) var(--sp-3); font-family: var(--mono); font-size: var(--fs-sm); line-height: 1.55; tab-size: 4; white-space: pre; overflow: auto; background: var(--field-bg); }
+.field-input > textarea.code-area { min-height: 0; }
+textarea.code-area.prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---------- groups inside a form tab ---------- */
+.ev-fields > .section { margin-top: var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--line); display: grid; gap: var(--sp-4); }
+.ev-fields > .section:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.ev-fields > .section .section-head { margin: 0; }
+
+/* ---------- list editors (components, rules, review points, templates) ---------- */
+.row-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-2) var(--sp-3); align-items: start; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel-2); }
+.row-editor-main { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--sp-2); min-width: 0; }
+.row-editor-main > .span-all { grid-column: 1 / -1; }
+.row-editor-main > .check-row { align-self: center; }
+.row-add { justify-self: start; }
+
+/* ---------- priority list of AI accounts ---------- */
+.order-list { display: grid; gap: var(--sp-2); list-style: none; margin: 0; padding: 0; }
+.order-item { display: flex; align-items: center; gap: var(--sp-2); min-height: calc(var(--ctl-h) + var(--sp-3)); padding: var(--sp-1) var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel-2); }
+.order-item.on { border-color: var(--accent); background: var(--accent-soft); }
+.order-pos { min-width: 1.5em; font-family: var(--mono); font-size: var(--fs-sm); color: var(--ink-2); }
+.order-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.order-buttons { display: inline-flex; gap: var(--sp-1); }
+
+/* ---------- checklist (one tickable item with an explanation on hover) ---------- */
+.check-list { display: grid; gap: var(--sp-2); }
+.check-item { display: flex; align-items: center; gap: var(--sp-1); }
+
+/* ---------- action menu in a page header ---------- */
+.action-menu { position: relative; }
+.action-menu-list { position: absolute; right: 0; top: calc(100% + var(--sp-1)); z-index: var(--z-pop); }
+
+/* ---------- stage / model grid on the account's Models tab ---------- */
+.model-grid { display: grid; grid-template-columns: minmax(160px, 220px) minmax(0, 1fr) minmax(0, 1fr); gap: var(--sp-2) var(--sp-4); align-items: center; }
+.model-grid .mg-head { font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); }
+.model-grid .mg-label, .model-single .mg-label { display: flex; align-items: center; gap: var(--sp-1); font-weight: 500; color: var(--ink-2); }
+.model-grid select { width: 100%; }
+.model-grid .mg-wide { grid-column: span 2; }
+.model-single { display: grid; grid-template-columns: minmax(160px, 220px) minmax(0, 1fr); gap: var(--sp-2) var(--sp-4); align-items: center; }
+.model-single select { width: 100%; }
+
+/* ---------- forms in dialogs: label above, buttons pinned ---------- */
+.modal-form { display: grid; gap: var(--sp-4); }
+.modal-form .field { grid-template-columns: 1fr; }
+.modal-form .field-label { min-height: 0; }
+.modal-form-actions { position: sticky; bottom: calc(-1 * var(--sp-5)); display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-2); padding: var(--sp-3) 0 0; background: var(--surface-2); border-top: 1px solid var(--line); }
+
+/* ---------- loading ---------- */
+.settings-loading { display: grid; gap: var(--sp-3); max-width: 920px; }
+
+/* ---------- multi-select (CheckboxSelect) ---------- */
+.checkbox-select { position: relative; display: inline-block; max-width: 100%; }
+.checkbox-select > .btn { max-width: 100%; justify-content: space-between; gap: var(--sp-2); }
+.checkbox-select .cs-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.checkbox-select .cs-list { position: absolute; left: 0; top: calc(100% + var(--sp-1)); z-index: var(--z-pop); max-height: 60vh; overflow: auto; min-width: 220px; }
+.checkbox-select .cs-item { display: flex; width: 100%; min-height: var(--ctl-h); padding: 0 var(--sp-2); border-radius: var(--r-md); white-space: nowrap; }
+.checkbox-select .cs-item:hover { background: var(--code); }
+
+@media (max-width: 760px) {
+    .model-grid { grid-template-columns: 1fr; }
+    .model-grid .mg-head { display: none; }
+    .model-grid .mg-label, .model-single .mg-label { margin-top: var(--sp-2); }
+    .model-grid .mg-wide { grid-column: auto; }
+    .model-single { grid-template-columns: 1fr; }
+    .row-editor { grid-template-columns: 1fr; }
+    .row-editor > .btn { justify-self: end; grid-row: 1; }
+    .modal-form-actions { bottom: calc(-1 * var(--sp-4)); }
+    .checkbox-select .cs-list { position: fixed; left: var(--sp-4); right: var(--sp-4); top: auto; bottom: var(--sp-4); max-height: 70vh; }
+}
+@media (pointer: coarse) {
+    .checkbox-select .cs-item { min-height: var(--touch, 44px); }
+}
+
+.field-follow { margin-top: var(--sp-2); }
+.file-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }

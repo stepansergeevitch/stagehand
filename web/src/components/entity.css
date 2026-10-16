@@ -21,7 +21,7 @@
 .form-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-5); padding: var(--sp-3) 0 0; border-top: 1px solid var(--line); }
 .form-actions.dirty { position: sticky; bottom: 0; z-index: var(--z-sticky); margin-inline: calc(-1 * var(--sp-5)); margin-bottom: calc(-1 * var(--sp-5)); padding: var(--sp-3) var(--sp-5); background: var(--surface-2); border-radius: 0 0 var(--r-lg) var(--r-lg); box-shadow: 0 -6px 12px -8px var(--overlay); }
 .form-dirty { margin-left: auto; display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); color: var(--ink-2); }
-@media (max-width: 900px) { .field { grid-template-columns: 1fr; } .field-label { min-height: 0; } }
+@media (max-width: 900px) { .field:not(.field-check) { grid-template-columns: 1fr; } .field-label { min-height: 0; } }
 @media (max-width: 760px) {
     .ev-body { padding: var(--sp-4); }
     .form-actions.dirty { margin-inline: calc(-1 * var(--sp-4)); margin-bottom: calc(-1 * var(--sp-4)); padding-inline: var(--sp-4); }
