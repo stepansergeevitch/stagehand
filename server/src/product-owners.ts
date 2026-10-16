@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,8 +10,9 @@ import { authEnv } from "./claude/accounts.js";
 import { startClaude, type ActivityEvent, type ClaudeRun } from "./claude/runner.js";
 import { recordUsage } from "./usage.js";
 import type { Palace } from "./palace.js";
-import { createClickUpTask, createLinearIssue, issueDescription, updateIssueDescription, downloadLinearUpload, fetchProjectState, fetchScope, fetchScopeIssues, fetchSource, findIssue, linearUploads, ticketScopeId, type TrackedIssue, type TrackedProject } from "./sources.js";
-import { sharedFileName } from "./tickets.js";
+import { createClickUpTask, createLinearIssue, issueDescription, updateIssueDescription, fetchProjectState, fetchScope, fetchScopeIssues, fetchSource, figmaLinks, figmaRenders, findIssue, ticketScopeId, type TrackedIssue, type TrackedProject } from "./sources.js";
+import { downloadUpload, hostedUploads, sharedFileName, uploadKey } from "./tickets.js";
+import { repoPaths } from "./git.js";
 import { chunkText, drawerText, issueDrawers } from "./palace-index.js";
 import { describeImage, extractDocText, isConvertibleDoc, isImage } from "./media.js";
 import { PoJournal, type PoEventChanges, type PoEventKind, type PoEventRefs, type PoMemoryWrite } from "./po-journal.js";
@@ -338,7 +340,11 @@ export class ProductOwners {
         if (!existsSync(TEMPLATES)) return;
         const hooks = join(this.configDir, "hooks");
         copyFileSync(join(TEMPLATES, "CLAUDE.md"), join(this.configDir, "CLAUDE.md"));
-        writeFileSync(join(this.configDir, "settings.json"), readFileSync(join(TEMPLATES, "settings.json"), "utf8").replace(/\{\{hooks\}\}/g, hooks));
+        // The envs' checkouts are readable (codeDirs) but never writable: Edit / Write there are denied.
+        const settings = JSON.parse(readFileSync(join(TEMPLATES, "settings.json"), "utf8").replace(/\{\{hooks\}\}/g, hooks)) as { permissions?: { deny?: string[] } };
+        const checkouts = (this.db.prepare(`SELECT path, repos, base_branch FROM envs`).all() as Array<{ path: string; repos: string | null; base_branch: string }>).flatMap((e) => repoPaths(e));
+        settings.permissions = { ...settings.permissions, deny: [...(settings.permissions?.deny ?? []), ...checkouts.flatMap((p) => ["Edit", "Write", "MultiEdit", "NotebookEdit"].map((t) => `${t}(/${p}/**)`))] };
+        writeFileSync(join(this.configDir, "settings.json"), JSON.stringify(settings, null, 4));
         rmSync(hooks, { recursive: true, force: true });
         cpSync(join(TEMPLATES, "hooks"), hooks, { recursive: true });
         // Onboarding flags come from the main config dir's .claude.json, once (like the Prompter's).
@@ -729,23 +735,44 @@ export class ProductOwners {
         return a;
     }
 
-    // Files hosted by Linear that a source links or embeds (images, documents, PDFs): each becomes an artifact of its
-    // own, once (by its URL), and goes through queueMedia.
+    // Files hosted by the task manager (Linear uploads, ClickUp attachments) that a source links or embeds (images,
+    // documents, PDFs), and the Figma frames it links: each becomes an artifact of its own, once (by its URL), and goes
+    // through queueMedia.
     async ingestUploads(poId: string, markdown: string): Promise<number> {
         const po = this.get(poId);
-        if (!po || po.source !== "linear") return 0;
+        if (!po) return 0;
         let added = 0;
-        for (const u of linearUploads(markdown)) {
-            if (this.db.prepare(`SELECT 1 FROM po_artifacts WHERE po_id = ? AND source_url = ?`).get(poId, u.url)) continue;
+        for (const u of hostedUploads(markdown)) {
+            const key = uploadKey(u.url);
+            if (this.db.prepare(`SELECT 1 FROM po_artifacts WHERE po_id = ? AND (source_url = ? OR substr(source_url, 1, ?) IN (?, ?))`).get(poId, key, key.length + 1, `${key}?`, `${key}#`)) continue;
             try {
-                const f = await downloadLinearUpload(this.cfg, u.url, u.label);
+                const f = await downloadUpload(this.cfg, u.url, u.name);
                 const file = `artifacts/${randomUUID().slice(0, 8)}-${sharedFileName(f.name)}`;
                 writeFileSync(join(this.dir(poId), file), f.bytes);
-                const a = this.insertArtifact({ id: randomUUID(), po_id: poId, kind: "linear", title: f.name, source_url: u.url, file, mime: f.mime, size: f.bytes.length, created_at: now() });
+                const a = this.insertArtifact({ id: randomUUID(), po_id: poId, kind: po.source, title: f.name, source_url: u.url, file, mime: f.mime, size: f.bytes.length, created_at: now() });
                 this.queueMedia(poId, a.id);
                 added++;
             } catch (e) {
                 console.warn(`[po] upload ${u.url}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            }
+        }
+        // Figma links: what each one shows, rendered to images (one artifact per frame, `<link>#<n>`), once per link.
+        if (this.cfg.figmaApiKey) {
+            for (const link of figmaLinks(markdown)) {
+                if (this.db.prepare(`SELECT 1 FROM po_artifacts WHERE po_id = ? AND (source_url = ? OR substr(source_url, 1, ?) = ?)`).get(poId, link, link.length + 1, `${link}#`)) continue;
+                try {
+                    const r = await figmaRenders(this.cfg, link);
+                    for (const [i, frame] of r.frames.entries()) {
+                        const f = await downloadUpload(this.cfg, frame.image, `${r.file} - ${frame.name}.png`);
+                        const file = `artifacts/${randomUUID().slice(0, 8)}-${sharedFileName(f.name)}`;
+                        writeFileSync(join(this.dir(poId), file), f.bytes);
+                        const a = this.insertArtifact({ id: randomUUID(), po_id: poId, kind: "figma", title: `Figma: ${r.file} › ${frame.name}`, source_url: `${link}#${i + 1}`, file, mime: f.mime ?? "image/png", size: f.bytes.length, created_at: now() });
+                        this.queueMedia(poId, a.id);
+                        added++;
+                    }
+                } catch (e) {
+                    console.warn(`[po] Figma ${link}: ${String((e as Error).message ?? e).slice(0, 160)}`);
+                }
             }
         }
         return added;
@@ -936,6 +963,25 @@ export class ProductOwners {
         });
     }
 
+    // The code of the PO's environments: each env's own checkout of every repository, read-only — a question the code
+    // answers is answered from it, not put to the human. Each checkout is named with the branch it is on, which can lag
+    // behind or differ from the trunk.
+    private codeDirs(po: ProductOwnerRow): Array<{ env: string; path: string; branch: string; base: string }> {
+        return poEnvIds(po).flatMap((id) => {
+            const env = this.db.prepare(`SELECT name, path, repos, base_branch FROM envs WHERE id = ?`).get(id) as { name: string; path: string; repos: string | null; base_branch: string } | undefined;
+            if (!env) return [];
+            return repoPaths(env).filter((p) => existsSync(p)).map((path) => {
+                let branch = "?";
+                try {
+                    branch = execFileSync("git", ["-C", path, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: 5000 }).trim();
+                } catch {
+                    // not a git checkout (yet): still readable
+                }
+                return { env: env.name, path, branch, base: env.base_branch };
+            });
+        });
+    }
+
     private systemPrompt(po: ProductOwnerRow): string {
         const d = this.dir(po.id);
         const ctx = existsSync(join(d, "context.md")) ? readFileSync(join(d, "context.md"), "utf8") : "";
@@ -973,6 +1019,10 @@ export class ProductOwners {
             `## Your project context (context.md)\n\n${ctx.trim() || "(empty — write it)"}`,
             ...(envPo ? [] : [`## Issues and the project\n\nEvery issue of the project, with its comments, is in your wing, room \`issues\` (current state in full: issues.md); the project's own description and documents in room \`project\` (in full: project.md). Stagehand reads them again every hour and tells you what changed. Images and documents they contain are artifacts: an image comes with a description, and you can open the file to look at it.`]),
             `## Artifacts (${arts.length}) — search them in your wing, room \`artifacts\`; read a file only when search is not enough\n\n${arts.map((a) => `- ${a.file} — ${a.title}${a.source_url ? ` (${a.source_url})` : ""} [${a.kind}${a.chunks ? `, ${a.chunks} chunks` : ""}]${a.description ? ` — image: ${a.description.split("\n")[0]!.slice(0, 160)} (open the file to look at it)` : a.text_file ? ` — text extracted to ${a.text_file}` : ""}`).join("\n") || "(none)"}`,
+            ((): string => {
+                const code = this.codeDirs(po);
+                return `## Code (${code.length} checkout${code.length === 1 ? "" : "s"}) — read-only\n\n${code.map((c) => `- ${c.path} — "${c.env}", on \`${c.branch}\`${c.branch !== c.base ? ` (the trunk is \`${c.base}\`)` : ""}`).join("\n") || "(none)"}\n\nWhen a question is about how the product works today (a model, a field, a rule, an API, a screen), answer it from the code with Grep, Glob and Read before you ask the human. Name the file you read. Never edit these checkouts and never run git commands that change them.`;
+            })(),
             ((): string => {
                 const tasks = this.projectTasks(po);
                 return `## Tasks of ${envPo ? "this environment you own" : "this project"} (${tasks.length}) — read their files directly, never edit them\n\n${tasks.map((t) => `- ${t.ticket}${t.title ? ` ${t.title}` : ""} — ${t.stage.replace(/_/g, " ")} · ${t.status.replace(/_/g, " ")} — ${t.dir}/${t.files.length ? ` (${t.files.join(", ")})` : " (no files yet)"}`).join("\n") || "(none)"}\n\ndesign.md is the agent's proposal; design.json holds its QA scenarios (seed, steps, expected results) and the baseline result.`;
@@ -1040,7 +1090,7 @@ export class ProductOwners {
             ...(first ? { sessionId: po.session_id, name: po.slug } : { resume: po.session_id }),
             ...(accountModelsOf(acc).default ? { model: accountModelsOf(acc).default! } : {}),
             maxTurns: 80,
-            addDirs: this.projectTasks(po).map((t) => t.dir),
+            addDirs: [...this.projectTasks(po).map((t) => t.dir), ...this.codeDirs(po).map((c) => c.path)],
             appendSystemPrompt: this.systemPrompt(po),
             mcpConfig: this.palace.mcpConfigPath,
             eventLogPath: join(this.dir(poId), "logs", `${Date.now()}.ndjson`),
@@ -1291,7 +1341,8 @@ export class ProductOwners {
                     this.queueProjectIndex(po, text);
                 }
             }
-            // Files Linear hosts (images, documents) in the project and its issues become artifacts, once each.
+            // Files the task manager hosts (images, documents) and Figma frames linked in the project and its issues become
+            // artifacts, once each.
             const uploads = await this.ingestUploads(poId, [project?.content ?? "", ...(project?.documents.map((d) => d.content) ?? []), ...fetched.flatMap((i) => [i.description, ...i.comments.map((c) => c.body)])].join("\n"));
             if (uploads) sections.push(`## New attachments (${uploads})\nFiles from the project or its issues (images, documents) are now artifacts. Images get a description and documents their text in a few minutes: search room \`artifacts\`, or open a file to look at it.`);
             for (const i of fetched) if (prev.get(i.identifier)?.hash !== issueHash(i)) this.queueIssueIndex(po, i.identifier);
@@ -1485,7 +1536,7 @@ export class ProductOwners {
         state({ status: "running" });
         const prompt = [
             `Write a brief on ticket ${task.ticket_id}${task.title ? ` (${task.title})` : ""} for the agent that researches it next, as the Product Owner of "${po.title}".`,
-            `Read ${taskDir}/ticket.json${existsSync(join(taskDir, "tickets")) ? ` and ${taskDir}/tickets/` : ""}. Search your wing for what you know about this ticket and its area: rooms \`issues\` (its comments and the neighbouring issues), \`decisions\`, \`features\`, \`artifacts\`. Read a file only when search is not enough.`,
+            `Read ${taskDir}/ticket.json${existsSync(join(taskDir, "tickets")) ? ` and ${taskDir}/tickets/` : ""}.${existsSync(join(taskDir, "attachments")) ? ` The ticket's media is in ${taskDir}/attachments/ (ticket.json lists each file): open an image to look at it.` : ""} Search your wing for what you know about this ticket and its area: rooms \`issues\` (its comments and the neighbouring issues), \`decisions\`, \`features\`, \`artifacts\`. Read a file only when search is not enough.`,
             this.taskTicketLine(po, task),
             `Give only what the ticket text does not already say and the research must not miss, for this ticket's work: product decisions that apply (name the source — a decision id, a comment and its author), constraints, related or dependent tickets and how they touch this one, open questions and contradictions, the user intent behind the ticket.`,
             `Write ${out}: 200 words or fewer, bullets only, each with a **bold lead-in**. When you know nothing beyond the ticket, write "Nothing beyond the ticket." Do not change any other file of the task.`,
@@ -1500,7 +1551,7 @@ export class ProductOwners {
             name: `${po.slug}-brief-${task.ticket_id}`,
             ...(accountModelsOf(acc).default ? { model: accountModelsOf(acc).default! } : {}),
             maxTurns: 40,
-            addDirs: [taskDir],
+            addDirs: [taskDir, ...this.codeDirs(po).map((c) => c.path)],
             appendSystemPrompt: this.systemPrompt(po),
             mcpConfig: this.palace.mcpConfigPath,
             eventLogPath: join(taskDir, `po-brief-${Date.now()}.ndjson`),
@@ -1559,7 +1610,7 @@ export class ProductOwners {
         writeReviewState(taskDir, { status: "running", sessionId });
         const prompt = [
             `Review the design proposal of task ${task.ticket_id}${task.title ? ` (${task.title})` : ""} as the Product Owner of "${po.title}".`,
-            `Read ${taskDir}/design.md, ${taskDir}/design.json (its QA scenarios), ${taskDir}/research.md and ${taskDir}/ticket.json. Search your environment's wings for the product facts that matter. ${task.worktree_path ? `The code is in ${task.worktree_path}; read it only to check a claim.` : ""}`,
+            `Read ${taskDir}/design.md, ${taskDir}/design.json (its QA scenarios), ${taskDir}/research.md and ${taskDir}/ticket.json.${existsSync(join(taskDir, "attachments")) ? ` The ticket's media is in ${taskDir}/attachments/: open an image to look at it.` : ""} Search your environment's wings for the product facts that matter. ${task.worktree_path ? `The code is in ${task.worktree_path}; read it only to check a claim.` : ""}`,
             this.taskTicketLine(po, task),
             `Judge the proposal as product, not as code: does it solve this ticket's problem for its users, does its scope match this ticket, are this ticket's acceptance criteria met, do the QA scenarios test what the user needs, what does it break for other parts of the product.`,
             `**Every comment is about this task's work.** Never ask it to do another ticket's work, and make no comment about a gap another ticket owns. A later ticket matters only when this task's design makes that ticket harder (a model, a name, an API shape it will have to undo): then set \`laterTicket\` to that ticket and say what to change in this task now.`,
@@ -1576,7 +1627,7 @@ export class ProductOwners {
             name: `${po.slug}-review-${task.ticket_id}`,
             ...(accountModelsOf(acc).default ? { model: accountModelsOf(acc).default! } : {}),
             maxTurns: 60,
-            addDirs: [taskDir, ...(task.worktree_path ? [task.worktree_path] : [])],
+            addDirs: [taskDir, ...(task.worktree_path ? [task.worktree_path] : []), ...this.codeDirs(po).map((c) => c.path)],
             appendSystemPrompt: this.systemPrompt(po),
             mcpConfig: this.palace.mcpConfigPath,
             eventLogPath: join(taskDir, `po-review-${Date.now()}.ndjson`),
@@ -1631,7 +1682,7 @@ export class ProductOwners {
             ...(state.sessionId ? { resume: state.sessionId } : { sessionId: randomUUID() }),
             ...(accountModelsOf(acc).default ? { model: accountModelsOf(acc).default! } : {}),
             maxTurns: 30,
-            addDirs: [taskDir, ...(task.worktree_path ? [task.worktree_path] : [])],
+            addDirs: [taskDir, ...(task.worktree_path ? [task.worktree_path] : []), ...this.codeDirs(po).map((c) => c.path)],
             appendSystemPrompt: this.systemPrompt(po),
             mcpConfig: this.palace.mcpConfigPath,
             eventLogPath: join(taskDir, `po-review-ask-${Date.now()}.ndjson`),
@@ -1736,7 +1787,7 @@ export class ProductOwners {
             ...(first ? { sessionId, name: `${po.slug}-${q.key}` } : { resume: sessionId }),
             ...(accountModelsOf(acc).default ? { model: accountModelsOf(acc).default! } : {}),
             maxTurns: 30,
-            addDirs: this.projectTasks(po).map((t) => t.dir),
+            addDirs: [...this.projectTasks(po).map((t) => t.dir), ...this.codeDirs(po).map((c) => c.path)],
             appendSystemPrompt: this.systemPrompt(po),
             mcpConfig: this.palace.mcpConfigPath,
             eventLogPath: join(this.dir(poId), "logs", `question-${q.key}-${Date.now()}.ndjson`),

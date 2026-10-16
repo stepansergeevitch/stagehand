@@ -84,6 +84,39 @@ const embeddedFiles = (markdown: string, origin: TicketAttachment["origin"]): Ti
     return out;
 };
 
+// The task managers' own uploads (Linear uploads, ClickUp attachments) a text embeds or links — not other links.
+// One file under several links (embedded, and listed as an attachment with `?view=open`) is one upload: its key is the
+// URL without query or fragment.
+export const uploadKey = (url: string): string => url.split(/[?#]/)[0]!;
+
+export const hostedUploads = (markdown: string): Array<{ name: string; url: string }> => {
+    const seen = new Set<string>();
+    return embeddedFiles(markdown, "description")
+        .filter((a) => {
+            try {
+                if (!FILE_HOST.test(new URL(a.url).hostname) || seen.has(uploadKey(a.url))) return false;
+            } catch {
+                return false;
+            }
+            seen.add(uploadKey(a.url));
+            return true;
+        })
+        .map((a) => ({ name: a.name, url: a.url }));
+};
+
+// One upload, with the task manager's credentials where it needs them; the name keeps the URL's extension.
+export const downloadUpload = async (cfg: Config, url: string, name: string): Promise<{ name: string; mime: string | null; bytes: Buffer }> => {
+    const res = await fetch(url, { headers: authHeadersFor(url, cfg), redirect: "follow", signal: AbortSignal.timeout(120_000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new Error(`too large (${Math.round(bytes.byteLength / 1e6)} MB)`);
+    const ctype = res.headers.get("content-type")?.split(";")[0]?.trim() || null;
+    if (ctype && /^text\/html/i.test(ctype)) throw new Error("server returned an HTML page instead of the file");
+    const disp = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(res.headers.get("content-disposition") ?? "")?.[1];
+    const file = safeFileName(extname(name) ? name : disp ? decodeURIComponent(disp) : name, url);
+    return { name: file, mime: ctype && ctype !== "application/octet-stream" ? ctype : mimeOf(file), bytes };
+};
+
 const safeFileName = (name: string, url: string): string => {
     const base = name.replace(/[\/\\:*?"<>|]/g, "_").replace(/\s+/g, " ").trim().slice(0, 120) || "attachment";
     const urlExt = extname(nameFromUrl(url)).toLowerCase();

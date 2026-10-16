@@ -145,7 +145,7 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
                 </ul>
             )}
             <div className="po-row">
-                <input value={srcUrl} onChange={(e) => setSrcUrl(e.target.value)} placeholder="Linear issue, ClickUp task, Notion page or any web page URL" />
+                <input value={srcUrl} onChange={(e) => setSrcUrl(e.target.value)} placeholder="Linear issue, ClickUp task, Notion page, Figma link or any web page URL" />
                 <button disabled={!/^https?:\/\//.test(srcUrl.trim())} onClick={() => { setSources((x) => [...x, { kind: "url", url: srcUrl.trim() }]); setSrcUrl(""); }}>Add URL</button>
                 <button onClick={() => setPaste((p) => (p ? null : { title: "", text: "" }))}>Paste text</button>
                 <button onClick={() => fileRef.current?.click()}>Upload files</button>
@@ -354,7 +354,7 @@ const ContextTab = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) 
             <section className="card">
                 <h2>Sources <span className="chip">{d.artifacts.length}</span></h2>
                 <div className="po-row">
-                    <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Linear project or issue, ClickUp task, Notion page, or any web page URL" />
+                    <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Linear project or issue, ClickUp task, Notion page, Figma link, or any web page URL" />
                     <button disabled={busy || url.trim().length < 8} onClick={() => void act(async () => { await api.poFetch(d.po.id, url.trim()); setUrl(""); })}>{busy ? "Fetching…" : "Fetch"}</button>
                     <button disabled={busy} onClick={() => fileRef.current?.click()}>Upload</button>
                     <button disabled={busy} onClick={() => setPaste((p) => (p ? null : { title: "", text: "", tell: true }))}>Paste text</button>

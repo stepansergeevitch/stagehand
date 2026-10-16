@@ -35,8 +35,9 @@ The artifacts listed in the system prompt are markdown files in `artifacts/`. St
 - **Read a span** — when you need the exact wording or the text around a hit, read only the lines its locator names (`Read` with `offset` and `limit`).
 - **Read a whole file** — only to take in a new source the human just gave you, or when the question needs the whole document (a full review, a summary of it).
 - **`issues.md`** — the current state of every issue. Read it whole only when you need all issues at once.
+- **The code** — the system prompt lists your environments' checkouts (section Code). A question about how the product works today (a model, a field, a rule, an API, a screen) is answered from the code: `Grep` and `Glob` to find it, `Read` the span. Never ask the human what the code already says. Never edit a checkout.
 
-To add a source the human names (a Linear project or issue, a ClickUp task, a Notion page, a web page), fetch it through Stagehand — it stores the result as an artifact:
+To add a source the human names (a Linear project or issue, a ClickUp task, a Notion page, a Figma link, a web page), fetch it through Stagehand — it stores the result as an artifact:
 
 ```bash
 curl -s -X POST "$STAGEHAND_API/api/product-owners/$STAGEHAND_PO_ID/artifacts/fetch" -H 'content-type: application/json' -d '{"url":"<url>"}'

@@ -619,13 +619,22 @@ const taskManagers = () => [
 
 app.get("/api/task-managers", (c) => c.json(taskManagers()));
 
-// Notion: Product Owners fetch pages by URL with this integration token (the pages must be shared with the integration).
-app.get("/api/integrations/notion", (c) => c.json({ configured: !!cfg.notionApiKey, token: mask(cfg.notionApiKey) }));
-app.patch("/api/integrations/notion", async (c) => {
+// Document sources Product Owners read by URL with a token alone: Notion pages (shared with the integration), Figma
+// frames (rendered to images).
+const TOKEN_INTEGRATIONS = { notion: "notionApiKey", figma: "figmaApiKey" } as const;
+const tokenIntegration = (id: keyof typeof TOKEN_INTEGRATIONS) => ({ id, configured: !!cfg[TOKEN_INTEGRATIONS[id]], token: mask(cfg[TOKEN_INTEGRATIONS[id]]) });
+const isTokenIntegration = (id: string): id is keyof typeof TOKEN_INTEGRATIONS => Object.hasOwn(TOKEN_INTEGRATIONS, id);
+app.get("/api/integrations/:id", (c) => {
+    const id = c.req.param("id");
+    return isTokenIntegration(id) ? c.json(tokenIntegration(id)) : c.json({ error: "unknown integration" }, 404);
+});
+app.patch("/api/integrations/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!isTokenIntegration(id)) return c.json({ error: "unknown integration" }, 404);
     const body = json(z.object({ token: z.string().nullable() }), await c.req.json());
-    cfg.notionApiKey = body.token || null;
+    cfg[TOKEN_INTEGRATIONS[id]] = body.token || null;
     saveConfig(cfg);
-    return c.json({ configured: !!cfg.notionApiKey, token: mask(cfg.notionApiKey) });
+    return c.json(tokenIntegration(id));
 });
 
 app.patch("/api/task-managers/:source", async (c) => {

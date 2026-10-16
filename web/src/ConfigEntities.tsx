@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type AccountModels, type Env, type ModelOperation, type ModelStage, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager } from "./api";
+import { accountBrowserReady, accountOrderOf, api, chromeBrowserLabel, modelLabel, type Account, type AccountModels, type Env, type ModelOperation, type ModelStage, type PrompterSettings, type PrompterStatus, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
 import { CheckField, EntityForm, EntityView, Field, ReadField, useDraft, useSaver } from "./components/EntityView";
 
 // The entity views of the Configuration pages that are not big enough for a file of their own: an AI account, an
@@ -184,12 +184,13 @@ const TaskManagerForm = ({ m, onSaved, onError }: { m: TaskManager; onSaved: () 
     );
 };
 
-const NotionForm = ({ state, onSaved, onError }: { state: { configured: boolean; token: string | null }; onSaved: () => Promise<void>; onError: (m: string) => void }) => {
+const TokenIntegrationForm = ({ state, onSaved, onError }: { state: TokenIntegration; onSaved: () => Promise<void>; onError: (m: string) => void }) => {
     const { saving, run } = useSaver(onError);
     const d = useDraft(() => ({ token: "" }), [state]);
+    const def = TOKEN_INTEGRATIONS.find((x) => x.id === state.id)!;
     return (
-        <EntityForm dirty={d.dirty} saving={saving === "save"} onDiscard={d.reset} onSave={() => run("save", async () => { await api.setNotion(d.value.token); await onSaved(); })}>
-            <Field label="Integration token" hint="Product Owners fetch Notion pages by URL with it. Share each page with the integration in Notion first. Empty: unchanged."><input value={d.value.token} onChange={(e) => d.patch({ token: e.target.value })} placeholder={state.token ?? "ntn_… or secret_…"} /></Field>
+        <EntityForm dirty={d.dirty} saving={saving === "save"} onDiscard={d.reset} onSave={() => run("save", async () => { await api.setTokenIntegration(state.id, d.value.token); await onSaved(); })}>
+            <Field label="Token" hint={def.hint}><input value={d.value.token} onChange={(e) => d.patch({ token: e.target.value })} placeholder={state.token ?? def.placeholder} /></Field>
         </EntityForm>
     );
 };
@@ -226,10 +227,10 @@ const JevForm = ({ settings, onChanged, onError }: { settings: Settings; onChang
 
 export const IntegrationPage = ({ id, settings, tab, onTab, onBack, onChanged, onError }: { tab: string | undefined; onTab: (t: string) => void; id: string; settings: Settings | null; onBack: () => void; onChanged: () => Promise<void>; onError: (m: string) => void }) => {
     const [managers, setManagers] = useState<TaskManager[] | null>(null);
-    const [notion, setNotion] = useState<{ configured: boolean; token: string | null } | null>(null);
+    const [tokens, setTokens] = useState<TokenIntegration[] | null>(null);
     const [notice, setNotice] = useState<Notice>(null);
     const load = async (): Promise<void> => {
-        await Promise.all([api.taskManagers().then(setManagers), api.notion().then(setNotion)]).catch((e: Error) => onError(e.message));
+        await Promise.all([api.taskManagers().then(setManagers), Promise.all(TOKEN_INTEGRATIONS.map((t) => api.tokenIntegration(t.id))).then(setTokens)]).catch((e: Error) => onError(e.message));
     };
     useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
     const attempt = async (start: string, fn: () => Promise<Notice>) => {
@@ -252,12 +253,14 @@ export const IntegrationPage = ({ id, settings, tab, onTab, onBack, onChanged, o
                 tabs={[{ key: "settings", label: "Settings", content: <TaskManagerForm m={m} onSaved={load} onError={onError} /> }]} />
         );
     }
-    if (id === "notion") {
-        if (!notion) return <div className="empty">loading…</div>;
+    const tokenDef = TOKEN_INTEGRATIONS.find((t) => t.id === id);
+    if (tokenDef) {
+        const state = tokens?.find((t) => t.id === tokenDef.id);
+        if (!state) return <div className="empty">loading…</div>;
         return (
-            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id="Notion"
-                actions={<button className="danger" disabled={!notion.configured} onClick={() => { if (confirm("Remove the Notion token?")) void api.setNotion(null).then(load); }}>Remove token</button>}
-                tabs={[{ key: "settings", label: "Settings", content: <NotionForm state={notion} onSaved={load} onError={onError} /> }]} />
+            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id={tokenDef.name}
+                actions={<button className="danger" disabled={!state.configured} onClick={() => { if (confirm(`Remove the ${tokenDef.name} token?`)) void api.setTokenIntegration(state.id, null).then(load); }}>Remove token</button>}
+                tabs={[{ key: "settings", label: "Settings", content: <TokenIntegrationForm state={state} onSaved={load} onError={onError} /> }]} />
         );
     }
     if (!settings) return <div className="empty">loading…</div>;

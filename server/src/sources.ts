@@ -1,11 +1,11 @@
 import type { Config } from "./config.js";
 
 // What a Product Owner reads and writes outside Stagehand, always by API key, never through an MCP server: Linear
-// projects and issues, ClickUp epics and tasks, Notion pages, plain web pages. Every read comes back as markdown (the
+// projects and issues, ClickUp epics and tasks, Notion pages, Figma frames (as images), plain web pages. Every read comes back as markdown (the
 // PO's artifacts are markdown files); every write creates one issue/task.
 
 export interface FetchedSource {
-    kind: "linear" | "clickup" | "notion" | "url";
+    kind: "linear" | "clickup" | "notion" | "figma" | "url";
     title: string;
     markdown: string;
     url: string;
@@ -27,6 +27,7 @@ const LINEAR_PROJECT_URL = /^https?:\/\/linear\.app\/[^/]+\/project\/([^/?#]+)/;
 const LINEAR_ISSUE_URL = /^https?:\/\/linear\.app\/[^/]+\/issue\/([A-Za-z0-9]+-\d+)/;
 const CLICKUP_TASK_URL = /^https?:\/\/app\.clickup\.com\/t\/(?:\d+\/)?([A-Za-z0-9-]+)/;
 const NOTION_URL = /^https?:\/\/(?:www\.)?notion\.(?:so|site)\/.*?([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[?#].*)?$/i;
+const FIGMA_URL = /^https?:\/\/(?:www\.)?figma\.com\/(?:design|file|proto|board)\/([A-Za-z0-9]+)[^\s)"'<>]*/i;
 
 const linear = async <T>(cfg: Config, query: string, variables: Record<string, unknown>): Promise<T> => {
     if (!cfg.linearApiKey) throw new Error("no Linear API key configured — add one under Integrations");
@@ -116,15 +117,23 @@ export const createLinearIssue = async (
 
 // ---------- ClickUp ----------
 
-type ClickUpTask = { id: string; custom_id?: string; name: string; url: string; markdown_description?: string; description?: string; status?: { status: string }; list?: { id: string; name: string }; subtasks?: Array<{ id: string; custom_id?: string; name: string; status?: { status: string } }> };
+type ClickUpTask = { id: string; custom_id?: string; name: string; url: string; markdown_description?: string; description?: string; attachments?: Array<{ title?: string; url?: string; url_w_query?: string }>; status?: { status: string }; list?: { id: string; name: string }; subtasks?: Array<{ id: string; custom_id?: string; name: string; status?: { status: string } }> };
 
 const clickupTask = async (cfg: Config, id: string): Promise<ClickUpTask> => {
     const teamQ = cfg.clickupTeamId && /^[A-Z]+-\d+$/i.test(id) ? `&custom_task_ids=true&team_id=${cfg.clickupTeamId}` : "";
     return clickup<ClickUpTask>(cfg, `/task/${encodeURIComponent(id)}?include_markdown_description=true&subtasks=true${teamQ}`);
 };
 
+// A ClickUp task's description with its attached files (attached, not embedded) listed after it, so whoever reads the text
+// finds them as links (a Product Owner downloads them as artifacts).
+const clickupText = (t: ClickUpTask): string => {
+    const body = (t.markdown_description ?? t.description ?? "").trim();
+    const files = (t.attachments ?? []).filter((a) => a.url ?? a.url_w_query);
+    return files.length ? `${body}\n\n## Attachments\n\n${files.map((a) => `- [${a.title || "file"}](${a.url_w_query ?? a.url})`).join("\n")}` : body;
+};
+
 const renderClickUpTask = (t: ClickUpTask, what: string): string =>
-    `# ${t.custom_id ?? t.id} — ${t.name}\nClickUp ${what} · ${t.url}${t.status ? ` · ${t.status.status}` : ""}${t.list ? ` · list: ${t.list.name}` : ""}\n\n${t.markdown_description ?? t.description ?? ""}` +
+    `# ${t.custom_id ?? t.id} — ${t.name}\nClickUp ${what} · ${t.url}${t.status ? ` · ${t.status.status}` : ""}${t.list ? ` · list: ${t.list.name}` : ""}\n\n${clickupText(t)}` +
     (t.subtasks?.length ? `\n\n## Subtasks (${t.subtasks.length})\n\n${t.subtasks.map((s) => `- **${s.custom_id ?? s.id}** ${s.name} — ${s.status?.status ?? "?"}`).join("\n")}` : "");
 
 export const createClickUpTask = async (cfg: Config, input: { listId: string; parentId: string; name: string; description: string }): Promise<{ id: string; identifier: string; url: string }> => {
@@ -219,6 +228,51 @@ const notionBlocks = async (cfg: Config, blocks: NotionBlock[], depth: number): 
     return lines.join("\n");
 };
 
+// ---------- Figma ----------
+
+const figma = async <T>(cfg: Config, path: string): Promise<T> => {
+    if (!cfg.figmaApiKey) throw new Error("no Figma token configured — add one under Integrations");
+    const res = await fetch(`https://api.figma.com/v1${path}`, { headers: { "X-Figma-Token": cfg.figmaApiKey }, signal: AbortSignal.timeout(120_000) });
+    if (!res.ok) throw new Error(`Figma ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    return (await res.json()) as T;
+};
+
+// Every Figma link a text has (design, file, prototype or board), once each.
+export const figmaLinks = (markdown: string): string[] => [...new Set([...markdown.matchAll(new RegExp(FIGMA_URL.source.replace(/^\^/, ""), "gi"))].map((m) => m[0]))];
+
+type FigmaNode = { id: string; name: string; type: string; children?: FigmaNode[] };
+
+// What a Figma link shows, as images: the linked node (`node-id`), else the top-level frames of the file's first page
+// (at most 8). Each comes back as a temporary image URL Figma renders; the caller downloads it.
+export const figmaRenders = async (cfg: Config, url: string): Promise<{ file: string; frames: Array<{ name: string; image: string }> }> => {
+    const key = FIGMA_URL.exec(url)?.[1];
+    if (!key) throw new Error(`not a Figma link: ${url}`);
+    const nodeParam = new URL(url).searchParams.get("node-id")?.replace(/-/g, ":") ?? null;
+    let file: string;
+    let nodes: Array<{ id: string; name: string }>;
+    if (nodeParam) {
+        const r = await figma<{ name: string; nodes: Record<string, { document: FigmaNode } | null> }>(cfg, `/files/${key}/nodes?ids=${encodeURIComponent(nodeParam)}&depth=1`);
+        file = r.name;
+        const doc = r.nodes[nodeParam]?.document;
+        // A page (CANVAS) is not rendered by Figma itself: its frames are.
+        nodes = !doc ? [] : doc.type === "CANVAS" ? (doc.children ?? []).slice(0, 8) : [doc];
+    } else {
+        const r = await figma<{ name: string; document: FigmaNode }>(cfg, `/files/${key}?depth=2`);
+        file = r.name;
+        nodes = (r.document.children?.[0]?.children ?? []).slice(0, 8);
+    }
+    if (!nodes.length) return { file, frames: [] };
+    const imgs = await figma<{ images: Record<string, string | null> }>(cfg, `/images/${key}?ids=${encodeURIComponent(nodes.map((n) => n.id).join(","))}&format=png&scale=1`);
+    return { file, frames: nodes.flatMap((n) => (imgs.images[n.id] ? [{ name: n.name, image: imgs.images[n.id]! }] : [])) };
+};
+
+// A Figma link fetched as a source: its file and frame names. The frames themselves become image artifacts (the
+// Product Owner ingests every Figma link of a source).
+const figmaSource = async (cfg: Config, url: string): Promise<FetchedSource> => {
+    const r = await figmaRenders(cfg, url);
+    return { kind: "figma", title: `Figma: ${r.file}`, url, markdown: `# ${r.file}\nFigma · ${url}\n\nFrames (${r.frames.length}): ${r.frames.map((f) => f.name).join(", ") || "none"}` };
+};
+
 const notionPage = async (cfg: Config, id: string, url: string): Promise<FetchedSource> => {
     const page = await notion<{ properties?: Record<string, { type: string; title?: NotionRich[] }> }>(cfg, `/pages/${id}`);
     const titleProp = Object.values(page.properties ?? {}).find((p) => p.type === "title");
@@ -268,6 +322,7 @@ export const fetchSource = async (cfg: Config, url: string): Promise<FetchedSour
     }
     const no = NOTION_URL.exec(u);
     if (no) return notionPage(cfg, no[1]!.replace(/-/g, ""), u);
+    if (FIGMA_URL.test(u)) return figmaSource(cfg, u);
     if (!/^https?:\/\//i.test(u)) throw new Error(`"${u}" is not a URL`);
     return plainPage(u);
 };
@@ -345,7 +400,7 @@ const clickupScopeIssues = async (cfg: Config, epicId: string): Promise<TrackedI
             url: t.url,
             title: t.name,
             status: t.status?.status ?? null,
-            description: (t.markdown_description ?? t.description ?? "").trim(),
+            description: clickupText(t),
             labels: (t.tags ?? []).map((x) => x.name).sort(),
             assignee: (t.assignees ?? []).map((a) => a.username ?? a.email ?? "?").sort().join(", ") || null,
             priority: t.priority?.priority ?? null,
@@ -386,27 +441,7 @@ export const fetchProjectState = async (cfg: Config, source: "linear" | "clickup
         };
     }
     const t = await clickupTask(cfg, scopeId);
-    return { name: t.name, state: t.status?.status ?? null, summary: "", content: (t.markdown_description ?? t.description ?? "").trim(), documents: [] };
-};
-
-// Files hosted by Linear (uploads.linear.app) that a markdown text links or embeds: images, documents, PDFs.
-export const linearUploads = (markdown: string): Array<{ label: string; url: string }> => {
-    const out = new Map<string, string>();
-    for (const m of markdown.matchAll(/!?\[([^\]]*)\]\((https:\/\/uploads\.linear\.app\/[^)\s]+)\)/g)) out.set(m[2]!, m[1]!.trim());
-    for (const m of markdown.matchAll(/(?<![(\w])(https:\/\/uploads\.linear\.app\/[^\s)"'<>]+)/g)) if (!out.has(m[1]!)) out.set(m[1]!, "");
-    return [...out].map(([url, label]) => ({ url, label }));
-};
-
-// Downloads a Linear upload with the API key (they are private); the name comes from the link label or the headers.
-export const downloadLinearUpload = async (cfg: Config, url: string, label: string): Promise<{ name: string; mime: string | null; bytes: Buffer }> => {
-    if (!cfg.linearApiKey) throw new Error("no Linear API key configured");
-    const res = await fetch(url, { headers: { Authorization: cfg.linearApiKey }, redirect: "follow" });
-    if (!res.ok) throw new Error(`Linear upload ${res.status}`);
-    const mime = res.headers.get("content-type")?.split(";")[0]?.trim() || null;
-    const disp = res.headers.get("content-disposition") ?? "";
-    const fromHeader = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disp)?.[1];
-    const name = (label && /\.[a-z0-9]{2,5}$/i.test(label) ? label : fromHeader ? decodeURIComponent(fromHeader) : label || url.split("/").pop() || "attachment").slice(0, 120);
-    return { name, mime, bytes: Buffer.from(await res.arrayBuffer()) };
+    return { name: t.name, state: t.status?.status ?? null, summary: "", content: clickupText(t), documents: [] };
 };
 
 // Every issue of a PO's scope, with its comments: the issues of a Linear project, or the subtasks of a ClickUp epic.

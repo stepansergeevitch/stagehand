@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile);
 import { DEPENDENCY_KIND, type Services } from "./services.js";
 import { CallbackRelay } from "./callback-relay.js";
 import type { ServiceKind } from "./db.js";
-import { extraTicketFile, fetchTicket, fetchTicketRest, parseTicketRef, renderSharedFiles, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
+import { extraTicketFile, fetchTicket, fetchTicketRest, mimeOf, parseTicketRef, renderSharedFiles, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
 import { describeReviewChecklist } from "./review-checklist.js";
 import { killSession, taskSessionName } from "./tmux.js";
 import { findTranscript } from "./transcripts.js";
@@ -1154,16 +1154,30 @@ export class Engine extends EventEmitter {
 
     // What the Implementation prompt says about checking its own change in the running app: optional, on demand, never a
     // second Manual QA.
-    private describeAppTools(task: TaskRow, env: EnvRow): string {
+    // `qa` (Chat → Do): the human may ask for a manual QA check of their own — then seeding data and screenshots are part
+    // of the job, and the screenshots saved in `shotsDir` come back attached to the reply.
+    private describeAppTools(task: TaskRow, env: EnvRow, qa?: { shotsDir: string }): string {
         if (!this.gstackBin()) return "";
         const api = `http://127.0.0.1:${this.cfg.port}/api/tasks/${task.id}`;
         const kinds = [env.be_command?.trim() ? "be" : null, env.fe_command?.trim() ? "fe" : null].filter(Boolean) as string[];
         if (!kinds.length) return "";
         return [
-            "## Checking your change in the running app (optional)",
-            "",
-            "Only when a change cannot be judged from tests alone — a layout, a form's behaviour, a page wiring several calls together — you may start the app and look at it in a headless browser. This is a quick check of what you just built, NOT a QA pass: Manual QA runs every scenario of the design after you, with seeded data and screenshots — do not repeat its scenarios, do not seed data for them, do not write QA results.",
-            "",
+            ...(qa
+                ? [
+                      "## The running app: manual QA on request",
+                      "",
+                      "When the instruction asks you to try, check, test or QA something in the app, do it yourself in the running app, as a human tester would: start it, use the browser below (it is signed in), seed the data the check needs, walk the flow, and look at the result (the page, the console, the database). Report what you saw against what was expected. A defect is a finding to report, not something to fix — unless the instruction also asks for the fix.",
+                      "",
+                      `- **Data** — write only to this task's own database (\`$STAGEHAND_TASK_DB\`), never the template. Give every row you create a recognisable prefix, and delete those rows when you are done unless the instruction says to keep them. This environment's seeding hints:\n\n${env.qa_seed_hints?.trim() || "(none configured — find the local database and API in the repo's configs and models)"}`,
+                      `- **Screenshots** — save each one as \`${qa.shotsDir}/<n>-<what>.png\` (e.g. \`$B screenshot ${qa.shotsDir}/1-list.png\`): every PNG there is attached to your reply in Chat. Take one of every result you report.`,
+                      "",
+                  ]
+                : [
+                      "## Checking your change in the running app (optional)",
+                      "",
+                      "Only when a change cannot be judged from tests alone — a layout, a form's behaviour, a page wiring several calls together — you may start the app and look at it in a headless browser. This is a quick check of what you just built, NOT a QA pass: Manual QA runs every scenario of the design after you, with seeded data and screenshots — do not repeat its scenarios, do not seed data for them, do not write QA results.",
+                      "",
+                  ]),
             `1. Start the app: ${kinds.map((k) => `\`curl -s -X POST ${api}/services/${k}/start\``).join(", then ")} (each returns when the service is up, with its \`url\`; a failure says why). Status: \`curl -s ${api}/services\`. Logs: \`${join(this.taskDir(task.id), "logs")}/<be|fe>.log\`.`,
             `2. Get a browser with the app's session: \`eval "$(curl -s -X POST ${api}/browser | jq -r .export)"\` — it sets \`$B\` (gstack's headless Chromium) and prints nothing else; \`curl -s -X POST ${api}/browser | jq -r .note\` explains a missing session.`,
             "3. Drive it in Bash: `$B goto <app url>/<path>`, `$B wait --networkidle`, `$B snapshot -i` (elements as @e1…), `$B click @eN`, `$B fill @eN 'text'`, `$B text`, `$B console --errors`, `$B screenshot <path>`.",
@@ -3999,9 +4013,12 @@ export class Engine extends EventEmitter {
                 : "Commits are NOT allowed in this environment: leave changes uncommitted (staging is fine) and say so; the human commits.",
             pushRule: rules.allowPush ? "Pushing is allowed here only when the instruction explicitly asks for it." : "Pushing is NOT allowed in this environment; never push.",
             taskNotes: task.notes?.trim() ? `\nThe human's standing notes on this task (they still apply): ${task.notes.trim()}` : "",
+            appTools: this.describeAppTools(task, env, { shotsDir: join(taskDir, "instructions", message.id) }),
         });
         const rulesMat = materializeRules(rules, env, task.worktree_path, this.cfg.dataDir);
-        mkdirSync(join(taskDir, "instructions"), { recursive: true });
+        // What a manual QA check in this run saves to show: its screenshots, attached to the reply.
+        const shotsDir = join(taskDir, "instructions", message.id);
+        mkdirSync(shotsDir, { recursive: true });
         const label = `Instruction · ${instructions.replace(/\s+/g, " ").slice(0, 60)}${instructions.length > 60 ? "…" : ""}`;
         this.setTaskStatus(taskId, "running", `${label} · starting`);
         const run = startClaude({
@@ -4037,7 +4054,11 @@ export class Engine extends EventEmitter {
                 outcome.result?.result?.trim() ||
                 (killed ? "(stopped before it finished — the worktree may hold partial changes; check Code changes)" : outcome.exitCode !== 0 ? `(did not finish: ${outcome.stderr.trim().split("\n").slice(-2).join(" ").slice(-200) || `exit ${outcome.exitCode}`})` : "(no reply)");
             this.setTaskStatus(taskId, prevStatus, prevLine ?? "instruction finished — see Chat");
-            this.addMessage(taskId, "agent", reply, null, "instruction_result");
+            const shots: SharedFile[] = readdirSync(shotsDir)
+                .filter((f) => /\.(png|jpe?g|webp)$/i.test(f))
+                .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+                .map((f) => ({ name: f, file: `instructions/${message.id}/${f}`, mime: mimeOf(f), size: statSync(join(shotsDir, f)).size }));
+            this.addMessage(taskId, "agent", reply, null, "instruction_result", shots);
             this.emitTask(taskId);
         });
         return message;

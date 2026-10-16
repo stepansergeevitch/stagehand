@@ -311,7 +311,15 @@ export const poEnvIds = (po: Pick<ProductOwner, "env_id" | "env_ids">): string[]
     return [...new Set([po.env_id, ...(Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [])].filter(Boolean))];
 };
 export interface PoMessage { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
-export interface PoArtifact { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; description?: string | null; text_file?: string | null; chunks?: number | null }
+// Document sources read with a token alone (Integrations).
+export type TokenIntegrationId = "notion" | "figma";
+export interface TokenIntegration { id: TokenIntegrationId; configured: boolean; token: string | null }
+export const TOKEN_INTEGRATIONS: Array<{ id: TokenIntegrationId; name: string; hint: string; placeholder: string }> = [
+    { id: "notion", name: "Notion", hint: "Product Owners fetch Notion pages by URL with it. Share each page with the integration in Notion first. Empty: unchanged.", placeholder: "ntn_… or secret_…" },
+    { id: "figma", name: "Figma", hint: "A personal access token with file content read access. Product Owners render the Figma links in their sources (and Figma URLs added as sources) to images. Empty: unchanged.", placeholder: "figd_…" },
+];
+
+export interface PoArtifact { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "figma" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; description?: string | null; text_file?: string | null; chunks?: number | null }
 export interface PoTicket { key: string; type: "epic" | "story" | "task" | "bug"; title: string; parent: string | null; summary: string; description: string; acceptanceCriteria: string[]; estimate: number | null; dependsOn: string[]; labels: string[]; existing?: string | null }
 // An issue of the PO's project as the last refresh saw it.
 export interface PoIssue {
@@ -692,8 +700,8 @@ export const api = {
     askPoReviewComment: (taskId: string, cid: string, text: string) => post<PoDesignReview>(`/api/tasks/${taskId}/po-review/comments/${encodeURIComponent(cid)}/ask`, { text }),
     sendPoReview: (taskId: string) => post<Task>(`/api/tasks/${taskId}/po-review/send`),
     setTaskProductOwner: (taskId: string, productOwnerId: string | null) => fetch(`/api/tasks/${taskId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ productOwnerId }) }).then((r) => j<Task>(r)),
-    notion: () => fetch("/api/integrations/notion").then((r) => j<{ configured: boolean; token: string | null }>(r)),
-    setNotion: (token: string | null) => fetch("/api/integrations/notion", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }).then((r) => j<{ configured: boolean; token: string | null }>(r)),
+    tokenIntegration: (id: TokenIntegrationId) => fetch(`/api/integrations/${id}`).then((r) => j<TokenIntegration>(r)),
+    setTokenIntegration: (id: TokenIntegrationId, token: string | null) => fetch(`/api/integrations/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }).then((r) => j<TokenIntegration>(r)),
     accounts: () => fetch("/api/accounts").then((r) => j<Account[]>(r)),
     addAccount: (name: string, email?: string) => post<{ account: Account; terminal: string }>("/api/accounts", { name, email }),
     refreshAccount: (id: string) => post<{ ok: boolean; detail: string; account: Account }>(`/api/accounts/${id}/refresh`),

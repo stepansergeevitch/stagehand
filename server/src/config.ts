@@ -27,6 +27,8 @@ const ConfigSchema = z.object({
     linearApiKey: z.string().nullable().default(null),
     // Notion integration token (an internal integration shared with the pages): Product Owners fetch pages by URL.
     notionApiKey: z.string().nullable().default(null),
+    // Figma personal access token (file content: read): Product Owners get the Figma frames their sources link as images.
+    figmaApiKey: z.string().nullable().default(null),
     // TypeSafe AI — Jev decision model (jev.ts). Null: Jev-backed judgments use the built-in heuristics.
     typesafeApiKey: z.string().nullable().default(null),
     defaultModel: z.string().nullable().default(null),
@@ -170,6 +172,7 @@ const defaults = (): Config => ({
     clickupUserId: null,
     linearApiKey: null,
     notionApiKey: null,
+    figmaApiKey: null,
     typesafeApiKey: null,
     defaultModel: null,
     notifications: { macos: true, ntfyServer: "https://ntfy.sh", ntfyTopic: null, ntfyToken: null, baseUrl: null, localBaseUrl: "http://localhost:5173" },

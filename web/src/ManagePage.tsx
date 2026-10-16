@@ -3,7 +3,7 @@ import { DataTable, type DataColumn } from "./components/DataTable";
 import { Modal } from "./Modal";
 import { navigate, type Route } from "./routes";
 import { authLabel, PrompterPage, type IntegrationType } from "./ConfigEntities";
-import { accountBrowserReady, accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager } from "./api";
+import { accountBrowserReady, accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
 
 // List / create / read / update / delete for the things Stagehand is configured with.
 export type ManageTab = "envs" | "dirs" | "accounts" | "integrations" | "prompter";
@@ -215,14 +215,14 @@ type IntegrationRow = { id: string; name: string; type: IntegrationType; status:
 
 const IntegrationTable = ({ settings, onOpen, onError }: { settings: Settings | null; onOpen: (id: string) => void; onError: (m: string) => void }) => {
     const [managers, setManagers] = useState<TaskManager[] | null>(null);
-    const [notion, setNotion] = useState<{ configured: boolean } | null>(null);
+    const [tokens, setTokens] = useState<TokenIntegration[] | null>(null);
     const load = async (): Promise<void> => {
-        await Promise.all([api.taskManagers().then(setManagers), api.notion().then(setNotion)]).catch((e: Error) => onError(e.message));
+        await Promise.all([api.taskManagers().then(setManagers), Promise.all(TOKEN_INTEGRATIONS.map((t) => api.tokenIntegration(t.id))).then(setTokens)]).catch((e: Error) => onError(e.message));
     };
     useEffect(() => { void load(); }, []);
     const rows: IntegrationRow[] = [
         ...(managers ?? []).map((m) => ({ id: `tm:${m.source}`, name: m.label, type: "task manager" as const, status: m.configured ? "configured" : "no token", ok: m.configured, usedBy: m.envs.join(", ") })),
-        ...(notion ? [{ id: "notion", name: "Notion", type: "documents" as const, status: notion.configured ? "configured" : "no token", ok: notion.configured, usedBy: "" }] : []),
+        ...(tokens ?? []).map((t) => ({ id: t.id, name: TOKEN_INTEGRATIONS.find((x) => x.id === t.id)!.name, type: "documents" as const, status: t.configured ? "configured" : "no token", ok: t.configured, usedBy: "" })),
         ...(settings
             ? [
                   { id: "notifications", name: "Notifications", type: "notifications" as const, status: settings.notifications.ntfyTopic ? "phone via ntfy" : "desktop only", ok: true, usedBy: "" },

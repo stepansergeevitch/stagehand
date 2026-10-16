@@ -4,6 +4,8 @@ Worktree: `{{worktree}}` (branch `{{branch}}`). Repos: {{repoLayout}}. Task file
 {{taskNotes}}
 {{components}}
 
+{{appTools}}
+
 ## The instruction
 
 {{instructions}}

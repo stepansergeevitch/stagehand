@@ -90,7 +90,7 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
             {error && <div className="blocked-box" style={{ marginBottom: 0 }}>{error}</div>}
             <div className="chat-mode" role="tablist" aria-label="Message mode">
                 <button type="button" role="tab" aria-selected={mode === "ask"} className={mode === "ask" ? "active" : ""} onClick={() => setMode("ask")} title="A question — the agent answers, changes nothing">Ask</button>
-                <button type="button" role="tab" aria-selected={mode === "do"} className={mode === "do" ? "active" : ""} onClick={() => setMode("do")} title="An instruction — the agent carries it out in the worktree and reports back">Do</button>
+                <button type="button" role="tab" aria-selected={mode === "do"} className={mode === "do" ? "active" : ""} onClick={() => setMode("do")} title="An instruction — the agent carries it out in the worktree and reports back; it can also try something in the running app (manual QA), with screenshots attached to its reply">Do</button>
             </div>
             <div className="chat-input">
                 <AgentInput
