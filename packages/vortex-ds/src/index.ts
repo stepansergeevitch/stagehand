@@ -2,6 +2,7 @@ import "./styles.css";
 export { Button } from "./Button";
 export type { ButtonProps, ButtonVariant } from "./Button";
 export { Card } from "./Card";
+export { Mark, Wordmark } from "./Brand";
 export { Chip } from "./Chip";
 export type { Tone } from "./Chip";
 export { Icon } from "./Icon";

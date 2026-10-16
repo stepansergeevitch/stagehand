@@ -9,7 +9,7 @@ export const Terminal = ({ session }: { session: string }) => {
     useEffect(() => {
         const el = ref.current;
         if (!el) return;
-        const term = new XTerm({ fontFamily: '"IBM Plex Mono", Menlo, monospace', fontSize: 12.5, theme: { background: "#0b1116" }, cursorBlink: true });
+        const term = new XTerm({ fontFamily: '"IBM Plex Mono", Menlo, monospace', fontSize: 12.5, theme: { background: getComputedStyle(document.documentElement).getPropertyValue("--terminal-bg").trim() }, cursorBlink: true });
         const fit = new FitAddon();
         term.loadAddon(fit);
         term.open(el);
@@ -26,7 +26,7 @@ export const Terminal = ({ session }: { session: string }) => {
             ws.send(JSON.stringify({ t: "r", cols: term.cols, rows: term.rows }));
         };
         ws.onmessage = (e) => term.write(typeof e.data === "string" ? e.data : "");
-        ws.onclose = () => term.write("\r\n[stagehand] terminal closed\r\n");
+        ws.onclose = () => term.write("\r\n[vortex] terminal closed\r\n");
         const onData = term.onData((d) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ t: "i", d })));
         const onResize = () => {
             safeFit();

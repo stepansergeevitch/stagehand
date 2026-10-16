@@ -12,6 +12,11 @@
     "Select": "invalid?: boolean; value?: string | number; defaultValue?: string | number; disabled?: boolean; onChange?: React.ChangeEventHandler<HTMLSelectElement>; className?: string; style?: React.CSSProperties; id?: string; name?: string; children?: React.ReactNode",
     "Textarea": "invalid?: boolean; value?: string; defaultValue?: string; placeholder?: string; rows?: number; disabled?: boolean; readOnly?: boolean; onChange?: React.ChangeEventHandler<HTMLTextAreaElement>; className?: string; style?: React.CSSProperties; id?: string; name?: string",
     "Tab": "active?: boolean; disabled?: boolean; onClick?: React.MouseEventHandler<HTMLButtonElement>; className?: string; style?: React.CSSProperties; children?: React.ReactNode",
-    "Icon": "name: \"close\" | \"plus\" | \"search\" | \"columns\" | \"filter\" | \"chevronDown\" | \"chevronRight\" | \"check\" | \"info\" | \"refresh\" | \"arrowLeft\" | \"external\"; width?: number | string; height?: number | string; className?: string; style?: React.CSSProperties"
-  }
+    "Icon": "name: \"close\" | \"plus\" | \"search\" | \"columns\" | \"filter\" | \"chevronDown\" | \"chevronRight\" | \"check\" | \"info\" | \"refresh\" | \"arrowLeft\" | \"external\"; width?: number | string; height?: number | string; className?: string; style?: React.CSSProperties",
+    "Mark": "size?: number | string; className?: string; style?: React.CSSProperties",
+    "Wordmark": "size?: \"sm\" | \"md\" | \"lg\"; markOnly?: boolean; className?: string; style?: React.CSSProperties"
+  },
+  "extraFonts": [
+    "src/fonts.css"
+  ]
 }

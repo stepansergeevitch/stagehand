@@ -208,7 +208,7 @@ const NotificationsForm = ({ settings, onChanged, onError }: { settings: Setting
         })}>
             <CheckField label={`macOS notification centre on this Mac (${settings.desktopNotifier})`} hint="Sent whenever a task starts waiting on you: review needed, blocked, failed, or parked on a rate limit — once per distinct reason." checked={v.macos} onChange={(on) => d.patch({ macos: on })} />
             <Field label="URL of this UI on this Mac" hint="A click on the desktop notification opens the task there."><Input value={v.localBaseUrl} onChange={(e) => d.patch({ localBaseUrl: e.target.value })} /></Field>
-            <Field label="ntfy topic" hint="For pushes to the phone: install the ntfy app, subscribe to a private, hard-to-guess topic name (e.g. stagehand-7f3a9c) and enter it here. Empty: no phone pushes."><Input value={v.ntfyTopic} onChange={(e) => d.patch({ ntfyTopic: e.target.value })} /></Field>
+            <Field label="ntfy topic" hint="For pushes to the phone: install the ntfy app, subscribe to a private, hard-to-guess topic name (e.g. vortex-7f3a9c) and enter it here. Empty: no phone pushes."><Input value={v.ntfyTopic} onChange={(e) => d.patch({ ntfyTopic: e.target.value })} /></Field>
             <Field label="ntfy server"><Input value={v.ntfyServer} onChange={(e) => d.patch({ ntfyServer: e.target.value })} /></Field>
             <Field label="ntfy access token" hint="Only for protected topics or self-hosted servers. Empty: unchanged."><Input value={v.ntfyToken} onChange={(e) => d.patch({ ntfyToken: e.target.value })} placeholder={n.ntfyToken ?? "not set"} /></Field>
             <Field label="Public URL of this UI" hint="Links in phone pushes open the task there."><Input value={v.baseUrl} onChange={(e) => d.patch({ baseUrl: e.target.value })} placeholder="https://your-host:4748" /></Field>
@@ -327,7 +327,7 @@ export const PrompterPage = ({ settings, accounts, tab, onTab, onChanged, onErro
     );
     const palace = (
         <div className="ev-fields">
-            <ReadField label="Palace" hint={`Seeding copies the Stagehand knowledge (wings ${p.seedWings.join(", ")} and the diary entries about it) from ${p.seedFrom}. Re-running only adds what is missing.`}>
+            <ReadField label="Palace" hint={`Seeding copies the Vortex knowledge (wings ${p.seedWings.join(", ")} and the diary entries about it) from ${p.seedFrom}. Re-running only adds what is missing.`}>
                 {status?.seeded ? <>seeded {new Date(status.seeded.at).toLocaleString()} · {status.seeded.total} drawer(s)</> : "not seeded yet"}
             </ReadField>
         </div>

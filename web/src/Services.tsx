@@ -146,7 +146,7 @@ export const ServicesPanel = ({ taskId, env, dependencyBranch, busy: taskBusy = 
                                 <Button variant="primary"
  
  disabled={busy !== null || taskBusy}
- title={taskBusy ? "a run is in progress — wait for it to finish" : "The task's agent reads the log, repairs the cause in the worktree, then Stagehand restarts the service; the outcome lands in Chat"}
+ title={taskBusy ? "a run is in progress — wait for it to finish" : "The task's agent reads the log, repairs the cause in the worktree, then Vortex restarts the service; the outcome lands in Chat"}
  onClick={() => act("fix", async () => { await api.fixService(taskId, kind); setFixing((s) => new Set(s).add(kind)); onFixStarted?.(); })}
 >
                                     {busy === "fix" ? "Starting…" : "Fix with agent"}

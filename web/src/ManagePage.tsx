@@ -104,7 +104,7 @@ const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }
             bulkActions={(sel, clear) => {
                 const busy = sel.filter((e) => taskCount(e) > 0);
                 return (
-                    <Button variant="danger" size="sm" disabled={busy.length> 0} title={busy.length ? `delete the tasks of ${busy.map((e) => e.name).join(", ")} first` : "remove from Stagehand (files untouched)"} onClick={() => { if (confirm(`Remove ${sel.length} environment(s) from Stagehand? Files on disk are not touched.`)) void act(async () => { for (const e of sel) await api.deleteEnv(e.id); clear(); }); }}>
+                    <Button variant="danger" size="sm" disabled={busy.length> 0} title={busy.length ? `delete the tasks of ${busy.map((e) => e.name).join(", ")} first` : "remove from Vortex (files untouched)"} onClick={() => { if (confirm(`Remove ${sel.length} environment(s) from Vortex? Files on disk are not touched.`)) void act(async () => { for (const e of sel) await api.deleteEnv(e.id); clear(); }); }}>
                         Delete
                     </Button>
                 );

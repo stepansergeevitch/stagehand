@@ -821,7 +821,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const startRebase = (repos?: string[]) => {
         const base = baseLabel(task, env) ?? env?.base_branch ?? "the base branch";
         const scope = repos?.length ? ` (${repos.map(repoName).join(", ")} only)` : "";
-        if (confirm(`Rebase ${task.branch}${scope} onto the latest base (${base})?\n\nA plain git rebase first; the agent resolves conflicts and re-runs checks only where needed. If the branch is on GitHub and this env allows pushes, Stagehand force-pushes it afterwards (with lease).`)) void onAction(() => api.rebase(task.id, repos));
+        if (confirm(`Rebase ${task.branch}${scope} onto the latest base (${base})?\n\nA plain git rebase first; the agent resolves conflicts and re-runs checks only where needed. If the branch is on GitHub and this env allows pushes, Vortex force-pushes it afterwards (with lease).`)) void onAction(() => api.rebase(task.id, repos));
     };
     const envRepoList = envRepos(env);
     const [rebasePick, setRebasePick] = useState<string[]>([]);
@@ -1078,7 +1078,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 {task.status !== "running" && task.branch && task.worktree_path && (
                     <span className="rebase-group">
                         <Button
- title="Every repository: a plain git rebase of this task's own commits onto the latest base first (seconds); the task's agent takes over only where that conflicts. If the branch is on GitHub and this env allows pushes, Stagehand then force-pushes it with lease, the PR checks restart, and tasks stacked on this branch are rebased in turn"
+ title="Every repository: a plain git rebase of this task's own commits onto the latest base first (seconds); the task's agent takes over only where that conflicts. If the branch is on GitHub and this env allows pushes, Vortex then force-pushes it with lease, the PR checks restart, and tasks stacked on this branch are rebased in turn"
  onClick={() => startRebase()}
 >
                             Rebase onto latest base
@@ -1210,7 +1210,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                     {/log ?in/i.test(task.status_line ?? "") && !/waiting for you/.test(task.status_line ?? "") && (
                         <div className="actions" style={{ marginBottom: 0 }}>
                             <Button variant="primary" onClick={() => onAction(() => api.qaLogin(task.id))}>Log in for QA</Button>
-                            <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Opens the app in the QA Chrome profile; you log in there, Stagehand watches the tab (and moves an Auth0 return from localhost:3000 to the app's port), then re-runs the stage. No agent, no cost.</span>
+                            <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Opens the app in the QA Chrome profile; you log in there, Vortex watches the tab (and moves an Auth0 return from localhost:3000 to the app's port), then re-runs the stage. No agent, no cost.</span>
                         </div>
                     )}
                     {/Relaunch Chrome for QA/.test(task.status_line ?? "") && (
@@ -1486,7 +1486,7 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
             badge={
                 <>
                     {created && <Chip className={`${o.cls}`}>{row?.url ? <a href={row.url} target="_blank" rel="noreferrer">#{row.number} {o.text} ↗</a> : o.text}</Chip>}
-                    {!created && approved && <Chip tone="warn" title="Approved; Stagehand could not push or open it itself — see the status line">approved · {o.text}</Chip>}
+                    {!created && approved && <Chip tone="warn" title="Approved; Vortex could not push or open it itself — see the status line">approved · {o.text}</Chip>}
                     {!created && !approved && reviewing && <Chip tone="wait">awaiting your approval</Chip>}
                     {editable && !editing && <Button size="sm" onClick={() => setEditing(true)}>Edit</Button>}
                 </>

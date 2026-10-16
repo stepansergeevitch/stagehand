@@ -11,7 +11,9 @@
     --accent: #2b59d6; --accent-ink: #ffffff; --accent-soft: #e6ecfb;
     --ok: #17803d; --ok-soft: #dff3e6; --warn: #a9640a; --warn-soft: #faedd2;
     --bad: #c03030; --bad-soft: #fbe3e1; --wait: #6a4fc2; --wait-soft: #ebe6fa;
-    --overlay: rgba(10, 15, 25, .45); --ring: color-mix(in srgb, var(--accent) 45%, transparent);
+    --overlay: rgba(10, 15, 25, .45); --bad-ink: #ffffff; --media-bg: #000000;
+    /* surfaces that stay dark in both themes: the terminal and the lightbox bar over media */
+    --terminal-bg: #0b1116; --scrim: rgba(0, 0, 0, .7); --scrim-ink: #e6ecf0; --scrim-link: #9fd3e8; --scrim-line: #55636e; --ring: color-mix(in srgb, var(--accent) 45%, transparent);
 
     /* type */
     --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -33,7 +35,7 @@
         --accent: #7c9bff; --accent-ink: #0c1118; --accent-soft: #1c2845;
         --ok: #4cc47e; --ok-soft: #14301f; --warn: #e3ac55; --warn-soft: #382a10;
         --bad: #f07b74; --bad-soft: #3b1c1b; --wait: #b3a2f2; --wait-soft: #2a2347;
-        --overlay: rgba(0, 0, 0, .6);
+        --overlay: rgba(0, 0, 0, .6); --bad-ink: #0c1118;
         --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
         --shadow-md: 0 8px 24px rgba(0, 0, 0, .5);
     }
@@ -108,3 +110,11 @@ input.invalid, select.invalid, textarea.invalid { border-color: var(--bad); }
 .notice.warn { border-color: var(--warn); background: var(--warn-soft); }
 .notice.bad { border-color: var(--bad); background: var(--bad-soft); }
 .notice.wait { border-color: var(--wait); background: var(--wait-soft); }
+
+/* ---------- Brand: Mark and Wordmark ---------- */
+.mark { flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.wordmark { display: inline-flex; align-items: center; gap: .4em; font-weight: 700; letter-spacing: -.02em; line-height: 1; color: var(--ink); }
+.wordmark .mark { color: var(--accent); }
+.wordmark-sm { font-size: var(--fs-md); }
+.wordmark-md { font-size: var(--fs-lg); }
+.wordmark-lg { font-size: var(--fs-xl); }

@@ -73,7 +73,7 @@ const RulesTab = ({ dir, info, save, saving }: { dir: ConfigDir; info: ConfigDir
             <Field label="Branch prefix" hint="Prepended to every task branch Research proposes, e.g. yourname/. The branch name pattern below applies after it."><Input value={r.branchPrefix} onChange={(e) => d.patch({ branchPrefix: e.target.value })} /></Field>
             <Field label="Branch name pattern" hint={`Regex, applied after the environment's prefix. ${GUARD}`}><Input value={r.branchPattern} onChange={(e) => d.patch({ branchPattern: e.target.value })} /></Field>
             <Field label="Branch name guidance" hint="Shown to agents in the generated /git-branch skill."><Input value={r.branchHint} onChange={(e) => d.patch({ branchHint: e.target.value })} /></Field>
-            <CheckField label="Auto-pushing the task branch is allowed" hint="Also gates what Stagehand does after you approve a PR draft." checked={r.allowPush} onChange={(on) => d.patch({ allowPush: on })} />
+            <CheckField label="Auto-pushing the task branch is allowed" hint="Also gates what Vortex does after you approve a PR draft." checked={r.allowPush} onChange={(on) => d.patch({ allowPush: on })} />
             <CheckField label="Auto-creating the pull request is allowed" hint="After you approve the PR draft." checked={r.allowPrCreate} onChange={(on) => d.patch({ allowPrCreate: on })} />
             <CheckField label="Open every PR as a draft" hint="You mark it ready for review yourself." checked={r.prDraft} onChange={(on) => d.patch({ prDraft: on })} />
             <Field label="PR description rules" hint="Given to the generated /pr-description skill."><Textarea className="tall" value={r.prRules} onChange={(e) => d.patch({ prRules: e.target.value })} /></Field>

@@ -382,7 +382,7 @@ export const ResourcesPage = ({ tab: tabArg, onTab: setTab, onError }: { tab: st
                     <div className="tiles">
                         <Tile label="Host RAM" value={`${gb(h.usedMb)} used`} sub={`${gb(h.availableMb)} available of ${gb(h.totalMb)} · ${gb(h.compressedMb)} compressed`} tone={tone} />
                         <Tile label="Swap" value={gb(h.swapUsedMb)} sub={`of ${gb(h.swapTotalMb)}`} tone={h.swapUsedMb > snap.policies.maxSwapMb ? "bad" : h.swapUsedMb > snap.policies.maxSwapMb / 2 ? "warn" : "ok"} />
-                        <Tile label="Stagehand processes" value={gb(snap.stagehand.rssMb)} sub={`${snap.stagehand.procs} processes · ${snap.stagehand.runs} agent run${snap.stagehand.runs === 1 ? "" : "s"} · ${snap.stagehand.browsers} browser${snap.stagehand.browsers === 1 ? "" : "s"}`} />
+                        <Tile label="Vortex processes" value={gb(snap.stagehand.rssMb)} sub={`${snap.stagehand.procs} processes · ${snap.stagehand.runs} agent run${snap.stagehand.runs === 1 ? "" : "s"} · ${snap.stagehand.browsers} browser${snap.stagehand.browsers === 1 ? "" : "s"}`} />
                         <Tile
                             label="Host storage"
                             value={d ? `${gb(d.freeMb)} free` : "—"}
@@ -395,7 +395,7 @@ export const ResourcesPage = ({ tab: tabArg, onTab: setTab, onError }: { tab: st
                     {groups.filter((g) => g.kind !== "orphan").map((g) => <Group key={g.kind} kind={g.kind} rows={g.rows} busy={busy} act={act} />)}
                     {worktrees.length > 0 && <Worktrees rows={worktrees} busy={busy} act={act} />}
                     {databases.length > 0 && <Databases rows={databases} onChanged={() => void load(true)} onError={onError} />}
-                    {snap.resources.length === 0 && <div className="quiet">Nothing running that Stagehand started.</div>}
+                    {snap.resources.length === 0 && <div className="quiet">Nothing running that Vortex started.</div>}
                 </>
             )}
             {tab === "policies" && <Policies value={snap.policies} onSaved={() => void load(true)} onError={onError} />}

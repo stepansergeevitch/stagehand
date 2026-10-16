@@ -233,7 +233,7 @@ const ProductHome = ({ route, onOpen, onError }: { route: ProductRoute; onOpen: 
             ),
         },
         { key: "tickets", label: "Tickets #", kind: "num", hint: "Issues of the project in the task manager", value: (po) => po.tickets ?? 0, filter: false },
-        { key: "tasks", label: "Tasks #", kind: "num", hint: "Stagehand tasks with this Product Owner", value: (po) => po.tasks ?? 0, filter: false },
+        { key: "tasks", label: "Tasks #", kind: "num", hint: "Vortex tasks with this Product Owner", value: (po) => po.tasks ?? 0, filter: false },
         {
             key: "progress",
             label: "Progress %",
@@ -655,7 +655,7 @@ const PoChat = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => v
             <div className="po-messages">
                 {d.messages.map((m) => (
                     <div key={m.id} className={`po-msg ${m.role}`}>
-                        <span className="po-msg-who">{m.role === "agent" ? "Product Owner" : m.role === "user" ? "You" : "Stagehand"}</span>
+                        <span className="po-msg-who">{m.role === "agent" ? "Product Owner" : m.role === "user" ? "You" : "Vortex"}</span>
                         <Markdown source={m.text} />
                     </div>
                 ))}

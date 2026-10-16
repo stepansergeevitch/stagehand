@@ -18,6 +18,7 @@ export default defineConfig({
     // The design system resolves to its source (HMR, no pre-build); `npm run build -w @vortex/ds` produces the dist for consumers outside the app.
     resolve: {
         alias: [
+            { find: "@vortex/ds/fonts.css", replacement: fileURLToPath(new URL("../packages/vortex-ds/src/fonts.css", import.meta.url)) },
             { find: "@vortex/ds/styles.css", replacement: fileURLToPath(new URL("../packages/vortex-ds/src/styles.css", import.meta.url)) },
             { find: /^@vortex\/ds$/, replacement: fileURLToPath(new URL("../packages/vortex-ds/src/index.ts", import.meta.url)) },
         ],

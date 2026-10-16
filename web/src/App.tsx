@@ -23,7 +23,7 @@ import { LazyTerminal } from "./LazyTerminal";
 import { AgentInput } from "./AgentInput";
 import { Modal } from "./Modal";
 import { BaseCheckChip } from "./components/BaseCheckChip";
-import { Button, Chip, Input, Select, Textarea } from "@vortex/ds";
+import { Button, Chip, Input, Select, Textarea, Wordmark } from "@vortex/ds";
 
 // Where the user is lives in the URL hash only (see routes.ts): reloads, back/forward, pasted links and anything that
 // reads the path see the same screen.
@@ -43,7 +43,7 @@ const NAV: { group: string | null; items: { id: Page; label: string; hint: strin
         items: [
             { id: "analytics", label: "Usage", hint: "Token and cost usage by environment, task, account" },
             { id: "timing", label: "Timing", hint: "How long runs and tasks take: by stage, operation, task, day; working vs waiting" },
-            { id: "resources", label: "Resources", hint: "Everything Stagehand runs on this host — dev servers, agent runs, browsers, terminals, worktrees — with memory, owner and the cleanup policy" },
+            { id: "resources", label: "Resources", hint: "Everything Vortex runs on this host — dev servers, agent runs, browsers, terminals, worktrees — with memory, owner and the cleanup policy" },
         ],
     },
     {
@@ -158,7 +158,7 @@ const Gauge = ({ a, onRefresh }: { a: Account; onRefresh: () => void }) => {
     const fill = (l: typeof five) => (!l || l.expired ? 0 : l.utilization);
     const stale = !!five?.expired || !!week?.expired;
     const asOf = five?.updatedAt ? new Date(five.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
-    const title = `${a.email ?? "no auth"} · ${a.org ?? ""} · ${a.plan ?? ""}${five ? ` · 5h window ${val(five)}` : ""}${week ? ` · 7d window ${val(week)}` : ""}${asOf ? ` · as of ${asOf}` : ""}${stale ? " · window reset since — click ↻ to refresh (one tiny Sonnet turn)" : ""}${enterprise ? " · what Stagehand ran on this account (tasks, helpers, probes)" : ""}`;
+    const title = `${a.email ?? "no auth"} · ${a.org ?? ""} · ${a.plan ?? ""}${five ? ` · 5h window ${val(five)}` : ""}${week ? ` · 7d window ${val(week)}` : ""}${asOf ? ` · as of ${asOf}` : ""}${stale ? " · window reset since — click ↻ to refresh (one tiny Sonnet turn)" : ""}${enterprise ? " · what Vortex ran on this account (tasks, helpers, probes)" : ""}`;
     return (
         <span className={`gauge ${enterprise ? "enterprise" : ""} ${stale ? "stale" : ""}`} title={title}>
             <span className="gauge-name">
@@ -391,7 +391,7 @@ export const App = () => {
     return (
         <div className="app">
             <header className={`topbar ${moreOpen ? "more-open" : ""}`}>
-                <span className="brand">Stagehand</span>
+                <Wordmark className="brand" />
                 <span className="spacer" />
                 <Button variant="ghost" className="more" onClick={() => setMoreOpen((v) => !v)} title="Account usage">⋯</Button>
                 <span className="extra gauges">{accounts.map((a) => <Gauge key={a.id} a={a} onRefresh={() => void api.refreshLimits(a.id).then((r) => { if (!r.ok) setError(`limits refresh (${a.name}): ${r.detail}`); }).then(reload).catch((e: Error) => setError(e.message))} />)}</span>
@@ -854,7 +854,7 @@ const AccountForm = ({ onSubmit }: { onSubmit: (name: string, email?: string) =>
     const [email, setEmail] = useState("");
     return (
         <>
-            <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 13 }}>Opens a terminal running <code>claude setup-token</code>: finish the claude.ai login in the browser (pick the right account there — the email below is only a label), paste the code back if asked. Stagehand stores the resulting long-lived token and closes the terminal; the account then works in any config dir.</p>
+            <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 13 }}>Opens a terminal running <code>claude setup-token</code>: finish the claude.ai login in the browser (pick the right account there — the email below is only a label), paste the code back if asked. Vortex stores the resulting long-lived token and closes the terminal; the account then works in any config dir.</p>
             <label>Name <Input autoFocus value={name} onChange={(e) => setName(e.target.value.toLowerCase())} placeholder="work" /></label>
             <label>Email (label) <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" /></label>
             <Button variant="primary" disabled={!/^[a-z0-9-]+$/.test(name)} onClick={() => onSubmit(name, email || undefined)}>Set up token</Button>

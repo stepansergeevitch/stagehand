@@ -277,7 +277,7 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
             <div className="prompter-where" title="What the assistant is told you are looking at">{where || path}</div>
             {status && !status.ready && <div className="blocked-box" style={{ margin: "0 10px 6px" }}>{status.reason}</div>}
             <div className="prompter-log">
-                {chat.messages.length === 0 && !chat.live && <div className="empty">Ask about what you see, how Stagehand works, or tell me what to do here. I remember through the palace, not through this window.</div>}
+                {chat.messages.length === 0 && !chat.live && <div className="empty">Ask about what you see, how Vortex works, or tell me what to do here. I remember through the palace, not through this window.</div>}
                 {chat.messages.map((m) => (
                     <div key={m.id} className={`chat-msg ${m.role === "user" ? "user" : "agent"} ${m.state === "queued" ? "queued" : ""}`}>
                         {m.role === "user" ? <div className="prompter-user-text">{m.text}</div> : <Markdown source={m.text} />}

@@ -163,7 +163,7 @@ const SessionCard = ({ s, env, settings, selected, busy, onOpen, onChanges, onCl
  const rm = confirm(`Delete session "${s.name}" AND remove its worktree + local branch ${s.branch}?\n\nOK = remove the worktree too · Cancel = keep the worktree, forget only the session`);
  if (!rm && !confirm(`Forget session "${s.name}" and keep the worktree at ${s.worktree_path}?`)) return;
  void onDelete(rm);
- } else if (confirm(`Delete session "${s.name}"? The conversation cannot be resumed from Stagehand afterwards.`)) void onDelete(false);
+ } else if (confirm(`Delete session "${s.name}"? The conversation cannot be resumed from Vortex afterwards.`)) void onDelete(false);
  }}
 >
                     {mine("delete") ? "Deleting…" : "Delete"}

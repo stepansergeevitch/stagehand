@@ -14,7 +14,7 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "vite build && tsc -p tsconfig.build.json",
+    "build": "vite build && tsc -p tsconfig.build.json && node scripts/fonts.mjs",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
