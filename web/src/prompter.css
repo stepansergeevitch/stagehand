@@ -19,7 +19,12 @@
 .pr-menu { position: absolute; top: calc(100% + var(--sp-1)); z-index: var(--z-pop); white-space: nowrap; }
 .pr-chats { left: 0; width: min(380px, calc(var(--prompter-w) - 2 * var(--sp-3))); max-height: min(60dvh, 420px); overflow-y: auto; }
 .pr-options { right: 0; min-width: 260px; }
-.pr-menu .menu-item.on { background: var(--code); }
+.pr-menu .pr-chat-row.on, .pr-sheet .pr-chat-row.on { background: var(--code); }
+.pr-chat-row { display: flex; align-items: center; border-radius: var(--r-md); }
+.pr-chat-pick { flex: 1; min-width: 0; background: transparent; }
+.pr-chat-close { flex: none; opacity: 0; }
+.pr-chat-row:hover .pr-chat-close, .pr-chat-row:focus-within .pr-chat-close { opacity: 1; }
+@media (hover: none) { .pr-chat-close { opacity: 1; } }
 .pr-menu .menu-item, .pr-sheet .menu-item { gap: var(--sp-2); }
 .pr-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pr-row-title.unread { font-weight: 600; }
@@ -95,3 +100,4 @@
     /* leave room under the page so the launcher never covers a table footer */
     body:has(.prompter-fab) .page-frame { padding-bottom: calc(var(--touch) + var(--sp-6) + env(safe-area-inset-bottom)); }
 }
+@media (max-width: 760px) { .pr-chat-close { width: var(--touch); min-width: var(--touch); height: var(--touch); } }

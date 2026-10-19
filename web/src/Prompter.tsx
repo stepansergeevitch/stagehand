@@ -415,14 +415,18 @@ export const Prompter = ({ route, settings, tasks = [] }: { route: Route; settin
     );
     const title = session?.title ?? TITLE;
     const shared = where || path;
+    // One chat per row: the row opens it, the × beside it closes it (the menu stays open to close several; the last one closes the window).
     const chatRows = (menu: boolean) => sessions.map((s) => {
         const c = chats[s.id] ?? EMPTY;
         return (
-            <MenuItem key={s.id} className={s.id === activeId ? "on" : undefined} role={menu ? "menuitem" : undefined} aria-current={s.id === activeId ? "true" : undefined} onClick={() => choose(s.id)}>
-                {dot(c)}
-                <span className={`pr-row-title${c.unread ? " unread" : ""}`}>{s.title ?? TITLE}</span>
-                <small className="pr-row-meta">{label(s)}</small>
-            </MenuItem>
+            <div key={s.id} className={`pr-chat-row${s.id === activeId ? " on" : ""}`}>
+                <MenuItem className="pr-chat-pick" role={menu ? "menuitem" : undefined} aria-current={s.id === activeId ? "true" : undefined} onClick={() => choose(s.id)}>
+                    {dot(c)}
+                    <span className={`pr-row-title${c.unread ? " unread" : ""}`}>{s.title ?? TITLE}</span>
+                    <small className="pr-row-meta">{label(s)}</small>
+                </MenuItem>
+                <IconButton icon="close" size="sm" variant="ghost" className="pr-chat-close" label={`Close chat ${s.title ?? TITLE}`} onClick={() => end(s.id, sessions.length <= 1)} />
+            </div>
         );
     });
     const shareSwitch = <Switch checked={share} aria-label="Share what you are looking at" label="Share view" disabled={!session} onChange={(e) => setShare(e.target.checked)} />;
