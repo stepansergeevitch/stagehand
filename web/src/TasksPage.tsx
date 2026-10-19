@@ -7,6 +7,7 @@ import type { TaskFilter, TaskList, TaskTab } from "./routes";
 import { PageFrame } from "./components/AppShell";
 import { PageHeader } from "./components/PageHeader";
 import { FilterChip } from "./components/FilterChip";
+import { ViewSwitch } from "./components/ViewSwitch";
 import { DataTable, type DataColumn, type DataGroup } from "./components/DataTable";
 import { age, TaskStatusChip, taskNeed, taskState } from "./components/status";
 import "./tasks.css";
@@ -77,7 +78,7 @@ const TaskCard = ({ task: t, onOpen }: { task: Task; onOpen: (id: string, tab?: 
     );
 };
 
-export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onList, onFilter, selected, detailPane, onDeleteTasks, onPinTasks, onStopTasks, onSelectEnv, onNewTask, onPasteTickets, onOpen }: {
+export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onList, onFilter, onView, selected, detailPane, onDeleteTasks, onPinTasks, onStopTasks, onSelectEnv, onNewTask, onPasteTickets, onOpen }: {
     envs: Env[];
     envId: string;
     env: Env | undefined;
@@ -89,6 +90,8 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
     onList: (list: TaskList | undefined) => void;
     // Search and filters; `env` jumps to another environment keeping them.
     onFilter: (filter: TaskFilter, env?: string) => void;
+    // List | Feed.
+    onView: (v: "list" | "feed") => void;
     selected: string | null;
     // What the workspace shows: the task view or a loading line.
     detailPane: ReactNode;
@@ -183,8 +186,8 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
     // Emacs keys for the list. A chord (C-c …, C-x …) waits two seconds for its second key.
     const chord = useRef<{ prefix: "c" | "x"; at: number } | null>(null);
     const step = (d: number): void => { const i = envs.findIndex((e) => e.id === envId); const to = envs[i + d]; if (to) onSelectEnv(to.id); };
-    const act = useRef({ onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? undefined : "completed"), step });
-    act.current = { onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? undefined : "completed"), step };
+    const act = useRef({ onView, onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? undefined : "completed"), step });
+    act.current = { onView, onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? undefined : "completed"), step };
     useEffect(() => {
         const onKey = (e: KeyboardEvent): void => {
             if (!act.current.enabled || e.defaultPrevented || e.altKey || e.metaKey || document.querySelector("[role=dialog]")) return;
@@ -201,6 +204,7 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
                 if (e.code === "KeyN" && !e.ctrlKey) { e.preventDefault(); act.current.onNewTask(); }
                 else if (e.code === "KeyR" && !e.ctrlKey) { e.preventDefault(); act.current.apply(); }
                 else if (e.code === "KeyC" && !e.ctrlKey) { e.preventDefault(); act.current.toggleList(); }
+                else if (e.code === "KeyF" && !e.ctrlKey) { e.preventDefault(); act.current.onView("feed"); }
                 else if (e.code === "KeyC" && e.ctrlKey) {
                     e.preventDefault();
                     const row = (document.activeElement as HTMLElement | null)?.closest("tr[data-row]");
@@ -272,6 +276,7 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
         <PageFrame width="wide">
             <PageHeader
                 title="Tasks"
+                meta={<ViewSwitch view="list" onChange={onView} />}
                 actions={
                     <>
                         <label className="tasks-search">

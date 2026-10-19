@@ -16,6 +16,7 @@ import { authEnv, browserDirFor, mirrorConfigDir, probeChrome } from "./claude/a
 import { activateChromeTab, chromeHasQaFlags, closeChromeTabs, listChromeTabs, openInProfile, QA_CHROME_FLAGS, setChromeTabUrl } from "./chrome-profiles.js";
 import { activateCloneTab, cloneProfile, launchClone, pickCdpPort, quitClone, sweepClones, type ChromeClone } from "./chrome-clones.js";
 import { backfillCalibration, backfillUsage, calibrateWindows, recordUsage, stampTaskOnUsage } from "./usage.js";
+import { backfillFeed, insertFeedEvent, recordFeedChange, type FeedEvent } from "./feed.js";
 import { localTaskLink, notify, taskLink, type Notice } from "./notify.js";
 import { baseDrift, baseOf, baseRefFor, branchCommits, forkPointFor, pinBase, commitsDiff, createWorktree, describePaths, dirtyPaths, type RepoLayout, envRepos, loginShellArgs, loginShellEnv, removeWorktreeAndBranch, repoPaths, runWorktreeSetup, uncommittedGroup, worktreeDiff, type BranchCommit, type DiffFile, type DiffGroup } from "./git.js";
 import { materializeRules, prTemplates, rulesOf } from "./rules.js";
@@ -689,6 +690,12 @@ export class Engine extends EventEmitter {
     // ---------- lifecycle ----------
 
     startScheduler(): void {
+        // Attention states from before the feed existed (or before a restart lost nothing) get their open entry.
+        try {
+            backfillFeed(this.db, this.feedEmit);
+        } catch (e) {
+            console.warn(`[vortex] feed backfill: ${String((e as Error).message ?? e).slice(0, 160)}`);
+        }
         setTimeout(() => void this.baseCheckPass(), 60_000).unref();
         setInterval(() => void this.baseCheckPass(), 10 * 60_000).unref();
         this.timer = setInterval(() => {
@@ -1403,6 +1410,7 @@ export class Engine extends EventEmitter {
         this.taskDir(id);
         const task = this.getTask(id)!;
         this.recordTaskEvent(id, "research", "running");
+        this.feed(task, { kind: "created", category: "lifecycle", text: "Task created" }, { stage: "research", status: "running" });
         this.emit("task", task);
         this.fetchTicketThenResearch(id);
         return task;
@@ -2608,6 +2616,7 @@ export class Engine extends EventEmitter {
         } catch (e) {
             const msg = String((e as { stderr?: string }).stderr ?? (e as Error).message ?? e).trim().split("\n").slice(-2).join(" ").slice(0, 200);
             this.setTaskStatus(taskId, "idle", `${repoLabel(repo)}: merge failed: ${msg} · ${row.url ?? ""}`);
+            this.feed(task, { kind: "merge_failed", category: "needs_you", text: "Merge failed", detail: `${repoLabel(repo)}: ${msg}` }, { stage: task.stage, status: "idle", repo: repo || null });
             throw new Error(`merge failed: ${msg}`);
         }
         let note = "";
@@ -3727,6 +3736,9 @@ export class Engine extends EventEmitter {
 
     // The one push a PR's checks earn when they all pass; failures go through notifyNeedsHuman (blocked), once.
     private notifyChecksPassed(task: TaskRow, text: string): void {
+        const repos = this.prRows(task.id).map((r) => r.repo).filter(Boolean);
+        const repo = repos.length === 1 ? repos[0] : null;
+        this.feed(task, { kind: "checks_passed", category: "pr", text: repo ? `All checks passed on ${repo}` : "All checks passed" }, { stage: task.stage, status: task.status, repo });
         void notify(this.cfg, {
             title: `${task.ticket_id} checks passed`,
             message: text,
@@ -3742,7 +3754,25 @@ export class Engine extends EventEmitter {
     // into the row by parkQueued and lands here through the next status change.
     private recordTaskEvent(taskId: string, stage: Stage, status: string): void {
         const t = this.getTask(taskId);
+        const prev = this.db.prepare(`SELECT stage, status FROM task_events WHERE task_id = ? ORDER BY at DESC, rowid DESC LIMIT 1`).get(taskId) as { stage: string; status: string } | undefined;
+        if (t) {
+            try {
+                recordFeedChange(this.db, t, stage, status, prev ?? null, this.feedEmit);
+            } catch (e) {
+                console.warn(`[vortex] feed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+            }
+        }
         this.db.prepare(`INSERT INTO task_events (id, task_id, ticket_id, at, stage, status) VALUES (?, ?, ?, ?, ?, ?)`).run(randomUUID(), taskId, t?.ticket_id ?? null, now(), stage, status);
+    }
+
+    // The activity feed (feed.ts): every inserted or resolved event goes out on the "feed" channel.
+    private readonly feedEmit = (e: FeedEvent): void => void this.emit("feed", e);
+    private feed(task: Pick<TaskRow, "id" | "env_id" | "ticket_id">, d: Parameters<typeof insertFeedEvent>[1], o: { stage?: string; status?: string; repo?: string | null | undefined } = {}): void {
+        try {
+            insertFeedEvent(this.db, d, { task, ...o }, this.feedEmit);
+        } catch (e) {
+            console.warn(`[vortex] feed: ${String((e as Error).message ?? e).slice(0, 160)}`);
+        }
     }
 
     // One push per distinct (task, status, line) within ten minutes: the human learns once that a task waits on them.

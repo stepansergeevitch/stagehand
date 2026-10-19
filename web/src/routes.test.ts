@@ -29,6 +29,8 @@ const routes: Route[] = [
     { page: "tasks", env: "e1", filter: { q: "migration", stage: "implementation", label: "bug" } },
     { page: "tasks", list: "completed", filter: { q: "export" } },
     { page: "tasks", filter: { pinned: true } },
+    { page: "tasks", feed: {} },
+    { page: "tasks", feed: { type: "needs_you", lifecycle: true }, env: "e1", filter: { q: "x" } },
     { page: "tasks", create: true, env: "e1" },
     { page: "tasks", task: "t1", view: { tab: "details", part: "runs", run: "r9" } },
     { page: "tasks", task: "t1", view: { tab: "details", part: "cost" } },

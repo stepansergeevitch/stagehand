@@ -14,6 +14,7 @@ const execFileAsync = promisify(execFile);
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ensureBrowsers } from "./browsers.js";
+import { markSeen, readFeed } from "./feed.js";
 import { loadConfig, PREVIEW, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
@@ -1039,6 +1040,19 @@ app.get("/api/timing", (c) => {
 // ---------- tasks ----------
 
 app.get("/api/tasks", (c) => c.json(engine.listTasks(c.req.query("env"))));
+
+// The activity feed (feed.ts): newest first, the open needs_you events apart, the unseen count; live on /ws/events as kind "feed".
+app.get("/api/feed", (c) => {
+    const q = json(
+        z.object({ env: z.string().min(1).optional(), limit: z.coerce.number().int().min(1).max(200).default(50), before: z.string().min(1).optional() }),
+        { env: c.req.query("env") || undefined, limit: c.req.query("limit") || undefined, before: c.req.query("before") || undefined },
+    );
+    return c.json(readFeed(db, q));
+});
+app.post("/api/feed/seen", async (c) => {
+    const body = json(z.object({ ids: z.array(z.string()).optional(), taskId: z.string().min(1).optional(), env: z.string().min(1).optional(), all: z.boolean().optional() }), await c.req.json());
+    return c.json({ ok: true, updated: markSeen(db, body) });
+});
 
 // The base check now, for every repository of the task, whatever the last one saw.
 app.post("/api/tasks/:id/base-check", async (c) => {
@@ -2690,7 +2704,7 @@ app.get(
         const listeners: Array<[string, (...args: unknown[]) => void]> = [];
         return {
             onOpen(_evt, ws) {
-                for (const kind of ["task", "activity", "rate_limit", "account", "message", "prompter", "po"]) {
+                for (const kind of ["task", "activity", "rate_limit", "account", "message", "prompter", "po", "feed"]) {
                     const fn = (payload: unknown): void => ws.send(JSON.stringify({ kind, payload }));
                     engine.on(kind, fn);
                     listeners.push([kind, fn]);

@@ -803,6 +803,24 @@ CREATE TABLE IF NOT EXISTS task_events (
     status TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS task_events_task ON task_events(task_id, at);
+CREATE TABLE IF NOT EXISTS feed_events (
+    id TEXT PRIMARY KEY,
+    at TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    env_id TEXT NOT NULL,
+    ticket_id TEXT,
+    kind TEXT NOT NULL,
+    category TEXT NOT NULL,
+    text TEXT NOT NULL,
+    detail TEXT,
+    stage TEXT,
+    status TEXT,
+    repo TEXT,
+    resolved_at TEXT,
+    seen_at TEXT
+);
+CREATE INDEX IF NOT EXISTS feed_events_at ON feed_events(at);
+CREATE INDEX IF NOT EXISTS feed_events_task ON feed_events(task_id, at);
 CREATE TABLE IF NOT EXISTS product_owners (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,

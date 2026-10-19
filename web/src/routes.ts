@@ -55,7 +55,7 @@ export interface TaskView {
 
 export type Route =
     // The Tasks page: `list` is its Active (default, absent) / Completed tab.
-    | { page: "tasks"; env?: string; list?: TaskList; filter?: TaskFilter; task?: string; view?: TaskView; create?: boolean }
+    | { page: "tasks"; env?: string; list?: TaskList; filter?: TaskFilter; feed?: FeedView; task?: string; view?: TaskView; create?: boolean }
     | { page: "sessions"; session?: string; view?: "terminal" | "changes"; diff?: DiffRoute; create?: boolean }
     | { page: "analytics"; days?: number }
     | { page: "timing"; days?: number }
@@ -74,6 +74,13 @@ export type PoTab = "context" | "design" | "questions" | "tickets" | "events" | 
 export const PO_TABS: readonly PoTab[] = ["design", "questions", "corrections", "context", "tickets", "events"];
 
 export type TaskList = "completed";
+// The Feed beside the list (`#/tasks/feed`): the event types shown (all when absent) and whether started / stopped
+// events are shown too. No environment = every environment.
+export type FeedType = "needs_you" | "agent" | "pr";
+export interface FeedView {
+    type?: FeedType;
+    lifecycle?: boolean;
+}
 // The list's search and filters, so a link reproduces the view: `?q=migration&stage=implementation&label=bug`.
 export interface TaskFilter {
     q?: string;
@@ -124,6 +131,11 @@ const parseTaskView = (tab: string | undefined, x: string | undefined, y: string
     }
 };
 
+const parseFeed = (q: URLSearchParams): FeedView => {
+    const type = q.get("type");
+    return { ...(type === "needs_you" || type === "agent" || type === "pr" ? { type } : {}), ...(q.get("lifecycle") === "1" ? { lifecycle: true } : {}) };
+};
+
 const parseFilter = (q: URLSearchParams): { filter?: TaskFilter } => {
     const text = q.get("q") ?? undefined;
     const stage = q.get("stage") ?? undefined;
@@ -142,6 +154,7 @@ export const parseRoute = (hash: string): Route => {
     switch (head) {
         case "dashboard":
         case "tasks":
+            if (a === "feed") return { page: "tasks", feed: parseFeed(q), ...(env ? { env } : {}), ...parseFilter(q) };
             if (a === "completed") return { page: "tasks", list: "completed", ...(env ? { env } : {}), ...parseFilter(q) };
             if (a === "active") return { page: "tasks", ...(env ? { env } : {}), ...parseFilter(q) };
             if (a === "new") return { page: "tasks", create: true, ...(env ? { env } : {}) };
@@ -219,7 +232,7 @@ export const formatRoute = (r: Route): string => {
     switch (r.page) {
         case "tasks":
             if (r.task) return formatTaskView(`#/tasks/${enc(r.task)}`, r.view);
-            return withQuery(r.create ? "#/tasks/new" : r.list === "completed" ? "#/tasks/completed" : "#/tasks", { env: r.env, q: r.filter?.q, stage: r.filter?.stage, label: r.filter?.label, pinned: r.filter?.pinned ? "1" : null });
+            return withQuery(r.create ? "#/tasks/new" : r.feed ? "#/tasks/feed" : r.list === "completed" ? "#/tasks/completed" : "#/tasks", { env: r.env, type: r.feed?.type, lifecycle: r.feed?.lifecycle ? "1" : null, q: r.filter?.q, stage: r.filter?.stage, label: r.filter?.label, pinned: r.filter?.pinned ? "1" : null });
         case "sessions":
             if (r.create) return "#/sessions/new";
             if (!r.session) return "#/sessions";

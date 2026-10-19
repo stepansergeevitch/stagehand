@@ -292,6 +292,15 @@ export interface Task {
     branch: string | null; base_branch: string | null; dependency_branch?: string | null; base_check_state?: BaseCheckState | null; base_check_detail?: string | null; skip_qa?: number; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
     pinned: number; notes: string | null; extra_tickets: string | null; labels?: string | null; product_owner_id?: string | null; ci_autopilot?: number | null; created_at: string; updated_at: string;
 }
+// The Feed: one row per thing that happened to a task (server/src/feed.ts). `needs_you` events stay open (resolved_at null)
+// until the task no longer needs the human; `seen_at` is null until the human has seen it.
+export type FeedCategory = "needs_you" | "agent" | "pr" | "system" | "lifecycle";
+export interface FeedEvent {
+    id: string; at: string; task_id: string; env_id: string; ticket_id: string | null; task_title: string | null;
+    kind: string; category: FeedCategory; text: string; detail: string | null; stage: Stage | null; status: TaskStatus | null; repo: string | null;
+    resolved_at: string | null; seen_at: string | null;
+}
+export interface FeedPage { events: FeedEvent[]; open: FeedEvent[]; unseen: number }
 // Product Owners: one per project of the product (a Linear project, a ClickUp epic).
 export type PoPhase = "context" | "design" | "tickets" | "approved" | "live";
 export interface ProductOwner {
@@ -853,6 +862,14 @@ export const api = {
     fetchTicket: (id: string) => post<Ticket>(`/api/tasks/${id}/fetch-ticket`),
     openApp: (id: string) => post<{ opened: string; profile: string }>(`/api/tasks/${id}/open-app`),
     pin: (id: string) => post<Task>(`/api/tasks/${id}/pin`),
+    feed: (opts: { env?: string; before?: string; limit?: number } = {}) => {
+        const q = new URLSearchParams();
+        if (opts.env) q.set("env", opts.env);
+        if (opts.before) q.set("before", opts.before);
+        if (opts.limit) q.set("limit", String(opts.limit));
+        return fetch(`/api/feed?${q}`).then((r) => j<FeedPage>(r));
+    },
+    feedSeen: (body: { ids?: string[]; taskId?: string; env?: string; all?: boolean }) => post<{ ok: true; updated: number }>("/api/feed/seen", body),
     setAccount: (id: string, accountId: string) => post<Task>(`/api/tasks/${id}/account`, { accountId }),
     terminal: (id: string) => post<{ terminal: string }>(`/api/tasks/${id}/terminal`),
     services: (id: string) => fetch(`/api/tasks/${id}/services`).then((r) => j<Service[]>(r)),

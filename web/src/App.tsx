@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type Account, type ConfigDir, type Env, type PoEvent, type Readiness, type Settings, type Task, type TaskDetail, accountUsableWith, STAGE_ORDER } from "./api";
+import { api, type Account, type ConfigDir, type Env, type FeedEvent, type PoEvent, type Readiness, type Settings, type Task, type TaskDetail, accountUsableWith, STAGE_ORDER } from "./api";
 import { TaskDetailView } from "./TaskDetail";
 import { formatRoute, navigate, type Route, taskRoute, useRoute, type Page, type TaskView } from "./routes";
 import { Prompter } from "./Prompter";
@@ -14,9 +14,11 @@ import { Timing } from "./Timing";
 import { SessionsPage } from "./SessionsPage";
 import { ProductPage } from "./ProductPage";
 import { TasksPage } from "./TasksPage";
+import { FeedPage } from "./FeedPage";
 import { NewTaskDialog } from "./NewTaskForm";
 import { AccountForm, EnvForm } from "./AddForms";
 import { poBus } from "./poBus";
+import { feedBus } from "./feedBus";
 import { storage } from "./storage";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { LazyTerminal } from "./LazyTerminal";
@@ -195,6 +197,7 @@ export const App = () => {
                 if (msg.kind === "rate_limit" || msg.kind === "account") void Promise.all([api.accounts(), api.configDirs()]).then(([a, d]) => { setAccounts(a); setConfigDirs(d); });
                 if (msg.kind === "prompter") prompterBus.emit(msg.payload as PrompterEvent);
                 if (msg.kind === "po") poBus.emit(msg.payload as PoEvent);
+                if (msg.kind === "feed") feedBus.emit(msg.payload as FeedEvent);
             };
         };
         connect();
@@ -439,6 +442,22 @@ export const App = () => {
                 "wide",
             )}
             {page === "tasks" && (
+                route.page === "tasks" && route.feed && !selected ? (
+                    <FeedPage
+                        envs={envs}
+                        envId={route.env}
+                        tasks={tasks}
+                        filter={route.filter ?? {}}
+                        feed={route.feed}
+                        connected={connected}
+                        onSelectEnv={(id) => navigate({ page: "tasks", feed: route.feed ?? {}, ...(id ? { env: id } : {}), ...(route.filter ? { filter: route.filter } : {}) })}
+                        onFilter={(filter) => navigate({ page: "tasks", feed: route.feed ?? {}, ...(route.env ? { env: route.env } : {}), ...(filter.q || filter.stage || filter.label ? { filter } : {}) })}
+                        onFeed={(feed) => navigate({ page: "tasks", feed, ...(route.env ? { env: route.env } : {}), ...(route.filter ? { filter: route.filter } : {}) })}
+                        onView={() => navigate(route.env ? listRoute(route.env) : listRoute())}
+                        onNewTask={() => navigate({ ...listRoute(route.env), create: true })}
+                        onOpen={(id, tab) => navigate(taskRoute(route, id, tab ? { tab } : undefined))}
+                    />
+                ) : (
                 <TasksPage
                     envs={envs}
                     envId={envId}
@@ -448,7 +467,8 @@ export const App = () => {
                     list={route.page === "tasks" ? route.list : undefined}
                     filter={route.page === "tasks" ? route.filter ?? {} : {}}
                     onList={(list) => navigate({ page: "tasks", ...(list ? { list } : {}), ...(envId ? { env: envId } : {}) })}
-                    onFilter={(filter, to) => navigate({ page: "tasks", ...(route.page === "tasks" && route.list ? { list: route.list } : {}), ...((to ?? envId) ? { env: to ?? envId } : {}), ...(filter.q || filter.stage || filter.label ? { filter } : {}) })}
+                    onFilter={(filter, to) => navigate({ page: "tasks", ...(route.page === "tasks" && route.list ? { list: route.list } : {}), ...((to ?? envId) ? { env: to ?? envId } : {}), ...(filter.q || filter.stage || filter.label || filter.pinned ? { filter } : {}) })}
+                    onView={(v) => navigate(v === "feed" ? { page: "tasks", feed: {}, ...(envId ? { env: envId } : {}) } : listRoute())}
                     selected={selected}
                     detailPane={tasksDetailPane}
                     onDeleteTasks={(ids) => void deletePicked(ids)}
@@ -459,6 +479,7 @@ export const App = () => {
                     onPasteTickets={async (tickets) => { if (env) await run(() => api.createTasks({ envId: env.id, tickets, mode: "each" })); }}
                     onOpen={(id, tab) => navigate(taskRoute(route, id, tab ? { tab } : undefined))}
                 />
+                )
             )}
         </AppShell>
     );

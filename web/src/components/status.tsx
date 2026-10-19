@@ -61,23 +61,54 @@ export const age = (iso: string): string => {
     return `${Math.floor(s / 86400)}d`;
 };
 
+// What needs a human, as ONE registry that the Tasks list ("What it needs") and the Feed (a Needs-you row, an event of that kind)
+// both read: a kind, the button's label and where it opens. The server records the same kinds on feed events
+// (server/src/feed.ts), so a button never differs between the two views.
+export type NeedKind = "questions" | "design_ready" | "user_review" | "pr_drafts" | "needs_review" | "blocked" | "failed" | "merge_failed";
+type NeedTab = "work" | "pr";
+export const NEED_ACTIONS: Record<NeedKind, { label: string; tab: NeedTab | "by_stage"; danger?: boolean }> = {
+    questions: { label: "Answer", tab: "work" },
+    design_ready: { label: "Review design", tab: "work" },
+    user_review: { label: "Review", tab: "work" },
+    pr_drafts: { label: "Review PRs", tab: "pr" },
+    needs_review: { label: "Review", tab: "work" },
+    blocked: { label: "See why", tab: "by_stage" },
+    failed: { label: "See failure", tab: "by_stage", danger: true },
+    merge_failed: { label: "Open PR", tab: "pr" },
+};
+
+// The action of a need kind for a task at `stage`: its label and the tab it opens.
+export const needAction = (kind: string, stage: string | null | undefined): { label: string; tab: NeedTab; danger: boolean } | undefined => {
+    const a = NEED_ACTIONS[kind as NeedKind];
+    if (!a) return undefined;
+    return { label: a.label, tab: a.tab === "by_stage" ? (/^pr_/.test(stage ?? "") ? "pr" : "work") : a.tab, danger: !!a.danger };
+};
+
+// A task's need kind from its state (the same rules the server applies when it records the event).
+export const needKind = (t: Pick<Task, "status" | "stage" | "status_line">): NeedKind | undefined => {
+    switch (t.status as TaskStatus) {
+        case "waiting_user":
+            if (/question/i.test(t.status_line ?? "")) return "questions";
+            if (t.stage === "design_proposal") return "design_ready";
+            if (t.stage === "user_review") return "user_review";
+            if (t.stage === "pr_creation_review") return "pr_drafts";
+            return "needs_review";
+        case "blocked": return "blocked";
+        case "failed": return "failed";
+        default: return undefined;
+    }
+};
+
 // What a task needs from you, as the Tasks list shows it: ONE button that opens the exact place (its label says what the
 // click does, the tab is where it goes), and for a task with nothing to press the line that says what it is doing.
 export interface TaskNeed {
     text: string;
-    action?: { label: string; tab: "work" | "pr" };
+    action?: { label: string; tab: "work" | "pr"; danger: boolean };
 }
 
 export const taskNeed = (t: Pick<Task, "status" | "stage" | "status_line">): TaskNeed => {
     const text = t.status_line ?? taskState(t).label;
-    switch (t.status as TaskStatus) {
-        case "waiting_user":
-            if (/question/i.test(t.status_line ?? "")) return { text, action: { label: "Answer", tab: "work" } };
-            if (t.stage === "design_proposal") return { text, action: { label: "Review design", tab: "work" } };
-            if (t.stage === "pr_creation_review") return { text, action: { label: "Review PRs", tab: "pr" } };
-            return { text, action: { label: "Review", tab: "work" } };
-        case "blocked": return { text, action: { label: "See why", tab: /^pr_/.test(t.stage) ? "pr" : "work" } };
-        case "failed": return { text, action: { label: "See failure", tab: /^pr_/.test(t.stage) ? "pr" : "work" } };
-        default: return { text };
-    }
+    const kind = needKind(t);
+    const action = kind ? needAction(kind, t.stage) : undefined;
+    return action ? { text, action } : { text };
 };

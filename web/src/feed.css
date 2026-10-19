@@ -1,0 +1,54 @@
+/* The Feed (FeedPage.tsx). The page chrome (title, search, tabs, filter chips) shares tasks.css and filterchip.css with the list. */
+.feed-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.feed-bar-end { margin-left: auto; display: inline-flex; align-items: center; gap: var(--sp-2); }
+.feed-live { font-size: var(--fs-sm); color: var(--ink-3); }
+.feed-pop { position: relative; display: inline-block; }
+.feed-digest { position: absolute; right: 0; top: calc(100% + var(--sp-1)); z-index: var(--z-pop); width: 300px; display: grid; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); }
+.feed-digest > div { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-md); }
+.feed-menu { position: absolute; right: 0; top: calc(100% + var(--sp-1)); z-index: var(--z-pop); min-width: 220px; padding: var(--sp-2); }
+.feed-stream { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.feed-queued { display: flex; justify-content: center; }
+.feed-block { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--shadow-sm); }
+.feed-needs { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.feed-block-head { display: flex; align-items: center; gap: var(--sp-2); padding: 10px var(--sp-4); font-weight: 600; background: color-mix(in srgb, var(--warn) 12%, var(--panel)); }
+.feed-day-head { padding: var(--sp-2) 2px; font-size: var(--fs-xs); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); }
+.feed-divider { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: 8px var(--sp-4); background: var(--accent-soft); color: var(--accent); font-size: var(--fs-sm); font-weight: 600; }
+.feed-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: var(--sp-3); align-items: start; padding: 12px var(--sp-4); border-top: 1px solid var(--line); background: var(--panel); cursor: pointer; }
+.feed-block > .feed-row:first-child, .feed-block-head + .feed-row { border-top: 0; }
+.feed-row:hover { background: var(--surface-2); }
+.feed-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-soft); }
+.feed-row.unseen .feed-title { font-weight: 600; }
+.feed-ic { width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; background: var(--code); color: var(--ink-2); }
+.feed-ic.warn { background: color-mix(in srgb, var(--warn) 18%, var(--panel)); color: var(--warn); }
+.feed-ic.info { background: color-mix(in srgb, var(--info) 16%, var(--panel)); color: var(--info); }
+.feed-ic.ok { background: color-mix(in srgb, var(--ok) 16%, var(--panel)); color: var(--ok); }
+.feed-ic.bad { background: color-mix(in srgb, var(--bad) 16%, var(--panel)); color: var(--bad); }
+.feed-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; overflow-wrap: anywhere; }
+.feed-new { font-size: 10.5px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-pill); padding: 0 5px; }
+.feed-env { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: var(--r-pill); background: var(--code); color: var(--ink-2); font-size: 11px; font-weight: 600; }
+.feed-ticket { color: var(--ink-2); font-weight: 500; }
+.feed-meta { margin-top: 2px; font-size: var(--fs-md); color: var(--ink-2); overflow-wrap: anywhere; }
+.feed-side { display: flex; align-items: center; gap: var(--sp-2); }
+.feed-time { font-size: var(--fs-sm); color: var(--ink-3); white-space: nowrap; }
+.feed-hover { visibility: hidden; }
+.feed-row:hover .feed-hover, .feed-row:focus-within .feed-hover { visibility: visible; }
+.feed-burst { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-3); padding: 8px var(--sp-4) 12px 56px; background: var(--panel-2); font-size: var(--fs-md); color: var(--ink-2); border-top: 1px solid var(--line); }
+.feed-more { display: flex; justify-content: center; }
+.feed-loading { display: grid; gap: 10px; padding: var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); }
+.feed-loading i { height: 14px; border-radius: 4px; background: var(--line); }
+.feed-loading i:nth-child(1) { width: 90%; } .feed-loading i:nth-child(2) { width: 70%; } .feed-loading i:nth-child(3) { width: 80%; }
+.feed-loading span { font-size: var(--fs-sm); color: var(--ink-3); }
+@media (max-width: 760px) {
+    /* A phone keeps the title with the switch and New task, the tabs, the type chips with Since, and the rows. */
+    .feed-bar .filter-chip, .feed-live, .feed-bar .feed-pop:last-child { display: none; }
+    .feed-bar { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+    .feed-bar::-webkit-scrollbar { display: none; }
+    .feed-bar > * { flex: none; }
+    .feed-bar-end { margin-left: 0; }
+    .feed-digest { position: fixed; left: var(--sp-3); right: var(--sp-3); top: auto; bottom: var(--sp-3); width: auto; }
+    .feed-row { grid-template-columns: minmax(0, 1fr); gap: var(--sp-2); }
+    .feed-ic { display: none; }
+    .feed-side { justify-content: space-between; }
+    .feed-side [data-primary] { flex: 1; min-height: var(--touch); }
+    .feed-hover { display: none; }
+}
