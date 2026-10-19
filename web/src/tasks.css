@@ -1,3 +1,6 @@
 /* Tasks list (TasksPage.tsx); the task workspace's rules are in tasks/workspace.css. */
 .task-id { display: inline-flex; align-items: center; gap: var(--sp-1); }
 .task-id .icon { width: 12px; height: 12px; color: var(--ink-3); }
+.task-paste { display: block; }
+.task-paste input { width: 100%; font-family: var(--mono); }
+.task-need { color: var(--ink-2); }

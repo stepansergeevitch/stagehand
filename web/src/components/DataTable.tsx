@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { storage } from "../storage";
 import { useDismiss } from "./useDismiss";
 import { Badge, Button, EmptyState, Hint, Icon, IconButton, Input, Menu, Checkbox } from "@vortex/ds";
@@ -43,6 +43,15 @@ export interface DataColumn<T> {
     hint?: string;
 }
 
+// Rows can be grouped under collapsible heads (the Tasks list: Needs you, Running, …). Groups show in the given order, the
+// column sort applies inside each; an empty group is not shown.
+export interface DataGroup {
+    key: string;
+    label: ReactNode;
+    // Starts folded.
+    collapsed?: boolean;
+}
+
 type Sort = { key: string; desc: boolean };
 type Filters = Record<string, string[]>;
 
@@ -74,6 +83,8 @@ export const DataTable = <T,>({
     defaultSort,
     storageKey,
     embedded,
+    groups,
+    groupOf,
 }: {
     // The header row: the list's name on the left, "Create new <entity>" on the right (when onCreate is given).
     title?: ReactNode;
@@ -97,6 +108,9 @@ export const DataTable = <T,>({
     storageKey?: string;
     // A list inside another page's tab: the header is a section heading, not the page's h1.
     embedded?: boolean;
+    // Group the rows: `groupOf` names a row's group (a `groups` key), `groups` lists the groups in display order.
+    groups?: DataGroup[];
+    groupOf?: (row: T) => string;
 }) => {
     const [query, setQuery] = useState("");
     const [filters, setFilters] = useState<Filters>({});
@@ -116,6 +130,15 @@ export const DataTable = <T,>({
         return new Set(columns.filter((c) => c.defaultHidden).map((c) => c.key));
     });
     const pickerRef = useDismiss(pickerOpen, () => setPickerOpen(false));
+    // Folded groups: transient, starts from each group's own default.
+    const [folded, setFolded] = useState<Set<string>>(() => new Set((groups ?? []).filter((g) => g.collapsed).map((g) => g.key)));
+    const toggleGroup = (key: string): void =>
+        setFolded((cur) => {
+            const next = new Set(cur);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+        });
 
     const toggleHidden = (key: string): void =>
         setHidden((cur) => {
@@ -199,6 +222,24 @@ export const DataTable = <T,>({
             const vals = cur[key] ?? [];
             return { ...cur, [key]: vals.includes(value) ? vals.filter((v) => v !== value) : [...vals, value] };
         });
+
+    // Emacs keys on a focused row: C-n / C-p (and the arrows) move to the next / previous row, C-SPC checks it. Match the
+    // physical key (`e.code`): Ctrl+letter is not remapped, but the rule is the same everywhere.
+    const onTableKey = (e: KeyboardEvent<HTMLElement>): void => {
+        const row = (e.target as HTMLElement).closest<HTMLElement>("tr[data-row]");
+        if (!row) return;
+        const onRow = e.target === row;
+        const next = e.code === "KeyN" && e.ctrlKey ? 1 : e.code === "KeyP" && e.ctrlKey ? -1 : onRow && e.key === "ArrowDown" ? 1 : onRow && e.key === "ArrowUp" ? -1 : 0;
+        if (next) {
+            const all = [...(row.closest("table")?.querySelectorAll<HTMLElement>("tr[data-row]") ?? [])];
+            all[all.indexOf(row) + next]?.focus();
+            e.preventDefault();
+        } else if (e.code === "Space" && e.ctrlKey && selectable) {
+            const key = row.dataset.row;
+            if (key) setRow(key, !checked.has(key));
+            e.preventDefault();
+        }
+    };
 
     const actionsRow = (
         <>
@@ -287,7 +328,7 @@ export const DataTable = <T,>({
                     <div className="dt-empty"><EmptyState icon="search" title="No row matches">Change the search or reset the filters.</EmptyState></div>
                 ) : (
                     <div className="dt-scroll">
-                        <table>
+                        <table onKeyDown={onTableKey}>
                             <thead>
                                 <tr>
                                     {selectable && (
@@ -311,29 +352,45 @@ export const DataTable = <T,>({
                                 </tr>
                             </thead>
                             <tbody>
-                                {shown.map((r) => {
-                                    const k = rowKey(r);
-                                    return (
-                                        <tr
-                                            key={k}
-                                            className={`${onRowClick ? "clickable" : ""}${activeKey === k ? " active" : ""}${checked.has(k) ? " checked" : ""}`}
-                                            tabIndex={onRowClick ? 0 : undefined}
-                                            onClick={onRowClick ? () => onRowClick(r) : undefined}
-                                            onKeyDown={onRowClick ? (e) => { if (e.key === "Enter" && e.target === e.currentTarget) onRowClick(r); } : undefined}
-                                        >
-                                            {selectable && (
-                                                <td className="dt-check" onClick={(e) => e.stopPropagation()}>
-                                                    <Check label="Select row" checked={checked.has(k)} onChange={(on) => setRow(k, on)} />
+                                {(groups ? groups.map((g) => ({ g, rows: shown.filter((r) => groupOf?.(r) === g.key) })).filter((x) => x.rows.length) : [{ g: null as DataGroup | null, rows: shown }]).map(({ g, rows: part }) => (
+                                    <Fragment key={g?.key ?? "all"}>
+                                        {g && (
+                                            <tr className="dt-group">
+                                                <td colSpan={visibleCols.length + (selectable ? 1 : 0)}>
+                                                    <button type="button" aria-expanded={!folded.has(g.key)} onClick={() => toggleGroup(g.key)}>
+                                                        <Icon name={folded.has(g.key) ? "chevronRight" : "chevronDown"} />
+                                                        {g.label}
+                                                        <span className="dt-group-count">{part.length}</span>
+                                                    </button>
                                                 </td>
-                                            )}
-                                            {visibleCols.map((c) => (
-                                                <td key={c.key} className={c.kind === "label" ? "dt-label" : c.kind === "num" ? "mono num" : undefined}>
-                                                    {c.render ? c.render(r) : text(c.value?.(r))}
-                                                </td>
-                                            ))}
-                                        </tr>
-                                    );
-                                })}
+                                            </tr>
+                                        )}
+                                        {!(g && folded.has(g.key)) && part.map((r) => {
+                                            const k = rowKey(r);
+                                            return (
+                                                <tr
+                                                    key={k}
+                                                    data-row={k}
+                                                    className={`${onRowClick ? "clickable" : ""}${activeKey === k ? " active" : ""}${checked.has(k) ? " checked" : ""}`}
+                                                    tabIndex={onRowClick ? 0 : undefined}
+                                                    onClick={onRowClick ? () => onRowClick(r) : undefined}
+                                                    onKeyDown={onRowClick ? (e) => { if (e.key === "Enter" && e.target === e.currentTarget) onRowClick(r); } : undefined}
+                                                >
+                                                    {selectable && (
+                                                        <td className="dt-check" onClick={(e) => e.stopPropagation()}>
+                                                            <Check label="Select row" checked={checked.has(k)} onChange={(on) => setRow(k, on)} />
+                                                        </td>
+                                                    )}
+                                                    {visibleCols.map((c) => (
+                                                        <td key={c.key} className={c.kind === "label" ? "dt-label" : c.kind === "num" ? "mono num" : undefined}>
+                                                            {c.render ? c.render(r) : text(c.value?.(r))}
+                                                        </td>
+                                                    ))}
+                                                </tr>
+                                            );
+                                        })}
+                                    </Fragment>
+                                ))}
                             </tbody>
                         </table>
                     </div>

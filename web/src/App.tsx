@@ -444,7 +444,8 @@ export const App = () => {
                     onDeleteTasks={(ids) => void deletePicked(ids)}
                     onSelectEnv={(id) => navigate(listRoute(id))}
                     onNewTask={() => navigate({ ...listRoute(), create: true })}
-                    onOpen={(id) => navigate(taskRoute(route, id))}
+                    onPasteTickets={async (tickets) => { if (env) await run(() => api.createTasks({ envId: env.id, tickets, mode: "each" })); }}
+                    onOpen={(id, tab) => navigate(taskRoute(route, id, tab ? { tab } : undefined))}
                 />
             )}
         </AppShell>

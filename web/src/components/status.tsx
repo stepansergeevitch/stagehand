@@ -60,3 +60,24 @@ export const age = (iso: string): string => {
     if (s < 86400) return `${Math.floor(s / 3600)}h`;
     return `${Math.floor(s / 86400)}d`;
 };
+
+// What a task needs from you, as the Tasks list shows it: ONE button that opens the exact place (its label says what the
+// click does, the tab is where it goes), and for a task with nothing to press the line that says what it is doing.
+export interface TaskNeed {
+    text: string;
+    action?: { label: string; tab: "work" | "pr" };
+}
+
+export const taskNeed = (t: Pick<Task, "status" | "stage" | "status_line">): TaskNeed => {
+    const text = t.status_line ?? taskState(t).label;
+    switch (t.status as TaskStatus) {
+        case "waiting_user":
+            if (/question/i.test(t.status_line ?? "")) return { text, action: { label: "Answer", tab: "work" } };
+            if (t.stage === "design_proposal") return { text, action: { label: "Review design", tab: "work" } };
+            if (t.stage === "pr_creation_review") return { text, action: { label: "Review PRs", tab: "pr" } };
+            return { text, action: { label: "Review", tab: "work" } };
+        case "blocked": return { text, action: { label: "See why", tab: /^pr_/.test(t.stage) ? "pr" : "work" } };
+        case "failed": return { text, action: { label: "See failure", tab: /^pr_/.test(t.stage) ? "pr" : "work" } };
+        default: return { text };
+    }
+};
