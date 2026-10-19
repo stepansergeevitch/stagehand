@@ -2,17 +2,16 @@ import { useMemo, type ReactNode } from "react";
 import { BaseCheckChip } from "./components/BaseCheckChip";
 import { LabelChips } from "./Labels";
 import { labelsOf, STAGE_LABEL, taskLabel, type Env, type Task } from "./api";
-import { Button, EmptyState, Icon, Select, Tabs } from "@vortex/ds";
+import { Badge, Button, EmptyState, Icon, Tabs } from "@vortex/ds";
 import type { TaskList } from "./routes";
-import { StatRow, StatTile } from "./components/StatTile";
 import { PageFrame } from "./components/AppShell";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { age, StageCell, TaskStatusChip, taskState } from "./components/status";
 import "./tasks.css";
 
-// The Tasks page (docs/ux-redesign.md §4.1, §4.3 and §6.1): the four triage tiles (all environments), then one
-// environment's tasks as a table in two tabs, Active (not finished, most urgent first) and Completed (finished and
-// stopped); a row opens the task workspace in place of the list. The environment picker is the route's `?env=`, the
+// The Tasks page (docs/ux-redesign.md §4.1, §4.3 and §6.1): a tab per environment (with the count of tasks waiting on
+// you), then that environment's tasks as a table in two tabs, Active (not finished, most urgent first) and Completed (finished and
+// stopped); a row opens the task workspace in place of the list. The environment tab is the route's `?env=`, the
 // tab its path (`#/tasks/completed`).
 export const TasksPage = ({ envs, envId, env, tasks, visible, list, onList, selected, detailPane, onDeleteTasks, onSelectEnv, onNewTask, onOpen }: {
     envs: Env[];
@@ -33,10 +32,8 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, onList, sele
 }) => {
     // Pinned first, then by what needs you, then the latest.
     const completed = list === "completed";
-    const count = (g: ReturnType<typeof taskState>["group"]) => tasks.filter((t) => taskState(t).group === g).length;
-    const attention = count("attention");
-    const working = count("working");
-    const waiting = count("waiting");
+    // Tasks waiting on you, per environment: the badge on its tab.
+    const needsYou = (id: string) => tasks.filter((t) => t.env_id === id && taskState(t).group === "attention").length;
     const rows = useMemo(
         () => visible.filter((t) => (taskState(t).group === "finished") === completed).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || taskState(a).rank - taskState(b).rank || b.updated_at.localeCompare(a.updated_at)),
         [visible, completed],
@@ -54,25 +51,23 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, onList, sele
     if (selected) return <PageFrame width="wide">{detailPane}</PageFrame>;
     return (
         <PageFrame width="wide">
-            <StatRow>
-                <StatTile label="Needs you" tone={attention ? "warn" : "neutral"} value={attention} sub={attention ? "Waiting on a decision, blocked or failed" : "Nothing is waiting on you"} />
-                <StatTile label="Running" tone={working ? "info" : "neutral"} value={working} sub="Agents working or queued" />
-                <StatTile label="Waiting on others" tone={waiting ? "wait" : "neutral"} value={waiting} sub="GitHub checks, reviewers, rate limits" />
-                <StatTile label="Environments" icon="server" value={envs.length} />
-            </StatRow>
+            <Tabs
+                items={envs.map((e) => {
+                    const n = needsYou(e.id);
+                    return { key: e.id, label: <>{e.name}{n > 0 && <Badge tone="warn" title={`${n} waiting on you`} aria-label={`${n} waiting on you`}>{n}</Badge>}</> };
+                })}
+                active={envId}
+                onChange={onSelectEnv}
+            />
             <Tabs
                 items={[{ key: "active", label: "Active" }, { key: "completed", label: "Completed" }]}
+                variant="pill"
                 active={completed ? "completed" : "active"}
                 onChange={(k) => onList(k === "completed" ? "completed" : undefined)}
             />
             <DataTable
                 title="Tasks"
                 entity="task"
-                actions={
-                    <Select value={envId} onChange={(e) => onSelectEnv(e.target.value)} aria-label="Environment">
-                        {envs.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.base_branch})</option>)}
-                    </Select>
-                }
                 onCreate={onNewTask}
                 createDisabled={env ? undefined : "Pick an environment first"}
                 columns={columns}

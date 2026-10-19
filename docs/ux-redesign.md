@@ -19,7 +19,7 @@ Problems found in the old app:
 | No global "needs me" signal beyond one count | shell | Status tones on nav badges, a live-connection dot, usage as one control |
 | Account gauges (two bars per account) fill the top bar and push the page on phones | top bar | One usage button with a popover (section 3) |
 | Every page invents its header (h1, `.sub`, back link, card h2) | all pages | `PageHeader` with breadcrumbs, meta, actions; entity pages use `EntityView` |
-| Dashboard is a wall of cards, one per environment, status only as a coloured word | Tasks (Active tab) | Stat tiles, then one table sorted by urgency (section 6.1) |
+| Dashboard is a wall of cards, one per environment, status only as a coloured word | Tasks (Active tab) | An environment tab strip, then one table sorted by urgency (section 6.1) |
 | Status is conveyed differently on every list (glyphs, chips, text) | lists | One status language (section 5) |
 | Task view: 9 tabs, widgets above them, chips for stages, actions as a row of 6 buttons | task | Task workspace template (section 4.3) |
 | Forms are one narrow column with labels above, Save at the bottom of a long tab | entity | Label-left fields, sticky Save bar while dirty |
@@ -34,7 +34,7 @@ Insights    Usage · Timing · Resources
 Settings    Environments · Config dirs · AI accounts · Integrations · Prompter
 ```
 
-- **Tasks**: the four triage tiles (all environments), then one environment's tasks in two tabs, Active and Completed (the tab is the path, `#/tasks` / `#/tasks/completed`; the environment picker is the route's `?env=`). A row opens the task workspace. The old `#/dashboard[/<id>/…]` paths parse and are rewritten to `#/tasks`.
+- **Tasks**: a tab per environment (badge = tasks waiting on you), then that environment's tasks in two pill tabs, Active and Completed (the tab is the path, `#/tasks` / `#/tasks/completed`; the environment tab is the route's `?env=`). A row opens the task workspace. The old `#/dashboard[/<id>/…]` paths parse and are rewritten to `#/tasks`.
 - Labels are nouns in sentence case, no hints in the label; the hint is the link's `title` (the rail's label when collapsed).
 - Badge in the nav: Tasks = tasks that need you (warn), else agents running (info). No other badges.
 - Route page ids and URLs are unchanged (`routes.ts` is the contract; only labels moved).
@@ -107,7 +107,7 @@ One mapping, `components/status.tsx` (`taskState`, `TaskStatusChip`, `StageProgr
 ## 6. Pages
 
 ### 6.1 Tasks (done)
-`StatRow` (Needs you, Running, Waiting on others, Environments; no readiness panel), `Tabs` Active / Completed, then the `DataTable`. Active: every non-finished task of the environment, pinned first, then rank, then recency. Completed: finished and stopped tasks. Columns Status, Task, Title, Stage (+ progress), Updated; Latest, Base and Labels hidden by default. A row opens the task in place (`#/tasks/<id>`).
+`Tabs` of environments (a warn `Badge` with the Needs-you count when above zero), `Tabs variant="pill"` Active / Completed, then the `DataTable`. Active: every non-finished task of the environment, pinned first, then rank, then recency. Completed: finished and stopped tasks. Columns Status, Task, Title, Stage (+ progress), Updated; Latest, Base and Labels hidden by default. A row opens the task in place (`#/tasks/<id>`).
 
 ### 6.2 Others
 Product (list + PO entity), Sessions (list + terminal/changes workspace, `full` width), Resources (tabs, tables), Prompter (singleton entity) and Settings (4.4) follow their templates.
@@ -138,7 +138,7 @@ Product (list + PO entity), Sessions (list + terminal/changes workspace, `full` 
 | `Toolbar` | children, end | lists, panels, analytics ranges |
 | `Panel` / `Section` | title, hint, badge, actions, footer, flush, tone / title, hint, actions | any grouped content (replaces ad-hoc `.card` and `h2`) |
 | `KeyValue` | items [{label, value, hint, mono}], columns | read-only facts (replaces `.kv`) |
-| `StatTile` / `StatRow` | label, value, sub, tone, icon, onClick | Tasks, Usage, Timing, Resources |
+| `StatTile` / `StatRow` | label, value, sub, tone, icon, onClick | Usage, Timing, Resources |
 | `DataTable` | unchanged props + `embedded` | every list |
 | `EntityView` | unchanged props + `meta` | every entity page |
 | `Field`, `CheckField`, `ReadField`, `EntityForm`, `useDraft`, `useSaver` | unchanged | entity tabs |
