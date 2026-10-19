@@ -14,8 +14,11 @@ export interface Command {
     run: () => void;
 }
 
-// ⌘K: jump to any page, task or environment by typing. Arrow keys move, Enter runs, Esc closes. Purely navigational; every
+// Alt+X (Emacs M-x): jump to any page, task or environment by typing. C-n / C-p (or the arrows) move, M-< / M-> jump to the first /
+// last, C-v / M-v page down / up, RET runs, C-g (or Esc) closes. Purely navigational; every
 // command's `run` is a `navigate` call, so the result is a URL like any other.
+const PAGE = 8;
+
 export const CommandPalette = ({ commands, onClose }: { commands: Command[]; onClose: () => void }) => {
     const [q, setQ] = useState("");
     const [at, setAt] = useState(0);
@@ -35,10 +38,18 @@ export const CommandPalette = ({ commands, onClose }: { commands: Command[]; onC
         c.run();
     };
     const onKey = (e: React.KeyboardEvent): void => {
-        if (e.key === "ArrowDown") { e.preventDefault(); setAt((i) => Math.min(shown.length - 1, i + 1)); }
-        else if (e.key === "ArrowUp") { e.preventDefault(); setAt((i) => Math.max(0, i - 1)); }
+        // Match the physical key (`e.code`): Option changes the typed character on macOS.
+        const ctrl = e.ctrlKey && !e.altKey && !e.metaKey;
+        const alt = e.altKey && !e.ctrlKey && !e.metaKey;
+        const move = (to: (i: number) => number): void => { e.preventDefault(); setAt((i) => Math.max(0, Math.min(shown.length - 1, to(i)))); };
+        if (e.key === "ArrowDown" || (ctrl && e.code === "KeyN")) move((i) => i + 1);
+        else if (e.key === "ArrowUp" || (ctrl && e.code === "KeyP")) move((i) => i - 1);
+        else if (alt && e.shiftKey && e.code === "Comma") move(() => 0);
+        else if (alt && e.shiftKey && e.code === "Period") move(() => shown.length - 1);
+        else if (e.key === "PageDown" || (ctrl && e.code === "KeyV")) move((i) => i + PAGE);
+        else if (e.key === "PageUp" || (alt && e.code === "KeyV")) move((i) => i - PAGE);
         else if (e.key === "Enter") { e.preventDefault(); run(shown[at]); }
-        else if (e.key === "Escape") { e.preventDefault(); onClose(); }
+        else if (e.key === "Escape" || (ctrl && e.code === "KeyG")) { e.preventDefault(); onClose(); }
     };
     let last = "";
     return (
@@ -47,7 +58,7 @@ export const CommandPalette = ({ commands, onClose }: { commands: Command[]; onC
                 <div className="cp-input">
                     <Icon name="search" />
                     <input ref={input} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search tasks, pages, environments…" aria-label="Search" role="combobox" aria-expanded="true" aria-controls="cp-list" />
-                    <Kbd>Esc</Kbd>
+                    <Kbd>C-g</Kbd>
                 </div>
                 <div className="cp-list" id="cp-list" role="listbox" ref={list}>
                     {shown.length === 0 && <div className="cp-empty">Nothing matches “{q}”.</div>}
