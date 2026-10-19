@@ -1,15 +1,44 @@
 /* Tasks list (TasksPage.tsx); the task workspace's rules are in tasks/workspace.css. */
 .task-id { display: inline-flex; align-items: center; gap: var(--sp-1); }
 .task-id .icon { width: 12px; height: 12px; color: var(--ink-3); }
-.task-paste { display: block; }
-.task-paste input { width: 100%; font-family: var(--mono); }
 .task-need { color: var(--ink-2); }
-.task-updates { display: flex; justify-content: center; padding: var(--sp-2); background: var(--accent-soft); border: 1px solid var(--line); border-radius: var(--r-lg) var(--r-lg) 0 0; border-bottom: 0; margin-bottom: calc(-1 * var(--sp-2)); }
 .task-updated { margin-left: var(--sp-2); }
-.tasks-table { display: flex; flex-direction: column; min-width: 0; }
 .task-card { display: flex; flex-direction: column; gap: var(--sp-2); }
 .task-card-top { display: flex; justify-content: space-between; gap: var(--sp-2); color: var(--ink-3); font-size: var(--fs-sm); }
 .task-card-title { font-weight: 500; white-space: normal; overflow-wrap: anywhere; }
 .task-card-action { width: 100%; min-height: var(--touch); }
 .task-card-stage { color: var(--ink-3); font-size: var(--fs-sm); }
 .task-card .task-need { white-space: normal; }
+
+/* The Tasks page chrome (TasksPage.tsx): title with search and New task, paste bar, filter bar, notices. */
+.tasks-search { display: flex; align-items: center; gap: var(--sp-2); min-width: 260px; height: var(--ctl-h); padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--panel); }
+.tasks-search > span:first-child { color: var(--ink-3); font-size: var(--fs-sm); }
+.tasks-search input { flex: 1; min-width: 0; min-height: 0; height: auto; padding: 0; border: 0; outline: 0; box-shadow: none; background: transparent; }
+.task-paste { padding: var(--sp-3) var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); }
+.task-paste input { width: 100%; font-family: var(--mono); }
+.tasks-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.tasks-bar .subtabs { margin: 0; flex-wrap: nowrap; }
+.tasks-filtered { display: flex; flex-direction: column; gap: 10px; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); }
+.tasks-filtered-chips { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.tasks-q { padding: 4px 10px; border: 1px solid var(--accent); border-radius: var(--r-md); background: var(--panel); }
+.tasks-filtered .filter-chip-btn .icon { width: 12px; height: 12px; }
+.tasks-result { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); font-size: var(--fs-md); color: var(--ink-2); }
+.tasks-empty { display: flex; flex-direction: column; align-items: center; gap: var(--sp-1); padding: 20px var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); text-align: center; }
+.tasks-empty p { margin: 0 0 var(--sp-2); font-size: var(--fs-md); color: var(--ink-2); }
+.tasks-table { display: flex; flex-direction: column; min-width: 0; }
+.task-updates-btn { border-color: var(--accent); color: var(--accent); background: var(--panel); }
+.dt-bulk-delete { background: var(--panel); }
+@media (max-width: 760px) {
+    /* A phone keeps the title with New task, the environment tabs and the cards. */
+    .tasks-search, .task-paste, .tasks-bar, .tasks-filtered, .tasks-new .kbd { display: none; }
+    .tasks-new { min-height: var(--touch); }
+    .page-header:has(.tasks-new) .ph-actions { width: auto; margin-left: auto; }
+    .tasks-table .data-table.bare { border: 0; background: transparent; box-shadow: none; overflow: visible; }
+    .tasks-table .has-card tr[data-row] { margin-bottom: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); }
+    .tasks-table .has-card tr.dt-group { margin-bottom: var(--sp-3); }
+    .tasks-table .has-card tr.dt-group td { background: transparent; border: 0; }
+    .tasks-table .has-card tr.dt-group button { min-height: var(--touch); padding: 0 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel-2); }
+    .tasks-table .has-card tr.dt-group button .icon { order: 3; margin-left: auto; }
+    .tasks-table .has-card tr.dt-group[data-group="attention"] button { min-height: 0; height: 24px; padding: 0; border: 0; background: transparent; pointer-events: none; }
+    .tasks-table .has-card tr.dt-group[data-group="attention"] button .icon { display: none; }
+}

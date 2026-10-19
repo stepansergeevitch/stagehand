@@ -256,6 +256,16 @@ export const App = () => {
         </ErrorBoundary>
     );
 
+    // Bulk Pin and Stop of the ticked tasks (Pin toggles: every picked task already pinned is unpinned).
+    const pinPicked = (ids: string[]): void => {
+        const picked = tasks.filter((t) => ids.includes(t.id));
+        const unpin = picked.length > 0 && picked.every((t) => t.pinned);
+        void run(async () => { for (const t of picked) if (!!t.pinned === unpin) await api.pin(t.id); });
+    };
+    const stopPicked = (ids: string[]): void => {
+        void run(async () => { for (const id of ids) await api.stop(id).catch(() => undefined); });
+    };
+
     // Bulk delete of the ticked tasks: same cleanup as a single Delete; tasks whose commits exist nowhere else are
     // refused first and offered a second, forced pass.
     const deletePicked = async (picked: string[]) => {
@@ -442,6 +452,8 @@ export const App = () => {
                     selected={selected}
                     detailPane={tasksDetailPane}
                     onDeleteTasks={(ids) => void deletePicked(ids)}
+                    onPinTasks={pinPicked}
+                    onStopTasks={stopPicked}
                     onSelectEnv={(id) => navigate(listRoute(id))}
                     onNewTask={() => navigate({ ...listRoute(), create: true })}
                     onPasteTickets={async (tickets) => { if (env) await run(() => api.createTasks({ envId: env.id, tickets, mode: "each" })); }}

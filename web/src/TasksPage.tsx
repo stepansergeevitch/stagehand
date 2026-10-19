@@ -2,22 +2,25 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { BaseCheckChip } from "./components/BaseCheckChip";
 import { LabelChips } from "./Labels";
 import { labelsOf, STAGE_LABEL, taskLabel, type Env, type Task } from "./api";
-import { Badge, Button, Chip, EmptyState, Icon, Input, Kbd, Notice, Tabs } from "@vortex/ds";
+import { Button, Badge, Chip, Icon, Input, Kbd, Tabs } from "@vortex/ds";
 import type { TaskFilter, TaskList, TaskTab } from "./routes";
 import { PageFrame } from "./components/AppShell";
-import { DataTable, type DataColumn, type DataGroup, type Filters } from "./components/DataTable";
+import { PageHeader } from "./components/PageHeader";
+import { FilterChip } from "./components/FilterChip";
+import { DataTable, type DataColumn, type DataGroup } from "./components/DataTable";
 import { age, TaskStatusChip, taskNeed, taskState } from "./components/status";
 import "./tasks.css";
 
-// The Tasks page (docs/ux-redesign.md §4.1, §4.3 and §6.1): a tab per environment (with the count of tasks waiting on
-// you), a paste bar to start tasks from ticket ids, then that environment's tasks as a table in two tabs, Active and
-// Completed (finished and stopped). Active is grouped by what the task needs from you (Needs you, Running, Waiting on
-// others, Idle) with ONE button per row that opens the place to act; a row opens the task workspace in place of the list.
-// The environment tab is the route's `?env=`, the tab its path (`#/tasks/completed`).
+// The Tasks page, as the approved design draws it (docs/ux-redesign.md §4.1, §4.3 and §6.1). Top to bottom: the title with
+// the search and New task, a tab per environment (the badge counts tasks waiting on you), a paste bar that starts one task
+// per ticket id, the Active / Completed switch with the Pinned, Stage and Label filters, then the table. Active is grouped
+// by what the task needs from you (Needs you, Running, Waiting on others, Idle folded) with a **What it needs** column: ONE
+// button that opens the exact place, or the task's status line when nothing is to be pressed. A row opens the workspace.
+// On a phone only the title with New task, the environment tabs and the task cards remain.
 //
-// Live updates never move a row under the pointer: while the table is hovered or has focus, a change that would
-// regroup or add a row waits behind a pill ("2 updates. Apply"), the rest (status text, ages) updates in place.
-// Search, stage and label are the route's `?q=&stage=&label=`; the result line says what matches in other environments.
+// Live updates never move a row under the pointer: while the table is hovered or has focus, a change that would regroup or
+// add a row waits behind a pill ("2 updates: … Apply"), the rest (status text, ages) updates in place.
+// Search, stage, label and pinned are the route's `?q=&stage=&label=&pinned=1`.
 //
 // Keys (Emacs): C-n / C-p move between rows, RET opens, C-SPC selects, C-s searches, C-c n makes a new task, C-c C-c
 // presses the focused row's button, C-c r applies waiting updates, C-c c switches Active / Completed, C-x then ← / →
@@ -34,23 +37,36 @@ const isTyping = (el: EventTarget | null): boolean => {
     return !!e && (e.tagName === "INPUT" || e.tagName === "TEXTAREA" || e.tagName === "SELECT" || e.isContentEditable);
 };
 
-// One task as the search sees it.
+// One task as the search and the filters see it.
 const matches = (t: Task, f: TaskFilter): boolean => {
     const q = f.q?.trim().toLowerCase();
     if (q && ![t.ticket_id, t.title ?? "", labelsOf(t).map((l) => l.text).join(" "), t.status_line ?? "", STAGE_LABEL[t.stage]].some((v) => v.toLowerCase().includes(q))) return false;
     if (f.stage && t.stage !== f.stage) return false;
     if (f.label && !labelsOf(t).some((l) => l.text === f.label)) return false;
+    if (f.pinned && !t.pinned) return false;
     return true;
 };
 
-// A task on a phone: id and age, title, labels, then ONE 44px button, or the line saying what it is doing and its stage.
+const groupKey = (t: Task): string => (taskState(t).group === "finished" ? "parked" : taskState(t).group);
+
+// What changed for a task while the list was held, in words: "ENG-24850 started again".
+const changeWords = (t: Task, before: string | undefined): string => {
+    const now = groupKey(t);
+    if (before === undefined) return `${t.ticket_id} was added`;
+    if (t.stage === "pr_green") return `${t.ticket_id} is green`;
+    if (now === "working") return `${t.ticket_id} ${before === "attention" ? "started again" : "is running"}`;
+    if (now === "attention") return `${t.ticket_id} needs you`;
+    if (now === "waiting") return `${t.ticket_id} is waiting on others`;
+    return `${t.ticket_id} is ${taskState(t).group === "finished" ? "done" : "idle"}`;
+};
+
+// A task on a phone: id and age, title, then ONE 44px button, or the line saying what it is doing and its stage.
 const TaskCard = ({ task: t, onOpen }: { task: Task; onOpen: (id: string, tab?: TaskTab) => void }) => {
     const need = taskNeed(t);
     return (
         <div className="task-card">
             <div className="task-card-top"><b className="task-id">{taskLabel(t)}</b><span className="mono">{age(t.updated_at)}</span></div>
             <div className="task-card-title">{t.title}</div>
-            {labelsOf(t).length > 0 && <LabelChips labels={labelsOf(t)} />}
             {need.action
                 ? <Button variant={t.status === "failed" ? "danger" : "primary"} className="task-card-action" onClick={(e) => { e.stopPropagation(); onOpen(t.id, need.action!.tab); }}>{need.action.label}</Button>
                 : <><span className="task-need">{need.text}</span><span className="task-card-stage">{STAGE_LABEL[t.stage]}</span></>}
@@ -58,7 +74,7 @@ const TaskCard = ({ task: t, onOpen }: { task: Task; onOpen: (id: string, tab?: 
     );
 };
 
-export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onList, onFilter, selected, detailPane, onDeleteTasks, onSelectEnv, onNewTask, onPasteTickets, onOpen }: {
+export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onList, onFilter, selected, detailPane, onDeleteTasks, onPinTasks, onStopTasks, onSelectEnv, onNewTask, onPasteTickets, onOpen }: {
     envs: Env[];
     envId: string;
     env: Env | undefined;
@@ -74,6 +90,8 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
     // What the workspace shows: the task view or a loading line.
     detailPane: ReactNode;
     onDeleteTasks: (ids: string[]) => void;
+    onPinTasks: (ids: string[]) => void;
+    onStopTasks: (ids: string[]) => void;
     onSelectEnv: (id: string) => void;
     onNewTask: () => void;
     // The paste bar: one task per ticket, with the environment's defaults.
@@ -83,12 +101,14 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
     const completed = list === "completed";
     // Tasks waiting on you, per environment: the badge on its tab.
     const needsYou = (id: string) => tasks.filter((t) => t.env_id === id && taskState(t).group === "attention").length;
+    const inList = useMemo(() => visible.filter((t) => (taskState(t).group === "finished") === completed), [visible, completed]);
     // Pinned first, then by what needs you, then the latest.
     const liveRows = useMemo(
-        () => visible.filter((t) => (taskState(t).group === "finished") === completed).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || taskState(a).rank - taskState(b).rank || b.updated_at.localeCompare(a.updated_at)),
-        [visible, completed],
+        () => inList.filter((t) => matches(t, filter)).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || taskState(a).rank - taskState(b).rank || b.updated_at.localeCompare(a.updated_at)),
+        [inList, filter],
     );
-    const groupKey = (t: Task): string => (taskState(t).group === "finished" ? "parked" : taskState(t).group);
+    const activeCount = visible.filter((t) => taskState(t).group !== "finished").length;
+    const completedCount = visible.length - activeCount;
 
     // The hold: pointer over the table or focus inside it. Its snapshot keeps each row's place; live data still shows.
     type Snap = { ids: string[]; group: Record<string, string> };
@@ -106,9 +126,8 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
         const byId = new Map(liveRows.map((t) => [t.id, t]));
         return snap.ids.map((id) => byId.get(id)).filter((t): t is Task => !!t);
     }, [liveRows, snap]);
-    const pending = snap
-        ? liveRows.filter((t) => snap.group[t.id] === undefined || snap.group[t.id] !== groupKey(t)).length + snap.ids.filter((id) => !liveRows.some((t) => t.id === id)).length
-        : 0;
+    const changes = snap ? liveRows.filter((t) => snap.group[t.id] !== groupKey(t)) : [];
+    const pending = snap ? changes.length + snap.ids.filter((id) => !liveRows.some((t) => t.id === id)).length : 0;
     const apply = (): void => { if (snap) setSnap(capture()); };
 
     // A row whose state just changed carries a text mark for three seconds.
@@ -135,17 +154,13 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
         return () => { document.title = "Vortex"; };
     }, [total]);
 
-    // Search and filters are the route's: DataTable shows them as its query and the Stage / Labels filters.
-    const filters: Filters = { ...(filter.stage ? { stage: [STAGE_LABEL[filter.stage]] } : {}), ...(filter.label ? { labels: [filter.label] } : {}) };
-    const setFilters = (f: Filters): void => {
-        const stage = f.stage?.[0] ? (Object.keys(STAGE_LABEL) as Task["stage"][]).find((k) => STAGE_LABEL[k] === f.stage![0]) : undefined;
-        onFilter({ ...(filter.q ? { q: filter.q } : {}), ...(stage ? { stage } : {}), ...(f.labels?.[0] ? { label: f.labels[0] } : {}) });
-    };
-    const filtered = !!(filter.q || filter.stage || filter.label);
+    const filtered = !!(filter.q || filter.stage || filter.label || filter.pinned);
     // Matches in the other environments, for the result line.
     const elsewhere = filtered
         ? envs.filter((e) => e.id !== envId).map((e) => ({ env: e, n: tasks.filter((t) => t.env_id === e.id && (taskState(t).group === "finished") === completed && matches(t, filter)).length })).filter((x) => x.n > 0)
         : [];
+    const stageOf = (label: string | undefined) => (Object.keys(STAGE_LABEL) as Task["stage"][]).find((k) => STAGE_LABEL[k] === label);
+    const labelOptions = [...new Set(inList.flatMap((t) => labelsOf(t).map((l) => l.text)))].sort();
 
     const [paste, setPaste] = useState("");
     const [pasting, setPasting] = useState(false);
@@ -164,8 +179,9 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
 
     // Emacs keys for the list. A chord (C-c …, C-x …) waits two seconds for its second key.
     const chord = useRef<{ prefix: "c" | "x"; at: number } | null>(null);
-    const act = useRef({ onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? undefined : "completed"), step: (d: number) => { const i = envs.findIndex((e) => e.id === envId); const to = envs[i + d]; if (to) onSelectEnv(to.id); } });
-    act.current = { onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? undefined : "completed"), step: (d: number) => { const i = envs.findIndex((e) => e.id === envId); const to = envs[i + d]; if (to) onSelectEnv(to.id); } };
+    const step = (d: number): void => { const i = envs.findIndex((e) => e.id === envId); const to = envs[i + d]; if (to) onSelectEnv(to.id); };
+    const act = useRef({ onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? undefined : "completed"), step });
+    act.current = { onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? undefined : "completed"), step };
     useEffect(() => {
         const onKey = (e: KeyboardEvent): void => {
             if (!act.current.enabled || e.defaultPrevented || e.altKey || e.metaKey || document.querySelector("[role=dialog]")) return;
@@ -199,7 +215,7 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
                 chord.current = { prefix: e.code === "KeyC" ? "c" : "x", at: Date.now() };
             } else if (e.ctrlKey && e.code === "KeyS") {
                 e.preventDefault();
-                document.querySelector<HTMLInputElement>(".dt-search input")?.focus();
+                document.querySelector<HTMLInputElement>(".tasks-search input")?.focus();
             } else if (e.ctrlKey && (e.code === "KeyN" || e.code === "KeyP")) {
                 const rowsEl = [...document.querySelectorAll<HTMLElement>("tr[data-row]")];
                 if (!(document.activeElement as HTMLElement | null)?.closest("tr[data-row]")) {
@@ -213,10 +229,10 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
     }, []);
 
     const columns: DataColumn<Task>[] = [
-        ...(completed ? [{ key: "status", label: "Status", value: (t: Task) => taskState(t).label, filter: "auto" as const, render: (t: Task) => <TaskStatusChip task={t} /> }] : []),
+        ...(completed ? [{ key: "status", label: "Status", value: (t: Task) => taskState(t).label, filter: false as const, render: (t: Task) => <TaskStatusChip task={t} /> }] : []),
         { key: "task", label: "Task", value: (t) => taskLabel(t), filter: false, render: (t) => <b className="task-id">{t.pinned ? <Icon name="pin" aria-label="Pinned" /> : null}{taskLabel(t)}</b> },
         { key: "title", label: "Title", kind: "label", value: (t) => t.title ?? "", filter: false, render: (t) => <>{t.title ?? ""}{changed.has(t.id) && <Chip tone="info" className="task-updated">Updated</Chip>}</> },
-        { key: "labels", label: "Labels", value: (t) => labelsOf(t).map((l) => l.text).join(", "), values: (t) => labelsOf(t).map((l) => l.text), filter: true, render: (t) => <LabelChips labels={labelsOf(t)} /> },
+        { key: "labels", label: "Labels", value: (t) => labelsOf(t).map((l) => l.text).join(", "), filter: false, render: (t) => <LabelChips labels={labelsOf(t)} /> },
         ...(completed ? [] : [{
             key: "need",
             label: "What it needs",
@@ -229,13 +245,41 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
                     : <span className="task-need">{need.text}</span>;
             },
         }]),
-        { key: "stage", label: "Stage", value: (t) => STAGE_LABEL[t.stage], filter: "auto", render: (t) => STAGE_LABEL[t.stage] },
+        { key: "stage", label: "Stage", value: (t) => STAGE_LABEL[t.stage], filter: false, render: (t) => STAGE_LABEL[t.stage] },
         { key: "base", label: "Base", value: (t) => t.base_check_state ?? "", filter: false, defaultHidden: true, render: (t) => <BaseCheckChip state={t.base_check_state} detail={t.base_check_detail} /> },
         { key: "age", label: "Updated", kind: "num", value: (t) => Date.now() - new Date(t.updated_at).getTime(), render: (t) => age(t.updated_at) },
     ];
     if (selected) return <PageFrame width="wide">{detailPane}</PageFrame>;
+
+    const running = inList.filter((t) => taskState(t).group === "working").length;
+    const waiting = inList.filter((t) => taskState(t).group === "waiting").length;
+    const allClear = !completed && inList.length > 0 && !filtered && !inList.some((t) => taskState(t).group === "attention");
+    const showRunning = (): void => {
+        const head = document.querySelector<HTMLElement>("tr.dt-group[data-group=working] button");
+        if (head?.getAttribute("aria-expanded") === "false") head.click();
+        head?.scrollIntoView({ block: "center" });
+        head?.focus();
+    };
+    const parts = [
+        running > 0 ? `${running} ${running === 1 ? "task is" : "tasks are"} running` : "",
+        waiting > 0 ? `${waiting} ${waiting === 1 ? "is" : "are"} waiting on others` : "",
+    ].filter(Boolean);
+
     return (
         <PageFrame width="wide">
+            <PageHeader
+                title="Tasks"
+                actions={
+                    <>
+                        <label className="tasks-search">
+                            <span>Search</span>
+                            <Input type="search" placeholder="id, title, label" aria-label="Search tasks" value={filter.q ?? ""} onChange={(e) => onFilter({ ...filter, q: e.target.value || undefined })} />
+                            <Kbd>C-s</Kbd>
+                        </label>
+                        <Button variant="primary" className="tasks-new" disabled={!env} onClick={onNewTask}>New task <Kbd>C-c n</Kbd></Button>
+                    </>
+                }
+            />
             <Tabs
                 items={envs.map((e) => {
                     const n = needsYou(e.id);
@@ -244,22 +288,46 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
                 active={envId}
                 onChange={onSelectEnv}
             />
-            {!completed && env && (
+            {env && (
                 <form className="task-paste" onSubmit={(e) => void submitPaste(e)}>
                     <Input value={paste} onChange={(e) => setPaste(e.target.value)} placeholder="Paste an id or link" aria-label="Ticket id or link" disabled={pasting} />
                 </form>
             )}
-            <Tabs
-                items={[{ key: "active", label: "Active" }, { key: "completed", label: "Completed" }]}
-                variant="pill"
-                active={completed ? "completed" : "active"}
-                onChange={(k) => onList(k === "completed" ? "completed" : undefined)}
-            />
-            {!completed && rows.length > 0 && !rows.some((t) => taskState(t).group === "attention") && (
-                <Notice tone="ok">
-                    <b>All clear in {env?.name ?? "this environment"}.</b> Nothing waits on you.
-                    {" "}{[[rows.filter((t) => taskState(t).group === "working").length, "running"], [rows.filter((t) => taskState(t).group === "waiting").length, "waiting on others"]].filter(([n]) => n).map(([n, w]) => `${n} ${w}`).join(", ")}
-                </Notice>
+            <div className="tasks-bar">
+                <Tabs
+                    items={[
+                        { key: "active", label: <>Active <span className="mono">{activeCount}</span></> },
+                        { key: "completed", label: <>Completed <span className="mono">{completedCount}</span></> },
+                    ]}
+                    variant="pill"
+                    active={completed ? "completed" : "active"}
+                    onChange={(k) => onList(k === "completed" ? "completed" : undefined)}
+                />
+                <Button size="sm" className="filter-chip-btn" on={!!filter.pinned} aria-pressed={!!filter.pinned} onClick={() => onFilter({ ...filter, pinned: filter.pinned ? undefined : true })}>Pinned</Button>
+                <FilterChip label="Stage" value={filter.stage ? STAGE_LABEL[filter.stage] : undefined} options={Object.values(STAGE_LABEL)} onPick={(v) => onFilter({ ...filter, stage: stageOf(v) })} />
+                <FilterChip label="Label" value={filter.label} options={labelOptions} onPick={(v) => onFilter({ ...filter, label: v })} />
+            </div>
+            {filtered && (
+                <div className="tasks-filtered">
+                    <div className="tasks-filtered-chips">
+                        {filter.q && <span className="tasks-q mono">{filter.q}</span>}
+                        {filter.stage && <Button size="sm" className="filter-chip-btn" on aria-label="Remove filter Stage" onClick={() => onFilter({ ...filter, stage: undefined })}>Stage: {STAGE_LABEL[filter.stage]} <Icon name="close" /></Button>}
+                        {filter.label && <Button size="sm" className="filter-chip-btn" on aria-label="Remove filter Label" onClick={() => onFilter({ ...filter, label: undefined })}>Label: {filter.label} <Icon name="close" /></Button>}
+                        {filter.pinned && <Button size="sm" className="filter-chip-btn" on aria-label="Remove filter Pinned" onClick={() => onFilter({ ...filter, pinned: undefined })}>Pinned <Icon name="close" /></Button>}
+                        <Button size="sm" onClick={() => onFilter({})}>Clear all</Button>
+                    </div>
+                    <div role="status" className="tasks-result">
+                        {liveRows.length} of {inList.length} {inList.length === 1 ? "task" : "tasks"} in {env?.name ?? "this environment"} match.
+                        {elsewhere.map((x) => <Button key={x.env.id} size="sm" variant="ghost" onClick={() => onFilter(filter, x.env.id)}>{x.n} more {x.n === 1 ? "matches" : "match"} in {x.env.name}</Button>)}
+                    </div>
+                </div>
+            )}
+            {allClear && (
+                <div className="tasks-empty">
+                    <b>All clear in {env?.name ?? "this environment"}</b>
+                    <p>Nothing waits on you.{parts.length ? ` ${parts.join(" and ")}.` : ""}</p>
+                    {running > 0 && <Button onClick={showRunning}>Show running</Button>}
+                </div>
             )}
             <div
                 className="tasks-table"
@@ -268,41 +336,37 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
                 onFocus={() => setHolding(true)}
                 onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null) && !e.currentTarget.matches(":hover")) setHolding(false); }}
             >
-            {pending > 0 && (
-                <div className="task-updates">
-                    <Button size="sm" onClick={apply}>{pending} {pending === 1 ? "update" : "updates"}. Apply <Kbd>C-c r</Kbd></Button>
-                </div>
-            )}
-            <DataTable
-                title="Tasks"
-                entity="task"
-                onCreate={onNewTask}
-                createDisabled={env ? undefined : "Pick an environment first"}
-                columns={columns}
-                rows={rows}
-                rowKey={(t) => t.id}
-                onRowClick={(t) => onOpen(t.id)}
-                storageKey={completed ? "tasks-completed" : "tasks-active"}
-                card={(t) => <TaskCard task={t} onOpen={onOpen} />}
-                groups={completed ? undefined : GROUPS}
-                groupOf={completed ? undefined : (t) => snap?.group[t.id] ?? groupKey(t)}
-                query={filter.q ?? ""}
-                onQuery={(q) => onFilter({ ...filter, ...(q ? { q } : { q: undefined }) })}
-                filters={filters}
-                onFilters={setFilters}
-                resultLine={(shown, all) => (
-                    <>
-                        {shown} of {all} {all === 1 ? "task" : "tasks"} in {env?.name ?? "this environment"} match.
-                        {elsewhere.map((x) => <Button key={x.env.id} size="sm" variant="ghost" onClick={() => onFilter(filter, x.env.id)}>{x.n} more {x.n === 1 ? "matches" : "match"} in {x.env.name}</Button>)}
-                    </>
-                )}
-                bulkActions={(sel, clear) => (
-                    <Button size="sm" variant="danger" onClick={() => { onDeleteTasks(sel.map((t) => t.id)); clear(); }}>Delete</Button>
-                )}
-                empty={completed
-                    ? <EmptyState icon="checkCircle" title="No completed tasks in this environment yet" />
-                    : <EmptyState icon="tasks" title={`No tasks in ${env?.name ?? "this environment"} yet`} action={env ? <Button variant="primary" onClick={onNewTask}><Icon name="plus" />Pick from my tickets</Button> : undefined} />}
-            />
+                <DataTable
+                    bare
+                    entity="task"
+                    columns={columns}
+                    rows={rows}
+                    rowKey={(t) => t.id}
+                    onRowClick={(t) => onOpen(t.id)}
+                    storageKey={completed ? "tasks-completed" : "tasks-active"}
+                    card={(t) => <TaskCard task={t} onOpen={onOpen} />}
+                    groups={completed ? undefined : GROUPS}
+                    groupOf={completed ? undefined : (t) => snap?.group[t.id] ?? groupKey(t)}
+                    topBar={pending > 0 ? (
+                        <div className="dt-live">
+                            <Button size="sm" className="task-updates-btn" onClick={apply}>
+                                {pending} {pending === 1 ? "update" : "updates"}{changes.length ? `: ${changes.slice(0, 3).map((t) => changeWords(t, snap?.group[t.id])).join(", ")}${changes.length > 3 ? ` and ${changes.length - 3} more` : ""}` : ""}. Apply <Kbd>C-c r</Kbd>
+                            </Button>
+                        </div>
+                    ) : undefined}
+                    bulkActions={(sel, clear) => (
+                        <>
+                            <Button size="sm" onClick={() => { onPinTasks(sel.map((t) => t.id)); clear(); }}>Pin</Button>
+                            <Button size="sm" onClick={() => { onStopTasks(sel.map((t) => t.id)); clear(); }}>Stop</Button>
+                            <Button size="sm" variant="danger" className="dt-bulk-delete" onClick={() => { onDeleteTasks(sel.map((t) => t.id)); clear(); }}>Delete</Button>
+                        </>
+                    )}
+                    empty={completed
+                        ? <div className="tasks-empty"><b>No completed tasks in {env?.name ?? "this environment"} yet</b></div>
+                        : filtered
+                            ? <div className="tasks-empty"><b>No task matches</b><Button onClick={() => onFilter({})}>Clear all</Button></div>
+                            : <div className="tasks-empty"><b>No tasks in {env?.name ?? "this environment"} yet</b><p>Paste a ticket id above, or pick one assigned to you.</p>{env && <Button variant="primary" onClick={onNewTask}>Pick from my tickets</Button>}</div>}
+                />
             </div>
         </PageFrame>
     );

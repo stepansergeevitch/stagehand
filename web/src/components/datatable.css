@@ -70,3 +70,9 @@
     .has-card tr[data-row] { border-bottom: 1px solid var(--line); }
     .has-card tr.dt-group td { display: block; }
 }
+/* bare: just the table box, the page draws the header, search and filters. */
+.data-table.bare .dt-scroll { border-radius: inherit; }
+.dt-bulkbar { position: sticky; bottom: var(--sp-4); z-index: 5; align-self: center; display: flex; align-items: center; gap: var(--sp-3); margin: 0 auto; padding: 8px 8px 8px 16px; border-radius: var(--r-lg); background: var(--ink); color: var(--bg); box-shadow: var(--shadow-lg); }
+.dt-bulkbar .btn-ghost { color: inherit; border: 1px solid var(--line-strong); }
+.dt-live { display: flex; justify-content: center; padding: var(--sp-2); background: var(--accent-soft); border-bottom: 1px solid var(--line); }
+@media (max-width: 760px) { .dt-bulkbar { display: none; } }

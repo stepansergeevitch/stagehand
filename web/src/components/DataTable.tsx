@@ -93,6 +93,8 @@ export const DataTable = <T,>({
     onFilters,
     resultLine,
     card,
+    bare,
+    topBar,
 }: {
     // The header row: the list's name on the left, "Create new <entity>" on the right (when onCreate is given).
     title?: ReactNode;
@@ -128,6 +130,11 @@ export const DataTable = <T,>({
     resultLine?: (shown: number, all: number) => ReactNode;
     // On a phone the row becomes this card (the cells are hidden); its own button stays a 44px target.
     card?: (row: T) => ReactNode;
+    // Only the table box: no page header, tools row, filter chips, footer or column picker (the page draws its own, as the
+    // Tasks list does). Checked rows raise a floating bulk bar at the bottom of the screen.
+    bare?: boolean;
+    // A bar across the top of the table box (the live-update pill).
+    topBar?: ReactNode;
 }) => {
     const [ownQuery, setOwnQuery] = useState("");
     const [ownFilters, setOwnFilters] = useState<Filters>({});
@@ -279,7 +286,7 @@ export const DataTable = <T,>({
     const hasHeader = !!(title || onCreate || actions);
     return (
         <div className="data-table-wrap">
-            {hasHeader && (embedded ? (
+            {!bare && hasHeader && (embedded ? (
                 <div className="dt-section-head">
                     <h2>{title}</h2>
                     <div className="dt-actions">{actionsRow}</div>
@@ -287,8 +294,9 @@ export const DataTable = <T,>({
             ) : (
                 <PageHeader title={title} actions={actionsRow} />
             ))}
-            <div className="data-table">
-                <Toolbar
+            <div className={`data-table${bare ? " bare" : ""}`}>
+                {topBar}
+                {!bare && <Toolbar
                     className="dt-tools"
                     end={
                         <>
@@ -327,8 +335,8 @@ export const DataTable = <T,>({
                         <Icon name="filter" />Filter
                         {activeFilters > 0 && <Badge tone="accent">{activeFilters}</Badge>}
                     </Button>
-                </Toolbar>
-                {filtersOpen && facets.length > 0 && (
+                </Toolbar>}
+                {!bare && filtersOpen && facets.length > 0 && (
                     <div className="dt-filters">
                         {facets.map(({ col, values }) => (
                             <div key={col.key} className="dt-facet">
@@ -347,7 +355,7 @@ export const DataTable = <T,>({
                         )}
                     </div>
                 )}
-                {(activeFilters > 0 || query.trim()) && (
+                {!bare && (activeFilters > 0 || query.trim()) && (
                     <div className="dt-active">
                         {query.trim() && <Button size="sm" className="dt-chip on" aria-label={`Clear search ${query}`} onClick={() => setQuery("")}>Search: {query.trim()} <Icon name="close" /></Button>}
                         {Object.entries(filters).flatMap(([key, vals]) => hidden.has(key) ? [] : vals.map((v) => (
@@ -392,7 +400,7 @@ export const DataTable = <T,>({
                                 {(groups ? groups.map((g) => ({ g, rows: shown.filter((r) => groupOf?.(r) === g.key) })).filter((x) => x.rows.length) : [{ g: null as DataGroup | null, rows: shown }]).map(({ g, rows: part }) => (
                                     <Fragment key={g?.key ?? "all"}>
                                         {g && (
-                                            <tr className="dt-group">
+                                            <tr className="dt-group" data-group={g.key}>
                                                 <td colSpan={visibleCols.length + (selectable ? 1 : 0)}>
                                                     <button type="button" aria-expanded={!folded.has(g.key)} onClick={() => toggleGroup(g.key)}>
                                                         <Icon name={folded.has(g.key) ? "chevronRight" : "chevronDown"} />
@@ -433,12 +441,19 @@ export const DataTable = <T,>({
                         </table>
                     </div>
                 )}
-                {rows.length > 0 && (
+                {!bare && rows.length > 0 && (
                     <div className="dt-footer">
                         {shown.length === rows.length ? `${rows.length} ${rows.length === 1 ? "row" : "rows"}` : `${shown.length} of ${rows.length} rows`}
                     </div>
                 )}
             </div>
+            {bare && selectable && selected.length > 0 && (
+                <div className="dt-bulkbar" role="region" aria-label="Bulk actions">
+                    <span role="status">{selected.length} {selected.length === 1 ? (entity ?? "item") : `${entity ?? "item"}s`} selected</span>
+                    {bulkActions?.(selected, clear)}
+                    <Button size="sm" variant="ghost" onClick={clear}>Clear</Button>
+                </div>
+            )}
         </div>
     );
 };

@@ -79,6 +79,7 @@ export interface TaskFilter {
     q?: string;
     stage?: Stage;
     label?: string;
+    pinned?: boolean;
 }
 
 export type Page = Route["page"];
@@ -127,7 +128,7 @@ const parseFilter = (q: URLSearchParams): { filter?: TaskFilter } => {
     const text = q.get("q") ?? undefined;
     const stage = q.get("stage") ?? undefined;
     const label = q.get("label") ?? undefined;
-    const filter: TaskFilter = { ...(text ? { q: text } : {}), ...(isStage(stage) ? { stage } : {}), ...(label ? { label } : {}) };
+    const filter: TaskFilter = { ...(text ? { q: text } : {}), ...(isStage(stage) ? { stage } : {}), ...(label ? { label } : {}), ...(q.get("pinned") === "1" ? { pinned: true } : {}) };
     return Object.keys(filter).length ? { filter } : {};
 };
 
@@ -218,7 +219,7 @@ export const formatRoute = (r: Route): string => {
     switch (r.page) {
         case "tasks":
             if (r.task) return formatTaskView(`#/tasks/${enc(r.task)}`, r.view);
-            return withQuery(r.create ? "#/tasks/new" : r.list === "completed" ? "#/tasks/completed" : "#/tasks", { env: r.env, q: r.filter?.q, stage: r.filter?.stage, label: r.filter?.label });
+            return withQuery(r.create ? "#/tasks/new" : r.list === "completed" ? "#/tasks/completed" : "#/tasks", { env: r.env, q: r.filter?.q, stage: r.filter?.stage, label: r.filter?.label, pinned: r.filter?.pinned ? "1" : null });
         case "sessions":
             if (r.create) return "#/sessions/new";
             if (!r.session) return "#/sessions";
