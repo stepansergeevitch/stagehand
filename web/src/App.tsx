@@ -14,7 +14,7 @@ import { Timing } from "./Timing";
 import { SessionsPage } from "./SessionsPage";
 import { ProductPage } from "./ProductPage";
 import { TasksPage } from "./TasksPage";
-import { TaskForm } from "./NewTaskForm";
+import { NewTaskDialog } from "./NewTaskForm";
 import { AccountForm, EnvForm } from "./AddForms";
 import { poBus } from "./poBus";
 import { storage } from "./storage";
@@ -338,9 +338,7 @@ export const App = () => {
                 <>
                     {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
                     {creating && env && (
-                        <Modal title={`New task in ${env.name}`} onClose={() => navigate(listRoute())}>
-                            <TaskForm accounts={accountsFor(env, accounts, configDirs)} env={env} settings={settings} readiness={readiness.find((r) => r.envId === env.id)} onSubmit={async (body) => { await run(() => api.createTasks({ envId: env.id, ...body })); navigate(listRoute()); }} />
-                        </Modal>
+                        <NewTaskDialog onClose={() => navigate(listRoute())} accounts={accountsFor(env, accounts, configDirs)} env={env} settings={settings} readiness={readiness.find((r) => r.envId === env.id)} onSubmit={async (body) => { await run(() => api.createTasks({ envId: env.id, ...body })); navigate(listRoute()); }} />
                     )}
                     {modal === "env" && (
                         <Modal title="Add environment" onClose={() => setModal(null)}>
@@ -438,7 +436,9 @@ export const App = () => {
                     tasks={tasks}
                     visible={visible}
                     list={route.page === "tasks" ? route.list : undefined}
+                    filter={route.page === "tasks" ? route.filter ?? {} : {}}
                     onList={(list) => navigate({ page: "tasks", ...(list ? { list } : {}), ...(envId ? { env: envId } : {}) })}
+                    onFilter={(filter, to) => navigate({ page: "tasks", ...(route.page === "tasks" && route.list ? { list: route.list } : {}), ...((to ?? envId) ? { env: to ?? envId } : {}), ...(filter.q || filter.stage || filter.label ? { filter } : {}) })}
                     selected={selected}
                     detailPane={tasksDetailPane}
                     onDeleteTasks={(ids) => void deletePicked(ids)}

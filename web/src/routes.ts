@@ -55,7 +55,7 @@ export interface TaskView {
 
 export type Route =
     // The Tasks page: `list` is its Active (default, absent) / Completed tab.
-    | { page: "tasks"; env?: string; list?: TaskList; task?: string; view?: TaskView; create?: boolean }
+    | { page: "tasks"; env?: string; list?: TaskList; filter?: TaskFilter; task?: string; view?: TaskView; create?: boolean }
     | { page: "sessions"; session?: string; view?: "terminal" | "changes"; diff?: DiffRoute; create?: boolean }
     | { page: "analytics"; days?: number }
     | { page: "timing"; days?: number }
@@ -74,6 +74,12 @@ export type PoTab = "context" | "design" | "questions" | "tickets" | "events" | 
 export const PO_TABS: readonly PoTab[] = ["design", "questions", "corrections", "context", "tickets", "events"];
 
 export type TaskList = "completed";
+// The list's search and filters, so a link reproduces the view: `?q=migration&stage=implementation&label=bug`.
+export interface TaskFilter {
+    q?: string;
+    stage?: Stage;
+    label?: string;
+}
 
 export type Page = Route["page"];
 
@@ -117,6 +123,14 @@ const parseTaskView = (tab: string | undefined, x: string | undefined, y: string
     }
 };
 
+const parseFilter = (q: URLSearchParams): { filter?: TaskFilter } => {
+    const text = q.get("q") ?? undefined;
+    const stage = q.get("stage") ?? undefined;
+    const label = q.get("label") ?? undefined;
+    const filter: TaskFilter = { ...(text ? { q: text } : {}), ...(isStage(stage) ? { stage } : {}), ...(label ? { label } : {}) };
+    return Object.keys(filter).length ? { filter } : {};
+};
+
 export const parseRoute = (hash: string): Route => {
     const raw = hash.replace(/^#\/?/, "");
     const qi = raw.indexOf("?");
@@ -127,11 +141,11 @@ export const parseRoute = (hash: string): Route => {
     switch (head) {
         case "dashboard":
         case "tasks":
-            if (a === "completed") return { page: "tasks", list: "completed", ...(env ? { env } : {}) };
-            if (a === "active") return { page: "tasks", ...(env ? { env } : {}) };
+            if (a === "completed") return { page: "tasks", list: "completed", ...(env ? { env } : {}), ...parseFilter(q) };
+            if (a === "active") return { page: "tasks", ...(env ? { env } : {}), ...parseFilter(q) };
             if (a === "new") return { page: "tasks", create: true, ...(env ? { env } : {}) };
             if (a) return { page: "tasks", task: a, ...(parseTaskView(b, c, d, q) ? { view: parseTaskView(b, c, d, q) } : {}) };
-            return { page: "tasks", ...(env ? { env } : {}) };
+            return { page: "tasks", ...(env ? { env } : {}), ...parseFilter(q) };
         case "sessions":
             if (a === "new") return { page: "sessions", create: true };
             return { page: "sessions", ...(a ? { session: a } : {}), ...(b === "changes" || b === "terminal" ? { view: b } : {}), ...(b === "changes" ? { diff: parseDiff(q) } : {}) };
@@ -204,7 +218,7 @@ export const formatRoute = (r: Route): string => {
     switch (r.page) {
         case "tasks":
             if (r.task) return formatTaskView(`#/tasks/${enc(r.task)}`, r.view);
-            return withQuery(r.create ? "#/tasks/new" : r.list === "completed" ? "#/tasks/completed" : "#/tasks", { env: r.env });
+            return withQuery(r.create ? "#/tasks/new" : r.list === "completed" ? "#/tasks/completed" : "#/tasks", { env: r.env, q: r.filter?.q, stage: r.filter?.stage, label: r.filter?.label });
         case "sessions":
             if (r.create) return "#/sessions/new";
             if (!r.session) return "#/sessions";

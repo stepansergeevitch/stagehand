@@ -3,7 +3,7 @@
 .modal .box.wide { width: min(960px, 100%); }
 .modal-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--line); flex: none; }
 .modal-head h2 { margin: 0; font-size: var(--fs-lg); font-weight: 600; overflow-wrap: anywhere; }
-.modal-body { display: grid; gap: var(--sp-3); padding: var(--sp-5); overflow: auto; min-height: 0; }
+.modal-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); padding: var(--sp-5); overflow: auto; min-height: 0; }
 .modal-body label { display: grid; gap: var(--sp-1); font-weight: 500; color: var(--ink-2); font-size: var(--fs-md); }
 .modal-body label > select { max-width: 100%; }
 .modal-body label.check-row { display: inline-flex; font-weight: 400; }
@@ -16,5 +16,9 @@
     .modal .box, .modal .box.wide { width: 100%; max-height: 92dvh; border-radius: var(--r-xl) var(--r-xl) 0 0; border-bottom: 0; padding-bottom: env(safe-area-inset-bottom); animation-name: modal-sheet; }
     .modal-head, .modal-body, .modal-foot { padding-inline: var(--sp-4); }
     .modal-foot > .btn { flex: 1; }
+    .modal .box.full { height: 100dvh; max-height: 100dvh; border-radius: 0; }
+    .modal .box.full .modal-body { flex: 1; }
+    .modal .box.full .modal-foot { flex-direction: column-reverse; padding-block: var(--sp-3); box-shadow: 0 -6px 20px rgb(0 0 0 / .08); border-radius: 0; }
+    .modal .box.full .modal-foot > .btn { min-height: 44px; }
 }
 @keyframes modal-sheet { from { transform: translateY(24px); opacity: 0; } }

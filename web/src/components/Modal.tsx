@@ -8,13 +8,16 @@ const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), select:
 // A dialog over the page (docs/ux-redesign.md §4.5). Esc or a click on the backdrop closes it; focus moves into it, stays
 // inside while Tab cycles, and returns to what opened it. On phones it is a bottom sheet. A dialog is a route
 // (`#/<list>/new`), so its open state is the caller's `navigate`, never local state.
-export const Modal = ({ title, children, onClose, wide, footer }: {
+export const Modal = ({ title, children, onClose, wide, footer, sheet, className }: {
     title: ReactNode;
     children: ReactNode;
     onClose: () => void;
     wide?: boolean;
     // Buttons pinned under the scrolling body.
     footer?: ReactNode;
+    // On phones fills the whole screen instead of a bottom sheet; the footer button docks at the bottom.
+    sheet?: boolean;
+    className?: string;
 }) => {
     const box = useRef<HTMLDivElement>(null);
     const titleId = useId();
@@ -45,7 +48,7 @@ export const Modal = ({ title, children, onClose, wide, footer }: {
     }, []);
     return createPortal(
         <div className="modal" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-            <div className={`box${wide ? " wide" : ""}`} ref={box} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+            <div className={`box${wide ? " wide" : ""}${sheet ? " full" : ""}${className ? ` ${className}` : ""}`} ref={box} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
                 <div className="modal-head">
                     <h2 id={titleId}>{title}</h2>
                     <IconButton variant="ghost" size="sm" icon="close" label="Close (Esc)" onClick={onClose} />

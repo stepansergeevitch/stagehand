@@ -38,6 +38,8 @@ export interface DataColumn<T> {
     sortable?: boolean;
     // Hidden until picked in the column picker.
     defaultHidden?: boolean;
+    // A column that holds several values per row (labels): they are the filter's options, a row matches any picked one.
+    values?: (row: T) => string[];
     // "label" = the wide, wrapping main column; "num" = mono, right-aligned.
     kind?: "label" | "num";
     hint?: string;
@@ -53,7 +55,7 @@ export interface DataGroup {
 }
 
 type Sort = { key: string; desc: boolean };
-type Filters = Record<string, string[]>;
+export type Filters = Record<string, string[]>;
 
 const text = (v: unknown): string => (v === null || v === undefined ? "" : typeof v === "boolean" ? (v ? "yes" : "no") : String(v));
 
@@ -85,6 +87,12 @@ export const DataTable = <T,>({
     embedded,
     groups,
     groupOf,
+    query: queryProp,
+    onQuery,
+    filters: filtersProp,
+    onFilters,
+    resultLine,
+    card,
 }: {
     // The header row: the list's name on the left, "Create new <entity>" on the right (when onCreate is given).
     title?: ReactNode;
@@ -111,9 +119,26 @@ export const DataTable = <T,>({
     // Group the rows: `groupOf` names a row's group (a `groups` key), `groups` lists the groups in display order.
     groups?: DataGroup[];
     groupOf?: (row: T) => string;
+    // Search and filters kept by the page (the Tasks list keeps them in the URL); without them the table keeps its own.
+    query?: string;
+    onQuery?: (q: string) => void;
+    filters?: Filters;
+    onFilters?: (f: Filters) => void;
+    // A line under the active-filter chips: how many rows match (shown, all).
+    resultLine?: (shown: number, all: number) => ReactNode;
+    // On a phone the row becomes this card (the cells are hidden); its own button stays a 44px target.
+    card?: (row: T) => ReactNode;
 }) => {
-    const [query, setQuery] = useState("");
-    const [filters, setFilters] = useState<Filters>({});
+    const [ownQuery, setOwnQuery] = useState("");
+    const [ownFilters, setOwnFilters] = useState<Filters>({});
+    const query = queryProp ?? ownQuery;
+    const setQuery = (q: string): void => (onQuery ? onQuery(q) : setOwnQuery(q));
+    const filters = filtersProp ?? ownFilters;
+    const setFilters = (f: Filters | ((cur: Filters) => Filters)): void => {
+        const next = typeof f === "function" ? f(filters) : f;
+        if (onFilters) onFilters(next);
+        else setOwnFilters(next);
+    };
     const [filtersOpen, setFiltersOpen] = useState(false);
     const [pickerOpen, setPickerOpen] = useState(false);
     const [sort, setSort] = useState<Sort | null>(defaultSort ?? null);
@@ -155,7 +180,7 @@ export const DataTable = <T,>({
         for (const c of columns) {
             // Only shown columns offer a filter; hiding a column also drops its filter (below).
             if (!c.value || c.filter === false || hidden.has(c.key)) continue;
-            const values = [...new Set(rows.map((r) => text(c.value!(r))))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+            const values = [...new Set(rows.flatMap((r) => (c.values ? c.values(r) : [text(c.value!(r))])))].filter((v) => v !== "" || !c.values).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
             const auto = values.length >= 2 && values.length <= 20;
             if (c.filter === true || (c.filter === "auto" && auto)) out.push({ col: c, values });
         }
@@ -171,7 +196,7 @@ export const DataTable = <T,>({
             for (const [key, vals] of Object.entries(filters)) {
                 if (!vals.length || hidden.has(key)) continue;
                 const c = columns.find((x) => x.key === key);
-                if (c?.value && !vals.includes(text(c.value(r)))) return false;
+                if (c?.values ? !c.values(r).some((v) => vals.includes(v)) : c?.value && !vals.includes(text(c.value(r)))) return false;
             }
             if (!q) return true;
             return columns.some((c) => c.value && c.searchable !== false && text(c.value(r)).toLowerCase().includes(q));
@@ -322,13 +347,25 @@ export const DataTable = <T,>({
                         )}
                     </div>
                 )}
+                {(activeFilters > 0 || query.trim()) && (
+                    <div className="dt-active">
+                        {query.trim() && <Button size="sm" className="dt-chip on" aria-label={`Clear search ${query}`} onClick={() => setQuery("")}>Search: {query.trim()} <Icon name="close" /></Button>}
+                        {Object.entries(filters).flatMap(([key, vals]) => hidden.has(key) ? [] : vals.map((v) => (
+                            <Button key={`${key}:${v}`} size="sm" className="dt-chip on" aria-label={`Remove filter ${columns.find((c) => c.key === key)?.label ?? key} ${v}`} onClick={() => toggleFilter(key, v)}>
+                                {columns.find((c) => c.key === key)?.label ?? key}: {v || "—"} <Icon name="close" />
+                            </Button>
+                        )))}
+                        <Button size="sm" variant="ghost" onClick={() => { setFilters({}); setQuery(""); }}>Clear all</Button>
+                        {resultLine && <span className="dt-result" role="status">{resultLine(shown.length, rows.length)}</span>}
+                    </div>
+                )}
                 {!rows.length ? (
                     <div className="dt-empty">{typeof empty === "string" ? <EmptyState title={empty} action={onCreate ? <Button variant="primary" disabled={!!createDisabled} onClick={onCreate}><Icon name="plus" />Create new {entity ?? "item"}</Button> : undefined} /> : empty}</div>
                 ) : !shown.length ? (
                     <div className="dt-empty"><EmptyState icon="search" title="No row matches">Change the search or reset the filters.</EmptyState></div>
                 ) : (
                     <div className="dt-scroll">
-                        <table onKeyDown={onTableKey}>
+                        <table onKeyDown={onTableKey} className={card ? "has-card" : undefined}>
                             <thead>
                                 <tr>
                                     {selectable && (
@@ -386,6 +423,7 @@ export const DataTable = <T,>({
                                                             {c.render ? c.render(r) : text(c.value?.(r))}
                                                         </td>
                                                     ))}
+                                                    {card && <td className="dt-card" colSpan={visibleCols.length}>{card(r)}</td>}
                                                 </tr>
                                             );
                                         })}

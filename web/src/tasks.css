@@ -4,3 +4,12 @@
 .task-paste { display: block; }
 .task-paste input { width: 100%; font-family: var(--mono); }
 .task-need { color: var(--ink-2); }
+.task-updates { display: flex; justify-content: center; padding: var(--sp-2); background: var(--accent-soft); border: 1px solid var(--line); border-radius: var(--r-lg) var(--r-lg) 0 0; border-bottom: 0; margin-bottom: calc(-1 * var(--sp-2)); }
+.task-updated { margin-left: var(--sp-2); }
+.tasks-table { display: flex; flex-direction: column; min-width: 0; }
+.task-card { display: flex; flex-direction: column; gap: var(--sp-2); }
+.task-card-top { display: flex; justify-content: space-between; gap: var(--sp-2); color: var(--ink-3); font-size: var(--fs-sm); }
+.task-card-title { font-weight: 500; white-space: normal; overflow-wrap: anywhere; }
+.task-card-action { width: 100%; min-height: var(--touch); }
+.task-card-stage { color: var(--ink-3); font-size: var(--fs-sm); }
+.task-card .task-need { white-space: normal; }
