@@ -8,7 +8,8 @@ import { EntityView } from "../components/EntityView";
 import { Panel } from "../components/Panel";
 import { poBus } from "../poBus";
 import type { PoTab } from "../routes";
-import { Badge, Button, Chip, Icon, MenuItem, MoreMenu, Textarea } from "@vortex/ds";
+import { Badge, Button, Chip, Icon, MenuItem, MoreMenu } from "@vortex/ds";
+import { ChatInput } from "../components/ChatInput";
 import { ContextTab } from "./ContextTab";
 import { DesignTab } from "./DesignTab";
 import { TicketsTab } from "./TicketsTab";
@@ -66,10 +67,17 @@ const PoChat = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => v
                 )}
             </div>
             <div className="po-input">
-                <Textarea value={text} aria-label="Message to the Product owner" onChange={(e) => setText(e.target.value)} placeholder={d.running ? "The Product owner is answering…" : "Message the Product owner (⌘/Ctrl+Enter sends)"} rows={3} disabled={d.running} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }} />
-                <div className="po-actions">
-                    {d.running ? <Button variant="danger" onClick={() => void api.poStop(d.po.id).then(reload)}>Stop</Button> : <Button variant="primary" disabled={!text.trim()} onClick={() => void send()}>Send</Button>}
-                </div>
+                <ChatInput
+                    value={text}
+                    onChange={setText}
+                    action={{ label: "Send", onSend: () => void send() }}
+                    working={d.running}
+                    onStop={() => void api.poStop(d.po.id).then(reload)}
+                    disabled={d.running}
+                    status={d.running ? "The Product owner is answering" : undefined}
+                    placeholder="Message the Product owner"
+                    rows={3}
+                />
             </div>
         </div>
     );
@@ -113,7 +121,7 @@ export const PoPage = ({ id, tab: tabArg, ticket, ticketTab, onTab, onBack, onEr
                         {d.running && <Chip tone="info">Answering</Chip>}
                         {failed && <Chip tone="bad">Failed</Chip>}
                         {d.proposal && <Chip tone="warn">Context proposal</Chip>}
-                        {d.po.scope_url && <a className="po-ext" href={d.po.scope_url} target="_blank" rel="noreferrer">{d.po.source === "linear" ? "Linear project" : "ClickUp epic"} ↗</a>}
+                        {d.po.scope_url && (/^https?:/.test(d.po.scope_url) ? <a className="po-ext" href={d.po.scope_url} target="_blank" rel="noreferrer">{d.po.source === "linear" ? "Linear project" : "ClickUp epic"} ↗</a> : <Chip mono>{d.po.scope_url}</Chip>)}
                         {d.tasks.length > 0 && <span className="po-muted">{d.tasks.length} task{d.tasks.length === 1 ? "" : "s"}</span>}
                     </>
                 }

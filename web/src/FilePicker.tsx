@@ -50,7 +50,7 @@ const Thumb = ({ file }: { file: File }) => {
 };
 
 // The pending files as chips (thumbnail, name, size, remove) plus the Attach button. Sits above the text input.
-export const FileChips = ({ pending, disabled }: { pending: PendingFiles; disabled?: boolean }) => {
+export const FileChips = ({ pending, disabled, attach = true, uploading }: { pending: PendingFiles; disabled?: boolean; attach?: boolean; uploading?: boolean }) => {
     const picker = useRef<HTMLInputElement>(null);
     return (
         <div className="file-chips">
@@ -58,13 +58,15 @@ export const FileChips = ({ pending, disabled }: { pending: PendingFiles; disabl
                 <Chip key={`${f.name}-${i}`} className="file-chip" title={`${f.name} · ${fmtBytes(f.size)}`}>
                     {f.type.startsWith("image/") && <Thumb file={f} />}
                     <span className="name">{f.name}</span>
-                    <span className="file-size">{fmtBytes(f.size)}</span>
-                    <IconButton icon="close" size="sm" variant="ghost" label={`Remove ${f.name}`} disabled={disabled} onClick={() => pending.remove(i)} />
+                    <span className="file-size">{uploading ? "Uploading" : fmtBytes(f.size)}</span>
+                    <IconButton icon="close" size="sm" variant="ghost" label={`Remove ${f.name}`} disabled={disabled || uploading} onClick={() => pending.remove(i)} />
                 </Chip>
             ))}
-            <Button size="sm" className="file-attach" disabled={disabled} title="Attach files for the agent. You can also paste a screenshot or drop files onto the text box." onClick={() => picker.current?.click()}>
-                <Icon name="plus" />Attach
-            </Button>
+            {attach && (
+                <Button size="sm" className="file-attach" disabled={disabled} title="Attach files for the agent. You can also paste a screenshot or drop files onto the text box." onClick={() => picker.current?.click()}>
+                    <Icon name="plus" />Attach
+                </Button>
+            )}
             <Input
                 ref={picker}
                 type="file"

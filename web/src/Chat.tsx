@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { anchorOf, api, filesOf, type Message, type TaskStatus } from "./api";
 import { MessageFiles } from "./FilePicker";
-import { AgentInput, usePendingFiles } from "./AgentInput";
+import { usePendingFiles } from "./AgentInput";
+import { ChatInput } from "./components/ChatInput";
 import { Markdown } from "./Markdown";
 import { Panel } from "./components/Panel";
-import { Button, Chip, EmptyState, Notice, Tabs } from "@vortex/ds";
+import { Button, Chip, EmptyState } from "@vortex/ds";
 import "./tasks/chat.css";
 
 type Mode = "ask" | "do";
@@ -33,26 +34,19 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
         if (!t || sending) return;
         setSending(true);
         setError(null);
-        setText("");
         try {
             const files = await api.uploadFiles(taskId, pending.files);
             if (mode === "do") await api.instruct(taskId, t, files);
             else await api.sendMessage(taskId, t, undefined, files);
             pending.clear();
+            setText("");
             await onSent();
         } catch (e) {
             setError(String((e as Error).message ?? e));
-            setText(t);
         } finally {
             setSending(false);
         }
     };
-
-    const placeholder = !idle
-        ? "A run is in progress. Send once it is idle."
-        : mode === "do"
-          ? "Tell the agent what to do in this task's worktree… (⌘/Ctrl+Enter to run)"
-          : "Ask about this task… (⌘/Ctrl+Enter to send)";
 
     return (
         <Panel
@@ -89,25 +83,20 @@ export const Chat = ({ taskId, messages, status, onSent, onOpenCode }: { taskId:
                 })}
                 <div ref={bottomRef} />
             </div>
-            {error && <Notice tone="bad">{error}</Notice>}
             <div className="chat-composer">
-                <Tabs variant="pill" active={mode} onChange={(k) => setMode(k as Mode)} items={[{ key: "ask", label: "Ask" }, { key: "do", label: "Do" }]} />
-                <div className="chat-input">
-                    <AgentInput
-                        value={text}
-                        onChange={setText}
-                        pending={pending}
-                        onKeyDown={(e) => {
-                            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send();
-                        }}
-                        placeholder={placeholder}
-                        disabled={!idle || sending}
-                        rows={mode === "do" ? 4 : 2}
-                    />
-                    <Button variant="primary" disabled={!idle || sending || (!text.trim() && pending.files.length === 0)} onClick={() => void send()}>
-                        {sending ? (mode === "do" ? "Starting…" : "Asking…") : mode === "do" ? "Run" : "Send"}
-                    </Button>
-                </div>
+                <ChatInput
+                    value={text}
+                    onChange={setText}
+                    pending={pending}
+                    mode={{ value: mode, items: [{ key: "ask", label: "Ask" }, { key: "do", label: "Do" }], onChange: (k) => setMode(k as Mode) }}
+                    action={{ label: mode === "do" ? "Run" : "Send", sendingLabel: mode === "do" ? "Starting" : "Asking", sending, onSend: () => void send() }}
+                    disabled={!idle}
+                    status={!idle ? "A run is in progress. Send once it is idle." : undefined}
+                    placeholder={mode === "do" ? "Tell the agent what to do" : "Message the agent"}
+                    rows={mode === "do" ? 4 : 2}
+                    error={error ? `Could not send: ${error}. Your text is kept.` : undefined}
+                    onRetry={error ? () => void send() : undefined}
+                />
             </div>
         </Panel>
     );

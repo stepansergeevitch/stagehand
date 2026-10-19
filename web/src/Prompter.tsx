@@ -4,7 +4,8 @@ import { Markdown } from "./Markdown";
 import { storage } from "./storage";
 import { prompterBus } from "./prompterBus";
 import { formatRoute, type Route } from "./routes";
-import { AgentInput, usePendingFiles } from "./AgentInput";
+import { usePendingFiles } from "./AgentInput";
+import { ChatInput } from "./components/ChatInput";
 import { Badge, Button, Chip, Icon, IconButton, Menu, MenuItem, Notice, Select, StatusDot, Tab, TabList } from "@vortex/ds";
 import { useDismiss } from "./components/useDismiss";
 import "./prompter.css";
@@ -219,6 +220,16 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
             setError(String((e as Error).message ?? e));
         }
     };
+    // Remove: a stacked message is dropped without coming back into the box.
+    const removeQueued = async (id: string) => {
+        if (!session) return;
+        try {
+            await api.prompterUnqueue(session.id, id);
+            patchChat(session.id, (c) => ({ ...c, messages: c.messages.filter((x) => x.id !== id) }));
+        } catch (e) {
+            setError(String((e as Error).message ?? e));
+        }
+    };
     // Ends one chat (the assistant files its notes first); the strip moves to the next one, or the window closes.
     const end = (id: string, thenClose: boolean) => {
         void api.prompterClose(id).catch(() => undefined);
@@ -242,9 +253,6 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
             </Button>
         );
     }
-    const placeholder = chat.busy
-        ? `Answering. Esc stops it; a message sent now waits for the next turn${queued.length ? ` (${queued.length} stacked; ArrowUp edits the last one)` : ""}`
-        : "Message Prompter. Enter sends, Shift+Enter adds a line.";
     return (
         <aside className={`prompter${wide ? " wide" : ""}`} aria-label="Prompter">
             <header className="pr-head">
@@ -285,15 +293,9 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
             {status && !status.ready && <Notice tone="warn" className="pr-notice">{status.reason}</Notice>}
             <div className="pr-log">
                 {chat.messages.length === 0 && !chat.live && <p className="pr-empty">Ask about what you see, how Vortex works, or tell me what to do here. I remember through the palace, not through this window.</p>}
-                {chat.messages.map((m) => (
-                    <div key={m.id} className={`pr-msg ${m.role === "user" ? "user" : "agent"}${m.state === "queued" ? " queued" : ""}`}>
+                {chat.messages.filter((m) => m.state !== "queued").map((m) => (
+                    <div key={m.id} className={`pr-msg ${m.role === "user" ? "user" : "agent"}`}>
                         {m.role === "user" ? <div className="pr-user-text">{m.text}</div> : <Markdown source={m.text} />}
-                        {m.state === "queued" && (
-                            <div className="pr-queued">
-                                <span>Waits for the next turn</span>
-                                <Button size="sm" variant="ghost" title="Take it back into the input to edit (ArrowUp does the same for the last one)" onClick={() => void takeBack(m)}>Edit</Button>
-                            </div>
-                        )}
                     </div>
                 ))}
                 {chat.live && <div className="pr-msg agent live"><Markdown source={chat.live} /></div>}
@@ -302,31 +304,21 @@ export const Prompter = ({ route, settings }: { route: Route; settings: Settings
             </div>
             {error && <Notice tone="bad" className="pr-notice">{error}</Notice>}
             <div className="pr-input">
-                <AgentInput
+                <ChatInput
                     ref={input}
                     value={text}
                     onChange={setText}
                     pending={attach}
-                    onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            void send();
-                        } else if (e.key === "Escape" && chat.busy) {
-                            e.preventDefault();
-                            void stop();
-                        } else if (e.key === "ArrowUp" && !text && queued.length) {
-                            e.preventDefault();
-                            void takeBack(queued[queued.length - 1]!);
-                        }
-                    }}
-                    placeholder={placeholder}
+                    action={{ label: chat.busy ? "Stack" : "Send", onSend: () => void send() }}
+                    working={chat.busy}
+                    onStop={() => void stop()}
+                    queued={queued.map((m) => ({ id: m.id, text: m.text }))}
+                    onEditQueued={(id) => { const m = queued.find((x) => x.id === id); if (m) void takeBack(m); }}
+                    onRemoveQueued={(id) => void removeQueued(id)}
+                    onRecall={() => { const m = queued[queued.length - 1]; if (m) void takeBack(m); }}
+                    placeholder="Message Prompter"
                     disabled={!session || (status !== null && !status.ready)}
-                    rows={2}
                 />
-                <div className="pr-send">
-                    {chat.busy && <Button variant="danger" title={`Stop this turn (Esc)${queued.length ? `; the ${queued.length} stacked message${queued.length === 1 ? "" : "s"} go out next` : ""}`} onClick={() => void stop()}>Stop</Button>}
-                    <Button variant="primary" disabled={!session || (!text.trim() && attach.files.length === 0)} title={chat.busy ? "Stacks behind the running turn" : "Send"} onClick={() => void send()}>{chat.busy ? "Stack" : "Send"}</Button>
-                </div>
             </div>
         </aside>
     );

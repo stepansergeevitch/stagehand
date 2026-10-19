@@ -22,17 +22,12 @@
 .pr-empty { margin: auto 0; text-align: center; color: var(--ink-3); font-size: var(--fs-sm); }
 .pr-msg { max-width: 92%; padding: var(--sp-2) var(--sp-3); border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--panel-2); min-width: 0; overflow-wrap: anywhere; }
 .pr-msg.user { align-self: flex-end; background: var(--accent-soft); border-color: transparent; }
-.pr-msg.user.queued { background: transparent; border: 1px dashed var(--accent); }
 .pr-msg.live { opacity: .85; }
 .pr-msg .markdown > :first-child { margin-top: 0; } .pr-msg .markdown > :last-child { margin-bottom: 0; }
 .pr-user-text { white-space: pre-wrap; }
-.pr-queued { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-1); font-size: var(--fs-xs); color: var(--ink-3); }
 .pr-activity { font-size: var(--fs-xs); color: var(--ink-3); font-family: var(--mono); padding: 0 var(--sp-1); }
 
-.pr-input { display: flex; gap: var(--sp-2); align-items: flex-end; padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--line); }
-.pr-input .agent-input { flex: 1; min-width: 0; }
-.pr-input textarea { min-height: 40px; resize: vertical; }
-.pr-send { display: flex; flex-direction: column; gap: var(--sp-1); }
+.pr-input { padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--line); }
 
 @media (max-width: 760px) {
     /* the launcher is a round button the size of a touch target; the window is a full-screen sheet */
@@ -41,9 +36,6 @@
     .prompter-fab .badge { position: absolute; top: -4px; right: -4px; }
     .prompter, .prompter.wide { inset: 0; width: auto; height: auto; max-height: none; border-radius: 0; border: 0; padding-bottom: env(safe-area-inset-bottom); }
     .pr-account { display: none; }
-    .pr-input { flex-direction: column; align-items: stretch; }
-    .pr-send { flex-direction: row-reverse; }
-    .pr-send .btn { flex: 1; }
     /* leave room under the page so the launcher never covers a table footer */
     body:has(.prompter-fab) .page-frame { padding-bottom: calc(var(--touch) + var(--sp-6) + env(safe-area-inset-bottom)); }
 }

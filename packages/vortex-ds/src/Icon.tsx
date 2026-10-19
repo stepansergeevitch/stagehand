@@ -4,6 +4,7 @@ import type { SVGProps } from "react";
 const PATHS = {
     close: "M5 5l10 10M15 5L5 15",
     plus: "M10 4v12M4 10h12",
+    paperclip: "M15 9.5l-5.2 5.2a3 3 0 01-4.2-4.2l6-6a2 2 0 112.8 2.8l-6 6",
     search: "M9 15a6 6 0 100-12 6 6 0 000 12zM14 14l4 4",
     columns: "M4 4h12v12H4zM8.5 4v12M12.5 4v12",
     filter: "M3 5h14l-5 6v5l-4-2v-3z",

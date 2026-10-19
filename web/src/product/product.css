@@ -70,7 +70,6 @@
 .po-msg-who { display: block; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-3); margin-bottom: var(--sp-1); }
 .po-msg .markdown { max-width: none; }
 .po-input { border-top: 1px solid var(--line); padding: var(--sp-3); }
-.po-input textarea { width: 100%; box-sizing: border-box; }
 
 /* design document */
 .po-doc { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--sp-5); }

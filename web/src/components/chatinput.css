@@ -1,0 +1,32 @@
+/* ChatInput: the one box for anything written to an agent (components/ChatInput.tsx). */
+.chat-input-wrap { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.chat-input { position: relative; display: flex; flex-direction: column; min-width: 0; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r-lg); }
+.chat-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.chat-input.dis { background: var(--panel-2); border-color: var(--line); color: var(--ink-3); }
+.chat-input.err { border-color: var(--bad); }
+.chat-input.drag { border: 2px dashed var(--accent); background: var(--accent-soft); }
+.chat-input.drag > :not(.chat-input-drop) { visibility: hidden; }
+.chat-input-drop { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--accent); font-weight: 600; }
+.chat-input textarea { width: 100%; box-sizing: border-box; min-height: 0; border: 0; outline: 0; box-shadow: none; background: transparent; resize: none; padding: 10px 12px; line-height: 1.5; color: inherit; }
+.chat-input textarea:focus, .chat-input textarea:focus-visible { box-shadow: none; outline: 0; }
+.chat-input .file-chips { margin: 0; padding: 8px 10px 0; }
+.chat-input-status { padding: 0 12px 8px; font-size: var(--fs-md); color: var(--ink-3); }
+.chat-input-bar { display: flex; align-items: center; gap: var(--sp-2); padding: 4px 8px 8px; }
+.chat-input-bar .sp { flex: 1; }
+.chat-input-mode.subtabs { margin: 0; flex-wrap: nowrap; padding: 2px; gap: 0; background: var(--code); border-radius: var(--r-md); }
+.chat-input-mode .tab { border: 0; border-radius: var(--r-sm); min-height: 24px; padding: 0 10px; margin: 0; }
+.chat-input-mode .tab.active { background: var(--panel); box-shadow: var(--shadow-sm); }
+.chat-input-error { display: flex; align-items: center; gap: var(--sp-3); padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--bad) 40%, var(--line)); border-radius: var(--r-md); background: color-mix(in srgb, var(--bad) 8%, var(--panel)); color: var(--ink); font-size: var(--fs-md); }
+.chat-input-error span { flex: 1; min-width: 0; }
+.chat-input-queued { display: flex; align-items: center; gap: var(--sp-3); padding: 6px 8px 6px 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); font-size: var(--fs-md); }
+.chat-input-queued b { font-size: var(--fs-sm); color: var(--ink-3); font-weight: 600; }
+.chat-input-queued .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 760px) {
+    /* A phone: 16px text (no zoom on focus), 44px targets; Return is a new line and the button sends. */
+    .chat-input textarea { font-size: 16px; }
+    .chat-input-bar .btn { min-height: var(--touch); }
+    .chat-input-bar .btn-icon { width: var(--touch); min-width: var(--touch); }
+    .chat-input-mode.subtabs { padding: 3px; }
+    .chat-input-mode .tab { min-height: 38px; padding: 0 14px; }
+    .chat-input-queued .btn { min-height: var(--touch); }
+}
