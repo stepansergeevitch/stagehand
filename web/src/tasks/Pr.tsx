@@ -31,6 +31,8 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
     const reviewing = (task.stage === "pr_creation_review" && task.status === "waiting_user") || (!created && task.status !== "running" && (task.stage === "pr_waiting" || task.stage === "pr_fix" || task.stage === "pr_green"));
     const editable = task.status !== "running" && !created;
     const [editing, setEditing] = useState(false);
+    // Send back pressed without the required note: the box shows the error until the human types.
+    const [triedSend, setTriedSend] = useState(false);
     const [title, setTitle] = useState(entry.title);
     const [body, setBody] = useState(entry.body);
     // This repository's PR base: the entry's own (a per-repo stack) or the draft's shared one.
@@ -109,9 +111,9 @@ const PrDraftEntryView = ({ detail, entry, repos, onAction }: { detail: TaskDeta
                     {approved && <p className="quiet">Approved. {task.status_line}</p>}
                     {changes && (
                         <>
-                            <AgentInput placeholder={`What should change in the ${repoName(entry.repo)} description (required)`} value={notes} onChange={setNotes} pending={attach} />
+                            <AgentInput placeholder={`What should change in the ${repoName(entry.repo)} description (required)`} value={notes} onChange={(v) => { setNotes(v); setTriedSend(false); }} pending={attach} fieldError={triedSend && !notes.trim() && attach.files.length === 0 ? "Required to request changes" : undefined} />
                             <div className="actions tight">
-                                <Button variant="primary" disabled={!notes.trim()} onClick={() => onAction(async () => { const files = await api.uploadFiles(task.id, attach.files); await api.review(task.id, { verdict: "changes", repo: entry.repo, notes, ...(files.length ? { files } : {}) }); setNotes(""); attach.clear(); setChanges(false); })}>Send back to the drafting agent</Button>
+                                <Button variant="primary" onClick={() => { if (!notes.trim() && attach.files.length === 0) { setTriedSend(true); return; } void onAction(async () => { const files = await api.uploadFiles(task.id, attach.files); await api.review(task.id, { verdict: "changes", repo: entry.repo, notes, ...(files.length ? { files } : {}) }); setNotes(""); attach.clear(); setChanges(false); }); }}>Send back to the drafting agent</Button>
                                 <span className="field-hint">The agent redrafts this repository's PR (others are copied through unchanged); drafts not yet approved go back to pending.</span>
                             </div>
                         </>

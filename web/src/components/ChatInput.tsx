@@ -46,12 +46,14 @@ export interface ChatInputProps {
     onRecall?: (() => void) | undefined;
     error?: ReactNode;
     onRetry?: (() => void) | undefined;
+    // A problem with the content of the box (a required note left empty): red border and the text under the box.
+    fieldError?: ReactNode;
     onKeyDown?: ((e: KeyboardEvent<HTMLTextAreaElement>) => void) | undefined;
 }
 
 const touch = (): boolean => window.matchMedia("(hover: none)").matches;
 
-export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(({ value, onChange, pending, chips = "inside", placeholder, ariaLabel, disabled, status, rows = 2, autoFocus, spellCheck, className, action, working, onStop, mode, queued, onEditQueued, onRemoveQueued, onRecall, error, onRetry, onKeyDown }, ref) => {
+export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(({ value, onChange, pending, chips = "inside", placeholder, ariaLabel, disabled, status, rows = 2, autoFocus, spellCheck, className, action, working, onStop, mode, queued, onEditQueued, onRemoveQueued, onRecall, error, onRetry, fieldError, onKeyDown }, ref) => {
     const own = useRef<HTMLTextAreaElement | null>(null);
     const picker = useRef<HTMLInputElement>(null);
     const chord = useRef(0);
@@ -115,7 +117,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(({ valu
                 </div>
             ))}
             <div
-                className={`chat-input${dragging ? " drag" : ""}${disabled ? " dis" : ""}${error ? " err" : ""}`}
+                className={`chat-input${dragging ? " drag" : ""}${disabled ? " dis" : ""}${error || fieldError ? " err" : ""}`}
                 onDragEnter={(e) => { if (pending && e.dataTransfer.types.includes("Files")) setDragging(true); }}
                 onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false); }}
                 onDragOver={pending?.onDragOver}
@@ -152,6 +154,7 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(({ valu
                     </div>
                 )}
             </div>
+            {fieldError && <div className="chat-input-field-error" role="alert">{fieldError}</div>}
         </div>
     );
 });

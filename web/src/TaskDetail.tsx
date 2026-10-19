@@ -11,7 +11,7 @@ import { DiffView, type PriorComment } from "./DiffView";
 import { AppQuick, ServicesPanel } from "./Services";
 import { Modal } from "./components/Modal";
 import { TaskCost } from "./TaskCost";
-import { AgentInput } from "./AgentInput";
+import { AgentInput, usePendingFiles } from "./AgentInput";
 import { DataTable, type DataColumn } from "./components/DataTable";
 import { Field, ReadField } from "./components/EntityView";
 import { PageHeader } from "./components/PageHeader";
@@ -72,6 +72,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
     const [returning, setReturning] = useState(false);
     const [appOpen, setAppOpen] = useState(false);
     const [localNotes, setLocalNotes] = useState("");
+    const localFiles = usePendingFiles();
     // Product Owners, for Settings and the Product owner review.
     const [owners, setOwners] = useState<ProductOwner[]>([]);
     useEffect(() => { void api.productOwners().then(setOwners).catch(() => setOwners([])); }, [task.id]);
@@ -325,9 +326,9 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                 <Notice tone="wait">
                     <b>{pending.length} line comment{pending.length === 1 ? "" : "s"} for the agent.</b> It addresses them, commits locally, and you review the diff before it is pushed.
                     <DraftList pending={pending} onRemove={(k) => rv.changeComment(k, null)} />
-                    <AgentInput placeholder="General notes (optional)" value={localNotes} onChange={setLocalNotes} />
+                    <AgentInput placeholder="General notes (optional)" value={localNotes} onChange={setLocalNotes} pending={localFiles} />
                     <div className="actions tight">
-                        <Button variant="primary" onClick={() => void onAction(async () => { await api.fixLocalComments(task.id, { ...(localNotes.trim() ? { notes: localNotes } : {}), comments: pending.map(([, c]) => c) }); rv.clearComments(); setLocalNotes(""); })}>
+                        <Button variant="primary" onClick={() => void onAction(async () => { await api.fixLocalComments(task.id, { ...(localNotes.trim() ? { notes: localNotes } : {}), comments: pending.map(([, c]) => c), ...(localFiles.files.length ? { files: await api.uploadFiles(task.id, localFiles.files) } : {}) }); rv.clearComments(); setLocalNotes(""); localFiles.clear(); })}>
                             Ask the agent to address {pending.length} comment{pending.length === 1 ? "" : "s"}
                         </Button>
                     </div>
@@ -429,7 +430,7 @@ export const TaskDetailView = ({ detail, accounts, env, onError, feed, terminal,
                         prNumber={gh?.number ?? null}
                         threads={(detail.messages ?? []).filter((m) => !!anchorOf(m)?.prComment)}
                         canAsk={task.status !== "running"}
-                        onAsk={(anchor, text) => onAction(async () => { await api.sendMessage(task.id, text, anchor); })}
+                        onAsk={(anchor, text, files) => onAction(async () => { await api.sendMessage(task.id, text, anchor, await api.uploadFiles(task.id, files)); })}
                         onResolve={async (id, resolved) => {
                             try {
                                 const next = await api.resolvePrComment(task.id, ghRepo ?? "", id, resolved);

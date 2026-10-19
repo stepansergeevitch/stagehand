@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { api, type PoCorrection, type PoDetail, type PoJournalEvent, type PoQuestion } from "./api";
-import { AgentInput } from "./AgentInput";
+import { AgentInput, usePendingFiles } from "./AgentInput";
+import { PoMessageFiles } from "./FilePicker";
 import { Markdown } from "./Markdown";
 import { Section } from "./components/Panel";
 import { Nothing } from "./product/parts";
@@ -23,12 +24,13 @@ export const DiffLines = ({ lines, max = 400 }: { lines: string[]; max?: number 
     </pre>
 );
 
-const Thread = ({ thread, asking }: { thread: PoQuestion["thread"]; asking: boolean }) => (
+const Thread = ({ poId, thread, asking }: { poId: string; thread: PoQuestion["thread"]; asking: boolean }) => (
     <div className="po-thread">
         {thread.map((m, i) => (
             <div key={i} className={`po-thread-msg ${m.role === "po" ? "agent" : "user"}`}>
                 <div className="po-thread-head"><b>{m.role === "user" ? "You" : "Product owner"}</b> <span className="po-muted">{when(m.at)}</span></div>
                 {m.role === "po" ? <Markdown source={m.text} /> : <div>{m.text}</div>}
+                <PoMessageFiles poId={poId} files={m.files ?? []} />
             </div>
         ))}
         {asking && <div className="po-thread-msg agent pending">The Product owner is answering…</div>}
@@ -39,7 +41,10 @@ const Thread = ({ thread, asking }: { thread: PoQuestion["thread"]; asking: bool
 
 const STATUS_CHIP: Record<PoQuestion["status"], [string, Tone]> = { open: ["Open", "warn"], proposed: ["Resolution to confirm", "warn"], resolved: ["Resolved", "ok"], dropped: ["Dropped", "neutral"] };
 
-const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: boolean; onAsk: (t: string) => Promise<void>; onConfirm: (resolution?: string) => Promise<void> }) => {
+const QuestionCard = ({ q, poId, asking, onAsk, onConfirm }: { q: PoQuestion; poId: string; asking: boolean; onAsk: (t: string, files: File[]) => Promise<void>; onConfirm: (resolution: string | undefined, files: File[]) => Promise<void> }) => {
+    const askFiles = usePendingFiles();
+    const ownFiles = usePendingFiles();
+    const editFiles = usePendingFiles();
     const live = q.status === "open" || q.status === "proposed";
     const [open, setOpen] = useState(live && (q.thread.length > 0 || q.status === "proposed"));
     const [text, setText] = useState("");
@@ -47,10 +52,11 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
     const [own, setOwn] = useState<string | null>(null);
     const send = async () => {
         const t = text.trim();
-        if (!t) return;
-        setText("");
+        if (!t && askFiles.files.length === 0) return;
         setOpen(true);
-        await onAsk(t);
+        try { await onAsk(t || "See the attached file(s).", askFiles.files); } catch { return; }
+        setText("");
+        askFiles.clear();
     };
     const [label, tone] = STATUS_CHIP[q.status];
     return (
@@ -65,17 +71,17 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
             {q.status === "proposed" && q.resolution && (
                 <div className="po-quote">
                     <b>Suggested resolution</b>
-                    {edit === null ? <Markdown source={q.resolution} /> : <AgentInput value={edit} onChange={setEdit} rows={4} />}
+                    {edit === null ? <Markdown source={q.resolution} /> : <AgentInput value={edit} onChange={setEdit} pending={editFiles} rows={4} />}
                     <div className="po-actions">
                         {edit === null ? (
                             <>
-                                <Button variant="primary" disabled={asking} onClick={() => void onConfirm()} title="The Product owner records it in its context and design">Confirm</Button>
+                                <Button variant="primary" disabled={asking} onClick={() => void onConfirm(undefined, []).catch(() => undefined)} title="The Product owner records it in its context and design">Confirm</Button>
                                 <Button disabled={asking} onClick={() => setEdit(q.resolution ?? "")}>Edit, then confirm</Button>
                             </>
                         ) : (
                             <>
-                                <Button variant="primary" disabled={!edit.trim()} onClick={() => void onConfirm(edit.trim()).then(() => setEdit(null))}>Confirm this resolution</Button>
-                                <Button onClick={() => setEdit(null)}>Cancel</Button>
+                                <Button variant="primary" disabled={!edit.trim() && editFiles.files.length === 0} onClick={() => void onConfirm(edit.trim() || undefined, editFiles.files).then(() => { setEdit(null); editFiles.clear(); }, () => undefined)}>Confirm this resolution</Button>
+                                <Button onClick={() => { setEdit(null); editFiles.clear(); }}>Cancel</Button>
                             </>
                         )}
                     </div>
@@ -90,10 +96,10 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
             {q.status === "dropped" && <p className="po-muted">Dropped by the Product owner{q.resolution ? `: ${q.resolution}` : ""}. Write to it to open the question again.</p>}
             {q.status === "open" && own !== null && (
                 <div className="po-quote">
-                    <AgentInput placeholder="The answer, as a decision — the Product owner records it" value={own} onChange={setOwn} rows={3} />
+                    <AgentInput placeholder="The answer, as a decision — the Product owner records it" value={own} onChange={setOwn} pending={ownFiles} rows={3} />
                     <div className="po-actions">
-                        <Button variant="primary" disabled={!own.trim()} onClick={() => void onConfirm(own.trim()).then(() => setOwn(null))}>Resolve</Button>
-                        <Button onClick={() => setOwn(null)}>Cancel</Button>
+                        <Button variant="primary" disabled={!own.trim() && ownFiles.files.length === 0} onClick={() => void onConfirm(own.trim() || undefined, ownFiles.files).then(() => { setOwn(null); ownFiles.clear(); }, () => undefined)}>Resolve</Button>
+                        <Button onClick={() => { setOwn(null); ownFiles.clear(); }}>Cancel</Button>
                     </div>
                 </div>
             )}
@@ -103,13 +109,14 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
             </div>
             {open && (
                 <div className="po-discussion">
-                    <Thread thread={q.thread} asking={asking} />
+                    <Thread poId={poId} thread={q.thread} asking={asking} />
                     {!asking && q.status !== "resolved" && (
                         <>
                             <AgentInput
                                 placeholder="Answer it, give a fact, or ask what the Product owner needs (⌘/Ctrl+Enter sends)"
                                 value={text}
                                 onChange={setText}
+                                pending={askFiles}
                                 rows={2}
                                 onKeyDown={(e) => {
                                     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -118,7 +125,7 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
                                     }
                                 }}
                             />
-                            <div className="po-actions"><Button variant="primary" disabled={!text.trim()} onClick={() => void send()}>Send</Button></div>
+                            <div className="po-actions"><Button variant="primary" disabled={!text.trim() && askFiles.files.length === 0} onClick={() => void send()}>Send</Button></div>
                         </>
                     )}
                 </div>
@@ -128,12 +135,13 @@ const QuestionCard = ({ q, asking, onAsk, onConfirm }: { q: PoQuestion; asking: 
 };
 
 export const QuestionsTab = ({ d, onError, reload }: Props) => {
-    const call = async (fn: () => Promise<unknown>) => { try { await fn(); reload(); } catch (e) { onError(errText(e)); } };
+    // Rethrows: the box that sent keeps its draft when the call failed.
+    const call = async (fn: () => Promise<unknown>) => { try { await fn(); reload(); } catch (e) { onError(errText(e)); throw e; } };
     const live = d.questions.filter((q) => q.status === "open" || q.status === "proposed");
     const resolved = d.questions.filter((q) => q.status === "resolved").reverse();
     const dropped = d.questions.filter((q) => q.status === "dropped").reverse();
     const card = (q: PoQuestion) => (
-        <QuestionCard key={q.id} q={q} asking={d.askingQuestions.includes(q.id)} onAsk={(t) => call(() => api.poAskQuestion(d.po.id, q.id, t))} onConfirm={(r) => call(() => api.poConfirmQuestion(d.po.id, q.id, r))} />
+        <QuestionCard key={q.id} q={q} poId={d.po.id} asking={d.askingQuestions.includes(q.id)} onAsk={(t, f) => call(async () => api.poAskQuestion(d.po.id, q.id, t, f.length ? await api.uploadPoFiles(d.po.id, f) : undefined))} onConfirm={(r, f) => call(async () => api.poConfirmQuestion(d.po.id, q.id, r, f.length ? await api.uploadPoFiles(d.po.id, f) : undefined))} />
     );
     return (
         <div className="po-stack">

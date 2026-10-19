@@ -2,6 +2,7 @@
 import "@vortex/ds/fonts.css";
 import "@vortex/ds/styles.css";
 import React from "react";
+import { installEmacsMark } from "./emacsMark";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -31,6 +32,9 @@ const showFatal = (text: string): void => {
 };
 window.addEventListener("error", (e) => showFatal(`Error: ${e.message}`));
 window.addEventListener("unhandledrejection", (e) => showFatal(`Unhandled: ${String((e.reason as Error)?.message ?? e.reason)}`));
+
+// Emacs region selection (C-SPC, then move) in every text box.
+installEmacsMark();
 
 createRoot(document.getElementById("root")!).render(
     <React.StrictMode>

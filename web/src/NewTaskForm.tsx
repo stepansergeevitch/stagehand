@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BranchPicker } from "./BranchPicker";
-import { accountOrderOf, api, envRepos, poEnvIds, modelLabel, type Account, type Env, type MyTicket, type ProductOwner, type Readiness, type Settings } from "./api";
-import { AgentInput } from "./AgentInput";
+import { accountOrderOf, api, envRepos, poEnvIds, modelLabel, type Account, type Env, type MyTicket, type ProductOwner, type Readiness, type SharedFile, type Settings } from "./api";
+import { AgentInput, usePendingFiles } from "./AgentInput";
 import { Modal } from "./components/Modal";
 import { Button, Chip, Hint, Input, Notice, Select, StatusDot, type Tone } from "@vortex/ds";
 import "./tasks/newtask.css";
@@ -16,7 +16,7 @@ const looksLikeTicket = (s: string): boolean => /app\.clickup\.com\/t\//.test(s)
 const shortRef = (s: string): string => { if (!/^https?:/.test(s)) return s; try { return decodeURIComponent(s.replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop() ?? s); } catch { return s; } };
 const SHOWN = 6;
 
-export type NewTaskBody = { tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string | Record<string, string>; productOwnerId?: string | null };
+export type NewTaskBody = { tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string | Record<string, string>; productOwnerId?: string | null; files?: SharedFile[] };
 
 const Section = ({ title, summary, children }: { title: string; summary?: string; children: React.ReactNode }) => (
     <details className="nt-sum">
@@ -41,6 +41,7 @@ const TaskFormBody = ({ accounts, env, settings, readiness, onSubmit, footerRef 
     useEffect(() => { void api.productOwners().then(setOwners).catch(() => setOwners([])); }, []);
     const [mode, setMode] = useState<"each" | "batch">("each");
     const [notes, setNotes] = useState("");
+    const pending = usePendingFiles();
     // One base branch per repository ("" = the single repo); empty = the env default.
     const repoKeys = useMemo(() => { const r = envRepos(env); return r.length ? r : [""]; }, [env]);
     const [bases, setBases] = useState<Record<string, string>>({});
@@ -92,7 +93,16 @@ const TaskFormBody = ({ accounts, env, settings, readiness, onSubmit, footerRef 
     const disabled = list.length === 0 || blocked !== null;
     const submit = (): void => {
         if (disabled) return;
-        void onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}), ...(baseBranch ? { baseBranch } : {}), ...(owner ? { productOwnerId: owner === "none" ? null : owner } : {}) });
+        void (async () => {
+            let files: SharedFile[] = [];
+            try {
+                if (pending.files.length > 0) files = await api.uploadEnvFiles(env.id, pending.files);
+            } catch (e) {
+                setStatus({ bad: true, text: `Could not upload the files: ${(e as Error).message}` });
+                return;
+            }
+            await onSubmit({ tickets: list, mode, ...(acc ? { accountId: acc } : {}), ...(model ? { model } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}), ...(baseBranch ? { baseBranch } : {}), ...(owner ? { productOwnerId: owner === "none" ? null : owner } : {}), ...(files.length ? { files } : {}) });
+        })();
     };
     const submitRef = useRef(submit);
     submitRef.current = submit;
@@ -204,7 +214,7 @@ const TaskFormBody = ({ accounts, env, settings, readiness, onSubmit, footerRef 
                     </div>
                 </Section>
                 <Section title="Instructions" summary={notes.trim() ? notes.trim().replace(/\s+/g, " ").slice(0, 80) : undefined}>
-                    <AgentInput value={notes} onChange={setNotes} placeholder="Constraints, where the code lives, what to skip, how to test…" className="short-text" />
+                    <AgentInput value={notes} onChange={setNotes} pending={pending} placeholder="Constraints, where the code lives, what to skip, how to test…" className="short-text" />
                 </Section>
             </div>
         </>

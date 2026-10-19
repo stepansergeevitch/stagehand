@@ -18,6 +18,7 @@
 .chat-input-mode .tab.active { background: var(--panel); box-shadow: var(--shadow-sm); }
 .chat-input-error { display: flex; align-items: center; gap: var(--sp-3); padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--bad) 40%, var(--line)); border-radius: var(--r-md); background: color-mix(in srgb, var(--bad) 8%, var(--panel)); color: var(--ink); font-size: var(--fs-md); }
 .chat-input-error span { flex: 1; min-width: 0; }
+.chat-input-field-error { font-size: var(--fs-md); color: var(--bad); }
 .chat-input-queued { display: flex; align-items: center; gap: var(--sp-3); padding: 6px 8px 6px 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); font-size: var(--fs-md); }
 .chat-input-queued b { font-size: var(--fs-sm); color: var(--ink-3); font-weight: 600; }
 .chat-input-queued .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

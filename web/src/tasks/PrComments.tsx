@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { Button, Checkbox, Chip, EmptyState, Icon, Notice } from "@vortex/ds";
-import { anchorOf, type LineComment, type Message, type MessageAnchor, type PrComment, type Review, type Stage } from "../api";
-import { AgentInput } from "../AgentInput";
+import { anchorOf, filesOf, type LineComment, type Message, type MessageAnchor, type PrComment, type Review, type Stage } from "../api";
+import { AgentInput, usePendingFiles } from "../AgentInput";
+import { MessageFiles } from "../FilePicker";
 import { Markdown } from "../Markdown";
 import { Panel } from "../components/Panel";
 import "./workspace.css";
@@ -19,7 +20,8 @@ export const prCommentAnchor = (c: PrComment, repo: string, number: number): Mes
 
 // A collapsible chat with the agent right under one PR comment: its earlier exchanges, a question box, the reply
 // arrives through the task's messages (same thread key, see MessageAnchor.prComment).
-const PrCommentThread = ({ items, canAsk, onAsk }: { items: Message[]; canAsk: boolean; onAsk: (text: string) => Promise<void> }) => {
+const PrCommentThread = ({ items, canAsk, onAsk }: { items: Message[]; canAsk: boolean; onAsk: (text: string, files: File[]) => Promise<void> }) => {
+    const pending = usePendingFiles();
     const [open, setOpen] = useState(items.length > 0);
     const [text, setText] = useState("");
     const [asking, setAsking] = useState(false);
@@ -28,11 +30,13 @@ const PrCommentThread = ({ items, canAsk, onAsk }: { items: Message[]; canAsk: b
     }, [items.length]);
     const send = async (): Promise<void> => {
         const t = text.trim();
-        if (!t) return;
+        if (!t && pending.files.length === 0) return;
         setAsking(true);
-        setText("");
+        const sent = pending.files;
         try {
-            await onAsk(t);
+            await onAsk(t || "See the attached file(s).", sent);
+            setText("");
+            pending.clear();
         } finally {
             setAsking(false);
         }
@@ -51,6 +55,7 @@ const PrCommentThread = ({ items, canAsk, onAsk }: { items: Message[]; canAsk: b
                                 <span className="field-hint">{new Date(msg.created_at).toLocaleString()}</span>
                             </div>
                             {msg.role === "agent" ? <Markdown source={msg.text} /> : <div>{msg.text}</div>}
+                            <MessageFiles taskId={msg.task_id} files={filesOf(msg)} />
                         </div>
                     ))}
                     {asking && <div className="thread-msg agent pending">Agent is answering…</div>}
@@ -60,6 +65,7 @@ const PrCommentThread = ({ items, canAsk, onAsk }: { items: Message[]; canAsk: b
                                 placeholder="Does this make sense? Is it already addressed? What would a fix take? (⌘/Ctrl+Enter sends)"
                                 value={text}
                                 onChange={setText}
+                                pending={pending}
                                 rows={2}
                                 onKeyDown={(e) => {
                                     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -69,7 +75,7 @@ const PrCommentThread = ({ items, canAsk, onAsk }: { items: Message[]; canAsk: b
                                 }}
                             />
                             <div className="actions tight">
-                                <Button variant="primary" disabled={!text.trim()} onClick={() => void send()}>Ask</Button>
+                                <Button variant="primary" disabled={!text.trim() && pending.files.length === 0} onClick={() => void send()}>Ask</Button>
                             </div>
                         </>
                     )}
@@ -82,7 +88,7 @@ const PrCommentThread = ({ items, canAsk, onAsk }: { items: Message[]; canAsk: b
 
 // GitHub PR comments of one kind (human or automation): review verdicts, line comments (path:line), general comments.
 // Open ones first (oldest first), resolved threads sink to the bottom; a line comment's thread can be resolved/reopened here.
-export const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, onRefresh, selected, onToggle, onResolve, repo, prNumber, threads, canAsk, onAsk }: { title: string; items: PrComment[] | null; loading: boolean; error: string | null; hasPr: boolean; url: string | null; fetchedAt: string | null; onRefresh: () => void; selected: Set<number>; onToggle: (id: number) => void; onResolve: (id: number, resolved: boolean) => Promise<void>; repo: string; prNumber: number | null; threads: Message[]; canAsk: boolean; onAsk: (anchor: MessageAnchor, text: string) => Promise<void> }) => {
+export const PrCommentList = ({ title, items, loading, error, hasPr, url, fetchedAt, onRefresh, selected, onToggle, onResolve, repo, prNumber, threads, canAsk, onAsk }: { title: string; items: PrComment[] | null; loading: boolean; error: string | null; hasPr: boolean; url: string | null; fetchedAt: string | null; onRefresh: () => void; selected: Set<number>; onToggle: (id: number) => void; onResolve: (id: number, resolved: boolean) => Promise<void>; repo: string; prNumber: number | null; threads: Message[]; canAsk: boolean; onAsk: (anchor: MessageAnchor, text: string, files: File[]) => Promise<void> }) => {
     const [busy, setBusy] = useState<number | null>(null);
     const threadOf = (c: PrComment): Message[] => threads.filter((m) => { const a = anchorOf(m)?.prComment; return !!a && a.id === c.id && a.repo === repo; });
     const sorted = items ? [...items].sort((a, b) => Number(isResolved(a)) - Number(isResolved(b)) || a.at.localeCompare(b.at)) : [];
@@ -122,7 +128,7 @@ export const PrCommentList = ({ title, items, loading, error, hasPr, url, fetche
                                     )}
                                 </div>
                                 {c.body && <Markdown source={c.body} />}
-                                {prNumber !== null && <PrCommentThread items={threadOf(c)} canAsk={canAsk} onAsk={(text) => onAsk(prCommentAnchor(c, repo, prNumber), text)} />}
+                                {prNumber !== null && <PrCommentThread items={threadOf(c)} canAsk={canAsk} onAsk={(text, files) => onAsk(prCommentAnchor(c, repo, prNumber), text, files)} />}
                             </div>
                         </Fragment>
                     ))}

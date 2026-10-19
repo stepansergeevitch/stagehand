@@ -1,5 +1,6 @@
-import { anchorOf, type Message, type MessageAnchor } from "../api";
+import { anchorOf, filesOf, type Message, type MessageAnchor } from "../api";
 import { Markdown } from "../Markdown";
+import { MessageFiles } from "../FilePicker";
 import { Button } from "@vortex/ds";
 
 // A chat message with its anchor unpacked, for placement.
@@ -31,6 +32,7 @@ export const LineThread = ({ items, asking, canAsk, onReply, open, onOpen }: { i
                     <span className="field-hint">{new Date(msg.created_at).toLocaleString()}</span>
                 </div>
                 {msg.role === "agent" ? <Markdown source={msg.text} /> : <div>{msg.text}</div>}
+                <MessageFiles taskId={msg.task_id} files={filesOf(msg)} />
             </div>
         ))}
         {asking && <div className="thread-msg agent pending">Agent is answering…</div>}

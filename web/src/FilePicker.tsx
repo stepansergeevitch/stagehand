@@ -84,12 +84,12 @@ export const FileChips = ({ pending, disabled, attach = true, uploading }: { pen
 
 // Files that went with a sent message: images inline (open full size in a new tab), anything else a link. The agent
 // got the same files by path.
-export const MessageFiles = ({ taskId, files }: { taskId: string; files: SharedFile[] }) => {
+const FileTiles = ({ files, urlOf }: { files: SharedFile[]; urlOf: (file: string) => string }) => {
     if (files.length === 0) return null;
     return (
         <div className="msg-files">
             {files.map((f) => {
-                const src = api.artifactUrl(taskId, f.file);
+                const src = urlOf(f.file);
                 const meta = [f.mime, fmtBytes(f.size)].filter(Boolean).join(" · ");
                 return f.mime?.startsWith("image/") ? (
                     <a key={f.file} href={src} target="_blank" rel="noreferrer" title={`${f.name} · ${meta}`}>
@@ -104,3 +104,8 @@ export const MessageFiles = ({ taskId, files }: { taskId: string; files: SharedF
         </div>
     );
 };
+
+export const MessageFiles = ({ taskId, files }: { taskId: string; files: SharedFile[] }) => <FileTiles files={files} urlOf={(file) => api.artifactUrl(taskId, file)} />;
+
+// The same for a Product owner's messages and threads: the files live under the PO dir.
+export const PoMessageFiles = ({ poId, files }: { poId: string; files: SharedFile[] }) => <FileTiles files={files} urlOf={(file) => api.poFileUrl(poId, file)} />;

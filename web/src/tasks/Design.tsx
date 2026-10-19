@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Button, Checkbox, Chip, EmptyState, Icon, Notice, Skeleton, Tab, TabList, type Tone } from "@vortex/ds";
-import { api, type LineComment, type MessageAnchor, type PoDesignReview, type PoReviewComment, type ProductOwner, type QaPass, type TaskDetail } from "../api";
-import { AgentInput } from "../AgentInput";
+import { Badge, Button, Checkbox, Chip, EmptyState, Icon, IconButton, Notice, Skeleton, Tab, TabList, type Tone } from "@vortex/ds";
+import { api, type SharedFile, type LineComment, type MessageAnchor, type PoDesignReview, type PoReviewComment, type ProductOwner, type QaPass, type TaskDetail } from "../api";
+import { AgentInput, usePendingFiles } from "../AgentInput";
+import { MessageFiles } from "../FilePicker";
 import { AnnotatedMarkdown } from "../components/AnnotatedMarkdown";
 import { threadMessages } from "../components/LineThread";
 import { Markdown } from "../Markdown";
@@ -40,15 +41,21 @@ const SEVERITY_TONE: Record<PoReviewComment["severity"], Tone> = { high: "bad", 
 
 // One review comment: pick it for the next round, read it, discuss it with the PO.
 // `closed`: the review was sent — the card only shows the comment, the note and the discussion.
-const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, onAsk }: { c: PoReviewComment; busy: boolean; asking: boolean; closed?: boolean; onPick: (v: boolean) => void; onNote: (note: string | null) => Promise<void>; onAsk: (text: string) => Promise<void> }) => {
+const PoReviewCommentCard = ({ taskId, c, busy, asking, closed = false, onPick, onNote, onAsk }: { taskId: string; c: PoReviewComment; busy: boolean; asking: boolean; closed?: boolean; onPick: (v: boolean) => void; onNote: (note: string | null, files: File[], kept: SharedFile[]) => Promise<void>; onAsk: (text: string, files: File[]) => Promise<void> }) => {
+    const notePending = usePendingFiles();
+    const askPending = usePendingFiles();
+    const [kept, setKept] = useState<SharedFile[]>([]);
     const [open, setOpen] = useState(c.thread.length > 0);
     const [note, setNote] = useState<string | null>(null);
     const [text, setText] = useState("");
     const send = async (): Promise<void> => {
         const t = text.trim();
-        if (!t) return;
+        if (!t && askPending.files.length === 0) return;
+        try {
+            await onAsk(t || "See the attached file(s).", askPending.files);
+        } catch { return; }
         setText("");
-        await onAsk(t);
+        askPending.clear();
     };
     return (
         <div className={`po-comment-card${c.withdrawn ? " withdrawn" : ""}${c.include && !closed ? " picked" : ""}${closed ? " closed" : ""}`}>
@@ -66,25 +73,33 @@ const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, 
             <Markdown source={c.body} />
             {note !== null ? (
                 <div className="po-human-note">
-                    <AgentInput placeholder="Your note on this comment — it goes to the design agent with it" value={note} onChange={setNote} rows={3} />
+                    <AgentInput placeholder="Your note on this comment — it goes to the design agent with it" value={note} onChange={setNote} pending={notePending} rows={3} />
+                    {kept.length > 0 && (
+                        <div className="file-chips">
+                            {kept.map((f) => (
+                                <Chip key={f.file} className="file-chip" title={f.name}><span className="name">{f.name}</span><IconButton icon="close" size="sm" variant="ghost" label={`Remove ${f.name}`} onClick={() => setKept((k) => k.filter((x) => x.file !== f.file))} /></Chip>
+                            ))}
+                        </div>
+                    )}
                     <div className="actions tight">
-                        <Button variant="primary" onClick={() => void onNote(note.trim() || null).then(() => setNote(null))}>Save note</Button>
-                        <Button onClick={() => setNote(null)}>Cancel</Button>
+                        <Button variant="primary" onClick={() => void onNote(note.trim() || null, notePending.files, kept).then(() => { setNote(null); notePending.clear(); }, () => undefined)}>Save note</Button>
+                        <Button onClick={() => { setNote(null); notePending.clear(); }}>Cancel</Button>
                     </div>
                 </div>
             ) : c.note ? (
                 <div className="po-human-note">
                     <div className="chat-msg-head"><b>Your note</b></div>
                     <Markdown source={c.note} />
+                    <MessageFiles taskId={taskId} files={c.noteFiles ?? []} />
                     {!closed && (
                         <div className="actions tight">
-                            <Button size="sm" onClick={() => setNote(c.note ?? "")}>Edit</Button>
-                            <Button size="sm" variant="danger" onClick={() => void onNote(null)}>Delete</Button>
+                            <Button size="sm" onClick={() => { setKept(c.noteFiles ?? []); setNote(c.note ?? ""); }}>Edit</Button>
+                            <Button size="sm" variant="danger" onClick={() => void onNote(null, [], [])}>Delete</Button>
                         </div>
                     )}
                 </div>
             ) : null}
-            {!closed && note === null && !c.note && <Button size="sm" onClick={() => setNote("")}>Add note</Button>}{" "}
+            {!closed && note === null && !c.note && <Button size="sm" onClick={() => { setKept([]); setNote(""); }}>Add note</Button>}{" "}
             {(!closed || c.thread.length > 0) && <Button size="sm" variant="ghost" aria-expanded={open} onClick={() => setOpen((o) => !o)}><Icon name={open ? "chevronDown" : "chevronRight"} />{closed ? "Discussion" : "Discuss with the Product owner"}{c.thread.length ? ` (${c.thread.length})` : ""}</Button>}
             {open && (
                 <div className="line-thread flush">
@@ -92,6 +107,7 @@ const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, 
                         <div key={i} className={`thread-msg ${m.role === "po" ? "agent" : "user"}`}>
                             <div className="chat-msg-head"><b>{m.role === "user" ? "You" : "Product Owner"}</b> <span className="field-hint">{new Date(m.at).toLocaleString()}</span></div>
                             {m.role === "po" ? <Markdown source={m.text} /> : <div>{m.text}</div>}
+                            <MessageFiles taskId={taskId} files={m.files ?? []} />
                         </div>
                     ))}
                     {asking && <div className="thread-msg agent pending">The Product Owner is answering…</div>}
@@ -101,6 +117,7 @@ const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, 
                                 placeholder="Push back, ask why, or ask what a fix looks like (⌘/Ctrl+Enter sends)"
                                 value={text}
                                 onChange={setText}
+                                pending={askPending}
                                 rows={2}
                                 onKeyDown={(e) => {
                                     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -110,7 +127,7 @@ const PoReviewCommentCard = ({ c, busy, asking, closed = false, onPick, onNote, 
                                 }}
                             />
                             <div className="actions tight">
-                                <Button variant="primary" disabled={!text.trim() || busy} title={busy ? "The Product Owner is busy with this review" : undefined} onClick={() => void send()}>Ask</Button>
+                                <Button variant="primary" disabled={(!text.trim() && askPending.files.length === 0) || busy} title={busy ? "The Product Owner is busy with this review" : undefined} onClick={() => void send()}>Ask</Button>
                             </div>
                         </>
                     )}
@@ -135,6 +152,8 @@ const PoReviewPanel = ({ task, owner, onPicked, onAction, onError }: { task: Tas
     const comments = [...(rev?.comments ?? [])].sort((a, b) => Number(a.withdrawn) - Number(b.withdrawn) || order[a.severity] - order[b.severity]);
     const reviewing = r.running && !r.asking;
     const call = async (fn: () => Promise<PoDesignReview>) => { try { setR(await fn()); } catch (e) { onError(String((e as Error).message ?? e)); } };
+    // The same, but the failure reaches the caller too, so a draft stays in its box.
+    const callKeep = async (fn: () => Promise<PoDesignReview>) => { try { setR(await fn()); } catch (e) { onError(String((e as Error).message ?? e)); throw e; } };
     return (
         <div className="po-review">
             <div className="actions tight">
@@ -156,7 +175,7 @@ const PoReviewPanel = ({ task, owner, onPicked, onAction, onError }: { task: Tas
                                 (list as PoReviewComment[]).length ? (
                                     <div key={label as string}>
                                         <h3>{label as string} ({(list as PoReviewComment[]).length})</h3>
-                                        {(list as PoReviewComment[]).map((c) => <PoReviewCommentCard key={c.id} c={c} busy asking={false} closed onPick={() => undefined} onNote={async () => undefined} onAsk={async () => undefined} />)}
+                                        {(list as PoReviewComment[]).map((c) => <PoReviewCommentCard key={c.id} taskId={task.id} c={c} busy asking={false} closed onPick={() => undefined} onNote={async () => undefined} onAsk={async () => undefined} />)}
                                     </div>
                                 ) : null,
                             )}
@@ -164,12 +183,13 @@ const PoReviewPanel = ({ task, owner, onPicked, onAction, onError }: { task: Tas
                     ) : comments.length === 0 ? <p className="quiet">No comments.</p> : comments.map((c) => (
                         <PoReviewCommentCard
                             key={c.id}
+                            taskId={task.id}
                             c={c}
                             busy={r.running}
                             asking={r.asking === c.id}
                             onPick={(v) => void call(() => api.patchPoReviewComment(task.id, c.id, { include: v }))}
-                            onNote={(note) => call(() => api.patchPoReviewComment(task.id, c.id, { note }))}
-                            onAsk={(text) => call(() => api.askPoReviewComment(task.id, c.id, text))}
+                            onNote={(note, files, kept) => callKeep(async () => api.patchPoReviewComment(task.id, c.id, { note, files: [...kept, ...(await api.uploadFiles(task.id, files))] }))}
+                            onAsk={(text, files) => callKeep(async () => api.askPoReviewComment(task.id, c.id, text, await api.uploadFiles(task.id, files)))}
                         />
                     ))}
                     {!rev.sentAt && (

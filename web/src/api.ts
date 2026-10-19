@@ -319,7 +319,8 @@ export const poEnvIds = (po: Pick<ProductOwner, "env_id" | "env_ids">): string[]
     }
     return [...new Set([po.env_id, ...(Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [])].filter(Boolean))];
 };
-export interface PoMessage { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
+export interface PoMessage { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string; files?: string | null }
+export const poFilesOf = (m: Pick<PoMessage, "files">): SharedFile[] => filesOf(m);
 // Document sources read with a token alone (Integrations).
 export type TokenIntegrationId = "notion" | "figma";
 export interface TokenIntegration { id: TokenIntegrationId; configured: boolean; token: string | null }
@@ -347,7 +348,7 @@ export interface PoDetail {
 // The PO's outstanding questions: it keeps the list; the human discusses each and confirms the suggested resolution.
 export interface PoQuestion {
     id: string; key: string; question: string; detail: string; status: "open" | "proposed" | "resolved" | "dropped"; resolution: string | null;
-    thread: Array<{ role: "user" | "po"; text: string; at: string }>; event_id: string | null; created_at: string; updated_at: string; resolved_at: string | null;
+    thread: Array<{ role: "user" | "po"; text: string; at: string; files?: SharedFile[] }>; event_id: string | null; created_at: string; updated_at: string; resolved_at: string | null;
 }
 // What reached the PO and what its turn changed.
 export interface PoJournalEvent {
@@ -367,7 +368,7 @@ export interface PoReview { running: boolean; status: string | null; error: stri
 // The PO's review of a design proposal: a verdict and graded comments the human picks and discusses.
 export interface PoReviewComment {
     id: string; severity: "high" | "medium" | "low"; area: "product" | "scope" | "acceptance" | "qa" | "question"; title: string; body: string; laterTicket: string | null;
-    include?: boolean; withdrawn: boolean; note: string | null; sentAt: string | null; thread: Array<{ role: "user" | "po"; text: string; at: string }>;
+    include?: boolean; withdrawn: boolean; note: string | null; noteFiles: SharedFile[]; sentAt: string | null; thread: Array<{ role: "user" | "po"; text: string; at: string; files?: SharedFile[] }>;
 }
 export interface PoDesignReview { running: boolean; status: string | null; error: string | null; at: string | null; asking: string | null; review: { verdict: "approve" | "changes"; summary: string; comments: PoReviewComment[]; sentAt: string | null } | null }
 // The PR comments the current fix round addressed, the round's commits, and the replies picked for after the push.
@@ -656,6 +657,17 @@ const uploadPrompterFiles = async (sessionId: string, files: File[]): Promise<Sh
     for (const f of files) out.push(await uploadFileTo(`/api/prompter/sessions/${sessionId}/files`, f));
     return out;
 };
+// New task: the task does not exist yet, so the files wait under the environment; createTasks moves them in.
+const uploadEnvFiles = async (envId: string, files: File[]): Promise<SharedFile[]> => {
+    const out: SharedFile[] = [];
+    for (const f of files) out.push(await uploadFileTo(`/api/envs/${envId}/uploads`, f));
+    return out;
+};
+const uploadPoFiles = async (poId: string, files: File[]): Promise<SharedFile[]> => {
+    const out: SharedFile[] = [];
+    for (const f of files) out.push(await uploadFileTo(`/api/product-owners/${poId}/files`, f));
+    return out;
+};
 const withFiles = (body: Record<string, unknown>, files: SharedFile[] | undefined): Record<string, unknown> => (files?.length ? { ...body, files } : body);
 
 export const api = {
@@ -672,7 +684,9 @@ export const api = {
     startProductOwner: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/start`),
     productOwner: (id: string) => fetch(`/api/product-owners/${id}`).then((r) => j<PoDetail>(r)),
     deleteProductOwner: (id: string) => fetch(`/api/product-owners/${id}`, { method: "DELETE" }).then((r) => j<{ ok: true }>(r)),
-    poSend: (id: string, text: string) => post<{ started: true }>(`/api/product-owners/${id}/messages`, { text }),
+    poSend: (id: string, text: string, files?: SharedFile[]) => post<{ started: true }>(`/api/product-owners/${id}/messages`, withFiles({ text }, files)),
+    uploadPoFiles,
+    uploadEnvFiles,
     poStop: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/stop`),
     poSetContext: (id: string, text: string) => fetch(`/api/product-owners/${id}/context`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).then((r) => j<{ ok: true }>(r)),
     poSetTickets: (id: string, tickets: PoTicket[]) => fetch(`/api/product-owners/${id}/tickets`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ tickets }) }).then((r) => j<{ ok: true }>(r)),
@@ -689,8 +703,8 @@ export const api = {
     poRevision: (id: string, name: string) => fetch(`/api/product-owners/${id}/revisions/${encodeURIComponent(name)}`).then((r) => j<{ text: string }>(r)),
     poApproveDesign: (id: string) => post<{ ok: true }>(`/api/product-owners/${id}/approve-design`),
     poApproveTickets: (id: string, keys?: string[]) => post<{ created: number; skipped: number }>(`/api/product-owners/${id}/approve-tickets`, keys ? { keys } : {}),
-    poAskQuestion: (id: string, q: string, text: string) => post<{ ok: true }>(`/api/product-owners/${id}/questions/${q}/ask`, { text }),
-    poConfirmQuestion: (id: string, q: string, resolution?: string) => post<{ ok: true }>(`/api/product-owners/${id}/questions/${q}/confirm`, resolution ? { resolution } : {}),
+    poAskQuestion: (id: string, q: string, text: string, files?: SharedFile[]) => post<{ ok: true }>(`/api/product-owners/${id}/questions/${q}/ask`, withFiles({ text }, files)),
+    poConfirmQuestion: (id: string, q: string, resolution?: string, files?: SharedFile[]) => post<{ ok: true }>(`/api/product-owners/${id}/questions/${q}/confirm`, withFiles(resolution ? { resolution } : {}, files)),
     poReadEvent: (id: string, eventId: string) => post<{ ok: true }>(`/api/product-owners/${id}/events/${eventId}/read`),
     poSendCorrections: (id: string, ids: string[]) => post<{ ok: true }>(`/api/product-owners/${id}/corrections/send`, { ids }),
     poApplyCorrection: (id: string, cid: string) => post<{ ok: true }>(`/api/product-owners/${id}/corrections/${cid}/apply`),
@@ -705,8 +719,8 @@ export const api = {
     startPoBrief: (taskId: string) => post<PoReview>(`/api/tasks/${taskId}/po-brief`),
     poReview: (taskId: string) => fetch(`/api/tasks/${taskId}/po-review`).then((r) => j<PoDesignReview>(r)),
     startPoReview: (taskId: string) => post<PoDesignReview>(`/api/tasks/${taskId}/po-review`),
-    patchPoReviewComment: (taskId: string, cid: string, patch: { include?: boolean; note?: string | null }) => fetch(`/api/tasks/${taskId}/po-review/comments/${encodeURIComponent(cid)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) }).then((r) => j<PoDesignReview>(r)),
-    askPoReviewComment: (taskId: string, cid: string, text: string) => post<PoDesignReview>(`/api/tasks/${taskId}/po-review/comments/${encodeURIComponent(cid)}/ask`, { text }),
+    patchPoReviewComment: (taskId: string, cid: string, patch: { include?: boolean; note?: string | null; files?: SharedFile[] }) => fetch(`/api/tasks/${taskId}/po-review/comments/${encodeURIComponent(cid)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) }).then((r) => j<PoDesignReview>(r)),
+    askPoReviewComment: (taskId: string, cid: string, text: string, files?: SharedFile[]) => post<PoDesignReview>(`/api/tasks/${taskId}/po-review/comments/${encodeURIComponent(cid)}/ask`, withFiles({ text }, files)),
     sendPoReview: (taskId: string) => post<Task>(`/api/tasks/${taskId}/po-review/send`),
     setTaskProductOwner: (taskId: string, productOwnerId: string | null) => fetch(`/api/tasks/${taskId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ productOwnerId }) }).then((r) => j<Task>(r)),
     tokenIntegration: (id: TokenIntegrationId) => fetch(`/api/integrations/${id}`).then((r) => j<TokenIntegration>(r)),
@@ -851,11 +865,11 @@ export const api = {
     refreshPr: (id: string) => post<{ task: Task; prStates: PrState[] }>(`/api/tasks/${id}/pr/refresh`),
     createApprovedPrs: (id: string) => post<{ ok: true; done: string[]; task: Task; prStates: PrState[] }>(`/api/tasks/${id}/pr/create`),
     mergePr: (id: string, body: { repo: string; method: MergeMethod; deleteBranch: boolean }) => post<{ ok: true; result: string; task: Task }>(`/api/tasks/${id}/pr/merge`, body),
-    fixComments: (id: string, repo: string, commentIds: number[]) => post<{ started: true }>(`/api/tasks/${id}/fix-comments`, { repo, commentIds }),
+    fixComments: (id: string, repo: string, commentIds: number[], files?: SharedFile[]) => post<{ started: true }>(`/api/tasks/${id}/fix-comments`, withFiles({ repo, commentIds }, files)),
     // Line comments left on Code changes at a PR stage → a PR-fix round (nothing posted to GitHub).
-    fixLocalComments: (id: string, body: { notes?: string; comments: LineComment[] }) => post<{ started: true }>(`/api/tasks/${id}/fix-local-comments`, body),
+    fixLocalComments: (id: string, body: { notes?: string; comments: LineComment[]; files?: SharedFile[] }) => post<{ started: true }>(`/api/tasks/${id}/fix-local-comments`, body),
     // The agent's take on picked comments, answered in Chat — nothing committed, no PR round.
-    askComments: (id: string, repo: string, commentIds: number[], question?: string) => post<Message>(`/api/tasks/${id}/ask-comments`, { repo, commentIds, ...(question ? { question } : {}) }),
+    askComments: (id: string, repo: string, commentIds: number[], question?: string, files?: SharedFile[]) => post<Message>(`/api/tasks/${id}/ask-comments`, withFiles({ repo, commentIds, ...(question ? { question } : {}) }, files)),
     // Batched PR jobs in one agent run (rebase first, then failing CI, picked comments, instructions).
     prJobs: (id: string, spec: { rebase?: { repos?: string[] } | null; fixCi?: { repos?: string[] } | null; comments?: Array<{ repo: string; ids: number[] }>; instructions?: string; files?: SharedFile[] }) =>
         post<{ started: boolean; note: string }>(`/api/tasks/${id}/pr-jobs`, spec),

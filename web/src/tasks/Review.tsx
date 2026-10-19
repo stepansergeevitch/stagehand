@@ -29,6 +29,8 @@ export const useReview = (detail: TaskDetail, onAction: Act) => {
     const canCommentDesign = task.status === "waiting_user" && task.stage === "design_proposal";
     const designPending = pending.filter(([, c]) => c.path === DESIGN_DOC);
     const [poPicked, setPoPicked] = useState(0);
+    // Request changes pressed while nothing says what should change: the notes box shows the error until the human types.
+    const [triedChanges, setTriedChanges] = useState(false);
     useEffect(() => {
         if (task.stage !== "design_proposal" || !task.product_owner_id) return setPoPicked(0);
         void api.poReview(task.id).then((r) => setPoPicked(pickedOf(r))).catch(() => undefined);
@@ -46,8 +48,9 @@ export const useReview = (detail: TaskDetail, onAction: Act) => {
             setNotes("");
             attach.clear();
         });
-    const requestChanges = (): Promise<void> =>
-        onAction(async () => {
+    const requestChanges = (): Promise<void> => {
+        if (!canRequestChanges) { setTriedChanges(true); return Promise.resolve(); }
+        return onAction(async () => {
             const files = await api.uploadFiles(task.id, attach.files);
             await api.review(task.id, {
                 verdict: "changes",
@@ -61,7 +64,8 @@ export const useReview = (detail: TaskDetail, onAction: Act) => {
             setNotes("");
             attach.clear();
         });
-    return { notes, setNotes, routeTo, setRouteTo, skipQa, setSkipQa, attach, comments, changeComment, clearComments, pending, canComment, canCommentDesign, canCommentPr, designPending, poPicked, setPoPicked, changesCount, canRequestChanges, approve, requestChanges };
+    };
+    return { notes, setNotes: (v: string) => { setNotes(v); setTriedChanges(false); }, notesError: triedChanges && !canRequestChanges, routeTo, setRouteTo, skipQa, setSkipQa, attach, comments, changeComment, clearComments, pending, canComment, canCommentDesign, canCommentPr, designPending, poPicked, setPoPicked, changesCount, canRequestChanges, approve, requestChanges };
 };
 export type ReviewState = ReturnType<typeof useReview>;
 
@@ -97,7 +101,7 @@ export const ReviewPanel = ({ task, reviews, rv, onOpenCode }: { task: TaskDetai
                 One round for everything: {rv.designPending.length} comment{rv.designPending.length === 1 ? "" : "s"} on the proposal (select text in Proposal), {rv.poPicked} picked Product owner comment{rv.poPicked === 1 ? "" : "s"}, and the note below.
             </p>
         )}
-        <AgentInput placeholder={rv.canComment ? "General comments (optional if you left line comments in Code)" : "Notes for the agent (required for Request changes)"} value={rv.notes} onChange={rv.setNotes} pending={rv.attach} />
+        <AgentInput placeholder={rv.canComment ? "General comments (optional if you left line comments in Code)" : "Notes for the agent (required for Request changes)"} value={rv.notes} onChange={rv.setNotes} pending={rv.attach} fieldError={rv.notesError ? "Required to request changes" : undefined} />
         {rv.canComment && rv.pending.length > 0 && (
             <div className="pending-comments">
                 <b>{rv.pending.length} line comment{rv.pending.length === 1 ? "" : "s"} to send</b>
@@ -106,7 +110,7 @@ export const ReviewPanel = ({ task, reviews, rv, onOpenCode }: { task: TaskDetai
         )}
         <div className="actions">
             <Button variant="primary" onClick={() => void rv.approve()}>{task.stage === "pr_fix" ? "Approve and push" : "Approve"}</Button>
-            <Button disabled={!rv.canRequestChanges} onClick={() => void rv.requestChanges()}>Request changes{rv.changesCount > 0 ? ` (${rv.changesCount})` : ""}</Button>
+            <Button onClick={() => void rv.requestChanges()}>Request changes{rv.changesCount > 0 ? ` (${rv.changesCount})` : ""}</Button>
             {task.stage === "user_review" && <Button variant="ghost" onClick={onOpenCode}>Comment on lines in Code</Button>}
         </div>
         <ReviewHistory reviews={reviews} stage={task.stage} />
@@ -123,12 +127,14 @@ export const ReturnDialog = ({ task, pending, onSend, onClose }: { task: TaskDet
     const [notes, setNotes] = useState("");
     const [skipQa, setSkipQa] = useState(false);
     const attach = usePendingFiles();
+    const [tried, setTried] = useState(false);
     if (options.length === 0) return null;
     const runs = stage !== "user_review";
     // Returning to a stage before User Review means the QA stages would run again on the way back; offer to skip them once.
     const qaAhead = runs && STAGE_ORDER.indexOf(stage) < STAGE_ORDER.indexOf("user_review");
     const withComments = stage === "implementation" && pending.length > 0;
-    const send = (): void => void onSend(stage, notes, stage === "implementation", qaAhead && skipQa, attach.files);
+    const blocked = runs && !notes.trim() && attach.files.length === 0 && !withComments;
+    const send = (): void => { if (blocked) { setTried(true); return; } void onSend(stage, notes, stage === "implementation", qaAhead && skipQa, attach.files); };
     return (
         <Modal
             title="Return to a stage"
@@ -136,7 +142,7 @@ export const ReturnDialog = ({ task, pending, onSend, onClose }: { task: TaskDet
             footer={
                 <>
                     <Button onClick={onClose}>Cancel</Button>
-                    <Button variant="primary" disabled={runs && !notes.trim() && attach.files.length === 0 && !withComments} onClick={send}>Send back to {STAGE_LABEL[stage]}</Button>
+                    <Button variant="primary" onClick={send}>Send back to {STAGE_LABEL[stage]}</Button>
                 </>
             }
         >
@@ -147,7 +153,7 @@ export const ReturnDialog = ({ task, pending, onSend, onClose }: { task: TaskDet
                     </Select>
                 </label>
                 <p className="quiet">{runs ? `${STAGE_LABEL[stage]} runs again with your notes as reviewer notes, then the later stages run again.` : "User review waits for you again; no agent runs."}</p>
-                <AgentInput placeholder={runs ? "What should change (required)" : "Notes for yourself (optional)"} value={notes} onChange={setNotes} pending={attach} />
+                <AgentInput placeholder={runs ? "What should change (required)" : "Notes for yourself (optional)"} value={notes} onChange={(v) => { setNotes(v); setTried(false); }} pending={attach} fieldError={tried && blocked ? "Required to request changes" : undefined} />
                 {withComments && <p className="quiet">{pending.length} draft line comment{pending.length === 1 ? "" : "s"} from Code go along.</p>}
                 {qaAhead && <Checkbox checked={skipQa} onChange={(e) => setSkipQa(e.target.checked)} label={`Skip manual QA this pass: go straight to user review after ${STAGE_LABEL[stage === "design_proposal" ? "implementation" : stage]}`} />}
             </div>

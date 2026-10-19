@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loading } from "../components/Loading";
 import { errText } from "../format";
-import { api, type PoDetail, type PoPhase } from "../api";
+import { api, poFilesOf, type PoDetail, type PoPhase } from "../api";
+import { usePendingFiles } from "../AgentInput";
+import { PoMessageFiles } from "../FilePicker";
 import { Markdown } from "../Markdown";
 import { CorrectionsTab, EventsTab, QuestionsTab } from "../PoJournal";
 import { EntityView } from "../components/EntityView";
@@ -33,6 +35,7 @@ const PhaseTrack = ({ phase }: { phase: PoPhase }) => {
 
 const PoChat = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => void; reload: () => void }) => {
     const [text, setText] = useState("");
+    const pending = usePendingFiles();
     const [live, setLive] = useState<string>("");
     const [activity, setActivity] = useState<string>("");
     const list = useRef<HTMLDivElement>(null);
@@ -46,8 +49,8 @@ const PoChat = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => v
     useEffect(() => { if (list.current) list.current.scrollTop = list.current.scrollHeight; }, [d.messages.length, live]);
     const send = async () => {
         const t = text.trim();
-        if (!t) return;
-        try { await api.poSend(d.po.id, t); setText(""); reload(); } catch (e) { onError(errText(e)); }
+        if (!t && pending.files.length === 0) return;
+        try { await api.poSend(d.po.id, t || "See the attached file(s).", pending.files.length ? await api.uploadPoFiles(d.po.id, pending.files) : undefined); setText(""); pending.clear(); reload(); } catch (e) { onError(errText(e)); }
     };
     return (
         <div className="po-chat">
@@ -57,6 +60,7 @@ const PoChat = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => v
                     <div key={m.id} className={`po-msg ${m.role}`}>
                         <span className="po-msg-who">{m.role === "agent" ? "Product owner" : m.role === "user" ? "You" : "Vortex"}</span>
                         <Markdown source={m.text} />
+                        <PoMessageFiles poId={d.po.id} files={poFilesOf(m)} />
                     </div>
                 ))}
                 {d.running && (
@@ -70,6 +74,7 @@ const PoChat = ({ d, onError, reload }: { d: PoDetail; onError: (m: string) => v
                 <ChatInput
                     value={text}
                     onChange={setText}
+                    pending={pending}
                     action={{ label: "Send", onSend: () => void send() }}
                     working={d.running}
                     onStop={() => void api.poStop(d.po.id).then(reload)}
