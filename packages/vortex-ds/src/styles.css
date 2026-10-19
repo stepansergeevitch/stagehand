@@ -314,6 +314,8 @@ input.invalid:focus-visible, select.invalid:focus-visible, textarea.invalid:focu
 .menu-item.danger { color: var(--bad); }
 .menu-item:disabled { opacity: .5; cursor: not-allowed; }
 .menu-item .kbd { margin-left: auto; }
+/* A phone has no keyboard: key hints are not drawn there (a narrow screen, or one with no hover). */
+@media (max-width: 760px), (hover: none) { .kbd { display: none; } }
 .more-menu { position: relative; display: inline-flex; }
 .more-menu-list { position: absolute; right: 0; top: calc(100% + var(--sp-1)); z-index: 30; }
 .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
