@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { BaseCheckChip } from "./components/BaseCheckChip";
 import { LabelChips } from "./Labels";
 import { labelsOf, STAGE_LABEL, taskLabel, type Env, type Task } from "./api";
@@ -13,8 +13,7 @@ import { age, TaskStatusChip, taskNeed, taskState } from "./components/status";
 import "./tasks.css";
 
 // The Tasks page, as the approved design draws it (docs/ux-redesign.md §4.1, §4.3 and §6.1). Top to bottom: the title with
-// the search and New task, a tab per environment (the badge counts tasks waiting on you), a paste bar that starts one task
-// per ticket id, the Active / Completed switch with the Pinned, Stage and Label filters, then the table. Active is grouped
+// the search and New task, a tab per environment (the badge counts tasks waiting on you), the Active / Completed switch with the Pinned, Stage and Label filters, then the table. Active is grouped
 // by what the task needs from you (Needs you, Running, Waiting on others, Idle folded) with a **What it needs** column: ONE
 // button that opens the exact place, or the task's status line when nothing is to be pressed. A row opens the workspace.
 // On a phone only the title with New task, the environment tabs and the task cards remain.
@@ -78,7 +77,7 @@ const TaskCard = ({ task: t, onOpen }: { task: Task; onOpen: (id: string, tab?: 
     );
 };
 
-export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onList, onFilter, onView, selected, detailPane, onDeleteTasks, onPinTasks, onStopTasks, onSelectEnv, onNewTask, onPasteTickets, onOpen }: {
+export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onList, onFilter, onView, selected, detailPane, onDeleteTasks, onPinTasks, onStopTasks, onSelectEnv, onNewTask, onOpen }: {
     envs: Env[];
     envId: string;
     env: Env | undefined;
@@ -87,7 +86,7 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
     visible: Task[];
     list: TaskList | undefined;
     filter: TaskFilter;
-    onList: (list: TaskList | undefined) => void;
+    onList: (list: TaskList) => void;
     // Search and filters; `env` jumps to another environment keeping them.
     onFilter: (filter: TaskFilter, env?: string) => void;
     // List | Feed.
@@ -100,8 +99,6 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
     onStopTasks: (ids: string[]) => void;
     onSelectEnv: (id: string) => void;
     onNewTask: () => void;
-    // The paste bar: one task per ticket, with the environment's defaults.
-    onPasteTickets: (tickets: string[]) => Promise<void>;
     onOpen: (id: string, tab?: TaskTab) => void;
 }) => {
     const completed = list === "completed";
@@ -168,26 +165,11 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
     const stageOf = (label: string | undefined) => (Object.keys(STAGE_LABEL) as Task["stage"][]).find((k) => STAGE_LABEL[k] === label);
     const labelOptions = [...new Set(inList.flatMap((t) => labelsOf(t).map((l) => l.text)))].sort();
 
-    const [paste, setPaste] = useState("");
-    const [pasting, setPasting] = useState(false);
-    const submitPaste = async (e: FormEvent): Promise<void> => {
-        e.preventDefault();
-        const tickets = paste.split(/[\s,]+/).filter(Boolean);
-        if (!tickets.length || !env || pasting) return;
-        setPasting(true);
-        try {
-            await onPasteTickets(tickets);
-            setPaste("");
-        } finally {
-            setPasting(false);
-        }
-    };
-
     // Emacs keys for the list. A chord (C-c …, C-x …) waits two seconds for its second key.
     const chord = useRef<{ prefix: "c" | "x"; at: number } | null>(null);
     const step = (d: number): void => { const i = envs.findIndex((e) => e.id === envId); const to = envs[i + d]; if (to) onSelectEnv(to.id); };
-    const act = useRef({ onView, onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? undefined : "completed"), step });
-    act.current = { onView, onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? undefined : "completed"), step };
+    const act = useRef({ onView, onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? "active" : "completed"), step });
+    act.current = { onView, onNewTask, enabled: !selected, apply, toggleList: () => onList(completed ? "active" : "completed"), step };
     useEffect(() => {
         const onKey = (e: KeyboardEvent): void => {
             if (!act.current.enabled || e.defaultPrevented || e.altKey || e.metaKey || document.querySelector("[role=dialog]")) return;
@@ -296,11 +278,6 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
                 active={envId}
                 onChange={onSelectEnv}
             />
-            {env && (
-                <form className="task-paste" onSubmit={(e) => void submitPaste(e)}>
-                    <Input value={paste} onChange={(e) => setPaste(e.target.value)} placeholder="Paste an id or link" aria-label="Ticket id or link" disabled={pasting} />
-                </form>
-            )}
             <div className="tasks-bar">
                 <Tabs
                     items={[
@@ -309,7 +286,7 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
                     ]}
                     variant="pill"
                     active={completed ? "completed" : "active"}
-                    onChange={(k) => onList(k === "completed" ? "completed" : undefined)}
+                    onChange={(k) => onList(k === "completed" ? "completed" : "active")}
                 />
                 <Button size="sm" className="filter-chip-btn" on={!!filter.pinned} aria-pressed={!!filter.pinned} onClick={() => onFilter({ ...filter, pinned: filter.pinned ? undefined : true })}>Pinned</Button>
                 <FilterChip label="Stage" value={filter.stage ? STAGE_LABEL[filter.stage] : undefined} options={Object.values(STAGE_LABEL)} onPick={(v) => onFilter({ ...filter, stage: stageOf(v) })} />
@@ -373,7 +350,7 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
                         ? <div className="tasks-empty"><b>No completed tasks in {env?.name ?? "this environment"} yet</b></div>
                         : filtered
                             ? <div className="tasks-empty"><b>No task matches</b><Button onClick={() => onFilter({})}>Clear all</Button></div>
-                            : <div className="tasks-empty"><b>No tasks in {env?.name ?? "this environment"} yet</b><p>Paste a ticket id above, or pick one assigned to you.</p>{env && <Button variant="primary" onClick={onNewTask}>Pick from my tickets</Button>}</div>}
+                            : <div className="tasks-empty"><b>No tasks in {env?.name ?? "this environment"} yet</b>{env && <Button variant="primary" onClick={onNewTask}>Pick from my tickets</Button>}</div>}
                 />
             </div>
         </PageFrame>

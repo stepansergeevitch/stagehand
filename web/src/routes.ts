@@ -5,7 +5,7 @@ import { STAGE_ORDER, type Stage } from "./api";
 // reload, back/forward, a pasted link, or an assistant reading the path all land on the same screen. Components take
 // their view from the route and change it through `navigate`; nothing view-affecting lives in component state.
 //
-//   #/tasks[/completed][?env=<envId>]              #/tasks/new[?env=<envId>]      (the list: Active by default, Completed tab)
+//   #/tasks (the Feed, the default)   #/tasks/list | #/tasks/completed [?env=<envId>]   #/tasks/new[?env=<envId>]
 //   #/tasks/<taskId>/work[/<stage>[/<proposal|qa|po>]]       #/tasks/<taskId>/code[?repo=<dir>&scope=all|uncommitted|<sha>,<sha>&kind=tests]
 //   #/tasks/<taskId>/pr[/<repo>]                             #/tasks/<taskId>/conversation[/<user|pr|automation>][?repo=<dir>]
 //   #/tasks/<taskId>/details[/<runs[/<runId>]|cost>]     #/tasks/<taskId>/settings   (the task's ⋯ menu; old …/details/setup still parses)
@@ -73,7 +73,7 @@ export type ProductHomeTab = "context" | "memory";
 export type PoTab = "context" | "design" | "questions" | "tickets" | "events" | "corrections";
 export const PO_TABS: readonly PoTab[] = ["design", "questions", "corrections", "context", "tickets", "events"];
 
-export type TaskList = "completed";
+export type TaskList = "active" | "completed";
 // The Feed beside the list (`#/tasks/feed`): the event types shown (all when absent) and whether started / stopped
 // events are shown too. No environment = every environment.
 export type FeedType = "needs_you" | "agent" | "pr";
@@ -154,12 +154,12 @@ export const parseRoute = (hash: string): Route => {
     switch (head) {
         case "dashboard":
         case "tasks":
-            if (a === "feed") return { page: "tasks", feed: parseFeed(q), ...(env ? { env } : {}), ...parseFilter(q) };
             if (a === "completed") return { page: "tasks", list: "completed", ...(env ? { env } : {}), ...parseFilter(q) };
-            if (a === "active") return { page: "tasks", ...(env ? { env } : {}), ...parseFilter(q) };
+            if (a === "list" || a === "active") return { page: "tasks", list: "active", ...(env ? { env } : {}), ...parseFilter(q) };
             if (a === "new") return { page: "tasks", create: true, ...(env ? { env } : {}) };
             if (a) return { page: "tasks", task: a, ...(parseTaskView(b, c, d, q) ? { view: parseTaskView(b, c, d, q) } : {}) };
-            return { page: "tasks", ...(env ? { env } : {}), ...parseFilter(q) };
+            // The Tasks page opens on the Feed; the list is `#/tasks/list` (`#/tasks/feed` still parses).
+            return { page: "tasks", feed: parseFeed(q), ...(env ? { env } : {}), ...parseFilter(q) };
         case "sessions":
             if (a === "new") return { page: "sessions", create: true };
             return { page: "sessions", ...(a ? { session: a } : {}), ...(b === "changes" || b === "terminal" ? { view: b } : {}), ...(b === "changes" ? { diff: parseDiff(q) } : {}) };
@@ -201,7 +201,7 @@ export const parseRoute = (hash: string): Route => {
                 ...(b === "tickets" && c && d ? { ticketTab: d } : {}),
             };
         default:
-            return { page: "tasks" };
+            return { page: "tasks", feed: {} };
     }
 };
 
@@ -232,7 +232,7 @@ export const formatRoute = (r: Route): string => {
     switch (r.page) {
         case "tasks":
             if (r.task) return formatTaskView(`#/tasks/${enc(r.task)}`, r.view);
-            return withQuery(r.create ? "#/tasks/new" : r.feed ? "#/tasks/feed" : r.list === "completed" ? "#/tasks/completed" : "#/tasks", { env: r.env, type: r.feed?.type, lifecycle: r.feed?.lifecycle ? "1" : null, q: r.filter?.q, stage: r.filter?.stage, label: r.filter?.label, pinned: r.filter?.pinned ? "1" : null });
+            return withQuery(r.create ? "#/tasks/new" : r.list === "completed" ? "#/tasks/completed" : r.list === "active" ? "#/tasks/list" : "#/tasks", { env: r.env, type: r.feed?.type, lifecycle: r.feed?.lifecycle ? "1" : null, q: r.filter?.q, stage: r.filter?.stage, label: r.filter?.label, pinned: r.filter?.pinned ? "1" : null });
         case "sessions":
             if (r.create) return "#/sessions/new";
             if (!r.session) return "#/sessions";

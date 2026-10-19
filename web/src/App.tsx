@@ -117,9 +117,13 @@ export const App = () => {
         storage.set("vortex.env", envId);
         setRememberedEnv(envId);
     }, [envId]);
-    // Back to the list the task was opened from.
-    const closeTask = useCallback(() => navigate({ page: "tasks", ...(route.page === "tasks" && route.list ? { list: route.list } : {}), ...(envId ? { env: envId } : {}) }), [route, envId]);
-    const listRoute = useCallback((env?: string) => ({ page: "tasks" as const, ...(env ?? envId ? { env: env ?? envId } : {}) }), [envId]);
+    // The Feed or the list the human was on last: closing a task or the New task dialog goes back to it, and it stays behind the dialog.
+    const lastView = useRef<Route>({ page: "tasks", feed: {} });
+    useEffect(() => { if (route.page === "tasks" && !route.task && !route.create) lastView.current = route; }, [route]);
+    const closeTask = useCallback(() => navigate(lastView.current), []);
+    const listRoute = useCallback((env?: string) => ({ page: "tasks" as const, list: "active" as const, ...(env ?? envId ? { env: env ?? envId } : {}) }), [envId]);
+    // The Tasks view on screen: the route's, or while the New task dialog is open the one behind it.
+    const tv = route.page === "tasks" ? (route.create && lastView.current.page === "tasks" ? lastView.current : route) : undefined;
 
     const reload = useCallback(async () => {
         const [a, e, t, d, s, r] = await Promise.all([api.accounts(), api.envs(), api.tasks(), api.configDirs(), api.settings().catch(() => null), api.readiness().catch(() => [] as Readiness[])]);
@@ -307,7 +311,7 @@ export const App = () => {
     }, []);
     const toggleCollapsed = (): void => setCollapsed((c) => { storage.set("vortex.sidebar.collapsed", c ? "0" : "1"); return !c; });
 
-    const pageRoute = (id: Page) => (id === "tasks" ? listRoute() : ({ page: id } as const));
+    const pageRoute = (id: Page) => (id === "tasks" ? ({ page: "tasks", feed: {} } as const) : ({ page: id } as const));
     const navGroups: NavGroup[] = NAV.map((g) => ({
         label: g.group,
         items: g.items.map((n) => ({
@@ -322,7 +326,7 @@ export const App = () => {
     const commands = useMemo<Command[]>(() => [
         ...NAV.flatMap((g) => g.items.map((n) => ({ id: `page-${n.id}`, label: n.label, group: "Pages", icon: n.icon, keywords: `${g.group} ${n.hint}`, run: () => navigate(n.id === "tasks" ? { page: "tasks" } : ({ page: n.id } as Route)) }))),
         { id: "page-tasks-completed", label: "Completed tasks", group: "Pages", icon: "tasks" as const, keywords: "finished stopped done", run: () => navigate({ page: "tasks", list: "completed" }) },
-        ...envs.map((e) => ({ id: `env-${e.id}`, label: `${e.name} tasks`, group: "Environments", icon: "server" as const, note: e.base_branch, run: () => navigate({ page: "tasks", env: e.id }) })),
+        ...envs.map((e) => ({ id: `env-${e.id}`, label: `${e.name} tasks`, group: "Environments", icon: "server" as const, note: e.base_branch, run: () => navigate({ page: "tasks", list: "active", env: e.id }) })),
         ...[...tasks].sort((a, b) => taskState(a).rank - taskState(b).rank || b.updated_at.localeCompare(a.updated_at)).map((t) => ({
             id: `task-${t.id}`, label: `${t.ticket_id}${t.title ? ` ${t.title}` : ""}`, group: "Tasks", icon: "tasks" as const, note: taskState(t).label,
             keywords: envs.find((e) => e.id === t.env_id)?.name ?? "", run: () => navigate({ page: "tasks", task: t.id }),
@@ -351,7 +355,7 @@ export const App = () => {
                 <>
                     {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
                     {creating && env && (
-                        <NewTaskDialog onClose={() => navigate(listRoute())} accounts={accountsFor(env, accounts, configDirs)} env={env} settings={settings} readiness={readiness.find((r) => r.envId === env.id)} onSubmit={async (body) => { await run(() => api.createTasks({ envId: env.id, ...body })); navigate(listRoute()); }} />
+                        <NewTaskDialog onClose={() => navigate(lastView.current)} accounts={accountsFor(env, accounts, configDirs)} env={env} settings={settings} readiness={readiness.find((r) => r.envId === env.id)} onSubmit={async (body) => { await run(() => api.createTasks({ envId: env.id, ...body })); navigate(listRoute()); }} />
                     )}
                     {modal === "env" && (
                         <Modal title="Add environment" onClose={() => setModal(null)}>
@@ -442,19 +446,19 @@ export const App = () => {
                 "wide",
             )}
             {page === "tasks" && (
-                route.page === "tasks" && route.feed && !selected ? (
+                tv && !tv.list && !selected ? (
                     <FeedPage
                         envs={envs}
-                        envId={route.env}
+                        envId={tv.env}
                         tasks={tasks}
-                        filter={route.filter ?? {}}
-                        feed={route.feed}
+                        filter={tv.filter ?? {}}
+                        feed={tv.feed ?? {}}
                         connected={connected}
-                        onSelectEnv={(id) => navigate({ page: "tasks", feed: route.feed ?? {}, ...(id ? { env: id } : {}), ...(route.filter ? { filter: route.filter } : {}) })}
-                        onFilter={(filter) => navigate({ page: "tasks", feed: route.feed ?? {}, ...(route.env ? { env: route.env } : {}), ...(filter.q || filter.stage || filter.label ? { filter } : {}) })}
-                        onFeed={(feed) => navigate({ page: "tasks", feed, ...(route.env ? { env: route.env } : {}), ...(route.filter ? { filter: route.filter } : {}) })}
-                        onView={() => navigate(route.env ? listRoute(route.env) : listRoute())}
-                        onNewTask={() => navigate({ ...listRoute(route.env), create: true })}
+                        onSelectEnv={(id) => navigate({ page: "tasks", feed: tv.feed ?? {}, ...(id ? { env: id } : {}), ...(tv.filter ? { filter: tv.filter } : {}) })}
+                        onFilter={(filter) => navigate({ page: "tasks", feed: tv.feed ?? {}, ...(tv.env ? { env: tv.env } : {}), ...(filter.q || filter.stage || filter.label ? { filter } : {}) })}
+                        onFeed={(feed) => navigate({ page: "tasks", feed, ...(tv.env ? { env: tv.env } : {}), ...(tv.filter ? { filter: tv.filter } : {}) })}
+                        onView={() => navigate(tv.env ? listRoute(tv.env) : listRoute())}
+                        onNewTask={() => navigate({ page: "tasks", create: true, ...(tv.env ? { env: tv.env } : {}) })}
                         onOpen={(id, tab) => navigate(taskRoute(route, id, tab ? { tab } : undefined))}
                     />
                 ) : (
@@ -464,10 +468,10 @@ export const App = () => {
                     env={env}
                     tasks={tasks}
                     visible={visible}
-                    list={route.page === "tasks" ? route.list : undefined}
-                    filter={route.page === "tasks" ? route.filter ?? {} : {}}
-                    onList={(list) => navigate({ page: "tasks", ...(list ? { list } : {}), ...(envId ? { env: envId } : {}) })}
-                    onFilter={(filter, to) => navigate({ page: "tasks", ...(route.page === "tasks" && route.list ? { list: route.list } : {}), ...((to ?? envId) ? { env: to ?? envId } : {}), ...(filter.q || filter.stage || filter.label || filter.pinned ? { filter } : {}) })}
+                    list={tv?.list}
+                    filter={tv?.filter ?? {}}
+                    onList={(list) => navigate({ page: "tasks", list, ...(envId ? { env: envId } : {}) })}
+                    onFilter={(filter, to) => navigate({ page: "tasks", list: tv?.list ?? "active", ...((to ?? envId) ? { env: to ?? envId } : {}), ...(filter.q || filter.stage || filter.label || filter.pinned ? { filter } : {}) })}
                     onView={(v) => navigate(v === "feed" ? { page: "tasks", feed: {}, ...(envId ? { env: envId } : {}) } : listRoute())}
                     selected={selected}
                     detailPane={tasksDetailPane}
@@ -475,8 +479,7 @@ export const App = () => {
                     onPinTasks={pinPicked}
                     onStopTasks={stopPicked}
                     onSelectEnv={(id) => navigate(listRoute(id))}
-                    onNewTask={() => navigate({ ...listRoute(), create: true })}
-                    onPasteTickets={async (tickets) => { if (env) await run(() => api.createTasks({ envId: env.id, tickets, mode: "each" })); }}
+                    onNewTask={() => navigate({ page: "tasks", create: true, ...(envId ? { env: envId } : {}) })}
                     onOpen={(id, tab) => navigate(taskRoute(route, id, tab ? { tab } : undefined))}
                 />
                 )

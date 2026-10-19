@@ -5,7 +5,7 @@ export const ViewSwitch = ({ view, onChange }: { view: "list" | "feed"; onChange
     <Tabs
         className="view-switch"
         variant="pill"
-        items={[{ key: "list", label: "List" }, { key: "feed", label: "Feed" }]}
+        items={[{ key: "feed", label: "Feed" }, { key: "list", label: "List" }]}
         active={view}
         onChange={(k) => onChange(k === "feed" ? "feed" : "list")}
     />
