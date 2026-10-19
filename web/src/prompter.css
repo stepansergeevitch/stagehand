@@ -18,7 +18,6 @@
 .pr-sw .icon { color: var(--ink-3); flex: none; }
 .pr-menu { position: absolute; top: calc(100% + var(--sp-1)); z-index: var(--z-pop); white-space: nowrap; }
 .pr-chats { left: 0; width: min(380px, calc(var(--prompter-w) - 2 * var(--sp-3))); max-height: min(60dvh, 420px); overflow-y: auto; }
-.pr-options { right: 0; min-width: 260px; }
 .pr-menu .pr-chat-row.on, .pr-sheet .pr-chat-row.on { background: var(--code); }
 .pr-chat-row { display: flex; align-items: center; border-radius: var(--r-md); }
 .pr-chat-pick { flex: 1; min-width: 0; background: transparent; }
@@ -30,9 +29,6 @@
 .pr-row-title.unread { font-weight: 600; }
 .pr-row-meta { margin-left: auto; padding-left: var(--sp-3); color: var(--ink-3); font-size: var(--fs-xs); white-space: nowrap; }
 .pr-menu .menu-item .kbd { margin-left: auto; }
-.pr-menu .menu-item.pr-static:disabled, .pr-sheet .menu-item.pr-static:disabled { opacity: 1; cursor: default; }
-.pr-menu-pick { padding: var(--sp-1) var(--sp-2) var(--sp-2); }
-.pr-menu-pick .pr-model { width: 100%; }
 
 /* what the assistant is told you see, with the switch to stop telling it */
 .pr-ctx { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: var(--fs-xs); color: var(--ink-2); min-width: 0; }
@@ -73,14 +69,11 @@
 
 .pr-input { padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--line); background: var(--surface-2); }
 
-/* the chats and options bottom sheet of a phone */
+/* the chats bottom sheet of a phone */
 .pr-sheet .modal-body { padding: 0 0 var(--sp-2); gap: 0; }
 .pr-sheet-list { display: flex; flex-direction: column; padding: 0 var(--sp-2); }
 .pr-sheet-list .menu-item { min-height: var(--touch); }
 .pr-sheet-new { color: var(--accent); font-weight: 500; }
-.pr-sheet-h { margin: var(--sp-3) 0 var(--sp-1); padding: 0 var(--sp-4); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
-.pr-sheet-switch { justify-content: space-between; }
-.pr-sheet-switch .switch { display: inline-flex; }
 
 @media (max-width: 760px) {
     /* the launcher is a round button the size of a touch target; the window is a full-screen sheet */
@@ -89,7 +82,6 @@
     .prompter-fab .badge { position: absolute; top: -4px; right: -4px; }
     .prompter, .prompter.docked { inset: 0; width: auto; height: auto; max-height: none; border-radius: 0; border: 0; padding-bottom: env(safe-area-inset-bottom); }
     .pr-head { padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-2); }
-    .pr-new { display: none; }
     .pr-head .btn, .pr-head .btn-icon { min-height: var(--touch); }
     .pr-head .btn-icon { min-width: var(--touch); }
     .pr-ctx { min-height: var(--touch); }

@@ -6,7 +6,7 @@ import { formatRoute, navigate, type Route } from "./routes";
 import { usePendingFiles } from "./AgentInput";
 import { ChatInput } from "./components/ChatInput";
 import { Modal } from "./components/Modal";
-import { Badge, Button, Chip, Icon, IconButton, Kbd, Menu, MenuItem, Notice, Select, StatusDot, Switch } from "@vortex/ds";
+import { Badge, Button, Chip, Icon, IconButton, Kbd, Menu, MenuItem, Notice, StatusDot, Switch } from "@vortex/ds";
 import { useDismiss } from "./components/useDismiss";
 import { Answer, AnswerActions, StepsLine, clock, useMedia, type Step } from "./PrompterParts";
 import "./prompter.css";
@@ -62,14 +62,9 @@ export const Prompter = ({ route, settings, tasks = [] }: { route: Route; settin
     const attach = usePendingFiles();
     const [error, setError] = useState<Problem | null>(null);
     const [switcher, setSwitcher] = useState(false);
-    const [options, setOptions] = useState(false);
     const [sheet, setSheet] = useState(false);
-    const [pickModel, setPickModel] = useState(false);
     const closeSwitcher = useCallback(() => setSwitcher(false), []);
-    const closeOptions = useCallback(() => { setOptions(false); setPickModel(false); }, []);
     const switcherRef = useDismiss(switcher, closeSwitcher);
-    const optionsRef = useDismiss(options, closeOptions);
-    const [newModel, setNewModel] = useState("");
     const [where, setWhere] = useState("");
     const [status, setStatus] = useState<Status | null>(null);
     const wide = useMedia("(min-width: 901px)");
@@ -85,8 +80,6 @@ export const Prompter = ({ route, settings, tasks = [] }: { route: Route; settin
     const chat = (activeId && chats[activeId]) || EMPTY;
     const queued = chat.messages.filter((m) => m.role === "user" && m.state === "queued");
     const share = !chat.noShare;
-    const modelValue = newModel || settings?.prompter?.model || "";
-    const modelLabel = (settings?.models ?? []).find((m) => m.value === modelValue)?.label || modelValue || "Default";
     const ticketTasks = useMemo(() => Object.fromEntries(tasks.map((t) => [t.ticket_id, t.id])), [tasks]);
     const otherUnread = Object.entries(chats).some(([id, c]) => id !== activeId && c.unread);
 
@@ -115,13 +108,13 @@ export const Prompter = ({ route, settings, tasks = [] }: { route: Route; settin
     );
 
     const create = useCallback(async () => {
-        const s = await api.prompterCreate(newModel || settings?.prompter?.model || null);
+        const s = await api.prompterCreate(settings?.prompter?.model || null);
         setSessions((list) => [s, ...list.filter((x) => x.id !== s.id)]);
         patchChat(s.id, (c) => ({ ...c, loaded: true }));
         setActiveId(s.id);
         setError(null);
         input.current?.focus();
-    }, [newModel, settings, patchChat]);
+    }, [settings, patchChat]);
 
     // Opening the window: the status, the chat list, and a chat to show (the remembered one, the newest, or a new one).
     useEffect(() => {
@@ -316,11 +309,10 @@ export const Prompter = ({ route, settings, tasks = [] }: { route: Route; settin
         setSheet(false);
         void create().catch((e: Error) => fail(e));
     };
-    const endThis = () => {
-        setOptions(false);
+    const openSettings = () => {
         setSwitcher(false);
         setSheet(false);
-        if (session) end(session.id, sessions.length <= 1);
+        navigate({ page: "prompter" });
     };
     const choose = (id: string) => {
         setSwitcher(false);
@@ -389,7 +381,7 @@ export const Prompter = ({ route, settings, tasks = [] }: { route: Route; settin
     // C-g or Esc inside the panel hides it, unless a turn runs (then the input stops it) or a menu is open (it closes).
     const onPanelKey = (e: ReactKeyboardEvent<HTMLElement>): void => {
         if (!e.currentTarget.contains(e.target as Node)) return;
-        if (((e.ctrlKey && e.code === "KeyG") || e.key === "Escape") && !chat.busy && !switcher && !options) {
+        if (((e.ctrlKey && e.code === "KeyG") || e.key === "Escape") && !chat.busy && !switcher) {
             e.preventDefault();
             setOpen(false);
         }
@@ -407,12 +399,6 @@ export const Prompter = ({ route, settings, tasks = [] }: { route: Route; settin
 
     const dot = (c: ChatState) => <StatusDot tone={c.busy ? "info" : c.unread ? "accent" : "neutral"} pulse={c.busy} title={c.busy ? "Answering" : c.unread ? "Unread answer" : undefined} />;
     const label = (s: PrompterSession) => ((chats[s.id] ?? EMPTY).busy ? "answering" : ago(s.last_at));
-    const modelOptions = (settings?.models ?? []).filter((m) => m.value).map((m) => <option key={m.value} value={m.value}>{m.label}</option>);
-    const pickerSelect = (
-        <Select className="pr-model" value={modelValue} aria-label="Model for new chats" autoFocus onChange={(e) => { setNewModel(e.target.value); setPickModel(false); }}>
-            {modelOptions}
-        </Select>
-    );
     const title = session?.title ?? TITLE;
     const shared = where || path;
     // One chat per row: the row opens it, the × beside it closes it (the menu stays open to close several; the last one closes the window).
@@ -446,26 +432,14 @@ export const Prompter = ({ route, settings, tasks = [] }: { route: Route; settin
                             {chatRows(true)}
                             {sessions.length > 0 && <hr />}
                             <MenuItem onClick={newChat}>New chat <Kbd>C-c p n</Kbd></MenuItem>
-                            <MenuItem danger disabled={!session} onClick={endThis}>End this chat</MenuItem>
+                            {wide && <MenuItem onClick={() => { setFloating((v) => !v); setSwitcher(false); }}>{docked ? "Float the window" : "Dock the window"}</MenuItem>}
+                            <MenuItem onClick={openSettings}>Prompter settings</MenuItem>
                         </Menu>
                     )}
                 </div>
                 {otherUnread && <StatusDot tone="accent" role="img" aria-label="Another chat has an unread answer" title="Another chat has an unread answer" />}
                 <span className="pr-spacer" />
                 <IconButton className="pr-new" icon="plus" label="New chat" variant="ghost" size="sm" onClick={newChat} />
-                <div className="pr-menu-wrap" ref={optionsRef}>
-                    <IconButton icon="more" label="Chat options" variant="ghost" size="sm" aria-expanded={phone ? sheet : options} aria-haspopup={phone ? "dialog" : "menu"} onClick={() => (phone ? setSheet(true) : setOptions((v) => !v))} />
-                    {options && !phone && (
-                        <Menu className="pr-menu pr-options" aria-label="Chat options">
-                            {wide && <MenuItem onClick={() => { setFloating((v) => !v); setOptions(false); }}>{docked ? "Float the window" : "Dock the window"}<small className="pr-row-meta">{docked ? "Docked" : "Floating"}</small></MenuItem>}
-                            <MenuItem aria-expanded={pickModel} onClick={() => setPickModel((v) => !v)}>Model for new chats<small className="pr-row-meta">{modelLabel} ▸</small></MenuItem>
-                            {pickModel && <div className="pr-menu-pick">{pickerSelect}</div>}
-                            <MenuItem className="pr-static" disabled>AI account<small className="pr-row-meta">{status?.account ?? "none"}</small></MenuItem>
-                            <hr />
-                            <MenuItem danger disabled={!session} onClick={endThis}>End this chat</MenuItem>
-                        </Menu>
-                    )}
-                </div>
                 <IconButton icon="close" label="Hide Prompter" variant="ghost" size="sm" onClick={() => setOpen(false)} />
             </header>
             {status?.ready !== false && (
@@ -529,14 +503,7 @@ export const Prompter = ({ route, settings, tasks = [] }: { route: Route; settin
                     <div className="pr-sheet-list" role="group" aria-label="Chats">
                         {chatRows(false)}
                         <MenuItem className="pr-sheet-new" onClick={newChat}>New chat</MenuItem>
-                    </div>
-                    <h3 className="pr-sheet-h">This chat</h3>
-                    <div className="pr-sheet-list" role="group" aria-label="This chat">
-                        <div className="menu-item pr-sheet-switch"><span>Share what I am looking at</span><Switch checked={share} aria-label="Share what you are looking at" disabled={!session} onChange={(e) => setShare(e.target.checked)} /></div>
-                        <MenuItem aria-expanded={pickModel} onClick={() => setPickModel((v) => !v)}>Model for new chats<small className="pr-row-meta">{modelLabel} ›</small></MenuItem>
-                        {pickModel && <div className="pr-menu-pick">{pickerSelect}</div>}
-                        <MenuItem className="pr-static" disabled>AI account<small className="pr-row-meta">{status?.account ?? "none"}</small></MenuItem>
-                        <MenuItem danger disabled={!session} onClick={endThis}>End this chat</MenuItem>
+                        <MenuItem onClick={openSettings}>Prompter settings</MenuItem>
                     </div>
                 </Modal>
             )}
