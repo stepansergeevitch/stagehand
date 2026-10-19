@@ -15,7 +15,7 @@ import "./chatinput.css";
 //
 // Keys (Emacs; RET sends on a desktop, a phone's Return is a new line and the button sends): RET sends, Shift+RET or C-j is a
 // new line, C-c C-c sends from anywhere in the box, C-g (or Esc) stops the running turn or leaves the box, M-p (or ArrowUp in
-// an empty box) takes the last queued message back.
+// an empty box) takes the last queued message back, C-v or C-y pastes on a Mac (a screenshot becomes an attachment).
 export interface ChatInputProps {
     value: string;
     onChange: (value: string) => void;
@@ -52,6 +52,33 @@ export interface ChatInputProps {
 }
 
 const touch = (): boolean => window.matchMedia("(hover: none)").matches;
+const mac = (): boolean => /Mac|iPhone|iPad/.test(navigator.platform);
+
+// macOS has no Ctrl+V paste (Cmd+V does, and pastes screenshots through the paste event): C-v and the Emacs yank C-y read the clipboard
+// themselves, so a screenshot goes in as an attachment and text goes in at the cursor. Other platforms paste with Ctrl+V natively.
+const yank = async (el: HTMLTextAreaElement, pending: PendingFiles | undefined): Promise<void> => {
+    try {
+        const items = await navigator.clipboard.read();
+        const files: File[] = [];
+        let text = "";
+        for (const item of items) {
+            const image = item.types.find((t) => t.startsWith("image/"));
+            if (image && pending) files.push(new File([await item.getType(image)], `image.${image.slice(6).replace("jpeg", "jpg")}`, { type: image }));
+            else if (item.types.includes("text/plain")) text += await (await item.getType("text/plain")).text();
+        }
+        if (files.length) pending?.add(files);
+        else if (text) {
+            el.focus();
+            document.execCommand("insertText", false, text);
+        }
+    } catch {
+        // The browser refused the clipboard (no permission): fall back to the text it will give.
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text) { el.focus(); document.execCommand("insertText", false, text); }
+        } catch { /* nothing to paste */ }
+    }
+};
 
 export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(({ value, onChange, pending, chips = "inside", placeholder, ariaLabel, disabled, status, rows = 2, autoFocus, spellCheck, className, action, working, onStop, mode, queued, onEditQueued, onRemoveQueued, onRecall, error, onRetry, fieldError, onKeyDown }, ref) => {
     const own = useRef<HTMLTextAreaElement | null>(null);
@@ -80,6 +107,9 @@ export const ChatInput = forwardRef<HTMLTextAreaElement, ChatInputProps>(({ valu
         if (e.key === "Enter" && !e.shiftKey && !e.altKey && action && (e.metaKey || e.ctrlKey || !touch())) {
             e.preventDefault();
             send();
+        } else if (mac() && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && (e.code === "KeyV" || e.code === "KeyY")) {
+            e.preventDefault();
+            void yank(e.currentTarget, pending);
         } else if (e.ctrlKey && e.code === "KeyJ") {
             e.preventDefault();
             const el = e.currentTarget;
