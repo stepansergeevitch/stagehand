@@ -19,7 +19,7 @@ export interface TaskView {
 
 export type Route =
     | { page: "dashboard"; task?: string; view?: TaskView }
-    | { page: "tasks"; env?: string; task?: string; view?: TaskView; create?: boolean }
+    | { page: "tasks"; list?: "active" | "completed"; env?: string; task?: string; view?: TaskView; create?: boolean }
     | { page: "sessions"; session?: string; view?: "terminal" | "changes" }
     | { page: "analytics"; days?: number }
     | { page: "timing"; days?: number }
@@ -61,6 +61,9 @@ export const parseRoute = (hash: string): Route => {
             return view ? { page: "dashboard", task: a, view } : { page: "dashboard", task: a };
         case "tasks":
             if (a === "new") return { page: "tasks", create: true, ...(env ? { env } : {}) };
+            // The list views (#/tasks/list, /completed, /active) and the Feed (#/tasks/feed, the bare #/tasks) have no task.
+            if (a === "feed") return { page: "tasks", ...(env ? { env } : {}) };
+            if (a === "list" || a === "completed" || a === "active") return { page: "tasks", list: a === "completed" ? "completed" : "active", ...(env ? { env } : {}) };
             if (a) return view ? { page: "tasks", task: a, view } : { page: "tasks", task: a };
             return { page: "tasks", ...(env ? { env } : {}) };
         case "sessions":

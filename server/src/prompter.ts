@@ -424,7 +424,7 @@ export class Prompter {
             case "tasks": {
                 if (r.task) return this.describeTask(r.task, r.view, "Tasks");
                 const env = r.env ? (this.db.prepare(`SELECT * FROM envs WHERE id = ?`).get(r.env) as EnvRow | undefined) : undefined;
-                const label = r.create ? `New task${env ? ` in ${env.name}` : ""}` : `Tasks${env ? ` · ${env.name}` : ""}`;
+                const label = r.create ? `New task${env ? ` in ${env.name}` : ""}` : `${r.list === "completed" ? "Completed tasks" : r.list ? "Tasks list" : "Tasks feed"}${env ? ` · ${env.name}` : ""}`;
                 return { summary: label, context: `Page: ${label}${env ? ` (environment ${env.name}, ${env.path}, base ${env.base_branch})` : ""}.` };
             }
             case "sessions": {

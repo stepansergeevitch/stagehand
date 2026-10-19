@@ -1,10 +1,12 @@
 /* App frame and page-level layout (docs/ux-redesign.md §3-4). Tokens only; no raw colours. */
 :root {
-    --sidebar-w: 232px; --rail-w: 56px; --topbar-h: 52px; --touch: 44px;
+    --prompter-w: 430px; --sidebar-w: 232px; --rail-w: 56px; --topbar-h: 52px; --touch: 44px;
     --z-sticky: 5; --z-pop: 30; --z-drawer: 40; --z-modal: 50; --z-palette: 60; --z-toast: 80;
 }
 
 .shell { display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); height: 100%; background: var(--bg); }
+/* A docked Prompter takes the right edge: the shell narrows beside it. */
+body.prompter-docked .shell { padding-right: var(--prompter-w); }
 .shell.collapsed { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
 .shell-col { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; }
 .shell-main { overflow: auto; min-height: 0; outline: none; }

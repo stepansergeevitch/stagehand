@@ -382,7 +382,7 @@ export const App = () => {
                             <LazyTerminal session={terminal} />
                         </Modal>
                     )}
-                    <ErrorBoundary label="Prompter"><Prompter route={route} settings={settings} /></ErrorBoundary>
+                    <ErrorBoundary label="Prompter"><Prompter route={route} settings={settings} tasks={tasks} /></ErrorBoundary>
                 </>
             }
         >
