@@ -3,3 +3,9 @@
 .expand-chip-detail { display: inline-block; max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; vertical-align: bottom; transition: max-width 0.2s ease, opacity 0.2s ease, margin-left 0.2s ease; }
 .expand-chip:hover .expand-chip-detail, .expand-chip:focus-visible .expand-chip-detail { max-width: 24ch; opacity: 1; margin-left: 0.4em; }
 @media (prefers-reduced-motion: reduce) { .expand-chip-detail { transition: none; } }
+.expand-chip-wrap { display: inline-flex; align-items: center; }
+.expand-chip-link { display: inline-flex; max-width: 0; opacity: 0; overflow: hidden; color: var(--ink-2); transition: max-width 0.2s ease, opacity 0.2s ease, margin-left 0.2s ease; }
+.expand-chip-wrap:hover .expand-chip-link, .expand-chip-wrap:focus-within .expand-chip-link { max-width: 2em; opacity: 1; margin-left: 0.3em; }
+.expand-chip-link:hover { color: var(--accent); }
+@media (hover: none) { .expand-chip-link { max-width: 2em; opacity: 1; margin-left: 0.3em; } }
+@media (prefers-reduced-motion: reduce) { .expand-chip-link { transition: none; } }

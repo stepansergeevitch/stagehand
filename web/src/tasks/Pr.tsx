@@ -487,7 +487,7 @@ export const PrSummaryChips = ({ detail, onOpen }: { detail: TaskDetail; onOpen:
                 if (o.kind === "none") return null;
                 const name = repos.length > 1 ? repoName(repo) : "PR";
                 const detailText = `${row?.number ? `#${row.number} ` : ""}${o.text}`;
-                return <ExpandChip key={repo} label={name} detail={detailText} tone={o.tone} onClick={() => onOpen(repo)} title={`${name} ${detailText} (open the pull request)`} />;
+                return <ExpandChip key={repo} label={name} detail={detailText} tone={o.tone} onClick={() => onOpen(repo)} title={`${name} ${detailText} (open the pull request)`} href={row?.url} />;
             })}
         </>
     );
