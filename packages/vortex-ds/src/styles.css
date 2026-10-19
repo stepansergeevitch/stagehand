@@ -230,7 +230,10 @@ input.invalid, select.invalid, textarea.invalid { border-color: var(--bad); }
 input.invalid:focus-visible, select.invalid:focus-visible, textarea.invalid:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 40%, transparent); }
 
 /* ---------- Tabs: the underline grows in under the active tab ---------- */
-.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 0 0 var(--sp-4); overflow-x: auto; }
+/* A strip wider than the screen scrolls sideways only: the line is an inset shadow (not a border the tabs overlap with a negative margin), so nothing sticks out below and the strip has no vertical scroll to grab on a touch screen. */
+.tabs { display: flex; gap: 2px; box-shadow: inset 0 -1px 0 var(--line); margin: 0 0 var(--sp-4); overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs .tab { margin-bottom: 0; flex: none; }
 .tab { position: relative; white-space: nowrap; border: 0; border-radius: var(--r-sm) var(--r-sm) 0 0; background: transparent; padding: 8px 14px; margin-bottom: -1px; color: var(--ink-3); font: inherit; font-weight: 500; cursor: pointer; transition: color var(--dur) var(--ease), background-color var(--dur) var(--ease); }
 .tab::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 2px; background: var(--brand-grad); transform: scaleX(0); transition: transform 180ms var(--ease); }
 .tab .badge { margin-left: var(--sp-2); }
