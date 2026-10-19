@@ -5,13 +5,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { Config } from "./config.js";
-import { accountModelsOf, now, type AccountRow, type DB, type PoArtifactRow, type PoIssueRow, type PoMessageRow, type PoPhase, type PoTicketLinkRow, type ProductOwnerRow, type TaskRow } from "./db.js";
+import { accountModelsOf, now, type AccountRow, type DB, type SharedFile, type PoArtifactRow, type PoIssueRow, type PoMessageRow, type PoPhase, type PoTicketLinkRow, type ProductOwnerRow, type TaskRow } from "./db.js";
 import { authEnv } from "./claude/accounts.js";
 import { startClaude, type ActivityEvent, type ClaudeRun } from "./claude/runner.js";
 import { recordUsage } from "./usage.js";
 import type { Palace } from "./palace.js";
 import { createClickUpTask, createLinearIssue, issueDescription, updateIssueDescription, fetchProjectState, fetchScope, fetchScopeIssues, fetchSource, figmaLinks, figmaRenders, findIssue, ticketScopeId, type TrackedIssue, type TrackedProject } from "./sources.js";
-import { downloadUpload, hostedUploads, sharedFileName, uploadKey } from "./tickets.js";
+import { downloadUpload, hostedUploads, renderSharedFiles, sharedFileName, uploadKey } from "./tickets.js";
+import { boardLanes, createCard, tasksMdEnvConfigOf } from "./tasksmd.js";
 import { repoPaths } from "./git.js";
 import { chunkText, drawerText, issueDrawers } from "./palace-index.js";
 import { describeImage, extractDocText, isConvertibleDoc, isImage } from "./media.js";
@@ -33,6 +34,10 @@ import { PoJournal, type PoEventChanges, type PoEventKind, type PoEventRefs, typ
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 // Every environment a PO works for, its primary one (env_id) first.
+// The task manager's name and what one project of it is called there.
+const trackerName = (source: string): string => (source === "linear" ? "Linear" : source === "tasksmd" ? "Tasks.md" : "ClickUp");
+const scopeLabel = (kind: string): string => (kind === "project" ? "Linear project" : kind === "board" ? "Tasks.md board" : kind === "env" ? "environment" : "ClickUp epic");
+
 export const poEnvIds = (po: Pick<ProductOwnerRow, "env_id" | "env_ids">): string[] => {
     let list: unknown = null;
     try {
@@ -69,6 +74,7 @@ export type PoTicket = z.infer<typeof PoTicket>;
 
 // A PO review of a task's design proposal (po-review.json in the task folder): a verdict and graded comments. The
 // human picks the comments for the next design round (`include`), and discusses each one with the PO (`thread`).
+const ReviewFile = z.object({ name: z.string(), file: z.string(), mime: z.string().nullable(), size: z.number() });
 export const PoReviewComment = z.object({
     id: z.string(),
     severity: z.enum(["high", "medium", "low"]),
@@ -85,7 +91,9 @@ export const PoReviewComment = z.object({
     note: z.string().nullable().default(null),
     // When it went to the design agent (null = not yet).
     sentAt: z.string().nullable().default(null),
-    thread: z.array(z.object({ role: z.enum(["user", "po"]), text: z.string(), at: z.string() })).default([]),
+    // Files the human attached to their note (task dir, shared/) and to their messages in the discussion.
+    noteFiles: z.array(ReviewFile).default([]),
+    thread: z.array(z.object({ role: z.enum(["user", "po"]), text: z.string(), at: z.string(), files: z.array(ReviewFile).optional() })).default([]),
 });
 // `sentAt`: when the picked comments went to the design agent — the review is closed from then on (read-only).
 export const PoReviewResult = z.object({ verdict: z.enum(["approve", "changes"]), summary: z.string(), comments: z.array(PoReviewComment), sentAt: z.string().nullable().default(null) });
@@ -115,7 +123,7 @@ export const readReview = (taskDir: string): PoReviewResult | null => {
 };
 
 // The picked comments of a review as the notes of the next design round, with their discussions.
-export const reviewNotes = (r: PoReviewResult, poTitle: string | null): string => {
+export const reviewNotes = (r: PoReviewResult, poTitle: string | null, taskDir: string | null = null): string => {
     const picked = r.comments.filter((c) => c.include && !c.withdrawn);
     const skipped = r.comments.length - picked.length;
     return [
@@ -126,8 +134,8 @@ export const reviewNotes = (r: PoReviewResult, poTitle: string | null): string =
             [
                 `### ${c.id} · ${c.severity} · ${c.area}${c.laterTicket ? ` · for ${c.laterTicket}` : ""} — ${c.title}`,
                 c.body,
-                c.note?.trim() ? `**The human's note:** ${c.note.trim()}` : "",
-                c.thread.length ? `**Discussion with the human:**\n${c.thread.map((m) => `- **${m.role === "user" ? "Human" : "Product Owner"}:** ${m.text.replace(/\n+/g, " ")}`).join("\n")}` : "",
+                c.note?.trim() || c.noteFiles.length ? `**The human's note:** ${c.note?.trim() ?? ""}${taskDir ? renderSharedFiles(c.noteFiles, taskDir) : ""}` : "",
+                c.thread.length ? `**Discussion with the human:**\n${c.thread.map((m) => `- **${m.role === "user" ? "Human" : "Product Owner"}:** ${m.text.replace(/\n+/g, " ")}${m.files?.length && taskDir ? ` (attached: ${m.files.map((f) => `\`${join(taskDir, f.file)}\``).join(", ")})` : ""}`).join("\n")}` : "",
             ]
                 .filter(Boolean)
                 .join("\n\n"),
@@ -405,9 +413,9 @@ export class ProductOwners {
         this.db.prepare(`UPDATE product_owners SET phase = ?, status = ?, status_line = ?, title = ?, updated_at = ? WHERE id = ?`).run(next.phase, next.status, next.status_line, next.title, now(), id);
         this.emit({ poId: id, kind: "updated" });
     }
-    private addMessage(poId: string, role: PoMessageRow["role"], text: string): PoMessageRow {
-        const m: PoMessageRow = { id: randomUUID(), po_id: poId, role, text, created_at: now() };
-        this.db.prepare(`INSERT INTO po_messages (id, po_id, role, text, created_at) VALUES (?, ?, ?, ?, ?)`).run(m.id, m.po_id, m.role, m.text, m.created_at);
+    private addMessage(poId: string, role: PoMessageRow["role"], text: string, files: SharedFile[] = []): PoMessageRow {
+        const m: PoMessageRow = { id: randomUUID(), po_id: poId, role, text, created_at: now(), files: files.length ? JSON.stringify(files) : null };
+        this.db.prepare(`INSERT INTO po_messages (id, po_id, role, text, created_at, files) VALUES (?, ?, ?, ?, ?, ?)`).run(m.id, m.po_id, m.role, m.text, m.created_at, m.files);
         this.emit({ poId, kind: "message", message: m });
         return m;
     }
@@ -545,7 +553,7 @@ export class ProductOwners {
         const envs = this.envsOf(envIds);
         const env = envs[0]!;
         const scope = await fetchScope(this.cfg, url);
-        for (const e of envs) if (e.ticket_source !== scope.source) throw new Error(`environment "${e.name}" uses ${e.ticket_source === "linear" ? "Linear" : "ClickUp"}, and this is a ${scope.source === "linear" ? "Linear project" : "ClickUp epic"}`);
+        for (const e of envs) if (e.ticket_source !== scope.source) throw new Error(`environment "${e.name}" uses ${trackerName(e.ticket_source)}, and this is a ${scopeLabel(scope.kind)}`);
         // The project's PO in any of these environments is this one: it takes the other environments too.
         const existing = envs
             .map((e) => this.db.prepare(`SELECT * FROM product_owners p WHERE ${PO_IN_ENV} AND p.source = ? AND p.scope_id = ?`).get(e.id, e.id, scope.source, scope.id) as ProductOwnerRow | undefined)
@@ -577,7 +585,7 @@ export class ProductOwners {
             .run(row.id, row.title, row.slug, row.source, row.scope_kind, row.scope_id, row.scope_url, row.team_id, row.phase, row.status, row.status_line, row.session_id, row.account_id, row.created_at, row.updated_at, row.env_id, row.env_ids);
         mkdirSync(join(this.dir(row.id), "artifacts"), { recursive: true });
         writeFileSync(join(this.dir(row.id), "context.md"), "");
-        this.addArtifactText(row.id, scope.source, `${scope.kind === "project" ? "Linear project" : "ClickUp epic"}: ${scope.title}`, scope.url, scope.markdown);
+        this.addArtifactText(row.id, scope.source, `${scopeLabel(scope.kind)}: ${scope.title}`, scope.url, scope.markdown);
         void this.assignExistingTasks(row);
         if (opts.start !== false) this.start(row.id);
         return this.get(row.id) ?? row;
@@ -586,7 +594,7 @@ export class ProductOwners {
     // The environment's own PO (one per env): no project, no tickets, no first turn. It reviews and briefs every task
     // of the env that has no project PO, from the product context and the env's memory.
     createEnvPo(envId: string, accountId: string | null): ProductOwnerRow {
-        const env = this.db.prepare(`SELECT id, name, ticket_source FROM envs WHERE id = ?`).get(envId) as { id: string; name: string; ticket_source: "linear" | "clickup" } | undefined;
+        const env = this.db.prepare(`SELECT id, name, ticket_source FROM envs WHERE id = ?`).get(envId) as { id: string; name: string; ticket_source: "linear" | "clickup" | "tasksmd" } | undefined;
         if (!env) throw new Error("no such environment");
         const existing = this.envPo(env.id);
         if (existing) return existing;
@@ -627,7 +635,7 @@ export class ProductOwners {
         if (!po) throw new Error("product owner not found");
         const envs = this.envsOf(envIds);
         if (po.scope_kind === "env" && (envs.length !== 1 || envs[0]!.id !== po.env_id)) throw new Error("an environment's own Product Owner belongs to that one environment");
-        for (const e of envs) if (e.ticket_source !== po.source) throw new Error(`environment "${e.name}" uses ${e.ticket_source === "linear" ? "Linear" : "ClickUp"}, and this Product Owner's project is in ${po.source === "linear" ? "Linear" : "ClickUp"}`);
+        for (const e of envs) if (e.ticket_source !== po.source) throw new Error(`environment "${e.name}" uses ${trackerName(e.ticket_source)}, and this Product Owner's project is in ${trackerName(po.source)}`);
         const ids = envs.map((e) => e.id);
         this.db.prepare(`UPDATE product_owners SET env_id = ?, env_ids = ?, updated_at = ? WHERE id = ?`).run(ids[0], JSON.stringify(ids), now(), poId);
         // Tasks of an environment it no longer works for drop it (the environment's own PO takes them on the next brief).
@@ -655,7 +663,7 @@ export class ProductOwners {
         const n = arts.length;
         // An environment PO starts only when the human gave it sources to read.
         if (po.scope_kind === "env" && !n) return;
-        const what = po.scope_kind === "project" ? "Linear project" : "ClickUp epic";
+        const what = scopeLabel(po.scope_kind);
         const text =
             po.scope_kind === "env"
                 ? `Read the ${n} source(s) the human added, and the product context. File what they teach about the product in your palace wing (update, do not append) and write a first context.md. List what is still unclear as your outstanding questions (CLAUDE.md, Questions). Then tell me in a few bullets what you learned.`
@@ -669,7 +677,7 @@ export class ProductOwners {
         for (const envId of poEnvIds(po)) {
             const env = this.db.prepare(`SELECT name, ticket_source FROM envs WHERE id = ?`).get(envId) as { name: string; ticket_source: string } | undefined;
             if (!env) throw new Error("one of this Product Owner's environments no longer exists");
-            if (env.ticket_source !== po.source) throw new Error(`environment "${env.name}" now uses ${env.ticket_source === "linear" ? "Linear" : "ClickUp"}, but this Product Owner's project is in ${po.source === "linear" ? "Linear" : "ClickUp"}`);
+            if (env.ticket_source !== po.source) throw new Error(`environment "${env.name}" now uses ${trackerName(env.ticket_source)}, but this Product Owner's project is in ${trackerName(po.source)}`);
         }
     }
 
@@ -998,7 +1006,7 @@ export class ProductOwners {
         return [
             envPo
                 ? `You are the Product Owner of the environment "${env?.name ?? po.env_id}" as a whole — no single project. You brief and review every task of this environment that has no project PO. Your knowledge is the product context below and this environment's memory: search it before every answer.`
-                : `You are the Product Owner of "${po.title}" — ${po.source === "linear" ? "a Linear project" : "a ClickUp epic"}: ${po.scope_url ?? po.scope_id}.`,
+                : `You are the Product Owner of "${po.title}" — a ${scopeLabel(po.scope_kind)}: ${po.scope_url ?? po.scope_id}.`,
             `Your folder: ${d}. Your palace wing: ${this.wing(po)}. Your diary agent name: ${po.slug}.`,
             envPo ? "You plan no project and write no design.md or tickets.json. Keep context.md for what you learn about the product across tasks." : `Phase: ${PHASE_LABEL[po.phase]}. ${phaseNote[po.phase]}`,
             ...((): string[] => {
@@ -1066,7 +1074,7 @@ export class ProductOwners {
     // One chat turn: the human's message (or a system brief), in the PO's own session. `events`: the events this turn
     // processes — it fills their brief, diffs and memory writes. A turn with no event that changes the PO's files or
     // memory (a chat) gets an event of its own.
-    async send(poId: string, text: string, opts: { system?: boolean; events?: string[] } = {}): Promise<void> {
+    async send(poId: string, text: string, opts: { system?: boolean; events?: string[]; files?: SharedFile[] } = {}): Promise<void> {
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
         if (this.active.has(poId)) throw new Error("the Product Owner is still answering — wait for it, or stop it");
@@ -1078,12 +1086,12 @@ export class ProductOwners {
         const memory: PoMemoryWrite[] = [];
         for (const id of events) this.journal.setEventStatus(id, "processing");
         this.turnEvent.set(poId, events[0] ?? ownEvent);
-        this.addMessage(poId, opts.system ? "system" : "user", text);
+        this.addMessage(poId, opts.system ? "system" : "user", text, opts.files ?? []);
         const first = !this.messages(poId).some((m) => m.role === "agent");
         this.trust(poId);
         mkdirSync(join(this.dir(poId), "logs"), { recursive: true });
         const run = startClaude({
-            prompt: text,
+            prompt: text + renderSharedFiles(opts.files ?? [], this.dir(poId)),
             cwd: this.dir(poId),
             configDir: this.configDir,
             extraEnv: this.runEnv(po, acc),
@@ -1186,7 +1194,7 @@ export class ProductOwners {
             if (!t.existing || have.has(t.key)) continue;
             const found = await findIssue(this.cfg, po.source, t.existing).catch(() => null);
             if (!found) {
-                this.addMessage(po.id, "system", `${t.key} names ${t.existing}, which Vortex cannot find in ${po.source === "linear" ? "Linear" : "ClickUp"}.`);
+                this.addMessage(po.id, "system", `${t.key} names ${t.existing}, which Vortex cannot find in ${trackerName(po.source)}.`);
                 continue;
             }
             this.db.prepare(`INSERT OR IGNORE INTO po_ticket_links (po_id, key, remote_id, identifier, url, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(po.id, t.key, found.id, found.identifier, found.url, now());
@@ -1205,7 +1213,7 @@ export class ProductOwners {
 
     // Open Vortex tasks whose ticket belongs to this PO's project or epic get it as their Product Owner.
     private async assignExistingTasks(po: ProductOwnerRow): Promise<void> {
-        const tasks = this.tasksForAssignment(po, true) as Array<{ id: string; source: "linear" | "clickup"; ticket_id: string }>;
+        const tasks = this.tasksForAssignment(po, true) as Array<{ id: string; source: "linear" | "clickup" | "tasksmd"; ticket_id: string }>;
         for (const t of tasks) {
             const scope = await ticketScopeId(this.cfg, t.source, t.ticket_id);
             if (scope === po.scope_id) {
@@ -1447,7 +1455,7 @@ export class ProductOwners {
         if (!existsSync(raw)) throw new Error("there is no tickets.json yet");
         const { tickets } = PoTickets.parse(JSON.parse(readFileSync(raw, "utf8")));
         this.checkManager(po);
-        if (!po.team_id) throw new Error(po.source === "linear" ? "the Linear project has no team to create issues in" : "the ClickUp epic has no list to create tasks in");
+        if (!po.team_id && po.source !== "tasksmd") throw new Error(po.source === "linear" ? "the Linear project has no team to create issues in" : "the ClickUp epic has no list to create tasks in");
         this.touch(poId, { phase: "approved", status: "running", status_line: `creating ${tickets.length} ticket(s)…` });
         const done = new Map(this.links(poId).map((l) => [l.key, l]));
         const order = [...tickets].sort((a, b) => (a.parent ? 1 : 0) - (b.parent ? 1 : 0));
@@ -1475,9 +1483,11 @@ export class ProductOwners {
                     .filter(Boolean)
                     .join("\n\n");
                 const res =
-                    po.source === "linear"
-                        ? await createLinearIssue(this.cfg, { teamId: po.team_id, projectId: po.scope_id, title: t.title, description, parentId: parent?.remote_id ?? null, estimate: t.estimate })
-                        : await createClickUpTask(this.cfg, { listId: po.team_id, parentId: parent?.remote_id ?? po.scope_id, name: t.title, description });
+                    po.source === "tasksmd"
+                        ? this.createCardFor(po, t.title, description)
+                        : po.source === "linear"
+                        ? await createLinearIssue(this.cfg, { teamId: po.team_id!, projectId: po.scope_id, title: t.title, description, parentId: parent?.remote_id ?? null, estimate: t.estimate })
+                        : await createClickUpTask(this.cfg, { listId: po.team_id!, parentId: parent?.remote_id ?? po.scope_id, name: t.title, description });
                 const link: PoTicketLinkRow = { po_id: poId, key: t.key, remote_id: res.id, identifier: res.identifier, url: res.url, created_at: now() };
                 this.db.prepare(`INSERT INTO po_ticket_links (po_id, key, remote_id, identifier, url, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(link.po_id, link.key, link.remote_id, link.identifier, link.url, link.created_at);
                 done.set(t.key, link);
@@ -1490,9 +1500,9 @@ export class ProductOwners {
         }
         const list = tickets.map((t) => `- ${t.key} → ${done.get(t.key)?.identifier ?? "?"} ${t.title}`).join("\n");
         this.touch(poId, { phase: "live", status: "idle", status_line: null });
-        this.addMessage(poId, "system", `Vortex created ${created} ticket(s) in ${po.source === "linear" ? "Linear" : "ClickUp"}.`);
+        this.addMessage(poId, "system", `Vortex created ${created} ticket(s) in ${trackerName(po.source)}.`);
         const prompt = `The tickets exist now:\n${list}\n\nConsolidate what this project taught you: bring context.md up to date; file the product knowledge in your wing's features, users, decisions and glossary rooms (update, do not append); add knowledge-graph facts for product entities; write a diary entry for this planning round. If the project changes the product-wide picture, write product-context-proposal.md. Then answer with a short summary of what you filed. End with a paragraph that starts with \`Impact:\` — 50 words or fewer.`;
-        const ev = this.journal.addEvent({ poId, kind: "tickets", title: `Tickets created in ${po.source === "linear" ? "Linear" : "ClickUp"} (${created})`, body: list, prompt, status: "pending" });
+        const ev = this.journal.addEvent({ poId, kind: "tickets", title: `Tickets created in ${trackerName(po.source)} (${created})`, body: list, prompt, status: "pending" });
         this.brief(poId, prompt, [ev.id]);
         return { created, skipped: tickets.length - created };
     }
@@ -1503,11 +1513,22 @@ export class ProductOwners {
 
     // ---------- tasks ----------
 
+    // A ticket the PO created on its Tasks.md board: a card in the primary env's "new" lane (else the board's first lane,
+    // else "Backlog"), numbered with that env's id prefix.
+    private createCardFor(po: ProductOwnerRow, title: string, description: string): { id: string; identifier: string; url: string } {
+        const env = this.db.prepare(`SELECT ticket_config FROM envs WHERE id = ?`).get(po.env_id) as { ticket_config: string | null } | undefined;
+        const tc = tasksMdEnvConfigOf(env?.ticket_config);
+        const board = po.scope_id;
+        const lane = tc.lanes.new || boardLanes(this.cfg, board)[0] || "Backlog";
+        const card = createCard(this.cfg, { board, lane, title, description, prefix: tc.idPrefix, ...(tc.tag ? { tags: [tc.tag] } : {}) });
+        return { id: card.id!, identifier: card.id!, url: `tasksmd:${[card.board, card.lane, card.title].filter(Boolean).join("/")}` };
+    }
+
     // The PO of a ticket: one that created it, else the one whose project or epic the ticket belongs to.
     async ownerOfTicket(envId: string, source: string, ticketId: string): Promise<string | null> {
         const link = this.db.prepare(`SELECT l.po_id FROM po_ticket_links l JOIN product_owners p ON p.id = l.po_id WHERE ${PO_IN_ENV} AND p.source = ? AND (UPPER(l.identifier) = UPPER(?) OR l.remote_id = ?)`).get(envId, envId, source, ticketId, ticketId) as { po_id: string } | undefined;
         if (link) return link.po_id;
-        if (source !== "linear" && source !== "clickup") return null;
+        if (source !== "linear" && source !== "clickup" && source !== "tasksmd") return null;
         const owners = this.db.prepare(`SELECT * FROM product_owners p WHERE ${PO_IN_ENV} AND p.source = ? AND p.scope_kind != 'env'`).all(envId, envId, source) as ProductOwnerRow[];
         const scope = owners.length ? await ticketScopeId(this.cfg, source, ticketId) : null;
         // The project's PO when there is one, else the environment's.
@@ -1652,7 +1673,7 @@ export class ProductOwners {
 
     // A question about one review comment, answered in the review's own session. The PO may regrade the comment
     // ("SEVERITY: low") or withdraw it ("WITHDRAW") on the last line of its answer.
-    async askReviewComment(task: TaskRow, taskDir: string, commentId: string, text: string, onChange: () => void): Promise<void> {
+    async askReviewComment(task: TaskRow, taskDir: string, commentId: string, text: string, onChange: () => void, files: SharedFile[] = []): Promise<void> {
         const po = task.product_owner_id ? this.get(task.product_owner_id) : undefined;
         if (!po) throw new Error("this task has no Product Owner");
         if (this.reviews.has(task.id)) throw new Error("the Product Owner is still working on this review — ask when it is done");
@@ -1663,14 +1684,14 @@ export class ProductOwners {
         if (review.sentAt) throw new Error("this review was sent to the agent — review the new proposal again");
         const acc = this.account(po);
         if (!acc?.oauth_token) throw new Error("no AI account with a token — set one up on the AI accounts page");
-        c.thread.push({ role: "user", text, at: now() });
+        c.thread.push({ role: "user", text, at: now(), ...(files.length ? { files } : {}) });
         writeFileSync(join(taskDir, "po-review.json"), JSON.stringify(review, null, 2));
         writeReviewState(taskDir, { ...state, asking: commentId });
         const prompt = [
             `The human asks about your review comment ${c.id} (${c.severity}, ${c.area}${c.laterTicket ? `, for ${c.laterTicket}` : ""}): "${c.title}" — ${c.body}`,
             `This task implements ${task.ticket_id} only; keep the answer to this task's work.`,
-            ...(c.note?.trim() ? [`The human's note on this comment: ${c.note.trim()}`] : []),
-            `Their message: ${text}`,
+            ...(c.note?.trim() || c.noteFiles.length ? [`The human's note on this comment: ${c.note?.trim() ?? ""}${renderSharedFiles(c.noteFiles, taskDir)}`] : []),
+            `Their message: ${text}${renderSharedFiles(files, taskDir)}`,
             `Answer in 120 words or fewer, as the Product Owner, by the writing rules. Check the proposal and the palace again when the question needs it. Do not change any file. Never name people; cite a source by what it is (a decision, a ticket comment, the spec).`,
             `When the discussion changes your view, end with one line: "SEVERITY: high", "SEVERITY: medium" or "SEVERITY: low" to regrade the comment, or "WITHDRAW" to drop it. Otherwise end without such a line.`,
         ].join("\n\n");
@@ -1756,7 +1777,7 @@ export class ProductOwners {
 
     // The human discusses one question with the PO, in the question's own session. The PO may end with a suggested
     // resolution ("RESOLUTION: …"), which the human confirms or discusses further.
-    askQuestion(poId: string, ref: string, text: string): void {
+    askQuestion(poId: string, ref: string, text: string, files: SharedFile[] = []): void {
         const po = this.get(poId);
         if (!po) throw new Error("product owner not found");
         const q = this.journal.question(poId, ref);
@@ -1765,7 +1786,7 @@ export class ProductOwners {
         if (this.questionRuns.has(q.id)) throw new Error("the Product Owner is still answering about this question");
         const acc = this.account(po);
         if (!acc?.oauth_token) throw new Error("no AI account with a token — set one up on the AI accounts page");
-        this.journal.pushThread(q.id, { role: "user", text, at: now() });
+        this.journal.pushThread(q.id, { role: "user", text, at: now(), ...(files.length ? { files } : {}) });
         if (q.status === "dropped") this.journal.patchQuestion(q.id, { status: "open", resolution: null });
         const first = !q.session_id;
         const sessionId = q.session_id ?? randomUUID();
@@ -1775,7 +1796,7 @@ export class ProductOwners {
         const prompt = [
             first ? `The human discusses your outstanding question **${q.key}**: "${q.question}"${q.detail ? ` — ${q.detail}` : ""}` : `More on **${q.key}** ("${q.question}").`,
             q.status === "proposed" && q.resolution ? `Your suggested resolution so far: ${q.resolution}` : "",
-            `Their message: ${text}`,
+            `Their message: ${text}${renderSharedFiles(files, this.dir(poId))}`,
             `Answer in 150 words or fewer, as the Product Owner, by the writing rules. Search your memory and sources when the question needs it. Do not change any file and do not call the Vortex API.`,
             `When you understand the answer, end with a paragraph that starts with \`RESOLUTION:\` — the answer as a decision, 60 words or fewer, as it will go into context.md. The human confirms it or discusses further. Otherwise end without it.`,
         ].filter(Boolean).join("\n\n");
@@ -1810,18 +1831,18 @@ export class ProductOwners {
     }
 
     // The human confirms a question's resolution (the PO's, or their own wording): the PO records it in its context.
-    confirmQuestion(poId: string, ref: string, resolution?: string): void {
+    confirmQuestion(poId: string, ref: string, resolution?: string, files: SharedFile[] = []): void {
         const q = this.journal.question(poId, ref);
         if (!q) throw new Error(`no question ${ref}`);
         if (q.status === "resolved") throw new Error(`${q.key} is already resolved`);
-        const text = resolution?.trim() || q.resolution?.trim();
+        const text = resolution?.trim() || q.resolution?.trim() || (files.length ? "(see the attached files)" : "");
         if (!text) throw new Error("there is no resolution to confirm — discuss the question first, or write the resolution");
         if (this.questionRuns.has(q.id)) throw new Error("the Product Owner is still answering about this question");
         this.journal.patchQuestion(q.id, { status: "resolved", resolution: text, resolved_at: now() });
         const thread = this.journal.thread(q.id);
         const prompt = [
             `The human confirmed the resolution of your outstanding question **${q.key}**: "${q.question}"`,
-            `**Resolution:** ${text}`,
+            `**Resolution:** ${text}${renderSharedFiles(files, this.dir(poId))}`,
             thread.length ? `The discussion:\n${thread.map((m) => `- **${m.role === "user" ? "Human" : "You"}:** ${m.text.replace(/\n+/g, " ")}`).join("\n")}` : "",
             `Record it: in context.md (from the open questions to the decisions), in design.md when it has this question (Open questions → Decisions), and in your palace room \`decisions\` (update, do not append).`,
             EVENT_RULES,
@@ -1871,13 +1892,13 @@ export class ProductOwners {
         const row = this.db.prepare(`SELECT * FROM po_issues WHERE po_id = ? AND UPPER(identifier) = UPPER(?)`).get(poId, c.target) as PoIssueRow | undefined;
         if (!row) throw new Error(`${c.target} is no longer an issue of this project`);
         const live = await issueDescription(this.cfg, po.source, row.remote_id);
-        if (live.trim() !== (c.before ?? "").trim()) throw new Error(`${c.target} changed in ${po.source === "linear" ? "Linear" : "ClickUp"} since the Product Owner suggested this — refresh the issues; the Product Owner suggests it again on the new text`);
+        if (live.trim() !== (c.before ?? "").trim()) throw new Error(`${c.target} changed in ${trackerName(po.source)} since the Product Owner suggested this — refresh the issues; the Product Owner suggests it again on the new text`);
         await updateIssueDescription(this.cfg, po.source, row.remote_id, c.after ?? "");
         const issue = { ...(JSON.parse(row.data) as TrackedIssue), description: c.after ?? "" };
         this.db.prepare(`UPDATE po_issues SET data = ?, hash = ?, changed_at = ? WHERE po_id = ? AND identifier = ?`).run(JSON.stringify(issue), issueHash(issue), now(), poId, row.identifier);
         this.queueIssueIndex(po, row.identifier);
         this.journal.setCorrectionStatus([id], "applied");
-        this.journal.addEvent({ poId, kind: "edit", title: `You applied a correction to ${c.target}: ${c.title}`, body: `The description of ${c.target} in ${po.source === "linear" ? "Linear" : "ClickUp"}, changed:\n\n\`\`\`diff\n${unifiedDiff(c.before ?? "", c.after ?? "").join("\n")}\n\`\`\``, status: "done" });
+        this.journal.addEvent({ poId, kind: "edit", title: `You applied a correction to ${c.target}: ${c.title}`, body: `The description of ${c.target} in ${trackerName(po.source)}, changed:\n\n\`\`\`diff\n${unifiedDiff(c.before ?? "", c.after ?? "").join("\n")}\n\`\`\``, status: "done" });
         this.emit({ poId, kind: "updated" });
     }
     withdrawCorrection(poId: string, id: string): void {

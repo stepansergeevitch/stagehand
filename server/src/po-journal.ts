@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { now, type DB, type PoCorrectionRow, type PoEventRow, type PoQuestionRow } from "./db.js";
+import { now, type DB, type SharedFile, type PoCorrectionRow, type PoEventRow, type PoQuestionRow } from "./db.js";
 
 // The journal of a Product Owner: its events, its outstanding questions and its suggested corrections (rows only —
 // ProductOwners runs the turns that fill them).
@@ -29,7 +29,7 @@ export interface PoEventView extends Omit<PoEventRow, "changes" | "memory" | "re
     refs: PoEventRefs;
     retryable: boolean;
 }
-export interface PoThreadMessage { role: "user" | "po"; text: string; at: string }
+export interface PoThreadMessage { role: "user" | "po"; text: string; at: string; files?: SharedFile[] }
 export interface PoQuestionView extends Omit<PoQuestionRow, "thread" | "session_id"> { thread: PoThreadMessage[] }
 export type PoCorrectionView = PoCorrectionRow;
 

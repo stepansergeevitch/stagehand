@@ -1,5 +1,6 @@
 import { saveConfig, type Config } from "./config.js";
 import type { TicketSource } from "./tickets.js";
+import { boardCards, ensureCardId, tasksMdEnvConfigOf } from "./tasksmd.js";
 
 // "My tickets" for the new-task dropdown: assigned to the token's user, open, sorted by priority (urgent first, unset last).
 export interface MyTicket {
@@ -120,12 +121,26 @@ const myLinearTickets = async (cfg: Config): Promise<MyTicket[]> => {
         .sort(byPriority);
 };
 
-const cache = new Map<TicketSource, { at: number; tickets: MyTicket[] }>();
+// ---------- Tasks.md: the env's board, its cards with the env's tag (every card without one), not in the done lane ----------
 
-export const listMyTickets = async (source: TicketSource, cfg: Config): Promise<MyTicket[]> => {
-    const hit = cache.get(source);
+// Each card offered gets its id tag here, so a pick always names a stable id. No priorities in Tasks.md: by lane, then title.
+const myTasksMdTickets = (cfg: Config, ticketConfig: string | null): MyTicket[] => {
+    const tc = tasksMdEnvConfigOf(ticketConfig);
+    return boardCards(cfg, tc.board)
+        .filter((c) => c.lane !== tc.lanes.done && (!tc.tag || c.tags.includes(tc.tag)))
+        .map((c) => ensureCardId(cfg, c, tc.idPrefix))
+        .map((c) => ({ id: c.id!, title: c.title, priority: null, priorityLabel: "", status: c.lane, url: null, group: c.lane }))
+        .sort((a, b) => a.group.localeCompare(b.group) || a.title.localeCompare(b.title));
+};
+
+const cache = new Map<string, { at: number; tickets: MyTicket[] }>();
+
+// `ticketConfig`: the env's envs.ticket_config — which board and tag, for Tasks.md.
+export const listMyTickets = async (source: TicketSource, cfg: Config, ticketConfig: string | null = null): Promise<MyTicket[]> => {
+    const key = `${source}:${source === "tasksmd" ? (ticketConfig ?? "") : ""}`;
+    const hit = cache.get(key);
     if (hit && Date.now() - hit.at < 60_000) return hit.tickets;
-    const tickets = source === "clickup" ? await myClickUpTickets(cfg) : await myLinearTickets(cfg);
-    cache.set(source, { at: Date.now(), tickets });
+    const tickets = source === "tasksmd" ? myTasksMdTickets(cfg, ticketConfig) : source === "clickup" ? await myClickUpTickets(cfg) : await myLinearTickets(cfg);
+    cache.set(key, { at: Date.now(), tickets });
     return tickets;
 };

@@ -26,6 +26,8 @@ const ConfigSchema = z.object({
     // Resolved once from GET /user with the token above and cached here.
     clickupUserId: z.string().nullable().default(null),
     linearApiKey: z.string().nullable().default(null),
+    // Tasks.md (tasksmd.ts): its TASKS_DIR (boards → lanes → cards) and CONFIG_DIR (pasted images), read and written on disk.
+    tasksMd: z.object({ tasksDir: z.string().nullable().default(null), configDir: z.string().nullable().default(null) }).default({ tasksDir: null, configDir: null }),
     // Notion integration token (an internal integration shared with the pages): Product Owners fetch pages by URL.
     notionApiKey: z.string().nullable().default(null),
     // Figma personal access token (file content: read): Product Owners get the Figma frames their sources link as images.
@@ -173,6 +175,7 @@ const defaults = (): Config => ({
     clickupTeamId: process.env.CLICKUP_TEAM_ID ?? null,
     clickupUserId: null,
     linearApiKey: null,
+    tasksMd: { tasksDir: null, configDir: null },
     notionApiKey: null,
     figmaApiKey: null,
     typesafeApiKey: null,

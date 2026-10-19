@@ -1,11 +1,12 @@
 import type { Config } from "./config.js";
+import { boardCards, boardLanes, cardText, findCard, setCardText, type Card } from "./tasksmd.js";
 
 // What a Product Owner reads and writes outside Vortex, always by API key, never through an MCP server: Linear
 // projects and issues, ClickUp epics and tasks, Notion pages, Figma frames (as images), plain web pages. Every read comes back as markdown (the
 // PO's artifacts are markdown files); every write creates one issue/task.
 
 export interface FetchedSource {
-    kind: "linear" | "clickup" | "notion" | "figma" | "url";
+    kind: "linear" | "clickup" | "tasksmd" | "notion" | "figma" | "url";
     title: string;
     markdown: string;
     url: string;
@@ -13,8 +14,8 @@ export interface FetchedSource {
 
 // A Product Owner's scope: which unit of the task manager counts as one project.
 export interface PoScope {
-    source: "linear" | "clickup";
-    kind: "project" | "epic";
+    source: "linear" | "clickup" | "tasksmd";
+    kind: "project" | "epic" | "board";
     id: string;
     url: string;
     title: string;
@@ -147,7 +148,8 @@ export const createClickUpTask = async (cfg: Config, input: { listId: string; pa
 // ---------- issue descriptions (PO ticket corrections) ----------
 
 // The live description of an issue, by its remote id.
-export const issueDescription = async (cfg: Config, source: "linear" | "clickup", remoteId: string): Promise<string> => {
+export const issueDescription = async (cfg: Config, source: "linear" | "clickup" | "tasksmd", remoteId: string): Promise<string> => {
+    if (source === "tasksmd") return cardText(findCard(cfg, remoteId).content);
     if (source === "linear") {
         const d = await linear<{ issue: { description: string | null } | null }>(cfg, `query($id: String!) { issue(id: $id) { description } }`, { id: remoteId });
         if (!d.issue) throw new Error("Linear: the issue no longer exists");
@@ -156,7 +158,8 @@ export const issueDescription = async (cfg: Config, source: "linear" | "clickup"
     const t = await clickupTask(cfg, remoteId);
     return t.markdown_description ?? t.description ?? "";
 };
-export const updateIssueDescription = async (cfg: Config, source: "linear" | "clickup", remoteId: string, description: string): Promise<void> => {
+export const updateIssueDescription = async (cfg: Config, source: "linear" | "clickup" | "tasksmd", remoteId: string, description: string): Promise<void> => {
+    if (source === "tasksmd") return setCardText(cfg, remoteId, description);
     if (source === "linear") {
         const d = await linear<{ issueUpdate: { success: boolean } }>(cfg, `mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }`, { id: remoteId, input: { description } });
         if (!d.issueUpdate.success) throw new Error("Linear: issueUpdate did not succeed");
@@ -426,7 +429,9 @@ export interface TrackedProject {
     documents: Array<{ id: string; title: string; content: string }>;
 }
 
-export const fetchProjectState = async (cfg: Config, source: "linear" | "clickup", scopeId: string): Promise<TrackedProject> => {
+export const fetchProjectState = async (cfg: Config, source: "linear" | "clickup" | "tasksmd", scopeId: string): Promise<TrackedProject> => {
+    // A Tasks.md board has no description of its own: its name and its lanes.
+    if (source === "tasksmd") return { name: tasksMdBoardName(scopeId), state: null, summary: "", content: `Lanes: ${boardLanes(cfg, scopeId).join(", ") || "none"}`, documents: [] };
     if (source === "linear") {
         const q = `query($id: String!) { project(id: $id) { name state description content documents(first: 50) { nodes { id title content } } } }`;
         const d = await linear<{ project: { name: string; state?: string | null; description?: string | null; content?: string | null; documents: { nodes: Array<{ id: string; title: string; content?: string | null }> } } | null }>(cfg, q, { id: scopeId });
@@ -445,12 +450,44 @@ export const fetchProjectState = async (cfg: Config, source: "linear" | "clickup
 };
 
 // Every issue of a PO's scope, with its comments: the issues of a Linear project, or the subtasks of a ClickUp epic.
-export const fetchScopeIssues = (cfg: Config, source: "linear" | "clickup", scopeId: string): Promise<TrackedIssue[]> =>
-    source === "linear" ? linearScopeIssues(cfg, scopeId) : clickupScopeIssues(cfg, scopeId);
+export const fetchScopeIssues = (cfg: Config, source: "linear" | "clickup" | "tasksmd", scopeId: string): Promise<TrackedIssue[]> =>
+    source === "tasksmd" ? Promise.resolve(tasksMdScopeIssues(cfg, scopeId)) : source === "linear" ? linearScopeIssues(cfg, scopeId) : clickupScopeIssues(cfg, scopeId);
+
+// ---------- Tasks.md boards as a Product Owner's scope ----------
+
+// A board is named `tasksmd:<board path under TASKS_DIR>` wherever a URL goes ("tasksmd:" alone = TASKS_DIR itself).
+const TASKSMD_SCOPE = /^tasksmd:(.*)$/i;
+const tasksMdBoardName = (board: string): string => board.split("/").filter(Boolean).pop() ?? "Tasks.md";
+const cardLink = (c: Card): string => `tasksmd:${[c.board, c.lane, c.title].filter(Boolean).join("/")}`;
+
+// The board's cards. A card Vortex has not numbered yet goes by its title until it gets an id.
+const tasksMdScopeIssues = (cfg: Config, board: string): TrackedIssue[] =>
+    boardCards(cfg, board).map((c) => ({
+        identifier: c.id ?? c.title,
+        remoteId: c.id ?? c.title,
+        url: cardLink(c),
+        title: c.title,
+        status: c.lane,
+        description: cardText(c.content),
+        labels: [...c.tags].sort(),
+        assignee: null,
+        priority: null,
+        estimate: null,
+        parent: null,
+        comments: [],
+    }));
 
 // The scope a new Product Owner is created from: a Linear project, or a ClickUp epic (a task whose subtasks are the tickets).
 export const fetchScope = async (cfg: Config, url: string): Promise<PoScope> => {
     const u = url.trim();
+    const tm = TASKSMD_SCOPE.exec(u);
+    if (tm) {
+        const board = tm[1]!.trim().replace(/^\/+|\/+$/g, "");
+        const cards = boardCards(cfg, board);
+        const title = tasksMdBoardName(board);
+        const lanes = boardLanes(cfg, board).map((lane) => `## ${lane}\n\n${cards.filter((c) => c.lane === lane).map((c) => `- ${c.id ? `**${c.id}** ` : ""}${c.title}`).join("\n") || "(empty)"}`);
+        return { source: "tasksmd", kind: "board", id: board, url: `tasksmd:${board}`, title, teamId: null, markdown: `# ${title}\nTasks.md board · ${u}\n\n${lanes.join("\n\n")}` };
+    }
     const project = linearProjectId(u);
     if (project) {
         const p = await linearProject(cfg, project);
@@ -461,12 +498,13 @@ export const fetchScope = async (cfg: Config, url: string): Promise<PoScope> => 
         const t = await clickupTask(cfg, cu[1]!);
         return { source: "clickup", kind: "epic", id: t.id, url: t.url, title: t.name, teamId: t.list?.id ?? null, markdown: renderClickUpTask(t, "epic") };
     }
-    throw new Error("a Product Owner starts from a Linear project URL (linear.app/<workspace>/project/…) or a ClickUp epic URL (app.clickup.com/t/…)");
+    throw new Error("a Product Owner starts from a Linear project URL (linear.app/<workspace>/project/…) or a ClickUp epic URL (app.clickup.com/t/…) or a Tasks.md board (tasksmd:<board>)");
 };
 
 // Which scope a ticket belongs to, for assigning its Product Owner: the Linear project id, or the ClickUp parent (epic) id.
-export const ticketScopeId = async (cfg: Config, source: "linear" | "clickup", ticketId: string): Promise<string | null> => {
+export const ticketScopeId = async (cfg: Config, source: "linear" | "clickup" | "tasksmd", ticketId: string): Promise<string | null> => {
     try {
+        if (source === "tasksmd") return findCard(cfg, ticketId).board;
         if (source === "linear") {
             const d = await linear<{ issue: { project?: { id: string } | null } | null }>(cfg, `query($id: String!) { issue(id: $id) { project { id } } }`, { id: ticketId });
             return d.issue?.project?.id ?? null;
@@ -479,7 +517,15 @@ export const ticketScopeId = async (cfg: Config, source: "linear" | "clickup", t
 };
 
 // An issue that already exists, by its identifier (INV-154, or a ClickUp custom id / task id): its id and URL.
-export const findIssue = async (cfg: Config, source: "linear" | "clickup", identifier: string): Promise<{ id: string; identifier: string; url: string } | null> => {
+export const findIssue = async (cfg: Config, source: "linear" | "clickup" | "tasksmd", identifier: string): Promise<{ id: string; identifier: string; url: string } | null> => {
+    if (source === "tasksmd") {
+        try {
+            const c = findCard(cfg, identifier);
+            return { id: c.id!, identifier: c.id!, url: cardLink(c) };
+        } catch {
+            return null;
+        }
+    }
     if (source === "linear") {
         const d = await linear<{ issue: { id: string; identifier: string; url: string } | null }>(cfg, `query($id: String!) { issue(id: $id) { id identifier url } }`, { id: identifier });
         return d.issue ?? null;

@@ -169,7 +169,9 @@ export interface EnvRow {
     repos: string | null;
     // Prepended to research's branch name (e.g. "yourname/").
     branch_prefix: string | null;
-    ticket_source: "clickup" | "linear";
+    ticket_source: "clickup" | "linear" | "tasksmd";
+    // JSON: how this env uses its task manager beyond fetching tickets (tasksmd.ts TasksMdEnvConfig for Tasks.md).
+    ticket_config?: string | null;
     // KEY=VALUE per line; exported into every process run for this env (git, setup, BE/FE, claude runs, terminal).
     env_vars: string | null;
     // Legacy: rules used to live on the env; they moved to config_dirs.rules (migrated on startup, kept for reference).
@@ -421,10 +423,10 @@ export interface PrStateRow {
     updated_at: string;
 }
 
-export const extraTicketsOf = (t: Pick<TaskRow, "extra_tickets">): Array<{ source: "clickup" | "linear"; id: string; url: string | null }> => {
+export const extraTicketsOf = (t: Pick<TaskRow, "extra_tickets">): Array<{ source: "clickup" | "linear" | "tasksmd"; id: string; url: string | null }> => {
     try {
         const v: unknown = t.extra_tickets ? JSON.parse(t.extra_tickets) : [];
-        return Array.isArray(v) ? v.filter((x): x is { source: "clickup" | "linear"; id: string; url: string | null } => !!x && typeof x === "object" && typeof (x as { id?: unknown }).id === "string") : [];
+        return Array.isArray(v) ? v.filter((x): x is { source: "clickup" | "linear" | "tasksmd"; id: string; url: string | null } => !!x && typeof x === "object" && typeof (x as { id?: unknown }).id === "string") : [];
     } catch {
         return [];
     }
@@ -950,10 +952,10 @@ export interface ProductOwnerRow {
     id: string;
     title: string;
     slug: string;
-    source: "linear" | "clickup";
+    source: "linear" | "clickup" | "tasksmd";
     // "env" = the environment's own PO: no project, no tickets — it reviews and briefs the env's tasks that have no
     // project PO, from the product context and the env's memory (scope_id = the env id).
-    scope_kind: "project" | "epic" | "env";
+    scope_kind: "project" | "epic" | "board" | "env";
     scope_id: string;
     scope_url: string | null;
     team_id: string | null;
@@ -974,8 +976,8 @@ export interface ProductOwnerRow {
     issues_refreshed_at?: string | null;
     issues_error?: string | null;
 }
-export interface PoMessageRow { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string }
-export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "figma" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; indexed_hash?: string | null; chunks?: number | null; description?: string | null; text_file?: string | null }
+export interface PoMessageRow { id: string; po_id: string; role: "user" | "agent" | "system"; text: string; created_at: string; files: string | null }
+export interface PoArtifactRow { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "tasksmd" | "figma" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; indexed_hash?: string | null; chunks?: number | null; description?: string | null; text_file?: string | null }
 export interface PoIssueRow { po_id: string; identifier: string; remote_id: string; hash: string; data: string; fetched_at: string; changed_at: string; indexed_hash?: string | null }
 export interface PoEventRow { id: string; po_id: string; kind: string; title: string; body: string; prompt: string | null; status: "pending" | "waiting" | "processing" | "done" | "unread" | "failed"; brief: string | null; changes: string | null; memory: string | null; refs: string | null; error: string | null; created_at: string; processed_at: string | null }
 export interface PoQuestionRow { id: string; po_id: string; key: string; question: string; detail: string; status: "open" | "proposed" | "resolved" | "dropped"; resolution: string | null; thread: string; session_id: string | null; event_id: string | null; created_at: string; updated_at: string; resolved_at: string | null }
@@ -1055,6 +1057,7 @@ const MIGRATIONS: Array<[string, string]> = [
     ["envs.cleanup_command", `ALTER TABLE envs ADD COLUMN cleanup_command TEXT`],
     ["envs.check_command", `ALTER TABLE envs ADD COLUMN check_command TEXT`],
     ["envs.base_check", `ALTER TABLE envs ADD COLUMN base_check TEXT`],
+    ["envs.ticket_config", `ALTER TABLE envs ADD COLUMN ticket_config TEXT`],
     ["envs.components", `ALTER TABLE envs ADD COLUMN components TEXT`],
     ["envs.keep_services", `ALTER TABLE envs ADD COLUMN keep_services INTEGER NOT NULL DEFAULT 0`],
     ["envs.qa_browser", `ALTER TABLE envs ADD COLUMN qa_browser TEXT NOT NULL DEFAULT 'chrome'`],
@@ -1135,6 +1138,8 @@ const MIGRATIONS: Array<[string, string]> = [
     ["messages.kind", `ALTER TABLE messages ADD COLUMN kind TEXT`],
     // Files the human attached to a Chat message / instruction / answer (JSON SharedFile[]), stored under the task dir's shared/.
     ["messages.files", `ALTER TABLE messages ADD COLUMN files TEXT`],
+    // Files the human attached to a message to a Product Owner (JSON SharedFile[], paths relative to the PO's directory).
+    ["po_messages.files", `ALTER TABLE po_messages ADD COLUMN files TEXT`],
 ];
 
 const hasColumn = (db: Database.Database, table: string, column: string): boolean =>

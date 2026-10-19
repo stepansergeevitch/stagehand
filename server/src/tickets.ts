@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Config } from "./config.js";
 import type { SharedFile } from "./db.js";
 import { claudeEnv } from "./claude/env.js";
+import { fetchCardTicket, tasksMdConfigured } from "./tasksmd.js";
 
 // A file attached to the ticket (explicitly, or embedded as an image/link in its description or comments). `file` is
 // the path relative to the task dir once downloaded; null with `error` set when the download failed — the URL stays.
@@ -20,7 +21,7 @@ export const TicketAttachment = z.object({
 });
 export type TicketAttachment = z.infer<typeof TicketAttachment>;
 
-export type TicketSource = "clickup" | "linear";
+export type TicketSource = "clickup" | "linear" | "tasksmd";
 
 export interface TicketRef {
     source: TicketSource;
@@ -29,7 +30,7 @@ export interface TicketRef {
 }
 
 export const Ticket = z.object({
-    source: z.enum(["clickup", "linear"]),
+    source: z.enum(["clickup", "linear", "tasksmd"]),
     id: z.string(),
     url: z.string().nullable(),
     title: z.string(),
@@ -143,6 +144,12 @@ export const downloadAttachments = async (ticket: Ticket, cfg: Config, taskDir: 
     const used = new Set<string>();
     const attachments: TicketAttachment[] = [];
     for (const a of ticket.attachments) {
+        // Already in the task dir (a Tasks.md card's images are copied, not downloaded).
+        if (a.file && existsSync(join(taskDir, a.file))) {
+            used.add(a.file.split("/").pop()!.toLowerCase());
+            attachments.push(a);
+            continue;
+        }
         let name = safeFileName(a.name, a.url);
         if (used.has(name.toLowerCase())) {
             const ext = extname(name);
@@ -201,7 +208,7 @@ export const parseTicketRef = (input: string, defaultSource: TicketSource = "cli
     if (li) return { source: "linear", id: li[1]!.toUpperCase(), url: s };
     if (BARE_ID.test(s)) return { source: defaultSource, id: s.toUpperCase(), url: null };
     if (/^[a-z0-9]{6,12}$/i.test(s)) return { source: "clickup", id: s, url: null };
-    throw new Error(`"${input}" is not a ClickUp/Linear ticket id or URL`);
+    throw new Error(`"${input}" is not a ClickUp/Linear ticket id or URL, or a Tasks.md card id`);
 };
 
 // ---------- REST fetchers (used when a token is configured) ----------
@@ -387,9 +394,12 @@ export const fetchTicket = async (
     outFile = "ticket.json",
 ): Promise<Ticket> => {
     const outPath = join(taskDir, outFile);
-    const restConfigured = ref.source === "clickup" ? !!cfg.clickupToken : !!cfg.linearApiKey;
+    const restConfigured = ref.source === "tasksmd" ? true : ref.source === "clickup" ? !!cfg.clickupToken : !!cfg.linearApiKey;
     let ticket: Ticket;
-    if (restConfigured) {
+    // A Tasks.md card is a file on this machine: read it, no token and no agent.
+    if (ref.source === "tasksmd") {
+        ticket = fetchCardTicket(cfg, ref.id, taskDir);
+    } else if (restConfigured) {
         ticket = ref.source === "clickup" ? await fetchClickUpRest(ref, cfg) : await fetchLinearRest(ref, cfg);
     } else {
         // The agent lists the files (name + URL); the server downloads them, so tokens never reach the agent.
@@ -403,9 +413,9 @@ export const fetchTicket = async (
 
 // Server-side only (ClickUp/Linear REST); refuses instead of spawning an agent when no token is configured.
 export const fetchTicketRest = async (ref: TicketRef, cfg: Config, taskDir: string, outFile = "ticket.json"): Promise<Ticket> => {
-    const restConfigured = ref.source === "clickup" ? !!cfg.clickupToken : !!cfg.linearApiKey;
-    if (!restConfigured) throw new Error(`no ${ref.source === "clickup" ? "ClickUp" : "Linear"} token configured — add one under Integrations, then fetch again`);
-    const fetched = ref.source === "clickup" ? await fetchClickUpRest(ref, cfg) : await fetchLinearRest(ref, cfg);
+    const restConfigured = ref.source === "tasksmd" ? tasksMdConfigured(cfg) : ref.source === "clickup" ? !!cfg.clickupToken : !!cfg.linearApiKey;
+    if (!restConfigured) throw new Error(ref.source === "tasksmd" ? "no Tasks.md folder configured — set it under Integrations, then fetch again" : `no ${ref.source === "clickup" ? "ClickUp" : "Linear"} token configured — add one under Integrations, then fetch again`);
+    const fetched = ref.source === "tasksmd" ? fetchCardTicket(cfg, ref.id, taskDir) : ref.source === "clickup" ? await fetchClickUpRest(ref, cfg) : await fetchLinearRest(ref, cfg);
     const ticket = await downloadAttachments(fetched, cfg, taskDir);
     writeFileSync(join(taskDir, outFile), JSON.stringify(ticket, null, 2));
     return ticket;

@@ -18,7 +18,9 @@ import { markSeen, readFeed } from "./feed.js";
 import { loadConfig, PREVIEW, saveConfig } from "./config.js";
 import { isPublicRequest, publicAuth } from "./public-access.js";
 import { listMyTickets } from "./my-tickets.js";
+import { allCards, tasksMdConfigured } from "./tasksmd.js";
 import { mimeOf, renderSharedFiles, sharedFileName } from "./tickets.js";
+import { checkUploads, copyUploadsIntoTask, pruneUploads, removeUploads, saveUpload } from "./uploads.js";
 import type { AccountModels, ServiceKind, SharedFile } from "./db.js";
 import { Resources } from "./resources.js";
 import { REVIEW_CATEGORIES, reviewChecklistJson } from "./review-checklist.js";
@@ -611,11 +613,13 @@ app.delete("/api/envs/:id", (c) => {
     return c.json({ deleted: env.id });
 });
 
-// ---------- task managers (ClickUp / Linear integrations) ----------
+// ---------- task managers (ClickUp / Linear / Tasks.md integrations) ----------
 
 const taskManagers = () => [
     { source: "clickup" as const, label: "ClickUp", configured: !!cfg.clickupToken, token: mask(cfg.clickupToken), teamId: cfg.clickupTeamId, envs: envsAll().filter((e) => e.ticket_source === "clickup").map((e) => e.name) },
     { source: "linear" as const, label: "Linear", configured: !!cfg.linearApiKey, token: mask(cfg.linearApiKey), teamId: null, envs: envsAll().filter((e) => e.ticket_source === "linear").map((e) => e.name) },
+    // Tasks.md is folders on this machine, no token: `tasksDir` (its TASKS_DIR) and `configDir` (its CONFIG_DIR, for images).
+    { source: "tasksmd" as const, label: "Tasks.md", configured: tasksMdConfigured(cfg), token: null, teamId: null, tasksDir: cfg.tasksMd.tasksDir, configDir: cfg.tasksMd.configDir, envs: envsAll().filter((e) => e.ticket_source === "tasksmd").map((e) => e.name) },
 ];
 
 app.get("/api/task-managers", (c) => c.json(taskManagers()));
@@ -640,13 +644,16 @@ app.patch("/api/integrations/:id", async (c) => {
 
 app.patch("/api/task-managers/:source", async (c) => {
     const source = c.req.param("source");
-    const body = json(z.object({ token: z.string().nullable().optional(), teamId: z.string().nullable().optional() }), await c.req.json());
+    const body = json(z.object({ token: z.string().nullable().optional(), teamId: z.string().nullable().optional(), tasksDir: z.string().nullable().optional(), configDir: z.string().nullable().optional() }), await c.req.json());
     if (source === "clickup") {
         if (body.token !== undefined) cfg.clickupToken = body.token || null;
         if (body.teamId !== undefined) cfg.clickupTeamId = body.teamId || null;
         if (body.token !== undefined) cfg.clickupUserId = null;
     } else if (source === "linear") {
         if (body.token !== undefined) cfg.linearApiKey = body.token || null;
+    } else if (source === "tasksmd") {
+        if (body.tasksDir !== undefined) cfg.tasksMd = { ...cfg.tasksMd, tasksDir: body.tasksDir?.trim() || null };
+        if (body.configDir !== undefined) cfg.tasksMd = { ...cfg.tasksMd, configDir: body.configDir?.trim() || null };
     } else return c.json({ error: "unknown task manager" }, 404);
     saveConfig(cfg);
     return c.json(taskManagers().find((t) => t.source === source));
@@ -655,8 +662,13 @@ app.patch("/api/task-managers/:source", async (c) => {
 // Live check: fetch the user's tickets with the stored credentials.
 app.post("/api/task-managers/:source/test", async (c) => {
     const source = c.req.param("source");
-    if (source !== "clickup" && source !== "linear") return c.json({ error: "unknown task manager" }, 404);
+    if (source !== "clickup" && source !== "linear" && source !== "tasksmd") return c.json({ error: "unknown task manager" }, 404);
     try {
+        // Tasks.md has no user: the test counts the cards it can read.
+        if (source === "tasksmd") {
+            const cards = allCards(cfg);
+            return c.json({ ok: true, count: cards.length, sample: cards.slice(0, 3).map((t) => `${t.id ?? "(no id yet)"} ${t.title}`) });
+        }
         const tickets = await listMyTickets(source, cfg);
         return c.json({ ok: true, count: tickets.length, sample: tickets.slice(0, 3).map((t) => `${t.id} ${t.title}`) });
     } catch (e) {
@@ -752,7 +764,7 @@ app.get("/api/envs/:id/my-tickets", async (c) => {
     const env = db.prepare(`SELECT * FROM envs WHERE id = ?`).get(c.req.param("id")) as EnvRow | undefined;
     if (!env) return c.json({ error: "not found" }, 404);
     try {
-        return c.json({ source: env.ticket_source, tickets: await listMyTickets(env.ticket_source, cfg) });
+        return c.json({ source: env.ticket_source, tickets: await listMyTickets(env.ticket_source, cfg, env.ticket_config ?? null) });
     } catch (e) {
         return c.json({ source: env.ticket_source, tickets: [], error: String((e as Error).message ?? e) });
     }
@@ -793,7 +805,7 @@ app.post("/api/envs", async (c) => {
             fePort: z.number().int().positive().optional(),
             setupCommand: z.string().optional(),
             repos: z.array(z.string().min(1)).optional(),
-            ticketSource: z.enum(["clickup", "linear"]).default("clickup"),
+            ticketSource: z.enum(["clickup", "linear", "tasksmd"]).default("clickup"),
             envVars: z.string().optional(),
             cleanupCommand: z.string().optional(),
             checkCommand: z.string().optional(),
@@ -858,7 +870,7 @@ app.patch("/api/envs/:id", async (c) => {
             fePort: z.number().int().positive().nullable().optional(),
             setupCommand: z.string().nullable().optional(),
             repos: z.array(z.string().min(1)).nullable().optional(),
-            ticketSource: z.enum(["clickup", "linear"]).optional(),
+            ticketSource: z.enum(["clickup", "linear", "tasksmd"]).optional(),
             envVars: z.string().nullable().optional(),
             cleanupCommand: z.string().nullable().optional(),
             rebaseCommand: z.string().nullable().optional(),
@@ -871,6 +883,8 @@ app.patch("/api/envs/:id", async (c) => {
             callbackPorts: z.array(z.object({ port: z.number().int().min(1).max(65535), relay: z.boolean().default(false) })).nullable().optional(),
             // The base check per repository: {repoDir: command} ("" for a single repo); empty commands drop out.
             baseCheck: z.record(z.string()).nullable().optional(),
+            // How the env uses its task manager beyond fetching tickets (Tasks.md: board, id prefix, tag, lanes).
+            ticketConfig: z.record(z.unknown()).nullable().optional(),
             // Bash run before every command of the env (env-config.ts).
             prepareCommand: z.string().nullable().optional(),
             // Run by Vortex before a QA pass; its last output line is the pass's $VORTEX_QA_SESSION.
@@ -973,6 +987,7 @@ app.patch("/api/envs/:id", async (c) => {
     if (body.qaSessionCommand !== undefined) db.prepare(`UPDATE envs SET qa_session_command = ? WHERE id = ?`).run(body.qaSessionCommand?.trim() || null, env.id);
     if (body.prepareCommand !== undefined) db.prepare(`UPDATE envs SET prepare_command = ? WHERE id = ?`).run(body.prepareCommand?.trim() || null, env.id);
     if (body.callbackPorts !== undefined) db.prepare(`UPDATE envs SET callback_ports = ? WHERE id = ?`).run(body.callbackPorts && body.callbackPorts.length ? JSON.stringify(body.callbackPorts) : null, env.id);
+    if (body.ticketConfig !== undefined) db.prepare(`UPDATE envs SET ticket_config = ? WHERE id = ?`).run(body.ticketConfig ? JSON.stringify(body.ticketConfig) : null, env.id);
     if (body.baseCheck !== undefined) {
         const checks = Object.fromEntries(Object.entries(body.baseCheck ?? {}).filter(([, v]) => v.trim()));
         db.prepare(`UPDATE envs SET base_check = ? WHERE id = ?`).run(Object.keys(checks).length ? JSON.stringify(checks) : null, env.id);
@@ -1015,7 +1030,9 @@ app.get("/api/readiness", (c) =>
             const warnings: string[] = [];
             if (run.length === 0) warnings.push(`no AI account can run in config dir ${cd.name} — set up a token on the AI accounts page`);
             if (browser.length === 0) warnings.push("no account can drive Chrome for this environment — QA stages will block (AI accounts → Log in (browser), Probe Chrome)");
-            if (env.ticket_source === "clickup" ? !cfg.clickupToken : !cfg.linearApiKey) warnings.push(`no ${env.ticket_source} token — tickets are fetched by an agent through MCP (slower, may fail)`);
+            if (env.ticket_source === "tasksmd") {
+                if (!tasksMdConfigured(cfg)) warnings.push("no Tasks.md folder set — tickets cannot be read (Integrations → Tasks.md)");
+            } else if (env.ticket_source === "clickup" ? !cfg.clickupToken : !cfg.linearApiKey) warnings.push(`no ${env.ticket_source} token — tickets are fetched by an agent through MCP (slower, may fail)`);
             return { envId: env.id, envName: env.name, configDir: cd.name, run: run.map((a) => a.name), browser: browser.map((a) => a.name), warnings };
         }),
     ),
@@ -1084,6 +1101,23 @@ app.get("/api/envs/:id/branches", async (c) => {
     }
 });
 
+// Files attached on the New task form before any task exists: one file per call (multipart, field `file`), kept in a
+// temp directory under the Vortex home (stale ones are pruned at start and hourly) until POST /api/tasks copies them
+// into each task it creates. `file` of the answer is an opaque token.
+const ENV_UPLOADS_DIR = join(cfg.dataDir, "uploads-tmp");
+pruneUploads(ENV_UPLOADS_DIR);
+setInterval(() => pruneUploads(ENV_UPLOADS_DIR), 3600_000).unref();
+const UploadFileSchema = z.object({ name: z.string().min(1), file: z.string().regex(/^[0-9a-f]{12}-[A-Za-z0-9._-]+$/), mime: z.string().nullable(), size: z.number().int().nonnegative() });
+app.post("/api/envs/:id/uploads", async (c) => {
+    if (!db.prepare(`SELECT 1 FROM envs WHERE id = ?`).get(c.req.param("id"))) return c.json({ error: "not found" }, 404);
+    const body = await c.req.parseBody();
+    const f = body["file"];
+    if (!(f instanceof File)) return c.json({ error: "send one file in the `file` field (multipart/form-data)" }, 400);
+    if (f.size === 0) return c.json({ error: `${f.name} is empty` }, 400);
+    if (f.size > MAX_SHARED_FILE_BYTES) return c.json({ error: `${f.name} is too large (${Math.round(f.size / 1e6)} MB; the cap is 200 MB)` }, 400);
+    return c.json(saveUpload(ENV_UPLOADS_DIR, f.name, Buffer.from(await f.arrayBuffer()), f.type));
+});
+
 // `tickets` + mode "each": one task per ticket; mode "batch": one task covering all of them (one branch, one PR per repo).
 app.post("/api/tasks", async (c) => {
     const body = json(
@@ -1100,13 +1134,19 @@ app.post("/api/tasks", async (c) => {
             baseBranch: z.union([z.string().trim().min(1), z.record(z.string())]).optional(),
             // The Product Owner reviewing the design; omitted = the one whose project the ticket belongs to (if any).
             productOwnerId: z.string().nullable().optional(),
+            // Files attached to the notes, as returned by POST /api/envs/:id/uploads; every task gets its own copies.
+            files: z.array(UploadFileSchema).optional(),
         }),
         await c.req.json(),
     );
+    const uploadError = checkUploads(ENV_UPLOADS_DIR, body.files ?? []);
+    if (uploadError) return c.json({ error: uploadError }, 400);
     const tickets = [...new Set([...(body.ticket ? [body.ticket] : []), ...(body.tickets ?? [])].map((t) => t.trim()).filter(Boolean))];
     if (tickets.length === 0) return c.json({ error: "no ticket given" }, 400);
     if (body.productOwnerId && !poWorksFor(productOwners.get(body.productOwnerId), body.envId)) return c.json({ error: "that Product Owner does not work for this task's environment" }, 400);
-    const created = body.mode === "batch" || tickets.length === 1 ? [engine.createTask(body.envId, tickets, body.accountId, body.model, body.notes, body.baseBranch)] : tickets.map((t) => engine.createTask(body.envId, [t], body.accountId, body.model, body.notes, body.baseBranch));
+    const attach = (dir: string) => copyUploadsIntoTask(ENV_UPLOADS_DIR, body.files ?? [], dir);
+    const created = body.mode === "batch" || tickets.length === 1 ? [engine.createTask(body.envId, tickets, body.accountId, body.model, body.notes, body.baseBranch, attach)] : tickets.map((t) => engine.createTask(body.envId, [t], body.accountId, body.model, body.notes, body.baseBranch, attach));
+    removeUploads(ENV_UPLOADS_DIR, body.files ?? []);
     for (const t of created) {
         if (body.productOwnerId !== undefined) engine.setProductOwner(t.id, body.productOwnerId);
         else void productOwners.ownerOfTicket(t.env_id, t.source, t.ticket_id).then((po) => po && engine.setProductOwner(t.id, po)).catch(() => undefined);
@@ -1851,11 +1891,12 @@ app.post("/api/tasks/:id/fix-local-comments", async (c) => {
         z.object({
             notes: z.string().optional(),
             comments: z.array(z.object({ path: z.string().min(1), line: z.number().int().positive(), side: z.enum(["new", "old"]), snippet: z.string(), text: z.string().min(1) })).default([]),
+            files: z.array(SharedFileSchema).optional(),
         }),
         await c.req.json(),
     );
     try {
-        await engine.startLocalCommentFix(c.req.param("id"), body.notes, body.comments ?? []);
+        await engine.startLocalCommentFix(c.req.param("id"), body.notes, body.comments ?? [], sharedFilesOf(c.req.param("id"), body.files));
         return c.json({ started: true });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
@@ -1864,9 +1905,9 @@ app.post("/api/tasks/:id/fix-local-comments", async (c) => {
 
 // Human picks specific PR comments (checkboxes) and asks the agent to address just those, without the full pipeline.
 app.post("/api/tasks/:id/fix-comments", async (c) => {
-    const body = json(z.object({ repo: z.string().optional(), commentIds: z.array(z.number()).min(1) }), await c.req.json());
+    const body = json(z.object({ repo: z.string().optional(), commentIds: z.array(z.number()).min(1), files: z.array(SharedFileSchema).optional() }), await c.req.json());
     try {
-        await engine.startPrCommentFix(c.req.param("id"), body.repo ?? "", body.commentIds);
+        await engine.startPrCommentFix(c.req.param("id"), body.repo ?? "", body.commentIds, sharedFilesOf(c.req.param("id"), body.files));
         return c.json({ started: true });
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
@@ -1875,9 +1916,9 @@ app.post("/api/tasks/:id/fix-comments", async (c) => {
 
 // Human picks PR comments and asks the agent what it thinks of them (Chat answer, no code change, no fix round).
 app.post("/api/tasks/:id/ask-comments", async (c) => {
-    const body = json(z.object({ repo: z.string().optional(), commentIds: z.array(z.number()).min(1), question: z.string().optional() }), await c.req.json());
+    const body = json(z.object({ repo: z.string().optional(), commentIds: z.array(z.number()).min(1), question: z.string().optional(), files: z.array(SharedFileSchema).optional() }), await c.req.json());
     try {
-        return c.json(await engine.askAboutPrComments(c.req.param("id"), body.repo ?? "", body.commentIds, body.question));
+        return c.json(await engine.askAboutPrComments(c.req.param("id"), body.repo ?? "", body.commentIds, body.question, sharedFilesOf(c.req.param("id"), body.files)));
     } catch (e) {
         return c.json({ error: String((e as Error).message ?? e) }, 400);
     }
@@ -2320,12 +2361,34 @@ app.delete("/api/product-owners/:id", async (c) => {
     return c.json({ ok: true });
 });
 // A chat turn runs in the background; the page follows it over the websocket ("po" events).
+// A file for a Product Owner (a screenshot, an export): saved under <PO dir>/uploads/, named on the message or answer.
+// `file` is relative to the PO's directory, which GET /api/product-owners/:id/files/* serves.
+const PoFileSchema = z.object({ name: z.string().min(1), file: z.string().regex(/^uploads\/[A-Za-z0-9._-]+$/), mime: z.string().nullable(), size: z.number().int().nonnegative() });
+const poFilesOf = (poId: string, files: SharedFile[] | undefined): SharedFile[] => {
+    for (const f of files ?? []) if (!existsSync(join(productOwners.dir(poId), f.file))) throw new Error(`${f.name} was not uploaded to this Product Owner — attach it again`);
+    return files ?? [];
+};
+app.post("/api/product-owners/:id/files", async (c) => {
+    const id = c.req.param("id");
+    if (!productOwners.get(id)) return c.json({ error: "not found" }, 404);
+    const body = await c.req.parseBody();
+    const f = body["file"];
+    if (!(f instanceof File)) return c.json({ error: "send one file in the `file` field (multipart/form-data)" }, 400);
+    if (f.size === 0) return c.json({ error: `${f.name} is empty` }, 400);
+    if (f.size > MAX_SHARED_FILE_BYTES) return c.json({ error: `${f.name} is too large (${Math.round(f.size / 1e6)} MB; the cap is 200 MB)` }, 400);
+    const safe = sharedFileName(f.name);
+    const rel = `uploads/${randomUUID().slice(0, 8)}-${safe}`;
+    mkdirSync(join(productOwners.dir(id), "uploads"), { recursive: true });
+    writeFileSync(join(productOwners.dir(id), rel), Buffer.from(await f.arrayBuffer()));
+    const shared: SharedFile = { name: f.name, file: rel, mime: f.type && f.type !== "application/octet-stream" ? f.type : mimeOf(safe), size: f.size };
+    return c.json(shared);
+});
 app.post("/api/product-owners/:id/messages", async (c) => {
-    const body = json(z.object({ text: z.string().min(1) }), await c.req.json());
+    const body = json(z.object({ text: z.string().min(1), files: z.array(PoFileSchema).optional() }), await c.req.json());
     const po = productOwners.get(c.req.param("id"));
     if (!po) return c.json({ error: "not found" }, 404);
     try {
-        const turn = productOwners.send(po.id, body.text);
+        const turn = productOwners.send(po.id, body.text, { files: poFilesOf(po.id, body.files) });
         turn.catch((e: unknown) => console.warn(`[po] ${po.slug}: ${String((e as Error).message ?? e).slice(0, 200)}`));
         await Promise.race([turn, new Promise((r) => setTimeout(r, 50))]);
         return c.json({ started: true });
@@ -2460,18 +2523,18 @@ app.patch("/api/product-owners/:id/questions/:q", async (c) => {
     }
 });
 app.post("/api/product-owners/:id/questions/:q/ask", async (c) => {
-    const body = json(z.object({ text: z.string().trim().min(1).max(8000) }), await c.req.json());
+    const body = json(z.object({ text: z.string().trim().min(1).max(8000), files: z.array(PoFileSchema).optional() }), await c.req.json());
     try {
-        productOwners.askQuestion(c.req.param("id"), c.req.param("q"), body.text);
+        productOwners.askQuestion(c.req.param("id"), c.req.param("q"), body.text, poFilesOf(c.req.param("id"), body.files));
         return c.json({ ok: true });
     } catch (e) {
         return poErr(c, e);
     }
 });
 app.post("/api/product-owners/:id/questions/:q/confirm", async (c) => {
-    const body = json(z.object({ resolution: z.string().max(4000).optional() }), await c.req.json().catch(() => ({})));
+    const body = json(z.object({ resolution: z.string().max(4000).optional(), files: z.array(PoFileSchema).optional() }), await c.req.json().catch(() => ({})));
     try {
-        productOwners.confirmQuestion(c.req.param("id"), c.req.param("q"), body.resolution);
+        productOwners.confirmQuestion(c.req.param("id"), c.req.param("q"), body.resolution, poFilesOf(c.req.param("id"), body.files));
         return c.json({ ok: true });
     } catch (e) {
         return poErr(c, e);
@@ -2643,7 +2706,7 @@ app.post("/api/tasks/:id/po-review", async (c) => {
 app.patch("/api/tasks/:id/po-review/comments/:cid", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
-    const body = json(z.object({ include: z.boolean().optional(), note: z.string().max(8000).nullable().optional() }), await c.req.json());
+    const body = json(z.object({ include: z.boolean().optional(), note: z.string().max(8000).nullable().optional(), files: z.array(SharedFileSchema).optional() }), await c.req.json());
     const dir = engine.taskDir(task.id);
     const review = readReview(dir);
     const cm = review?.comments.find((x) => x.id === c.req.param("cid"));
@@ -2651,6 +2714,8 @@ app.patch("/api/tasks/:id/po-review/comments/:cid", async (c) => {
     if (review.sentAt) return c.json({ error: "this review was sent to the agent — review the new proposal again" }, 409);
     if (body.include !== undefined) cm.include = body.include;
     if (body.note !== undefined) cm.note = body.note?.trim() ? body.note.trim() : null;
+    // The attached files replace the comment's earlier ones (an empty list clears them).
+    if (body.files !== undefined) cm.noteFiles = sharedFilesOf(task.id, body.files);
     writeFileSync(join(dir, "po-review.json"), JSON.stringify(review, null, 2));
     engine.touchTask(task.id);
     return c.json(poReviewOf(task.id));
@@ -2659,9 +2724,9 @@ app.patch("/api/tasks/:id/po-review/comments/:cid", async (c) => {
 app.post("/api/tasks/:id/po-review/comments/:cid/ask", async (c) => {
     const task = engine.getTask(c.req.param("id"));
     if (!task) return c.json({ error: "not found" }, 404);
-    const body = json(z.object({ text: z.string().trim().min(1).max(8000) }), await c.req.json());
+    const body = json(z.object({ text: z.string().trim().min(1).max(8000), files: z.array(SharedFileSchema).optional() }), await c.req.json());
     try {
-        await productOwners.askReviewComment(task, engine.taskDir(task.id), c.req.param("cid"), body.text, () => engine.touchTask(task.id));
+        await productOwners.askReviewComment(task, engine.taskDir(task.id), c.req.param("cid"), body.text, () => engine.touchTask(task.id), sharedFilesOf(task.id, body.files));
         return c.json(poReviewOf(task.id));
     } catch (e) {
         return poErr(c, e);
@@ -2674,7 +2739,7 @@ const takePoReviewNotes = (task: TaskRow): string | null => {
     const review = readReview(dir);
     if (!review || review.sentAt || !review.comments.some((x) => x.include && !x.withdrawn)) return null;
     const po = task.product_owner_id ? productOwners.get(task.product_owner_id) : undefined;
-    const notes = reviewNotes(review, po?.title ?? null);
+    const notes = reviewNotes(review, po?.title ?? null, dir);
     const at = new Date().toISOString();
     for (const x of review.comments) if (x.include && !x.withdrawn) x.sentAt = at;
     review.sentAt = at;

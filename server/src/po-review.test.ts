@@ -31,4 +31,13 @@ describe("PO design review", () => {
         expect(notes).not.toContain("Label wording");
         expect(notes).toContain("1 other(s) are skipped");
     });
+    it("lists the files attached to a note and to a discussion message", () => {
+        const f = { name: "a.png", file: "shared/1-a.png", mime: "image/png", size: 3 };
+        const r = readReview(dir)!;
+        r.comments[0]!.noteFiles = [f];
+        r.comments[2]!.thread[0]!.files = [f];
+        const notes = reviewNotes(r, null, "/t/x");
+        expect(notes).toContain("Keep the existing EA items unlocked.\n\n### Files from the human (1)");
+        expect(notes).toContain("`/t/x/shared/1-a.png`");
+    });
 });

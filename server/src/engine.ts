@@ -28,6 +28,7 @@ import { DEPENDENCY_KIND, type Services } from "./services.js";
 import { CallbackRelay } from "./callback-relay.js";
 import type { ServiceKind } from "./db.js";
 import { extraTicketFile, fetchTicket, fetchTicketRest, mimeOf, parseTicketRef, renderSharedFiles, renderTicketsForPrompt, Ticket, type TicketRef } from "./tickets.js";
+import { moveCard, tasksMdEnvConfigOf } from "./tasksmd.js";
 import { describeReviewChecklist } from "./review-checklist.js";
 import { killSession, taskSessionName } from "./tmux.js";
 import { findTranscript } from "./transcripts.js";
@@ -748,11 +749,12 @@ export class Engine extends EventEmitter {
         const task = this.getTask(taskId);
         if (!task) return;
         const env = this.env(task.env_id);
-        const ref: TicketRef = { source: task.source as "clickup" | "linear", id: task.ticket_id, url: task.ticket_url };
+        const ref: TicketRef = { source: task.source as "clickup" | "linear" | "tasksmd", id: task.ticket_id, url: task.ticket_url };
         const extras = extraTicketsOf(task);
         const cd = this.configDirOf(env);
         const account = this.pickAccount(task, STAGE_DEFS.research, env, cd);
         this.setTaskStatus(taskId, "running", extras.length ? `fetching ${extras.length + 1} tickets` : "fetching ticket");
+        this.syncTicketLane(taskId, "inProgress");
         const onResult = (raw: unknown): void => {
             const parsed = ResultEvent.safeParse(raw);
             if (parsed.success) recordUsage(this.db, { accountId: account?.id ?? null, envId: env.id, taskId, runId: null, kind: "ticket-fetch", stage: null }, parsed.data);
@@ -798,7 +800,7 @@ export class Engine extends EventEmitter {
     async fetchTicketNow(taskId: string): Promise<Ticket> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
-        const ticket = await fetchTicketRest({ source: task.source as "clickup" | "linear", id: task.ticket_id, url: task.ticket_url }, this.cfg, this.taskDir(taskId));
+        const ticket = await fetchTicketRest({ source: task.source as "clickup" | "linear" | "tasksmd", id: task.ticket_id, url: task.ticket_url }, this.cfg, this.taskDir(taskId));
         this.db.prepare(`UPDATE tasks SET title = COALESCE(title, ?), ticket_url = COALESCE(ticket_url, ?), updated_at = ? WHERE id = ?`).run(ticket.title, ticket.url, now(), taskId);
         this.emitTask(taskId);
         return ticket;
@@ -1389,7 +1391,7 @@ export class Engine extends EventEmitter {
     // ---------- task creation ----------
 
     // One task per call. `tickets` holds one ticket, or several for a batch task (one branch / one PR set covering them all).
-    createTask(envId: string, tickets: string[], accountId?: string, model?: string, notes?: string, baseBranch?: string | Record<string, string>): TaskRow {
+    createTask(envId: string, tickets: string[], accountId?: string, model?: string, notes?: string, baseBranch?: string | Record<string, string>, attach?: (taskDir: string) => SharedFile[]): TaskRow {
         const env = this.env(envId);
         // Only a base that differs from the env's is stored; the env default stays the single source of truth otherwise.
         const base = normalizeBaseBranch(baseBranch, this.prRepos(env), env.base_branch);
@@ -1401,12 +1403,16 @@ export class Engine extends EventEmitter {
         const id = randomUUID();
         const sessionId = randomUUID();
         const ts = now();
+        // Files attached on the New task form: this task's own copies, listed at the end of its notes.
+        const dir = this.taskDir(id);
+        const attached = attach ? attach(dir) : [];
+        const fullNotes = `${notes?.trim() ?? ""}${renderSharedFiles(attached, dir)}`.trim();
         this.db
             .prepare(
                 `INSERT INTO tasks (id, env_id, ticket_id, source, ticket_url, model, session_id, account_id, stage, status, status_line, pinned, notes, extra_tickets, base_branch, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'research', 'running', 'fetching ticket', 0, ?, ?, ?, ?, ?)`,
             )
-            .run(id, env.id, ref.id, ref.source, ref.url, model ?? null, sessionId, accountId ?? accountOrderOf(env)[0] ?? null, notes?.trim() || null, extras.length ? JSON.stringify(extras) : null, base, ts, ts);
+            .run(id, env.id, ref.id, ref.source, ref.url, model ?? null, sessionId, accountId ?? accountOrderOf(env)[0] ?? null, fullNotes || null, extras.length ? JSON.stringify(extras) : null, base, ts, ts);
         this.taskDir(id);
         const task = this.getTask(id)!;
         this.recordTaskEvent(id, "research", "running");
@@ -2346,6 +2352,29 @@ export class Engine extends EventEmitter {
                  ON CONFLICT(task_id, repo) DO UPDATE SET number = excluded.number, url = excluded.url, checks_json = excluded.checks_json, review_decision = excluded.review_decision, merged_at = excluded.merged_at, pushed_at = excluded.pushed_at, pushed_sha = excluded.pushed_sha, approved_at = excluded.approved_at, state = excluded.state, updated_at = excluded.updated_at`,
             )
             .run(taskId, repo, next.number, next.url, next.checks_json, next.review_decision, next.merged_at, next.pushed_at, next.pushed_sha, next.approved_at, next.state, now());
+        // Every PR merged → the ticket is done; any PR open → it is in review.
+        const rows = this.prRows(taskId).filter((r) => r.number);
+        if (rows.length) this.syncTicketLane(taskId, rows.every((r) => r.merged_at || r.state === "MERGED") ? "done" : "review");
+    }
+
+    // The task's progress written back to its ticket: Tasks.md moves the card to the env's lane for it (envs.ticket_config
+    // lanes; empty = leave it). Each phase is applied once per task (ticket-lane.json), so a card the human moved back
+    // stays where they put it. Other task managers are not written to.
+    private syncTicketLane(taskId: string, phase: "inProgress" | "review" | "done"): void {
+        const task = this.getTask(taskId);
+        if (!task || task.source !== "tasksmd") return;
+        const env = this.env(task.env_id);
+        const lane = tasksMdEnvConfigOf(env.ticket_config).lanes[phase];
+        const file = join(this.taskDir(taskId), "ticket-lane.json");
+        const applied = this.readArtifactJson<{ phases: string[] }>(taskId, "ticket-lane.json")?.phases ?? [];
+        if (!lane || applied.includes(phase)) return;
+        try {
+            const moved = moveCard(this.cfg, task.ticket_id, lane);
+            writeFileSync(file, JSON.stringify({ phases: [...applied, phase] }));
+            if (moved) this.addAgentNote(taskId, `Moved ${task.ticket_id} to the "${lane}" lane in Tasks.md.`);
+        } catch (e) {
+            console.warn(`[vortex] ${task.ticket_id}: Tasks.md lane "${lane}": ${String((e as Error).message ?? e).slice(0, 200)}`);
+        }
     }
 
     // pr.json normalised to one draft per repository. A file from before per-repo drafts ({title, body, base}) is fanned
@@ -3366,18 +3395,18 @@ export class Engine extends EventEmitter {
     // Line comments and notes the human left on Code changes while the task sits at a PR stage (nothing posted to
     // GitHub): a PR-fix round with them as the reviewer notes — the same path User Review's "Request changes" takes
     // before the PR exists. Recorded as a review row so the round shows in the history.
-    async startLocalCommentFix(taskId: string, notes: string | undefined, comments: LineComment[]): Promise<void> {
+    async startLocalCommentFix(taskId: string, notes: string | undefined, comments: LineComment[], files: SharedFile[] = []): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
         if (!LOCAL_COMMENT_FIX_STAGES.has(task.stage)) throw new Error("this is for a task at a PR stage — use Request changes at User Review");
-        if (!notes?.trim() && comments.length === 0) throw new Error("leave a line comment on Code changes or write notes first");
+        if (!notes?.trim() && comments.length === 0 && files.length === 0) throw new Error("leave a line comment on Code changes or write notes first");
         await this.recordFixComments(task, []);
         const prior = this.db.prepare(`SELECT COUNT(*) AS n FROM reviews WHERE task_id = ? AND stage = 'pr_fix' AND verdict = 'changes'`).get(taskId) as { n: number };
         this.db
             .prepare(`INSERT INTO reviews (id, task_id, stage, verdict, route_to, notes, comments, created_at) VALUES (?, ?, 'pr_fix', 'changes', 'pr_fix', ?, ?, ?)`)
             .run(randomUUID(), taskId, notes?.trim() || null, comments.length ? JSON.stringify(comments) : null, now());
-        const failureOutput = `${comments.length} line comment(s) and notes the human left on the task's Code changes (not a CI failure — the PR itself is untouched):\n\n${renderReviewNotes(prior.n + 1, notes, comments, "pr_fix")}`;
+        const failureOutput = `${comments.length} line comment(s) and notes the human left on the task's Code changes (not a CI failure — the PR itself is untouched):\n\n${renderReviewNotes(prior.n + 1, notes, comments, "pr_fix")}${renderSharedFiles(files, this.taskDir(taskId))}`;
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         this.setStage(taskId, "pr_fix");
         this.startPrRound(taskId, { "": failureOutput }, { attempt: rounds.n + 1, operation: "pr_fix_comments" });
@@ -3386,7 +3415,7 @@ export class Engine extends EventEmitter {
 
     // Human-triggered only (checkbox picks on the PR comments tab). Same commit-locally-then-review-the-diff cycle as
     // startPrFix, just sourced from one PR's comments instead of failing checks.
-    async startPrCommentFix(taskId: string, repo: string, commentIds: number[]): Promise<void> {
+    async startPrCommentFix(taskId: string, repo: string, commentIds: number[], files: SharedFile[] = []): Promise<void> {
         const task = this.getTask(taskId);
         if (!task) throw new Error("task not found");
         if (task.status === "running") throw new Error("a run is in progress — stop it first");
@@ -3395,7 +3424,8 @@ export class Engine extends EventEmitter {
         const failureOutput =
             `${repoScopeNote(repo)}${picked.length} comment(s) on PR #${number} picked by the human to address (this is not necessarily a CI failure). ` +
             `Where a comment carries replies or a Vortex discussion below it, that discussion is the brief: the human's last word there wins over the comment's original wording.\n` +
-            picked.map((c) => describePrComment(c).replace(/^- /, `- [comment #${c.id}] `) + renderReplies(c, all) + renderAskThread(threads.get(c.id) ?? [])).join("\n");
+            picked.map((c) => describePrComment(c).replace(/^- /, `- [comment #${c.id}] `) + renderReplies(c, all) + renderAskThread(threads.get(c.id) ?? [])).join("\n") +
+            renderSharedFiles(files, this.taskDir(taskId));
         const rounds = this.db.prepare(`SELECT COUNT(*) AS n FROM runs WHERE task_id = ? AND stage = 'pr_fix'`).get(taskId) as { n: number };
         await this.recordFixComments(task, [{ repo, comments: picked }]);
         this.setStage(taskId, "pr_fix");
@@ -3435,14 +3465,14 @@ export class Engine extends EventEmitter {
     // Human-triggered only: the picked comments go to the task's chat as a question, not a fix round. The agent assesses
     // each one (does it make sense, is it already addressed on the branch, what a fix would take) and changes nothing;
     // the human then decides between "address" and a reply on GitHub. Answers land in Chat like any Ask.
-    async askAboutPrComments(taskId: string, repo: string, commentIds: number[], question: string | undefined): Promise<MessageRow> {
+    async askAboutPrComments(taskId: string, repo: string, commentIds: number[], question: string | undefined, files: SharedFile[] = []): Promise<MessageRow> {
         const { number, picked } = await this.pickedPrComments(taskId, repo, commentIds);
         const ask =
             question?.trim() ||
             "For each comment: does it make sense — agree or disagree, and why? Is it already addressed on this branch (cite the commit or path:line)? " +
                 "If not, what would the fix be, how big is it, and what is the risk? Recommend address / reply-and-decline / needs-human-decision per comment.";
         const text = `About ${picked.length} comment(s) on PR #${number}${repo ? ` (${repoLabel(repo)})` : ""}:\n${picked.map(describePrComment).join("\n")}\n\n${ask}`;
-        return this.askAgent(taskId, text);
+        return this.askAgent(taskId, text, null, files);
     }
 
     // After the human approves a PR Fix (already committed locally, never pushed): push every checkout that has
@@ -3465,8 +3495,29 @@ export class Engine extends EventEmitter {
                 comments: g.comments.map((c) => ({ id: c.id, kind: c.kind, author: c.author, url: c.url, body: c.body.slice(0, 400), ...(c.kind === "line" ? { path: c.path, line: c.line, root: c.replyTo ?? c.id } : {}) })),
             };
         }
+        // Comments an earlier round addressed whose "Addressed in" reply is not posted yet stay, with their outcome and
+        // reply: a round after them (reviewer notes, a CI fix, "amend the existing commit") does not undo them. Only
+        // a comment picked again in this round starts over. (2026-10-19: a review-notes round dropped the three
+        // comments the round before had addressed, and nothing suggested their replies any more.)
+        const prev = this.readArtifactJson<FixComments>(task.id, "pr_fix_comments.json");
+        const outcomes: NonNullable<FixComments["outcomes"]> = [];
+        const replies: FixComments["replies"] = [];
+        for (const [repo, p] of Object.entries(prev?.repos ?? {})) {
+            const picked = new Set(repos[repo]?.comments.map((c) => c.id) ?? []);
+            const keep = p.comments.filter((c) => {
+                if (picked.has(c.id)) return false;
+                const o = prev?.outcomes?.find((x) => x.repo === repo && x.commentId === c.id);
+                const r = prev?.replies.find((x) => x.repo === repo && x.commentId === c.id);
+                return !!o?.addressed && !r?.posted;
+            });
+            if (!keep.length) continue;
+            const ids = new Set(keep.map((c) => c.id));
+            repos[repo] = repos[repo] ? { ...repos[repo]!, comments: [...repos[repo]!.comments, ...keep] } : { ...p, comments: keep };
+            outcomes.push(...(prev?.outcomes ?? []).filter((x) => x.repo === repo && ids.has(x.commentId)));
+            replies.push(...(prev?.replies ?? []).filter((x) => x.repo === repo && ids.has(x.commentId)));
+        }
         const file = join(this.taskDir(task.id), "pr_fix_comments.json");
-        if (Object.keys(repos).length) writeFileSync(file, JSON.stringify({ at: now(), repos, replies: [] } satisfies FixComments, null, 2));
+        if (Object.keys(repos).length) writeFileSync(file, JSON.stringify({ at: now(), repos, replies, ...(outcomes.length ? { outcomes } : {}) } satisfies FixComments, null, 2));
         else rmSync(file, { force: true });
     }
 
@@ -3478,10 +3529,18 @@ export class Engine extends EventEmitter {
         const env = this.env(task.env_id);
         const commits: Record<string, Array<{ sha: string; subject: string }>> = {};
         for (const [repo, r] of Object.entries(fc.repos)) {
-            const log = await this.git(this.checkoutOf(task, env, repo), ["log", "--format=%H %s", r.headBefore ? `${r.headBefore}..HEAD` : "-5"], env).catch(() => "");
+            const cwd = this.checkoutOf(task, env, repo);
+            // A rebase since the round started leaves headBefore off the branch: the branch's own commits then.
+            const onBranch = !!r.headBefore && (await this.git(cwd, ["merge-base", "--is-ancestor", r.headBefore, "HEAD"], env).then(() => true, () => false));
+            const range = onBranch ? `${r.headBefore}..HEAD` : `${await this.baseRef(cwd, env, this.baseBranchOf(task, env, repo)).catch(() => `origin/${env.base_branch}`)}..HEAD`;
+            const log = await this.git(cwd, ["log", "--format=%H %s", range], env).catch(() => "");
             commits[repo] = log.split("\n").filter(Boolean).map((l) => ({ sha: l.slice(0, 40), subject: l.slice(41) }));
         }
-        return { ...fc, commits };
+        // Commits named before an amend or a rebase are shown (and posted) as the branch has them now.
+        const live = async <T extends { repo: string; sha: string | null; posted?: string | null }>(x: T): Promise<T> => (x.sha && !x.posted ? { ...x, sha: (await this.liveCommit(task, env, x.repo, x.sha)) ?? x.sha } : x);
+        const outcomes = fc.outcomes ? await Promise.all(fc.outcomes.map(live)) : undefined;
+        const replies = await Promise.all(fc.replies.map(live));
+        return { ...fc, ...(outcomes ? { outcomes } : {}), replies, commits };
     }
 
     // The fix run's report per comment → outcomes and pre-filled replies. A commit counts only when it is one of the
@@ -3504,12 +3563,15 @@ export class Engine extends EventEmitter {
                 // A round sent back runs again ("fix the other 3 as well"): the new run reports only what it did now. A
                 // comment an earlier run of the same round addressed keeps that outcome (and its reply) while its commit
                 // is still one of the round's — unless the new run addressed it itself.
+                // The same holds for a comment an earlier round addressed (carried over by recordFixComments): it keeps
+                // its outcome while its commit is still in the branch, followed across an amend or a rebase.
                 const prior = fc.outcomes?.find((x) => x.repo === repo && x.commentId === c.id && x.addressed && x.sha);
-                if (prior && !o?.addressed && prior.sha && shas.includes(prior.sha)) {
-                    outcomes.push(prior);
+                const priorLive = prior?.sha && !o?.addressed ? await this.liveCommit(task, env, repo, prior.sha) : null;
+                if (prior && priorLive) {
+                    outcomes.push({ ...prior, sha: priorLive });
                     const was = fc.replies.find((x) => x.repo === repo && x.commentId === c.id);
-                    if (was) replies.push(was);
-                    else if (!fc.outcomes?.length) replies.push({ repo, commentId: c.id, sha: prior.sha, posted: null, error: null });
+                    if (was) replies.push(was.posted ? was : { ...was, sha: priorLive });
+                    else if (!fc.outcomes?.length) replies.push({ repo, commentId: c.id, sha: priorLive, posted: null, error: null });
                     continue;
                 }
                 if (!o) {
@@ -3544,6 +3606,18 @@ export class Engine extends EventEmitter {
         this.emitTask(taskId);
     }
 
+    // A commit a fix round named, as the branch has it now: itself while it is still in the branch, else the branch's own
+    // commit (base..HEAD) with the same subject — an amend, a rebase or a pull --rebase since rewrote it — else null.
+    private async liveCommit(task: TaskRow, env: EnvRow, repo: string, sha: string): Promise<string | null> {
+        const cwd = this.checkoutOf(task, env, repo);
+        if (await this.git(cwd, ["merge-base", "--is-ancestor", sha, "HEAD"], env).then(() => true, () => false)) return sha;
+        const subject = (await this.git(cwd, ["log", "-1", "--format=%s", sha], env).catch(() => "")).trim();
+        if (!subject) return null;
+        const base = await this.baseRef(cwd, env, this.baseBranchOf(task, env, repo)).catch(() => `origin/${env.base_branch}`);
+        const own = await this.git(cwd, ["log", "--format=%H %s", `${base}..HEAD`], env).catch(() => "");
+        return own.split("\n").find((l) => l.slice(41) === subject)?.slice(0, 40) ?? null;
+    }
+
     // After the push: each picked reply goes to GitHub with the env's gh login (the human's account). A line comment
     // gets a reply in its thread; a review or general comment gets a PR comment that quotes it.
     private async postFixReplies(task: TaskRow, env: EnvRow): Promise<void> {
@@ -3558,12 +3632,9 @@ export class Engine extends EventEmitter {
             const m = pr ? /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(pr.prUrl) : null;
             if (!pr || !c || !m) continue;
             const cwd = this.checkoutOf(task, env, r.repo);
-            // The push may have rewritten the commit (a pull --rebase): link to the pushed commit with the same subject.
-            if (!(await this.git(cwd, ["merge-base", "--is-ancestor", r.sha, "HEAD"], env).then(() => true, () => false))) {
-                const subject = await this.git(cwd, ["log", "-1", "--format=%s", r.sha], env).catch(() => "");
-                const pushed = subject ? (await this.git(cwd, ["log", "--format=%H %s", pr.headBefore ? `${pr.headBefore}..HEAD` : "-20"], env).catch(() => "")).split("\n").find((l) => l.slice(41) === subject)?.slice(0, 40) : undefined;
-                if (pushed) r.sha = pushed;
-            }
+            // The commit may have been rewritten since (an amend, a pull --rebase): link to the pushed one.
+            const live = await this.liveCommit(task, env, r.repo, r.sha);
+            if (live) r.sha = live;
             const link = `${pr.prUrl}/commits/${r.sha}`;
             try {
                 const out =
