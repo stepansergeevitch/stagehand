@@ -145,7 +145,17 @@ Product (list + PO entity), Sessions (list + terminal/changes workspace, `full` 
 | `Modal` | title, onClose, wide, footer | create dialogs (also re-exported from `web/src/Modal.tsx`) |
 | `status.tsx`: `taskState`, `TaskStatusChip`, `StageName`, `StageProgress`, `age` | | every place a task state appears |
 
-Primitives always come from `@vortex/ds` (Button, IconButton, Chip, Badge, StatusDot, Notice, Tabs, Menu, Popover, Hint, Kbd, EmptyState, Checkbox, Switch, Input/Select/Textarea, Icon). DS additions in phase 1: icons `menu chevronLeft chevronUp home tasks layers terminal chart cpu server folder user plug spark command pin gauge`.
+Primitives always come from `@vortex/ds` (Button, IconButton, Chip, Badge, StatusDot, Notice, Tabs, Menu, Popover, Hint, Kbd, EmptyState, Checkbox, Switch, Input/Select/Textarea, Icon). DS additions in phase 1 (and `paperclip` with the chat input): icons `menu chevronLeft chevronUp home tasks layers terminal chart cpu server folder user plug spark command pin gauge`.
+
+### 9.1 Shared composites added after phase 1
+
+| Component | What it is | Rules |
+|---|---|---|
+| `ChatInput` (`components/ChatInput.tsx`; `AgentInput` is its Field shape) | The one box for anything the human writes to an agent: the task Chat, the Prompter, the Product owner chat, and every note, answer and review comment in a form. Attached files as chips above the text, auto-growing text (2 to 8 rows), a toolbar inside the box: paperclip and mode on the left, the action on the right | **Composer** shape has an action (Send, Run, Stack while the agent works, Stop; Stop alone when the box is empty); **Field** shape has none. A queued message shows above the box with Edit and Remove; a failed send shows above it with Retry and keeps the text. Keys (Emacs): RET sends (a phone's Return is a new line), Shift+RET or C-j new line, C-c C-c sends, C-g or Esc stops, M-p or ArrowUp recalls. No hint text; the placeholder is the label. Never write a one-off textarea for an agent |
+| `FilterChip`, `ViewSwitch` (`components/`) | A pill that opens a list of values to pick one from; the List \| Feed switch beside the Tasks title | The picked value is the route's, not component state |
+| `needAction` / `NEED_ACTIONS` (`components/status.tsx`) | The one registry of "what needs a human": a kind, the button label, the tab it opens | The Tasks list and the Feed both read it; a button never differs between them |
+
+Key hints (`Kbd`) are not drawn on a phone (a narrow screen or one with no hover); a strip of tabs wider than the screen scrolls sideways only.
 
 ## 10. Work breakdown (phase 2; disjoint file sets)
 
