@@ -47,6 +47,9 @@ const matches = (t: Task, f: TaskFilter): boolean => {
     return true;
 };
 
+// A touch screen has no hover and a tap leaves focus behind, so the list never holds there: changes apply at once.
+const canHold = (): boolean => window.matchMedia("(hover: hover)").matches;
+
 const groupKey = (t: Task): string => (taskState(t).group === "finished" ? "parked" : taskState(t).group);
 
 // What changed for a task while the list was held, in words: "ENG-24850 started again".
@@ -331,9 +334,9 @@ export const TasksPage = ({ envs, envId, env, tasks, visible, list, filter, onLi
             )}
             <div
                 className="tasks-table"
-                onMouseEnter={() => setHolding(true)}
+                onMouseEnter={() => { if (canHold()) setHolding(true); }}
                 onMouseLeave={() => { if (!document.activeElement?.closest(".tasks-table")) setHolding(false); }}
-                onFocus={() => setHolding(true)}
+                onFocus={(e) => { if (canHold() && (e.target as HTMLElement).matches(":focus-visible")) setHolding(true); }}
                 onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null) && !e.currentTarget.matches(":hover")) setHolding(false); }}
             >
                 <DataTable
