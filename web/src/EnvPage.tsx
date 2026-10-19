@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loading } from "./components/Loading";
 import { splitCsv } from "./format";
-import { accountOrderOf, accountUsableWith, api, envRepos, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, taskDbConfigOf, type Account, type AutopilotRules, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type Task, type TaskDbConfig } from "./api";
+import { accountOrderOf, accountUsableWith, api, trackerName, tasksMdEnvConfigOf, type TasksMdEnvConfig, envRepos, autopilotRulesOf, AUTOPILOT_KINDS, componentsOf, reviewChecklistOf, taskDbConfigOf, type Account, type AutopilotRules, type ClaudeMdFile, type ConfigDir, type Env, type EnvComponent, type EnvRules, type QaAutoFixScope, type ReviewCategoryDef, type ReviewPass, type Task, type TaskDbConfig } from "./api";
 import { CheckField, EntityForm, EntityView, Field, Hint, ReadField, useDraft, useSaver } from "./components/EntityView";
 import { Section } from "./components/Panel";
 import { AddRow, RowEditor } from "./SettingsParts";
@@ -33,18 +33,37 @@ type Common = { env: Env; save: (key: string, body: Patch) => Promise<void>; sav
 const PLACEHOLDERS = "Placeholders: {{port}}, {{url}}, {{bePort}}, {{beUrl}} (FE only), {{feUrl}}, {{fePort}} (BE only: the port the task's FE has or will take), {{worktree}}, {{taskDir}}, {{envPath}} (setup only). Commands run from the task's worktree in tmux.";
 
 // ---------- General ----------
+// How a Tasks.md env uses its board (envs.ticket_config): which board, how cards are numbered, which are "mine", where cards go.
+const TasksMdFields = ({ value, onChange }: { value: TasksMdEnvConfig; onChange: (v: TasksMdEnvConfig) => void }) => {
+    const lane = (key: keyof TasksMdEnvConfig["lanes"], label: string, hint: string) => (
+        <Field label={label} hint={hint}><Input value={value.lanes[key]} onChange={(e) => onChange({ ...value, lanes: { ...value.lanes, [key]: e.target.value } })} placeholder="leave the card where it is" /></Field>
+    );
+    return (
+        <>
+            <Field label="Tasks.md board" hint="The board, as a folder path inside the Tasks.md tasks folder (Integrations → Tasks.md). Empty: the tasks folder itself."><Input value={value.board} onChange={(e) => onChange({ ...value, board: e.target.value })} placeholder="my-project" /></Field>
+            <Field label="Card id prefix" hint="Tasks.md cards have no ids: Vortex tags each card it uses with one, [tag:<PREFIX>-<n>]. Ticket ids, branches and PR titles use it."><Input value={value.idPrefix} onChange={(e) => onChange({ ...value, idPrefix: e.target.value.toUpperCase() })} placeholder="TASK" /></Field>
+            <Field label="My tickets tag" hint="The new-task picker offers the board's cards with this tag (without the brackets). Empty: every card except those in the done lane."><Input value={value.tag} onChange={(e) => onChange({ ...value, tag: e.target.value })} placeholder="me" /></Field>
+            {lane("new", "Lane for new cards", "Where a Product Owner creates the tickets it plans. Empty: the board's first lane.")}
+            {lane("inProgress", "Lane when a task starts", "Vortex moves the card here when a task starts on it.")}
+            {lane("review", "Lane when the PR opens", "Vortex moves the card here once the task's pull request is open.")}
+            {lane("done", "Lane when the PR merges", "Vortex moves the card here once every pull request of the task is merged. Cards here are left out of the new-task picker.")}
+        </>
+    );
+};
+
 const GeneralTab = ({ env, envs, save, saving }: Common & { envs: Env[] }) => {
-    const d = useDraft(() => ({ name: env.name, repos: joinRepos(env.repos), baseBranch: env.base_branch, ticketSource: env.ticket_source as "clickup" | "linear", dependsOn: env.depends_on_env_id ?? "" }), [env]);
+    const d = useDraft(() => ({ name: env.name, repos: joinRepos(env.repos), baseBranch: env.base_branch, ticketSource: env.ticket_source, dependsOn: env.depends_on_env_id ?? "", tmd: tasksMdEnvConfigOf(env.ticket_config) }), [env]);
     const v = d.value;
     return (
-        <EntityForm dirty={d.dirty} saving={saving === "general"} onDiscard={d.reset} onSave={() => save("general", { name: v.name, baseBranch: v.baseBranch, repos: splitCsv(v.repos).length ? splitCsv(v.repos) : null, ticketSource: v.ticketSource, dependsOnEnvId: v.dependsOn || null })}>
+        <EntityForm dirty={d.dirty} saving={saving === "general"} onDiscard={d.reset} onSave={() => save("general", { name: v.name, baseBranch: v.baseBranch, repos: splitCsv(v.repos).length ? splitCsv(v.repos) : null, ticketSource: v.ticketSource, dependsOnEnvId: v.dependsOn || null, ...(v.ticketSource === "tasksmd" ? { ticketConfig: v.tmd } : {}) })}>
             <ReadField label="Path" hint="Where the environment's checkout lives; set when it was added."><code>{env.path}</code></ReadField>
             <Field label="Name"><Input value={v.name} onChange={(e) => d.patch({ name: e.target.value })} /></Field>
             <Field label="Sub-repositories" hint="Comma-separated directories of the path that are git repositories. Empty: the path itself is the git repository."><Input value={v.repos} onChange={(e) => d.patch({ repos: e.target.value })} placeholder="backend, frontend" /></Field>
             <Field label="Base branch" hint="Tasks branch from it, diffs and rebases are measured against it."><Input value={v.baseBranch} onChange={(e) => d.patch({ baseBranch: e.target.value })} /></Field>
             <Field label="Task system" hint="How bare ticket ids like ABC-123 are resolved.">
-                <Select value={v.ticketSource} onChange={(e) => d.patch({ ticketSource: e.target.value as "clickup" | "linear" })}><option value="clickup">ClickUp</option><option value="linear">Linear</option></Select>
+                <Select value={v.ticketSource} onChange={(e) => d.patch({ ticketSource: e.target.value as "clickup" | "linear" | "tasksmd" })}><option value="clickup">ClickUp</option><option value="linear">Linear</option><option value="tasksmd">Tasks.md</option></Select>
             </Field>
+            {v.ticketSource === "tasksmd" && <TasksMdFields value={v.tmd} onChange={(tmd) => d.patch({ tmd })} />}
             <Field label="Depends on" hint="Another environment whose backend this app calls out to and cannot work without (e.g. Deal needs Core for auth). Started once — by the first task that needs it — and shared by every task of this environment; it keeps its own checkout and branch. Its configured port is tried first.">
                 <Select value={v.dependsOn} onChange={(e) => d.patch({ dependsOn: e.target.value })}>
                     <option value="">None</option>
@@ -463,7 +482,7 @@ export const EnvPage = ({ env, envs, accounts, configDirs, tasks = [], tab, onTa
             type="Environments"
             onType={onBack}
             id={env.name}
-            meta={<><Chip mono>{env.base_branch}</Chip><Chip>{env.ticket_source === "linear" ? "Linear" : "ClickUp"}</Chip></>}
+            meta={<><Chip mono>{env.base_branch}</Chip><Chip>{trackerName(env.ticket_source)}</Chip></>}
             actions={<Button variant="danger" disabled={taskCount > 0} title={taskCount ? `Delete the ${taskCount} task(s) of ${env.name} first` : "Remove from Vortex; files on disk are not touched"} onClick={() => { if (confirm(`Remove environment ${env.name} from Vortex? Files on disk are not touched.`)) void run("delete", async () => { await api.deleteEnv(env.id); await onChanged(); onBack(); }); }}>Delete</Button>}
             tabs={[
                 { key: "general", label: "General", content: <GeneralTab {...common} envs={envs} /> },

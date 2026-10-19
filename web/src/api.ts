@@ -63,7 +63,7 @@ export interface Env {
     id: string; name: string; path: string; base_branch: string; default_account_id: string | null; account_order: string | null; config_dir_id: string | null;
     chrome_device_id: string | null; chrome_browser_name: string | null; qa_seed_hints: string | null; qa_mock_hints: string | null; app_url: string | null; qa_script: string | null;
     be_command: string | null; fe_command: string | null; be_url_template: string | null; fe_url_template: string | null; be_port: number | null; fe_port: number | null;
-    setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear"; env_vars: string | null;
+    setup_command: string | null; repos: string | null; branch_prefix: string | null; ticket_source: "clickup" | "linear" | "tasksmd"; ticket_config?: string | null; env_vars: string | null;
     rules: string | null; cleanup_command: string | null; rebase_command?: string | null; migrate_command?: string | null; migrate_down_command?: string | null; memory_wings?: string | null; ci_autopilot?: number; test_command?: string | null; ci_autopilot_rules?: string | null; callback_ports?: string | null; prepare_command?: string | null; qa_session_command?: string | null; qa_browser_cookies?: string | null; code_review?: number; db_hosts_command?: string | null; allowed_db_hosts?: string | null; task_db?: string | null; qa_auto_fix?: string | null; check_command?: string | null; base_check?: string | null; components?: string | null; keep_services?: number; qa_browser?: "chrome" | "gstack"; pr_templates?: string | null;
     // JSON ReviewChecklist: gstack categories switched off, points added, extra do-not-flag rules for Code Review; null = the full checklist.
     review_checklist?: string | null;
@@ -90,7 +90,7 @@ export type PrComment =
     | { kind: "general"; id: number; author: string; body: string; at: string; url: string };
 // `repo` = GitHub owner/name, `repoDir` = the task's sub-repo directory ("" for a single-repo env).
 export interface PrComments { number: number; repo: string; repoDir: string; human: PrComment[]; automation: PrComment[]; fetchedAt: string }
-export interface TaskManager { source: "clickup" | "linear"; label: string; configured: boolean; token: string | null; teamId: string | null; envs: string[] }
+export interface TaskManager { source: "clickup" | "linear" | "tasksmd"; label: string; configured: boolean; token: string | null; teamId: string | null; envs: string[]; tasksDir?: string | null; configDir?: string | null }
 export interface ClaudeMdFile {
     id: string;
     label: string;
@@ -195,7 +195,7 @@ export interface PrompterSession { id: string; claude_session_id: string; model:
 export interface PrompterMessage { id: string; session_id: string; role: "user" | "assistant" | "system"; text: string; path: string | null; created_at: string; state: "sent" | "queued" }
 export interface PrompterStatus { home: string; configDir: string; account: string | null; model: string; open: number; seeded: { at: string; total: number; copied: number } | null; ready: boolean; reason: string | null }
 export interface Ticket {
-    source: "clickup" | "linear"; id: string; url: string | null; title: string; status: string | null; description: string;
+    source: "clickup" | "linear" | "tasksmd"; id: string; url: string | null; title: string; status: string | null; description: string;
     acceptanceCriteria: string[]; parent: { id: string; title: string; description: string } | null;
     // Optional: tickets fetched before this field existed have no comments key in their stored ticket.json — re-fetch to get them.
     comments?: Array<{ author: string; body: string; at: string }>;
@@ -288,7 +288,7 @@ export const pendingQuestions = (d: Pick<TaskDetail, "questions">): QuestionRoun
 export type BaseCheckState = "up_to_date" | "clean" | "conflicts" | "check_failed" | "error";
 export interface BaseCheck { task_id: string; repo: string; base: string; base_sha: string; head_sha: string; command: string; state: BaseCheckState; detail: string; checked_at: string }
 export interface Task {
-    id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
+    id: string; env_id: string; ticket_id: string; title: string | null; source: "clickup" | "linear" | "tasksmd"; ticket_url: string | null; model: string | null; session_id: string; account_id: string | null;
     branch: string | null; base_branch: string | null; dependency_branch?: string | null; base_check_state?: BaseCheckState | null; base_check_detail?: string | null; skip_qa?: number; worktree_path: string | null; stage: Stage; status: TaskStatus; status_line: string | null;
     pinned: number; notes: string | null; extra_tickets: string | null; labels?: string | null; product_owner_id?: string | null; ci_autopilot?: number | null; created_at: string; updated_at: string;
 }
@@ -304,7 +304,7 @@ export interface FeedPage { events: FeedEvent[]; open: FeedEvent[]; unseen: numb
 // Product Owners: one per project of the product (a Linear project, a ClickUp epic).
 export type PoPhase = "context" | "design" | "tickets" | "approved" | "live";
 export interface ProductOwner {
-    id: string; title: string; slug: string; source: "linear" | "clickup"; scope_kind: "project" | "epic" | "env"; scope_id: string; scope_url: string | null;
+    id: string; title: string; slug: string; source: "linear" | "clickup" | "tasksmd"; scope_kind: "project" | "epic" | "board" | "env"; scope_id: string; scope_url: string | null;
     team_id: string | null; phase: PoPhase; status: "idle" | "running" | "failed"; status_line: string | null; account_id: string | null; created_at: string; updated_at: string;
     issues_refreshed_at?: string | null; issues_error?: string | null; env_id: string; env_ids?: string | null;
     tasks?: number; created?: number; tickets?: number; ticketsDone?: number; progress?: number | null;
@@ -329,7 +329,7 @@ export const TOKEN_INTEGRATIONS: Array<{ id: TokenIntegrationId; name: string; h
     { id: "figma", name: "Figma", hint: "A personal access token with file content read access. Product Owners render the Figma links in their sources (and Figma URLs added as sources) to images. Empty: unchanged.", placeholder: "figd_…" },
 ];
 
-export interface PoArtifact { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "figma" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; description?: string | null; text_file?: string | null; chunks?: number | null }
+export interface PoArtifact { id: string; po_id: string; kind: "upload" | "text" | "linear" | "notion" | "clickup" | "tasksmd" | "figma" | "url"; title: string; source_url: string | null; file: string; mime: string | null; size: number | null; created_at: string; description?: string | null; text_file?: string | null; chunks?: number | null }
 export interface PoTicket { key: string; type: "epic" | "story" | "task" | "bug"; title: string; parent: string | null; summary: string; description: string; acceptanceCriteria: string[]; estimate: number | null; dependsOn: string[]; labels: string[]; existing?: string | null }
 // An issue of the PO's project as the last refresh saw it.
 export interface PoIssue {
@@ -743,7 +743,7 @@ export const api = {
     envs: () => fetch("/api/envs").then((r) => j<Env[]>(r)),
     addEnv: (body: {
         name: string; path: string; baseBranch: string; defaultAccountId?: string; accountOrder?: string[]; configDirId?: string; appUrl?: string;
-        repos?: string[]; ticketSource: "clickup" | "linear"; envVars?: string;
+        repos?: string[]; ticketSource: "clickup" | "linear" | "tasksmd"; envVars?: string;
     }) => post<Env>("/api/envs", body),
     patchEnv: (
         id: string,
@@ -751,7 +751,7 @@ export const api = {
             name?: string; baseBranch?: string; defaultAccountId?: string | null; accountOrder?: string[]; configDirId?: string | null;
             qaSeedHints?: string | null; qaMockHints?: string | null; appUrl?: string | null;
             beCommand?: string | null; feCommand?: string | null; beUrlTemplate?: string | null; feUrlTemplate?: string | null; bePort?: number | null; fePort?: number | null;
-            setupCommand?: string | null; repos?: string[] | null; ticketSource?: "clickup" | "linear"; envVars?: string | null;
+            setupCommand?: string | null; repos?: string[] | null; ticketSource?: "clickup" | "linear" | "tasksmd"; ticketConfig?: TasksMdEnvConfig | null; envVars?: string | null;
             qaBrowser?: "chrome" | "gstack"; qaAutoFix?: QaAutoFixScope;
             reviewChecklist?: ReviewChecklist | null;
             cleanupCommand?: string | null; rebaseCommand?: string | null; migrateCommand?: string | null; migrateDownCommand?: string | null; memoryWings?: string[] | null; ciAutopilot?: boolean; testCommand?: string | null; ciAutopilotRules?: AutopilotRules | null; prepareCommand?: string | null; qaSessionCommand?: string | null; qaBrowserCookies?: string | null; codeReview?: boolean; dbHostsCommand?: string | null; allowedDbHosts?: string[] | null; taskDb?: TaskDbConfig | null; callbackPorts?: Array<{ port: number; relay: boolean }> | null; baseCheck?: Record<string, string> | null; checkCommand?: string | null; components?: EnvComponent[]; keepServices?: boolean; prTemplates?: Record<string, string | null>; dependsOnEnvId?: string | null;
@@ -774,13 +774,13 @@ export const api = {
     deleteEnv: (id: string) => fetch(`/api/envs/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     deleteAccount: (id: string) => fetch(`/api/accounts/${id}`, { method: "DELETE" }).then((r) => j<{ deleted: string }>(r)),
     taskManagers: () => fetch("/api/task-managers").then((r) => j<TaskManager[]>(r)),
-    patchTaskManager: (source: "clickup" | "linear", body: { token?: string | null; teamId?: string | null }) =>
+    patchTaskManager: (source: "clickup" | "linear" | "tasksmd", body: { token?: string | null; teamId?: string | null; tasksDir?: string | null; configDir?: string | null }) =>
         fetch(`/api/task-managers/${source}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<TaskManager>(r)),
-    testTaskManager: (source: "clickup" | "linear") => post<{ ok: boolean; count?: number; sample?: string[]; error?: string }>(`/api/task-managers/${source}/test`),
+    testTaskManager: (source: "clickup" | "linear" | "tasksmd") => post<{ ok: boolean; count?: number; sample?: string[]; error?: string }>(`/api/task-managers/${source}/test`),
     tasks: (envId?: string) => fetch(`/api/tasks${envId ? `?env=${envId}` : ""}`).then((r) => j<Task[]>(r)),
     task: (id: string) => fetch(`/api/tasks/${id}`).then((r) => j<TaskDetail>(r)),
     // mode "each": one task per ticket; "batch": one task covering every ticket.
-    createTasks: (body: { envId: string; tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string | Record<string, string>; productOwnerId?: string | null }) => post<{ tasks: Task[] }>("/api/tasks", body),
+    createTasks: (body: { envId: string; tickets: string[]; mode: "each" | "batch"; accountId?: string; model?: string; notes?: string; baseBranch?: string | Record<string, string>; productOwnerId?: string | null; files?: SharedFile[] }) => post<{ tasks: Task[] }>("/api/tasks", body),
     // Remote branch names of one repository of an env ("" = the single repo), for the base-branch pickers.
     branches: (envId: string, repo = "") => fetch(`/api/envs/${envId}/branches?repo=${encodeURIComponent(repo)}`).then((r) => j<{ branches: string[] }>(r)),
     labelSuggestions: () => fetch("/api/labels").then((r) => j<Array<TaskLabel & { count: number }>>(r)),
@@ -849,7 +849,7 @@ export const api = {
     forcePush: (id: string, repo: string, force = false) => post<{ ok: true; result: string }>(`/api/tasks/${id}/commits/force-push`, { repo, force }),
     prComments: (id: string, repo: string) => fetch(`/api/tasks/${id}/pr-comments?repo=${encodeURIComponent(repo)}`).then((r) => j<PrComments | null>(r)),
     resolvePrComment: (id: string, repo: string, commentId: number, resolved: boolean) => post<PrComments | null>(`/api/tasks/${id}/pr-comments/${commentId}/resolve`, { repo, resolved }),
-    myTickets: (envId: string) => fetch(`/api/envs/${envId}/my-tickets`).then((r) => j<{ source: "clickup" | "linear"; tickets: MyTicket[]; error?: string }>(r)),
+    myTickets: (envId: string) => fetch(`/api/envs/${envId}/my-tickets`).then((r) => j<{ source: "clickup" | "linear" | "tasksmd"; tickets: MyTicket[]; error?: string }>(r)),
     stop: (id: string) => post<Task>(`/api/tasks/${id}/stop`),
     retry: (id: string) => post<Task>(`/api/tasks/${id}/retry`),
     rerun: (id: string, stage: Stage) => post<Task>(`/api/tasks/${id}/rerun`, { stage }),
@@ -931,3 +931,22 @@ export const STAGE_ORDER: Stage[] = [
     "research", "design_proposal", "implementation", "code_review", "manual_qa", "user_review",
     "pr_creation_review", "pr_waiting", "pr_fix", "pr_green", "pr_approved", "done",
 ];
+
+// envs.ticket_config for a Tasks.md env (server tasksmd.ts TasksMdEnvConfig).
+export interface TasksMdEnvConfig {
+    board: string;
+    idPrefix: string;
+    tag: string;
+    lanes: { new: string; inProgress: string; review: string; done: string };
+}
+export const tasksMdEnvConfigOf = (json: string | null | undefined): TasksMdEnvConfig => {
+    let v: Partial<TasksMdEnvConfig> = {};
+    try {
+        v = json ? (JSON.parse(json) as Partial<TasksMdEnvConfig>) : {};
+    } catch {
+        v = {};
+    }
+    return { board: v.board ?? "", idPrefix: v.idPrefix ?? "", tag: v.tag ?? "", lanes: { new: v.lanes?.new ?? "", inProgress: v.lanes?.inProgress ?? "", review: v.lanes?.review ?? "", done: v.lanes?.done ?? "" } };
+};
+// The task manager's display name.
+export const trackerName = (source: string): string => (source === "linear" ? "Linear" : source === "tasksmd" ? "Tasks.md" : "ClickUp");

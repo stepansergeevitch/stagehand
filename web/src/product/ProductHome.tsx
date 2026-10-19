@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loading } from "../components/Loading";
 import { errText } from "../format";
-import { api, poEnvIds, type Env, type ProductOwner } from "../api";
+import { api, poEnvIds, trackerName, type Env, type ProductOwner } from "../api";
 import { Modal } from "../Modal";
 import { DataTable, type DataColumn } from "../components/DataTable";
 import { EntityForm, Field, useDraft, useSaver } from "../components/EntityView";
@@ -20,8 +20,12 @@ type ProductRoute = Extract<Route, { page: "product" }>;
 // memory tabs show are all routed (#/product/context?env=…).
 
 type PendingSource = { kind: "url"; url: string } | { kind: "text"; title: string; text: string } | { kind: "file"; file: File };
-const LINEAR_PROJECT = /^https?:\/\/linear\.app\/[^/]+\/project\//;
-const CLICKUP_TASK = /^https?:\/\/app\.clickup\.com\/t\//;
+// What one project is in each task manager, and how its address looks.
+const SCOPES = {
+    linear: { name: "Linear project", placeholder: "https://linear.app/<workspace>/project/…", pattern: /^https?:\/\/linear\.app\/[^/]+\/project\//, bad: "a Linear project URL" },
+    clickup: { name: "ClickUp epic", placeholder: "https://app.clickup.com/t/…", pattern: /^https?:\/\/app\.clickup\.com\/t\//, bad: "a ClickUp task URL" },
+    tasksmd: { name: "Tasks.md board", placeholder: "tasksmd:<board folder>", pattern: /^tasksmd:/i, bad: "a Tasks.md board (tasksmd:<board folder>)" },
+} as const;
 
 // A new PO: its environment (which fixes the task manager), the project of that task manager, and the sources it
 // starts from. The PO is created without its first turn, gets the sources, then starts — so it reads them all.
@@ -31,7 +35,8 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
     // Opened by its URL, the environments are not loaded yet: pick the first when they arrive.
     useEffect(() => { if (envIds.length === 0 && envs[0]) setEnvIds([envs[0].id]); }, [envs, envIds.length]);
     const env = envs.find((e) => e.id === envIds[0]);
-    const manager = env?.ticket_source === "clickup" ? "ClickUp" : "Linear";
+    const manager = trackerName(env?.ticket_source ?? "linear");
+    const scope = SCOPES[env?.ticket_source ?? "linear"];
     const [url, setUrl] = useState("");
     // "env" = the environment's own PO: no project; it reviews the env's tasks that have no project PO.
     const [kind, setKind] = useState<"project" | "env">("project");
@@ -40,7 +45,7 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
     const [paste, setPaste] = useState<{ title: string; text: string } | null>(null);
     const [progress, setProgress] = useState<string | null>(null);
     const fileRef = useRef<HTMLInputElement>(null);
-    const urlOk = env?.ticket_source === "clickup" ? CLICKUP_TASK.test(url.trim()) : LINEAR_PROJECT.test(url.trim());
+    const urlOk = scope.pattern.test(url.trim());
     const create = async () => {
         if (!env) return;
         setProgress(kind === "env" ? "Creating…" : "Reading the project…");
@@ -89,14 +94,14 @@ const NewPoDialog = ({ envs, onClose, onCreated, onError }: { envs: Env[]; onClo
                 </Field>
                 <Field label="Scope" hint="A project Product owner plans one project, designs it and splits it into tickets. A whole-environment one has no project: it briefs and reviews every task of the environment that has no project Product owner, from the product context and the environment's memory (one per picked environment).">
                     <div className="po-radios">
-                        <Radio name="po-kind" label={`One ${manager === "Linear" ? "Linear project" : "ClickUp epic"}`} checked={kind === "project"} onChange={() => setKind("project")} />
+                        <Radio name="po-kind" label={`One ${scope.name}`} checked={kind === "project"} onChange={() => setKind("project")} />
                         <Radio name="po-kind" label="Whole environment" checked={kind === "env"} onChange={() => setKind("env")} />
                     </div>
                 </Field>
                 {kind === "project" && (
-                    <Field label={manager === "Linear" ? "Linear project" : "ClickUp epic"} hint={`The task manager is ${manager}: the Product owner reads its project and creates tickets only there.`}>
-                        <Input value={url} invalid={!!url.trim() && !urlOk} onChange={(e) => setUrl(e.target.value)} placeholder={manager === "Linear" ? "https://linear.app/<workspace>/project/…" : "https://app.clickup.com/t/…"} />
-                        {url.trim() && !urlOk && <p className="po-error">This is not a {manager === "Linear" ? "Linear project URL" : "ClickUp task URL"}.</p>}
+                    <Field label={scope.name} hint={`The task manager is ${manager}: the Product owner reads its project and creates tickets only there.`}>
+                        <Input value={url} invalid={!!url.trim() && !urlOk} onChange={(e) => setUrl(e.target.value)} placeholder={scope.placeholder} />
+                        {url.trim() && !urlOk && <p className="po-error">This is not {scope.bad}.</p>}
                     </Field>
                 )}
                 <Field label="Sources" hint="Optional. The Product owner reads them in its first turn.">
@@ -153,7 +158,7 @@ const MemoryWings = ({ env, onError }: { env: Env; onError: (m: string) => void 
     );
 };
 
-const typeOf = (po: ProductOwner): string => (po.scope_kind === "env" ? "Whole environment" : po.source === "linear" ? "Linear project" : "ClickUp epic");
+const typeOf = (po: ProductOwner): string => (po.scope_kind === "env" ? "Whole environment" : SCOPES[po.source].name);
 const stateOf = (po: ProductOwner): string => (po.status === "running" ? "Answering" : po.status === "failed" ? "Failed" : "Idle");
 
 export const ProductHome = ({ route, onOpen, onError }: { route: ProductRoute; onOpen: (id: string) => void; onError: (m: string) => void }) => {

@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { errText } from "../format";
-import { api, type Env, type PalaceHit } from "../api";
+import { api, trackerName, type Env, type PalaceHit } from "../api";
 import { Markdown } from "../Markdown";
 import { CheckboxSelect } from "../components/CheckboxSelect";
 import { Section } from "../components/Panel";
@@ -83,7 +83,7 @@ export const EnvsSelect = ({ envs, value, onChange, disabled, switchable }: { en
     const sourceOf = (id: string) => envs.find((e) => e.id === id)?.ticket_source;
     return (
         <CheckboxSelect
-            options={envs.map((e) => ({ value: e.id, label: e.name, disabled: !switchable && source && e.ticket_source !== source ? `uses ${e.ticket_source === "linear" ? "Linear" : "ClickUp"}, not ${source === "linear" ? "Linear" : "ClickUp"}` : undefined }))}
+            options={envs.map((e) => ({ value: e.id, label: e.name, disabled: !switchable && source && e.ticket_source !== source ? `uses ${trackerName(e.ticket_source)}, not ${source === "linear" ? "Linear" : "ClickUp"}` : undefined }))}
             value={value}
             onChange={(ids) => {
                 const added = ids.find((id) => !value.includes(id));

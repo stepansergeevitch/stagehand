@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { api, type PoCorrection, type PoDetail, type PoJournalEvent, type PoQuestion } from "./api";
+import { api, trackerName, type PoCorrection, type PoDetail, type PoJournalEvent, type PoQuestion } from "./api";
 import { AgentInput, usePendingFiles } from "./AgentInput";
 import { PoMessageFiles } from "./FilePicker";
 import { Markdown } from "./Markdown";
@@ -231,17 +231,17 @@ export const EventsTab = ({ d, onError, reload }: Props) => {
 const TicketCorrection = ({ c, d, busy, onApply, onDiscard }: { c: PoCorrection; d: PoDetail; busy: boolean; onApply: () => void; onDiscard: () => void }) => {
     const issue = d.issues.find((i) => i.identifier.toUpperCase() === c.target.toUpperCase());
     const ev = d.events.find((e) => e.id === c.event_id);
-    const manager = d.po.source === "clickup" ? "ClickUp" : "Linear";
+    const manager = trackerName(d.po.source);
     return (
         <article className="po-card">
             <div className="po-card-head">
-                {issue ? <a className="po-ext" href={issue.url} target="_blank" rel="noreferrer">{c.target} ↗</a> : <Chip tone="accent">{c.target}</Chip>}
+                {issue && /^https?:/.test(issue.url) ? <a className="po-ext" href={issue.url} target="_blank" rel="noreferrer">{c.target} ↗</a> : <Chip tone="accent">{c.target}</Chip>}
                 <b className="po-card-title">{c.title}</b>
                 <time className="po-muted">{when(c.created_at)}</time>
             </div>
             {c.body && <Markdown source={c.body} />}
             {ev && <p className="po-muted">After: {ev.title}</p>}
-            {issue && issue.description !== c.before && <p className="po-error">The description changed in {issue.url.includes("clickup") ? "ClickUp" : "Linear"} since this suggestion.</p>}
+            {issue && issue.description !== c.before && <p className="po-error">The description changed in {manager} since this suggestion.</p>}
             <details className="po-fold" open>
                 <summary>New description, as a diff</summary>
                 <DiffLines lines={c.diff ?? []} />

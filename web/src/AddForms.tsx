@@ -24,7 +24,7 @@ export const EnvForm = ({
     const [dirId, setDirId] = useState("");
     const [appUrl, setAppUrl] = useState("");
     const [repos, setRepos] = useState("");
-    const [ticketSource, setTicketSource] = useState<"clickup" | "linear">("clickup");
+    const [ticketSource, setTicketSource] = useState<"clickup" | "linear" | "tasksmd">("clickup");
     const [busy, setBusy] = useState(false);
     const repoList = splitCsv(repos);
     const submit = async (): Promise<void> => {
@@ -51,8 +51,8 @@ export const EnvForm = ({
             <Field label="Sub-repositories" hint="Comma-separated directories of the path that are git repositories. Empty: the path itself is the git repository."><Input value={repos} onChange={(e) => setRepos(e.target.value)} placeholder="backend, frontend" /></Field>
             <Field label="Base branch"><Input value={base} onChange={(e) => setBase(e.target.value)} /></Field>
             <Field label="Task system" hint="How bare ticket ids like ABC-123 are resolved.">
-                <Select value={ticketSource} onChange={(e) => setTicketSource(e.target.value as "clickup" | "linear")}>
-                    <option value="clickup">ClickUp</option><option value="linear">Linear</option>
+                <Select value={ticketSource} onChange={(e) => setTicketSource(e.target.value as "clickup" | "linear" | "tasksmd")}>
+                    <option value="clickup">ClickUp</option><option value="linear">Linear</option><option value="tasksmd">Tasks.md</option>
                 </Select>
             </Field>
             <Field label="App URL for QA"><Input value={appUrl} onChange={(e) => setAppUrl(e.target.value)} placeholder="https://localhost:3000" /></Field>

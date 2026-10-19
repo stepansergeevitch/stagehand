@@ -148,7 +148,7 @@ const TaskFormBody = ({ accounts, env, settings, readiness, onSubmit, footerRef 
                 {mine && mine.tickets.length > 0 && (
                     <div className="nt-sprint">
                         <div className="nt-sprint-head">
-                            <b>{env.ticket_source === "clickup" ? "From the current sprint" : "Assigned to you"}</b><span className="mono nt-count">{all.length}</span>
+                            <b>{env.ticket_source === "clickup" ? "From the current sprint" : env.ticket_source === "tasksmd" ? "From the board" : "Assigned to you"}</b><span className="mono nt-count">{all.length}</span>
                             <Input className="nt-filter" aria-label="Filter sprint tickets" placeholder="Filter by id or title" value={q} onChange={(e) => setQ(e.target.value)} />
                         </div>
                         <div role="listbox" aria-multiselectable="true" aria-label="Sprint tickets">

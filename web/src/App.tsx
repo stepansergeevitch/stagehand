@@ -297,11 +297,12 @@ export const App = () => {
         await reload();
     };
 
-    // The drawer closes when the route changes (a link was followed); ⌘K / Ctrl+K opens the palette from anywhere.
+    // The drawer closes when the route changes (a link was followed); Alt+X (Emacs M-x) opens the palette from anywhere.
+    // Matched on the physical key: on macOS Option+X types "≈", so e.key is not "x".
     useEffect(() => { setDrawerOpen(false); }, [route]);
     useEffect(() => {
         const onKey = (e: KeyboardEvent): void => {
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+            if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === "KeyX") {
                 e.preventDefault();
                 setPaletteOpen((o) => !o);
             }

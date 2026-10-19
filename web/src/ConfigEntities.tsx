@@ -209,7 +209,24 @@ export type IntegrationType = "task manager" | "notifications" | "decision model
 
 const TaskManagerForm = ({ m, onSaved, onError }: { m: TaskManager; onSaved: () => Promise<void>; onError: (m: string) => void }) => {
     const { saving, run } = useSaver(onError);
-    const d = useDraft(() => ({ token: "", teamId: m.teamId ?? "" }), [m]);
+    const d = useDraft(() => ({ token: "", teamId: m.teamId ?? "", tasksDir: m.tasksDir ?? "", configDir: m.configDir ?? "" }), [m]);
+    // Tasks.md is folders on this machine: no token.
+    if (m.source === "tasksmd") {
+        return (
+            <EntityForm dirty={d.dirty} saving={saving === "save"} onDiscard={d.reset} onSave={() => run("save", async () => {
+                await api.patchTaskManager(m.source, { tasksDir: d.value.tasksDir || null, configDir: d.value.configDir || null });
+                await onSaved();
+            })}>
+                <ReadField label="Used by">{m.envs.join(", ") || "no environment yet"}</ReadField>
+                <Field label="Tasks folder" hint="Tasks.md's TASKS_DIR (mounted at /tasks in its container): a board is a folder whose sub-folders are its lanes, a card is a .md file in a lane. Vortex reads and writes it directly.">
+                    <Input value={d.value.tasksDir} onChange={(e) => d.patch({ tasksDir: e.target.value })} placeholder="/path/to/tasks" />
+                </Field>
+                <Field label="Config folder" hint="Tasks.md's CONFIG_DIR (mounted at /config): images pasted into cards live in its images/ folder, and come with the ticket. Optional.">
+                    <Input value={d.value.configDir} onChange={(e) => d.patch({ configDir: e.target.value })} placeholder="/path/to/config" />
+                </Field>
+            </EntityForm>
+        );
+    }
     return (
         <EntityForm dirty={d.dirty} saving={saving === "save"} onDiscard={d.reset} onSave={() => run("save", async () => {
             await api.patchTaskManager(m.source, { ...(d.value.token ? { token: d.value.token } : {}), ...(m.source === "clickup" ? { teamId: d.value.teamId || null } : {}) });
@@ -290,10 +307,10 @@ export const IntegrationPage = ({ id, settings, tab, onTab, onBack, onChanged, o
     if (id.startsWith("tm:") && !m) return <Loading />;
     if (m) {
         return (
-            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id={m.label} notice={notice} meta={state(m.configured)}
+            <EntityView tab={tab} onTab={onTab} type="Integrations" onType={onBack} id={m.label} notice={notice} meta={state(m.configured, m.source === "tasksmd" ? "no folder" : "no token")}
                 actions={<>
-                    <Button variant="primary" disabled={!m.configured || busy} onClick={() => void attempt("Testing…", async () => { const r = await api.testTaskManager(m.source); return r.ok ? { ok: true, text: `OK — ${r.count} ticket(s) assigned to you${r.sample?.length ? `: ${r.sample.join(" · ")}` : ""}` } : { ok: false, text: `Failed: ${r.error}` }; })}>{busy ? "Testing…" : "Test"}</Button>
-                    <Button variant="danger" disabled={!m.configured} onClick={() => { if (confirm(`Remove the ${m.label} token?`)) void api.patchTaskManager(m.source, { token: null }).then(load); }}>Remove token</Button>
+                    <Button variant="primary" disabled={!m.configured || busy} onClick={() => void attempt("Testing…", async () => { const r = await api.testTaskManager(m.source); return r.ok ? { ok: true, text: `OK — ${r.count} ${m.source === "tasksmd" ? "card(s) readable" : "ticket(s) assigned to you"}${r.sample?.length ? `: ${r.sample.join(" · ")}` : ""}` } : { ok: false, text: `Failed: ${r.error}` }; })}>{busy ? "Testing…" : "Test"}</Button>
+                    <Button variant="danger" disabled={!m.configured} onClick={() => { if (confirm(`Remove the ${m.label} ${m.source === "tasksmd" ? "folders" : "token"}?`)) void api.patchTaskManager(m.source, m.source === "tasksmd" ? { tasksDir: null, configDir: null } : { token: null }).then(load); }}>{m.source === "tasksmd" ? "Remove folders" : "Remove token"}</Button>
                 </>}
                 tabs={[{ key: "settings", label: "Settings", content: <TaskManagerForm m={m} onSaved={load} onError={onError} /> }]} />
         );

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { errText } from "../format";
-import { api, poEnvIds, type Env, type PoDetail, type PoIssue, type PoTicket } from "../api";
+import { api, poEnvIds, trackerName, type Env, type PoDetail, type PoIssue, type PoTicket } from "../api";
 import { Markdown } from "../Markdown";
 import { DataTable, type DataColumn } from "../components/DataTable";
 import { EntityForm, Field, ReadField, useDraft } from "../components/EntityView";
@@ -83,7 +83,7 @@ export const TicketsTab = ({ d, sel, ticketTab, onError, reload, send }: Props) 
     const [target, setTarget] = useState(d.po.env_id);
     const targetEnv = poEnvs.includes(target) ? target : d.po.env_id;
     const envName = allEnvs.find((e) => e.id === targetEnv)?.name ?? null;
-    const tracker = d.po.source === "linear" ? "Linear" : "ClickUp";
+    const tracker = trackerName(d.po.source);
     const byKey = useMemo(() => new Map(tickets.map((t) => [t.key, t])), [tickets]);
     const link = (k: string) => d.links.find((l) => l.key === k);
     const identOf = (t: PoTicket): string | null => link(t.key)?.identifier ?? t.existing ?? null;

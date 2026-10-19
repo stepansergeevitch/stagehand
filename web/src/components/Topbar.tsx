@@ -10,7 +10,7 @@ export const Topbar = ({ onMenu, onSearch, children }: { onMenu: () => void; onS
         <button type="button" className="tb-search" onClick={onSearch} aria-label="Search tasks and pages">
             <Icon name="search" />
             <span className="tb-search-text">Search tasks, pages, environments</span>
-            <span className="tb-search-keys"><Kbd>⌘</Kbd><Kbd>K</Kbd></span>
+            <span className="tb-search-keys"><Kbd>⌥</Kbd><Kbd>X</Kbd></span>
         </button>
         <span className="tb-spacer" />
         <div className="tb-status">{children}</div>

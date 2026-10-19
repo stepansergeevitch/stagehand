@@ -30,6 +30,8 @@ Pages are built from the design system (`packages/vortex-ds`, imported as `@vort
   it, a create dialog (`/new`, environments included: `/envs/new`) and a view selector (environment picker, Files/Tests, diff scope). Components read it from
   the route and change it with `navigate` — never `useState` or localStorage, or a reload lands somewhere else. Only
   transient UI (hover, expanded rows, menus, an inline edit) stays in component state.
+- **Keyboard shortcuts follow Emacs** (Alt+X opens the command palette, like M-x). Match the physical key
+  (`e.code`), not `e.key`: on macOS Option changes the typed character. Pick a new shortcut from Emacs bindings.
 - **Anything the human writes to an agent is a `ChatInput`** (`web/src/components/ChatInput.tsx`; `AgentInput` is its form-field shape): chats, notes, answers, review comments. Never a bare `Textarea` with its own send button.
 - **A setting lives on the entity it describes** (models on the AI account, pipeline behaviour on the environment);
   one concept per Configuration subtab.

@@ -5,7 +5,7 @@ import { DataTable, type DataColumn } from "./components/DataTable";
 import { Modal } from "./Modal";
 import { navigate, type Route } from "./routes";
 import { authLabel, authTone, PrompterPage, type IntegrationType } from "./ConfigEntities";
-import { accountBrowserReady, accountOrderOf, api, modelLabel, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
+import { accountBrowserReady, accountOrderOf, api, modelLabel, trackerName, type Account, type ConfigDir, type Env, type Settings, type Task, type TaskManager, type TokenIntegration, TOKEN_INTEGRATIONS } from "./api";
 import { Field } from "./components/EntityView";
 import { limitTone } from "./SettingsParts";
 import { Button, Chip, Input } from "@vortex/ds";
@@ -86,7 +86,7 @@ const EnvTable = ({ envs, configDirs, accounts, tasks, onConfigure, onAdd, act }
     const accountList = (e: Env): string => accountOrderOf(e).map((id, i) => `${i + 1}. ${accounts.find((a) => a.id === id)?.name ?? "?"}`).join("  ") || "any that can run in the dir";
     const columns: DataColumn<Env>[] = [
         { key: "name", label: "Name", kind: "label", value: (e) => e.name, filter: false },
-        { key: "source", label: "Tickets", value: (e) => e.ticket_source, filter: "auto", render: (e) => (e.ticket_source === "linear" ? "Linear" : "ClickUp") },
+        { key: "source", label: "Tickets", value: (e) => e.ticket_source, filter: "auto", render: (e) => trackerName(e.ticket_source) },
         { key: "base", label: "Base branch", value: (e) => e.base_branch, filter: "auto", render: (e) => <Chip mono>{e.base_branch}</Chip> },
         { key: "repos", label: "Repos", value: (e) => repoList(e.repos), filter: false },
         { key: "dir", label: "Config dir", value: dirName, filter: "auto" },
@@ -240,7 +240,7 @@ const IntegrationTable = ({ settings, onOpen, onError }: { settings: Settings | 
     };
     useEffect(() => { void load(); }, []);
     const rows: IntegrationRow[] = [
-        ...(managers ?? []).map((m) => ({ id: `tm:${m.source}`, name: m.label, type: "task manager" as const, status: m.configured ? "configured" : "no token", ok: m.configured, usedBy: m.envs.join(", ") })),
+        ...(managers ?? []).map((m) => ({ id: `tm:${m.source}`, name: m.label, type: "task manager" as const, status: m.configured ? "configured" : m.source === "tasksmd" ? "no folder" : "no token", ok: m.configured, usedBy: m.envs.join(", ") })),
         ...(tokenStates ?? []).map((t) => ({ id: t.id, name: TOKEN_INTEGRATIONS.find((x) => x.id === t.id)!.name, type: "documents" as const, status: t.configured ? "configured" : "no token", ok: t.configured, usedBy: "" })),
         ...(settings
             ? [
